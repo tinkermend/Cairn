@@ -487,13 +487,13 @@ function Settings({
         </p>
 
         <Field
-          label='控制台可信 HTTPS 地址'
-          hint='通知正文中的运行详情及告警链接使用此地址拼接。'
+          label='控制台访问地址'
+          hint='通知正文中的运行详情及告警链接使用此地址拼接（支持 HTTP 或 HTTPS）。'
         >
           <Input
             type='url'
             disabled={!canWrite}
-            placeholder='https://cairn.example.com'
+            placeholder='http://localhost:5173 或 https://cairn.example.com'
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />

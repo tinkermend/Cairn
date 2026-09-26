@@ -1,13 +1,13 @@
-import type { TargetDescriptor } from '@cairn/shared'
+import type { LocatorPlan, ResolutionPolicy, TargetDescriptor } from '@cairn/shared'
 import { TargetFields } from '@/features/authoring/fields/target'
 
 export interface SectionTargetLocatorProps {
   target: TargetDescriptor
   disabled?: boolean
   optional?: boolean
-  policy?: { resolution?: any; deepLocate?: boolean }
+  policy?: { resolution?: ResolutionPolicy; locatorPlan?: LocatorPlan; deepLocate?: boolean }
   onChange: (target: TargetDescriptor) => void
-  onPolicyChange?: (policy: { resolution?: any; deepLocate?: boolean }) => void
+  onPolicyChange?: (policy: { resolution?: ResolutionPolicy; locatorPlan?: LocatorPlan; deepLocate?: boolean }) => void
   forceAdvanced?: boolean
 }
 

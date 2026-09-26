@@ -16,6 +16,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { KeyValueEditor } from '../key-value-editor'
 import { ReportProfileEditor, ReportProfileSelect } from '@/features/reports/profiles'
+import { useCan } from '@/hooks/use-permissions'
 
 export function SuiteInspector({
   name,
@@ -40,6 +41,7 @@ export function SuiteInspector({
 }) {
   const [sharedParamsOpen, setSharedParamsOpen] = useState(true)
   const [reportsOpen, setReportsOpen] = useState(true)
+  const canExport = useCan('report:export')
 
   const sharedInputCount = Object.keys(document.sharedInput ?? {}).length
 
@@ -248,27 +250,74 @@ export function SuiteInspector({
           <div className='space-y-3 pt-1'>
             <ReportProfileSelect
               targetId={targetId}
+              source='SUITE_RUN'
               value={document.reportProfileId}
               disabled={!canWrite}
               onChange={(reportProfileId) =>
                 onUpdateDocument((doc) => ({ ...doc, reportProfileId }))
               }
             />
-            <label className='flex items-start gap-2 text-body cursor-pointer'>
-              <input
-                type='checkbox'
-                disabled={!canWrite}
-                checked={document.autoGenerateFinalReport}
-                className='mt-1'
-                onChange={(event) =>
-                  onUpdateDocument((doc) => ({
-                    ...doc,
-                    autoGenerateFinalReport: event.target.checked,
-                  }))
-                }
-              />
-              <span>运行完成并结算证据后，自动生成总报告和 Word / PDF 文件。</span>
-            </label>
+
+            <div className='space-y-3 rounded-md border border-border-default/60 p-3 bg-muted/20'>
+              <label className='flex items-start gap-2 text-body cursor-pointer'>
+                <input
+                  type='checkbox'
+                  disabled={!canWrite || !canExport}
+                  checked={document.outputPolicy?.autoGenerateReport ?? document.autoGenerateFinalReport}
+                  className='mt-1'
+                  onChange={(event) =>
+                    onUpdateDocument((doc) => ({
+                      ...doc,
+                      autoGenerateFinalReport: event.target.checked,
+                      outputPolicy: {
+                        ...doc.outputPolicy,
+                        autoGenerateReport: event.target.checked,
+                        memberReportPolicy: doc.outputPolicy?.memberReportPolicy ?? 'inherit',
+                      },
+                    }))
+                  }
+                />
+                <div>
+                  <div className='font-medium text-foreground'>自动生成集合总报告</div>
+                  <div className='text-xs text-muted-foreground'>
+                    场景集全部成员运行完成并结算证据后，自动触发生成集合总报告与 Word / PDF。
+                  </div>
+                  {!canExport && canWrite ? (
+                    <div className='text-xs text-amber-600 mt-1'>
+                      开启自动生成报告需要导出权限 (report:export)
+                    </div>
+                  ) : null}
+                </div>
+              </label>
+
+              {(document.outputPolicy?.autoGenerateReport ?? document.autoGenerateFinalReport) ? (
+                <label className='flex items-start gap-2 text-body cursor-pointer pt-2 border-t border-border-default/40'>
+                  <input
+                    type='checkbox'
+                    disabled={!canWrite}
+                    checked={document.outputPolicy?.memberReportPolicy === 'suppress'}
+                    className='mt-1'
+                    onChange={(event) =>
+                      onUpdateDocument((doc) => ({
+                        ...doc,
+                        outputPolicy: {
+                          ...doc.outputPolicy,
+                          autoGenerateReport: true,
+                          memberReportPolicy: event.target.checked ? 'suppress' : 'inherit',
+                        },
+                      }))
+                    }
+                  />
+                  <div>
+                    <div className='font-medium text-foreground'>抑制成员单场景报告</div>
+                    <div className='text-xs text-muted-foreground'>
+                      仅生成集合总报告，强制抑制子场景单报告导出，防止大集合并发耗尽 Worker 资源。
+                    </div>
+                  </div>
+                </label>
+              ) : null}
+            </div>
+
             <p className='text-label text-muted-foreground'>
               配置随新运行冻结。生成失败单独记录，可从运行详情重试报告。
             </p>

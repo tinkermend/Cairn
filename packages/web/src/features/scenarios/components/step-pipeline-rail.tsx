@@ -52,6 +52,7 @@ import { StepTypeIcon } from '../step-type-icon'
 import { outputConsumersAny } from '../studio-document'
 import { STEP_TYPE_HINTS, unavailableStudioTypes } from '../step-registry'
 import { STEP_SNIPPET_TEMPLATES } from '../snippets/step-snippets'
+import type { StepLocatorHealth } from '../use-scenario-locator-health'
 
 export interface StepPipelineRailProps {
   document?: ScenarioDocument | ScenarioAuthoringDocument | null
@@ -72,6 +73,7 @@ export interface StepPipelineRailProps {
   canRecord?: boolean
   capabilitiesData?: any
   flowgram?: boolean
+  locatorHealthMap?: Map<string, StepLocatorHealth>
   onToggleFlowgram?: (flowgram: boolean) => void
   onLocateStep?: (id: string) => void
   onSelect: (id: string) => void
@@ -111,6 +113,7 @@ export function StepPipelineRail({
   canRecord,
   capabilitiesData,
   flowgram = false,
+  locatorHealthMap,
   onToggleFlowgram,
   onLocateStep,
   onSelect,
@@ -584,7 +587,7 @@ export function StepPipelineRail({
               disabled={disabled}
             >
               <Plus className='size-3.5 mr-1.5 text-ai-foreground' />
-              第 1 步：AI 智能操作
+              第 1 步：视觉操作
             </Button>
           </div>
         </div>
@@ -885,9 +888,48 @@ export function StepPipelineRail({
                       {isDisabled && <StatusBadge tone='neutral'>已跳过</StatusBadge>}
                       {isHolding && <StatusBadge tone='warning'>挂起</StatusBadge>}
                       {imported && <StatusBadge tone='info'>刚导入</StatusBadge>}
+                      {step && locatorHealthMap?.get(step.id) && (
+                        <div
+                          data-testid={`step-locator-health-${step.id}`}
+                          className='inline-flex items-center gap-1'
+                        >
+                          {locatorHealthMap.get(step.id)?.activeCandidate ? (
+                            <span
+                              className='inline-flex items-center gap-0.5 rounded bg-primary/10 text-primary px-1 py-0.2 text-3xs font-medium'
+                              title='AI 已自动反向生成全新确定性定位规则，可点击前往采纳'
+                            >
+                              <Sparkles className='size-2.5' />
+                              <span>自愈就绪 ({Math.round((locatorHealthMap.get(step.id)?.ruleHitRate ?? 0) * 100)}%)</span>
+                            </span>
+                          ) : locatorHealthMap.get(step.id)?.status === 'fallback_warning' ? (
+                            <span
+                              className='rounded bg-status-warning-background text-status-warning-foreground px-1 py-0.2 text-3xs font-medium'
+                              title={`原有选择器已衰减！近期规则命中率 ${Math.round((locatorHealthMap.get(step.id)?.ruleHitRate ?? 0) * 100)}% · 曾靠 AI 兜底挽回 ${locatorHealthMap.get(step.id)?.ai} 次`}
+                            >
+                              ⚠️ 需维护 ({Math.round((locatorHealthMap.get(step.id)?.ruleHitRate ?? 0) * 100)}%)
+                            </span>
+                          ) : locatorHealthMap.get(step.id)?.status === 'failing' ? (
+                            <span
+                              className='rounded bg-status-error-background text-status-error-foreground px-1 py-0.2 text-3xs font-medium'
+                              title={`目标未能定位，近期定位失败 ${locatorHealthMap.get(step.id)?.failed} 次`}
+                            >
+                              ❌ 定位失败
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
                       {isOptional && (
                         <span className='rounded bg-status-info-background text-status-info-foreground px-1 py-0.5 text-3xs font-medium'>
                           可选
+                        </span>
+                      )}
+                      {step && 'origin' in item.node && item.node.origin?.kind === 'ai_solidification' && (
+                        <span
+                          className='inline-flex items-center gap-1 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1 py-0.2 text-3xs font-medium'
+                          title={`固化自 Attempt: ${item.node.origin.attemptId}\n原指令: ${item.node.origin.instruction}`}
+                        >
+                          <Sparkles className='size-2.5 text-amber-600 dark:text-amber-400' />
+                          <span>固化</span>
                         </span>
                       )}
                       {isModule ? (

@@ -450,6 +450,7 @@ export function SuiteDetailPage() {
       {/* Member Input Override Dialog */}
       <MemberInputDialog
         open={editingMember !== null}
+        document={document}
         onOpenChange={(open) => {
           if (!open) setEditingMember(null)
         }}

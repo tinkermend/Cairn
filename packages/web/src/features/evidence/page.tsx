@@ -300,7 +300,7 @@ function optionalCell(column: OptionalColumn, item: EvidenceSearchItem) {
   }
 }
 
-function SearchPanel({
+export function SearchPanel({
   search,
   patch,
 }: {
@@ -1247,7 +1247,7 @@ function SearchPanel({
   )
 }
 
-function RetentionPanel({
+export function RetentionPanel({
   search,
   patch,
 }: {
@@ -1469,7 +1469,7 @@ function RetentionPanel({
   )
 }
 
-function ReportsCenterPanel({ search }: { search: EvidencePageSearch }) {
+export function ReportsCenterPanel({ search }: { search: EvidencePageSearch }) {
   const canRead = useCan('report:read')
   const [cursors, setCursors] = useState<string[]>([])
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)

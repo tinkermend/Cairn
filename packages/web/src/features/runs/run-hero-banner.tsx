@@ -36,19 +36,19 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useAssistantStore } from '@/stores/assistant-store'
+import { useCan } from '@/hooks/use-permissions'
+import { retryRunReport } from '@/lib/runs-api'
 import { CatalogName } from './catalog-name'
 import {
   CAPTURE_MODE_LABELS,
   RUN_EVIDENCE_STATUS_LABELS,
+  RUN_REPORT_STATUS_LABELS,
   RUN_STATUS_LABELS,
   formatDuration,
   runEvidenceStatusTone,
+  runReportStatusTone,
   runStatusTone,
 } from './labels'
-import {
-  OutcomeAxisSummary,
-  RUN_EXECUTION_AXIS_LABELS,
-} from './outcome-axis'
 import {
   connectionLabel,
   type ObservationConnection,
@@ -78,6 +78,9 @@ export function RunHeroBanner({
   canDelete = false,
 }: Props) {
   const [techInfoOpen, setTechInfoOpen] = useState(false)
+  const [retryingReport, setRetryingReport] = useState(false)
+  const canReadReports = useCan('report:read')
+  const canExportReports = useCan('report:export')
   const openAssistant = useAssistantStore((state) => state.openPanel)
   const finished = isFinishedRunStatus(run.status)
   const durationText = formatDuration(run.startedAt, run.finishedAt)
@@ -86,6 +89,19 @@ export function RunHeroBanner({
   const copyRunId = () => {
     void navigator.clipboard.writeText(run.id)
     toast.success('已复制运行 ID')
+  }
+
+  const handleRetryReport = async () => {
+    try {
+      setRetryingReport(true)
+      await retryRunReport(run.id)
+      toast.success('已触发重新生成报告')
+      onRefresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '重试生成报告失败')
+    } finally {
+      setRetryingReport(false)
+    }
   }
 
   return (
@@ -221,6 +237,26 @@ export function RunHeroBanner({
               </StatusBadge>
             ) : null}
 
+            {canReadReports && run.runReportStatus && run.runReportStatus !== 'not_configured' ? (
+              run.reportId ? (
+                <Link
+                  to='/reports/$reportId'
+                  params={{ reportId: run.reportId }}
+                  className='inline-flex hover:opacity-80'
+                >
+                  <StatusBadge tone={runReportStatusTone(run.runReportStatus)}>
+                    {RUN_REPORT_STATUS_LABELS[run.runReportStatus]}
+                  </StatusBadge>
+                </Link>
+              ) : (
+                <span title={run.reportError ?? undefined}>
+                  <StatusBadge tone={runReportStatusTone(run.runReportStatus)}>
+                    {RUN_REPORT_STATUS_LABELS[run.runReportStatus]}
+                  </StatusBadge>
+                </span>
+              )
+            ) : null}
+
             {/* 实时连接状态圆点 */}
             {!finished ? (
               <span
@@ -254,10 +290,23 @@ export function RunHeroBanner({
             </Button>
           ) : null}
 
-          {/* 已完成：查看完整报告 */}
-          {finished ? (
+          {/* 失败报告重试按钮 */}
+          {canExportReports && run.runReportStatus === 'failed' ? (
+            <Button
+              variant='outline'
+              size='sm'
+              disabled={busy || retryingReport}
+              onClick={() => void handleRetryReport()}
+              className='h-8'
+            >
+              重试生成报告
+            </Button>
+          ) : null}
+
+          {/* 已生成报告：查看报告 */}
+          {canReadReports && run.reportId ? (
             <Button variant='outline' size='sm' asChild className='h-8'>
-              <Link to='/evidence' search={{ runId: run.id, tab: 'search' }}>
+              <Link to='/reports/$reportId' params={{ reportId: run.reportId }}>
                 查看报告
               </Link>
             </Button>
@@ -283,10 +332,17 @@ export function RunHeroBanner({
                 刷新
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
-                <Link to='/evidence' search={{ runId: run.id, tab: 'search' }}>
-                  在结果与报告中查看
+                <Link to='/runs' search={{ runId: run.id, view: 'materials' }}>
+                  现场材料检索
                 </Link>
               </DropdownMenuItem>
+              {canReadReports && run.reportId ? (
+                <DropdownMenuItem asChild>
+                  <Link to='/reports/$reportId' params={{ reportId: run.reportId }}>
+                    查看交付报告
+                  </Link>
+                </DropdownMenuItem>
+              ) : null}
 
               {run.suiteRunId ? (
                 <DropdownMenuItem asChild>
@@ -340,14 +396,6 @@ export function RunHeroBanner({
         </div>
       </header>
 
-      {/* 双轴判定摘要 (可访问性与断言保证) */}
-      <div className='sr-only'>
-        <OutcomeAxisSummary
-          executionLabel={RUN_EXECUTION_AXIS_LABELS[run.status]}
-          outcomeStatus={run.outcomeStatus}
-          hasContracts={Boolean(run.snapshot.outcomeManifest?.entries.length)}
-        />
-      </div>
 
       {/* 执行环境与底层租约弹窗（Zero-Jargon：将底层技术细节收拢在二级弹窗，不污染主界面） */}
       <Dialog open={techInfoOpen} onOpenChange={setTechInfoOpen}>

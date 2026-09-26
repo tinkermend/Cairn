@@ -1,9 +1,11 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useId, type KeyboardEvent } from 'react'
 import {
   evaluateGenerator,
   type DataGeneratorSpec,
   type MockPreset,
   MOCK_PRESETS,
+  GENERATOR_MACROS,
+  generatorTemplateIssues,
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -28,6 +30,58 @@ const PRESET_LABELS: Record<MockPreset, string> = {
   uuid_v4: 'UUID v4 随机标示符',
 }
 
+function MacroInput({ value, disabled, onChange }: { value: string; disabled?: boolean; onChange: (value: string) => void }) {
+  const input = useRef<HTMLInputElement>(null)
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const [caret, setCaret] = useState(0)
+  const [scroll, setScroll] = useState(0)
+  const issues = generatorTemplateIssues(value)
+  const before = value.slice(0, caret)
+  const start = before.lastIndexOf('{{')
+  const query = start >= 0 && !before.slice(start).includes('}}') ? before.slice(start + 2).toLowerCase() : ''
+  const candidates = GENERATOR_MACROS.filter((item) => !query || item.token.toLowerCase().includes(query) || item.label.includes(query))
+  const parts: Array<{ text: string; kind: 'text' | 'valid' | 'invalid' }> = []
+  let cursor = 0
+  for (const match of value.matchAll(/\{\{.*?(?:\}\}|$)/g)) {
+    if (match.index > cursor) parts.push({ text: value.slice(cursor, match.index), kind: 'text' })
+    parts.push({ text: match[0], kind: issues.some((issue) => issue.start === match.index) ? 'invalid' : 'valid' })
+    cursor = match.index + match[0].length
+  }
+  if (cursor < value.length) parts.push({ text: value.slice(cursor), kind: 'text' })
+  const insert = (token: string) => {
+    const el = input.current
+    const selectionStart = el?.selectionStart ?? value.length
+    const selectionEnd = el?.selectionEnd ?? selectionStart
+    const prefixStart = value.slice(0, selectionStart).lastIndexOf('{{')
+    const begin = selectionStart === selectionEnd && prefixStart >= 0 ? prefixStart : selectionStart
+    onChange(value.slice(0, begin) + token + value.slice(selectionEnd))
+    setOpen(false)
+    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(begin + token.length, begin + token.length) })
+  }
+  const keyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || !open) return
+    if (event.key === 'Escape') { event.preventDefault(); setOpen(false) }
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActive((index) => (index + 1) % Math.max(candidates.length, 1)) }
+    if (event.key === 'ArrowUp') { event.preventDefault(); setActive((index) => (index - 1 + candidates.length) % Math.max(candidates.length, 1)) }
+    if (event.key === 'Enter' && candidates[active]) { event.preventDefault(); insert(candidates[active].token) }
+  }
+  return <div className='relative'>
+    <div aria-hidden='true' className='pointer-events-none absolute inset-x-3 top-1/2 -translate-y-1/2 overflow-hidden whitespace-nowrap font-mono text-label'>
+      <span className='relative block w-max' style={{ transform: `translateX(-${scroll}px)` }}>{parts.map((part, index) => <span key={index} className={part.kind === 'valid' ? 'text-primary font-medium' : part.kind === 'invalid' ? 'text-destructive underline' : 'text-foreground'}>{part.text}</span>)}</span>
+    </div>
+    <Input ref={input} aria-label='生成器模板内容' role='combobox' aria-autocomplete='list' aria-expanded={open} aria-controls={`${id}-list`} aria-activedescendant={open && candidates[active] ? `${id}-${active}` : undefined}
+      className='relative h-8 bg-transparent font-mono text-label text-transparent caret-foreground' placeholder='如 商品_{{rand:8}}' value={value} disabled={disabled}
+      onScroll={(event) => setScroll(event.currentTarget.scrollLeft)} onChange={(event) => { onChange(event.target.value); const pos = event.target.selectionStart ?? event.target.value.length; setCaret(pos); setOpen(event.target.value.slice(0, pos).lastIndexOf('{{') > event.target.value.slice(0, pos).lastIndexOf('}}')); setActive(0) }} onClick={(event) => setCaret(event.currentTarget.selectionStart ?? value.length)} onKeyDown={keyDown} onBlur={() => setOpen(false)} />
+    {open && !disabled ? <div id={`${id}-list`} role='listbox' aria-label='生成器宏' className='absolute z-50 max-h-52 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-lg'>
+      {candidates.map((item, index) => <div id={`${id}-${index}`} key={item.token} role='option' aria-selected={index === active} className={`cursor-pointer rounded px-2 py-1 text-label ${index === active ? 'bg-primary/10' : ''}`} onMouseDown={(event) => event.preventDefault()} onClick={() => insert(item.token)}><code>{item.token}</code> · {item.label}<div className='text-muted-foreground'>{item.description}</div></div>)}
+      {!candidates.length ? <p className='p-2 text-muted-foreground'>没有匹配的宏</p> : null}
+    </div> : null}
+    {issues.length ? <p role='alert' className='mt-1 text-label text-destructive'>{issues[0]!.message}</p> : null}
+  </div>
+}
+
 export function GeneratorConfigEditor({
   generator,
   disabled,
@@ -44,7 +98,7 @@ export function GeneratorConfigEditor({
     try {
       return String(evaluateGenerator(generator))
     } catch {
-      return '求值失败'
+      return '模板求值失败，请修正宏'
     }
   }, [generator, rerollSeed])
 
@@ -108,7 +162,7 @@ export function GeneratorConfigEditor({
               } else if (val === 'enum_sample') {
                 onChange({ kind: 'enum_sample', options: ['选项A', '选项B', '选项C'] })
               } else if (val === 'template') {
-                onChange({ kind: 'template', pattern: '用户_{{random_string}}', unique: true })
+                onChange({ kind: 'template', pattern: '用户_{{rand:8}}', unique: true })
               } else if (val === 'fixed') {
                 onChange({ kind: 'fixed', value: '固定默认值' })
               }
@@ -252,13 +306,7 @@ export function GeneratorConfigEditor({
         {generator.kind === 'template' && (
           <div className='space-y-1'>
             <Label className='text-caption text-muted-foreground'>模板内容</Label>
-            <Input
-              className='h-8 text-label font-mono'
-              placeholder='如 商品_{{random_string}}'
-              value={generator.pattern}
-              disabled={disabled}
-              onChange={(e) => onChange({ ...generator, pattern: e.target.value })}
-            />
+            <MacroInput value={generator.pattern} disabled={disabled} onChange={(pattern) => onChange({ ...generator, pattern })} />
           </div>
         )}
 

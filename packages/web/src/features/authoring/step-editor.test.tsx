@@ -82,6 +82,14 @@ const aiExtract: Step = {
   },
 }
 
+const aiAction: Step = {
+  id: '77777777-7777-4777-8777-777777777777',
+  name: '视觉操作',
+  type: 'ai_action',
+  effectType: 'SIDE_EFFECT',
+  input: { instruction: '点击提交按钮' },
+}
+
 const echoField: Step = {
   id: '55555555-5555-4555-8555-555555555555',
   name: '回显字段',
@@ -115,7 +123,7 @@ function editor(
       diagnostics={[]}
       onChange={onChange}
       onRequestTypeChange={vi.fn()}
-    />,
+    />
   )
 }
 
@@ -123,11 +131,44 @@ function withObserve(ui: ReactNode) {
   return withQuery(
     <AuthoringObserveProvider enabled={false} onApplyTarget={() => undefined}>
       {ui}
-    </AuthoringObserveProvider>,
+    </AuthoringObserveProvider>
   )
 }
 
 describe('StepEditor', () => {
+  it('视觉操作只提供视觉动作类型，并保持 ai_action 步骤类型', async () => {
+    const onChange = vi.fn()
+    const screen = await render(editor(aiAction, onChange))
+
+    await expect
+      .element(screen.getByRole('combobox', { name: '步骤 1 类型' }))
+      .not.toBeInTheDocument()
+    await screen.getByRole('combobox', { name: '视觉操作动作类型' }).click()
+    for (const name of [
+      '业务意图',
+      '点击目标',
+      '输入文字',
+      '按键',
+      '相对滚动',
+    ]) {
+      await expect
+        .element(screen.getByRole('option', { name, exact: true }))
+        .toBeInTheDocument()
+    }
+    for (const name of ['导航', '点击', '填写', 'AI 提取']) {
+      await expect
+        .element(screen.getByRole('option', { name, exact: true }))
+        .not.toBeInTheDocument()
+    }
+
+    await screen.getByRole('option', { name: '点击目标' }).click()
+    const next = onChange.mock.lastCall?.[0] as Step
+    expect(next).toMatchObject({
+      type: 'ai_action',
+      input: { operation: 'tap' },
+    })
+  })
+
   it('未挂观察时不展示指认和校验高亮', async () => {
     const screen = await render(editor(click))
     await expect
@@ -226,34 +267,53 @@ describe('StepEditor', () => {
           index={0}
           bindings={[]}
           shapes={new Map()}
-          editableTypes={EXECUTABLE_STEP_TYPES.filter((type) => type !== 'assert' && type !== 'ai_assert')}
+          editableTypes={EXECUTABLE_STEP_TYPES.filter(
+            (type) => type !== 'assert' && type !== 'ai_assert'
+          )}
           diagnostics={[]}
           outcomes={[]}
           onChange={vi.fn()}
           onOutcomesChange={vi.fn()}
           onRequestTypeChange={vi.fn()}
-        />,
-      ),
+        />
+      )
     )
-    await expect.element(screen.getByRole('heading', { name: '成功条件' })).toBeInTheDocument()
-    await expect.element(screen.getByLabelText('超时（毫秒，可选）')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: '成功条件' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('超时（毫秒，可选）'))
+      .not.toBeInTheDocument()
     await screen.getByRole('button', { name: '高级选项', exact: true }).click()
-    await expect.element(screen.getByLabelText('超时（毫秒，可选）')).toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('超时（毫秒，可选）'))
+      .toBeInTheDocument()
   })
 
   it('打开提取全部匹配时写入默认上限', async () => {
     const onChange = vi.fn()
     const screen = await render(editor(extract, onChange))
     await screen.getByLabelText('提取全部匹配').click()
-    const enabled = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as Step
-    expect(enabled.type === 'extract' && enabled.input.many).toEqual({ maxItems: 50 })
+    const enabled = onChange.mock.calls[
+      onChange.mock.calls.length - 1
+    ]?.[0] as Step
+    expect(enabled.type === 'extract' && enabled.input.many).toEqual({
+      maxItems: 50,
+    })
   })
 
   it('关闭提取全部匹配时去掉 many', async () => {
     const onChange = vi.fn()
-    const screen = await render(editor({ ...extract, input: { ...extract.input, many: { maxItems: 50 } } }, onChange))
+    const screen = await render(
+      editor(
+        { ...extract, input: { ...extract.input, many: { maxItems: 50 } } },
+        onChange
+      )
+    )
     await screen.getByLabelText('提取全部匹配').click()
-    const disabled = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as Step
+    const disabled = onChange.mock.calls[
+      onChange.mock.calls.length - 1
+    ]?.[0] as Step
     expect(disabled.type === 'extract' && disabled.input.many).toBeUndefined()
   })
 })

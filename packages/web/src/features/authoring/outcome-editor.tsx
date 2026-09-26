@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ChevronDown } from 'lucide-react'
+import { FieldHelp } from '@/components/ui/field-help'
 import { defaultTarget } from './step-registry'
 import { TargetFields } from './fields/target'
 import { useAuthoringObserve } from './observe'
@@ -224,7 +225,12 @@ function OutcomeCard({
         {expect.kind === 'aria_snapshot' ? (
           <div className='col-span-full space-y-2'>
             <div className='flex items-center justify-between'>
-              <Label htmlFor={`outcome-aria-${contract.id}`}>Aria 快照模板 (YAML)</Label>
+              <div className='flex items-center gap-1.5'>
+                <Label htmlFor={`outcome-aria-${contract.id}`}>Aria 快照模板 (YAML)</Label>
+                <FieldHelp label='Aria 快照模板'>
+                  支持角色、无障碍名称与正则匹配（如 <code>- button /确认/</code>）。顶层必须以 <code>-</code> 开头。
+                </FieldHelp>
+              </div>
               <span className='text-label text-muted-foreground'>
                 {expect.template.length} / 16384 字符
               </span>
@@ -301,13 +307,7 @@ function OutcomeCard({
           size='sm'
           variant='outline'
           disabled={disabled}
-          onClick={() => {
-            if (!observe.holding) {
-              observe.setPickMode(true)
-              return
-            }
-            observe.setPickMode(true)
-          }}
+          onClick={() => observe.setPickMode(true, { scope: contract.scope, contractId: contract.id })}
         >
           从页面选择
         </Button>
@@ -345,6 +345,7 @@ function OutcomeCard({
             target={target}
             disabled={disabled}
             optional
+            ruleOnly
             onChange={(next) => patchRule({ target: next })}
           />
         </div>
@@ -383,7 +384,14 @@ function OutcomeCard({
               </Select>
             </div>
             <div className='space-y-2'>
-              <Label>不成立时</Label>
+              <div className='flex items-center gap-1.5'>
+                <Label>不成立时</Label>
+                <FieldHelp label='不成立时'>
+                  {haltBlocked
+                    ? '应当成立或仅记录的条件不能停止整次运行。'
+                    : '指定当条件校验未通过时，是立即中止整次运行还是记录失败后继续执行后续步骤。'}
+                </FieldHelp>
+              </div>
               <Select
                 value={haltBlocked ? 'continue' : contract.onViolation}
                 disabled={disabled || haltBlocked}

@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import { createScenario, fetchScenarios } from '@/lib/scenarios-api'
+import { handoffCreateScenario } from '@/lib/recordings-api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -34,6 +35,8 @@ type Props = {
   targetId: string
   targetName: string
   sourceProtocol?: 'recording@1' | 'demonstration@1'
+  generalizationRevision?: number
+  candidateDigest?: string
 }
 
 export function RecordingHandoffDialog({
@@ -44,6 +47,8 @@ export function RecordingHandoffDialog({
   targetId,
   targetName,
   sourceProtocol,
+  generalizationRevision,
+  candidateDigest,
 }: Props) {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<'existing' | 'new'>('existing')
@@ -86,6 +91,29 @@ export function RecordingHandoffDialog({
       return
     }
     setCreating(true)
+    if (sourceProtocol === 'demonstration@1' && candidateDigest && generalizationRevision) {
+      try {
+        const res = await handoffCreateScenario(recordingId, {
+          name: newScenarioName.trim(),
+          revision: generalizationRevision,
+          candidateDigest,
+        })
+        toast.success(`新场景「${res.scenario.name}」已由泛化候选原子创建并回填`)
+        onOpenChange(false)
+        void navigate({
+          to: '/scenarios/$scenarioId',
+          params: { scenarioId: res.scenario.id },
+        })
+      } catch (error) {
+        toast.error(
+          error instanceof ApiRequestError ? error.message : '创建场景失败'
+        )
+      } finally {
+        setCreating(false)
+      }
+      return
+    }
+
     try {
       const created = await createScenario({
         targetId,

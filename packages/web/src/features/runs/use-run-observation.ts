@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { RunObservation } from '@cairn/shared'
 import { fetchRunObservation, subscribeRunEvents } from '@/lib/runs-api'
 import { ApiRequestError } from '@/lib/api-client'
@@ -7,120 +7,105 @@ import { useAuthStore } from '@/stores/auth-store'
 
 export type ObservationConnection = 'live' | 'recovering' | 'unavailable' | 'forbidden' | 'idle'
 
-export function useRunObservation(runId: string, enabled = true) {
-  const queryClient = useQueryClient()
-  const appliedSeq = useRef(0)
-  const dirty = useRef(false)
-  const pumping = useRef(false)
-  const refetchRef = useRef<() => Promise<unknown>>(async () => undefined)
-  const applyRef = useRef<(next: RunObservation | undefined) => void>(() => undefined)
-  const [view, setView] = useState<RunObservation | null>(null)
-  const [connection, setConnection] = useState<ObservationConnection>('idle')
+type SharedStream = {
+  controller: AbortController
+  listeners: Set<(connection: ObservationConnection) => void>
+  connection: ObservationConnection
+  appliedSeq: number
+  dirty: boolean
+  pumping: boolean
+  lastPumpAt: number
+  timer: ReturnType<typeof setTimeout> | null
+}
 
-  const observation = useQuery({
-    queryKey: ['runs', runId, 'observation'],
-    queryFn: () => fetchRunObservation(runId),
-    enabled,
-  })
-  refetchRef.current = () => observation.refetch()
+// A scenario page mounts several consumers of the same Run. Each consumer opening its
+// own SSE connection can exhaust the browser's per-origin HTTP connection limit and
+// leave ordinary save/debug requests queued behind long-lived streams.
+const streams = new WeakMap<QueryClient, Map<string, SharedStream>>()
 
-  const apply = (next: RunObservation | undefined) => {
-    if (!next || next.eventSeq < appliedSeq.current) return
-    queryClient.setQueryData(['runs', runId], next.run)
-    queryClient.setQueryData(['runs', runId, 'evidence'], next.evidence)
-    appliedSeq.current = next.eventSeq
-    setView(next)
+function acquireStream(
+  queryClient: QueryClient,
+  runId: string,
+  initialSeq: number,
+  onConnection: (connection: ObservationConnection) => void,
+) {
+  let byRun = streams.get(queryClient)
+  if (!byRun) {
+    byRun = new Map()
+    streams.set(queryClient, byRun)
   }
-  applyRef.current = apply
-
-  const lastPumpAt = useRef(0)
-  const throttleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const THROTTLE_INTERVAL_MS = 300
-
-  const pumpRefresh = () => {
-    if (pumping.current) return
-    pumping.current = true
-    lastPumpAt.current = Date.now()
-    void (async () => {
-      try {
-        while (dirty.current) {
-          dirty.current = false
-          const result = await refetchRef.current()
-          applyRef.current(
-            result && typeof result === 'object' && 'data' in result
-              ? (result.data as RunObservation | undefined)
-              : undefined,
-          )
-        }
-      } finally {
-        pumping.current = false
-        if (dirty.current) {
-          scheduleRefresh(false)
-        }
-      }
-    })()
-  }
-
-  const scheduleRefresh = (immediate = false) => {
-    dirty.current = true
-    if (immediate) {
-      if (throttleTimer.current) {
-        clearTimeout(throttleTimer.current)
-        throttleTimer.current = null
-      }
-      pumpRefresh()
-      return
+  let stream = byRun.get(runId)
+  if (!stream) {
+    stream = {
+      controller: new AbortController(),
+      listeners: new Set(),
+      connection: 'recovering',
+      appliedSeq: initialSeq,
+      dirty: false,
+      pumping: false,
+      lastPumpAt: 0,
+      timer: null,
     }
-    if (pumping.current || throttleTimer.current) return
-    const elapsed = Date.now() - lastPumpAt.current
-    if (elapsed >= THROTTLE_INTERVAL_MS) {
-      pumpRefresh()
-    } else {
-      throttleTimer.current = setTimeout(() => {
-        throttleTimer.current = null
-        pumpRefresh()
-      }, THROTTLE_INTERVAL_MS - elapsed)
-    }
-  }
-
-  useEffect(() => {
-    appliedSeq.current = 0
-    setView(null)
-    setConnection('idle')
-    if (throttleTimer.current) {
-      clearTimeout(throttleTimer.current)
-      throttleTimer.current = null
-    }
-  }, [runId])
-
-  useEffect(() => {
-    apply(observation.data)
-  }, [observation.data, runId])
-
-  useEffect(() => {
-    if (!enabled || !observation.isSuccess) return
+    byRun.set(runId, stream)
+    const active = stream
     const tokenAtStart = useAuthStore.getState().auth.accessToken
-    const controller = new AbortController()
     let stopped = false
     let delay = 500
-    const connect = async () => {
-      while (!stopped && !controller.signal.aborted) {
+    const setConnection = (next: ObservationConnection) => {
+      if (active.connection === next) return
+      active.connection = next
+      for (const listener of active.listeners) listener(next)
+    }
+    const pump = () => {
+      if (active.pumping || active.controller.signal.aborted) return
+      active.pumping = true
+      active.lastPumpAt = Date.now()
+      void (async () => {
         try {
-          setConnection((current) => (current === 'unavailable' ? current : 'recovering'))
+          while (active.dirty && !active.controller.signal.aborted) {
+            active.dirty = false
+            try {
+              const observation = await fetchRunObservation(runId)
+              if (observation.eventSeq >= active.appliedSeq) {
+                active.appliedSeq = observation.eventSeq
+                queryClient.setQueryData(['runs', runId, 'observation'], observation)
+              }
+            } catch {
+              // A later SSE event or an explicit refresh can retry the snapshot.
+            }
+          }
+        } finally {
+          active.pumping = false
+          if (active.dirty && !active.controller.signal.aborted) scheduleRefresh(false)
+        }
+      })()
+    }
+    const scheduleRefresh = (immediate: boolean) => {
+      active.dirty = true
+      if (immediate && active.timer) {
+        clearTimeout(active.timer)
+        active.timer = null
+      }
+      if (active.pumping || active.timer) return
+      const wait = immediate ? 0 : Math.max(0, 300 - (Date.now() - active.lastPumpAt))
+      if (wait === 0) pump()
+      else active.timer = setTimeout(() => {
+        active.timer = null
+        pump()
+      }, wait)
+    }
+    void (async () => {
+      while (!stopped && !active.controller.signal.aborted) {
+        try {
+          setConnection(active.connection === 'unavailable' ? 'unavailable' : 'recovering')
           await subscribeRunEvents(runId, {
-            cursor: appliedSeq.current,
-            signal: controller.signal,
+            cursor: active.appliedSeq,
+            signal: active.controller.signal,
             handlers: {
-              onEvent: () => {
-                scheduleRefresh(false)
-              },
+              onEvent: () => scheduleRefresh(false),
               onControl: (control) => {
-                if (control.kind === 'ready') {
-                  setConnection(control.realtime ? 'live' : 'unavailable')
-                }
-                if (control.kind === 'reset') {
-                  scheduleRefresh(true)
-                }
+                if (control.kind === 'ready') setConnection(control.realtime ? 'live' : 'unavailable')
+                if (control.kind === 'reset') scheduleRefresh(true)
                 if (control.kind === 'complete') {
                   stopped = true
                   setConnection('live')
@@ -130,16 +115,12 @@ export function useRunObservation(runId: string, enabled = true) {
                   if (control.code === 'FORBIDDEN') {
                     stopped = true
                     setConnection('forbidden')
-                    return
-                  }
-                  if (control.code === 'UNAUTHORIZED') {
+                  } else if (control.code === 'UNAUTHORIZED') {
                     stopped = true
                     if (tokenAtStart === useAuthStore.getState().auth.accessToken) {
                       useAuthStore.getState().auth.reset()
                     }
-                    return
-                  }
-                  setConnection('recovering')
+                  } else setConnection('recovering')
                 }
               },
             },
@@ -147,7 +128,7 @@ export function useRunObservation(runId: string, enabled = true) {
           if (stopped) return
           setConnection('recovering')
         } catch (error) {
-          if (controller.signal.aborted || stopped) return
+          if (active.controller.signal.aborted || stopped) return
           if (error instanceof ApiRequestError && error.status === 403) {
             setConnection('forbidden')
             return
@@ -163,16 +144,52 @@ export function useRunObservation(runId: string, enabled = true) {
           delay = Math.min(delay * 2, 8_000)
         }
       }
-    }
-    void connect()
-    return () => {
-      stopped = true
-      controller.abort()
-      if (throttleTimer.current) {
-        clearTimeout(throttleTimer.current)
-        throttleTimer.current = null
-      }
-    }
+    })()
+  }
+  stream.appliedSeq = Math.max(stream.appliedSeq, initialSeq)
+  stream.listeners.add(onConnection)
+  onConnection(stream.connection)
+  return () => {
+    stream.listeners.delete(onConnection)
+    if (stream.listeners.size > 0) return
+    stream.controller.abort()
+    if (stream.timer) clearTimeout(stream.timer)
+    byRun.delete(runId)
+  }
+}
+
+export function useRunObservation(runId: string, enabled = true) {
+  const queryClient = useQueryClient()
+  const appliedSeq = useRef(0)
+  const [view, setView] = useState<RunObservation | null>(null)
+  const [connection, setConnection] = useState<ObservationConnection>('idle')
+
+  const observation = useQuery({
+    queryKey: ['runs', runId, 'observation'],
+    queryFn: () => fetchRunObservation(runId),
+    enabled,
+  })
+  const apply = (next: RunObservation | undefined) => {
+    if (!next || next.eventSeq < appliedSeq.current) return
+    queryClient.setQueryData(['runs', runId], next.run)
+    queryClient.setQueryData(['runs', runId, 'evidence'], next.evidence)
+    appliedSeq.current = next.eventSeq
+    setView(next)
+  }
+
+  useEffect(() => {
+    appliedSeq.current = 0
+    setView(null)
+    setConnection('idle')
+  }, [runId])
+
+  useEffect(() => {
+    apply(observation.data)
+  }, [observation.data, runId])
+
+  useEffect(() => {
+    if (!enabled || !observation.isSuccess) return
+    return acquireStream(queryClient, runId, observation.data?.eventSeq ?? 0, setConnection)
   }, [enabled, observation.isSuccess, runId])
 
   return {

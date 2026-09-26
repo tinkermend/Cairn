@@ -7,6 +7,7 @@ import {
   type RunWaitReason,
   type RunStatus,
   type StepRunStatus,
+  type RunReportStatus,
 } from '@cairn/shared'
 import type { StatusTone } from '@/components/status-badge'
 import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS, STEP_TYPE_LABELS } from '@/features/scenarios/labels'
@@ -102,3 +103,21 @@ export function formatDuration(startedAt: string | null, finishedAt: string | nu
   if (ms < 10_000) return `${(ms / 1000).toFixed(1)} s`
   return `${Math.round(ms / 1000)} s`
 }
+
+export const RUN_REPORT_STATUS_LABELS: Record<RunReportStatus, string> = {
+  not_configured: '未配置',
+  pending: '待生成',
+  generating: '生成中',
+  generated: '已生成',
+  failed: '生成失败',
+  partial_gaps: '材料有缺项',
+}
+
+export function runReportStatusTone(status: RunReportStatus): StatusTone {
+  if (status === 'generated') return 'success'
+  if (status === 'partial_gaps') return 'warning'
+  if (status === 'failed') return 'error'
+  if (status === 'generating') return 'info'
+  return 'neutral'
+}
+

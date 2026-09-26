@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import type { ScenarioDataRowFieldDecl, ScenarioMetricDecl, ScenarioOutputDecl } from '@cairn/shared'
 import { Plus, Trash2, TrendingUp, Table, FileText, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ export function ScenarioOutputsEditor({
   availableContextKeys,
   onChange,
 }: ScenarioOutputsEditorProps) {
+  const summaryInput = useRef<HTMLInputElement>(null)
   const current: ScenarioOutputDecl = outputs ?? {
     metrics: [],
     dataRowFields: [],
@@ -40,15 +41,25 @@ export function ScenarioOutputsEditor({
       if (metric) {
         return `1,420${metric.unit ? ` ${metric.unit}` : ''}`
       }
-      return `[${key}]`
+      return ''
     })
   }, [current.summaryTemplate, current.metrics])
+
+  const unresolvedSummaryKeys = useMemo(() => {
+    const available = new Set(candidateKeys)
+    return [...(current.summaryTemplate ?? '').matchAll(/\$\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? '')
+      .filter((key) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || !available.has(key))
+  }, [candidateKeys, current.summaryTemplate])
 
   const insertVariable = (key: string) => {
     const varTag = `\${${key}}`
     const existing = current.summaryTemplate ?? ''
-    const nextVal = existing ? `${existing.trim()} ${varTag}` : varTag
+    const start = summaryInput.current?.selectionStart ?? existing.length
+    const end = summaryInput.current?.selectionEnd ?? start
+    const nextVal = existing.slice(0, start) + varTag + existing.slice(end)
     handleUpdate({ summaryTemplate: nextVal })
+    requestAnimationFrame(() => { summaryInput.current?.focus(); summaryInput.current?.setSelectionRange(start + varTag.length, start + varTag.length) })
   }
 
   const handleUpdate = (patch: Partial<ScenarioOutputDecl>) => {
@@ -76,7 +87,7 @@ export function ScenarioOutputsEditor({
       {
         key: `metric_${idx}`,
         name: `指标 ${idx}`,
-        fromContextKey: '',
+        fromContextKey: availableContextKeys?.[0] ?? `metric_${idx}`,
       },
     ]
     handleUpdate({ metrics: nextMetrics })
@@ -102,7 +113,7 @@ export function ScenarioOutputsEditor({
       {
         columnKey: `field_${idx}`,
         columnHeader: `字段 ${idx}`,
-        fromContextKey: '',
+        fromContextKey: availableContextKeys?.[0] ?? `field_${idx}`,
       },
     ]
     handleUpdate({ dataRowFields: nextFields })
@@ -127,7 +138,7 @@ export function ScenarioOutputsEditor({
       <div>
         <h3 className='text-small font-semibold text-foreground'>场景业务输出与指标声明</h3>
         <p className='text-xs text-muted-foreground mt-1'>
-          声明运行完成后的标准化业务结论、核心巡检指标及单行宽表数据。若未配置，引擎将自动按执行状态进行兜底智能装配。
+          声明运行完成后的标准化业务结论、核心巡检指标及单行宽表数据。此处声明的输出字段将在运行成功后自动组装为 RunOutput，并按调用方交付策略推送给外部服务。若未配置，引擎将自动按执行状态进行兜底智能装配。
         </p>
       </div>
 
@@ -144,12 +155,14 @@ export function ScenarioOutputsEditor({
             </Label>
             <Input
               id='summary-template'
+              ref={summaryInput}
               value={current.summaryTemplate ?? ''}
               disabled={disabled}
               placeholder='例：巡检完成，在售商品 ${item_count} 件'
               onChange={(e) => handleUpdate({ summaryTemplate: e.target.value || undefined })}
               className='text-sm'
             />
+            {unresolvedSummaryKeys.length ? <p role='alert' className='mt-1 text-label text-destructive'>未知或非法变量：{unresolvedSummaryKeys.join('、')}。运行时这些内容会替换为空；发布前请修正。</p> : null}
           </div>
 
           {/* 候选变量快捷插入 */}
@@ -183,6 +196,7 @@ export function ScenarioOutputsEditor({
             >
               <span className='font-medium text-muted-foreground mr-1.5'>实时模拟推演：</span>
               <span className='font-medium text-foreground italic'>{simulatedSummary}</span>
+              {unresolvedSummaryKeys.length ? <span className='block text-destructive'>未知变量按运行规则显示为空。</span> : null}
             </div>
           )}
 

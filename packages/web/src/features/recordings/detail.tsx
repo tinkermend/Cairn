@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { hasPermission, recordingSourceLabel } from '@cairn/shared'
@@ -7,8 +7,17 @@ import {
   ArrowRight,
   ExternalLink,
   Trash2,
+  Sparkles,
+  ListTree,
+  FileCode2,
+  History,
 } from 'lucide-react'
-import { deleteRecording, fetchRecording } from '@/lib/recordings-api'
+import {
+  deleteRecording,
+  fetchRecording,
+  fetchRecordingGeneralization,
+  observeRecordingGeneralization,
+} from '@/lib/recordings-api'
 import { fetchDemonstration } from '@/lib/demonstrations-api'
 import { useAuthStore } from '@/stores/auth-store'
 import { Main } from '@/components/layout/main'
@@ -18,12 +27,15 @@ import { QueryErrorState } from '@/components/query-error-state'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { RecordingHandoffDialog } from './components/handoff-dialog'
 import { RecordingMetricStrip } from './components/metric-strip'
 import { RecordingStepInspector } from './components/step-inspector'
 import { type FilterOption, RecordingStepStream } from './components/step-stream'
 import { RecordingRenameDialog } from './rename-dialog'
 import { SavedDemonstrationFacts } from './demonstration-facts'
+import { CandidateScenarioPreview } from './components/candidate-preview'
+import { GeneralizationPanel } from './components/generalization-panel'
 
 export function RecordingDetailPage() {
   const { recordingId } = useParams({ from: '/_authenticated/recordings/$recordingId/' })
@@ -44,11 +56,29 @@ export function RecordingDetailPage() {
     enabled: Boolean(draft?.sourceProtocol === 'demonstration@1'),
   })
 
+  const generalizationQuery = useQuery({
+    queryKey: ['recording-generalization', recordingId],
+    queryFn: () => fetchRecordingGeneralization(recordingId),
+    enabled: Boolean(draft?.sourceProtocol === 'demonstration@1'),
+  })
+
+  useEffect(() => {
+    if (draft?.sourceProtocol !== 'demonstration@1') return
+    return observeRecordingGeneralization(recordingId, {
+      onUpdate: (data) => {
+        queryClient.setQueryData(['recording-generalization', recordingId], data)
+      },
+    })
+  }, [draft?.sourceProtocol, recordingId, queryClient])
+
   const [renaming, setRenaming] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [handoffOpen, setHandoffOpen] = useState(false)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
-  const [viewMode, setViewMode] = useState<'workbench' | 'facts'>('workbench')
+  const [viewMode, setViewMode] = useState<'workbench' | 'candidate' | 'generalization' | 'facts'>('workbench')
+
+  const genData = generalizationQuery.data?.generalization
+  const candidateDoc = generalizationQuery.data?.candidateDocument ?? genData?.candidateDocument
 
   // 步骤交互状态与轻量清洗
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -210,10 +240,66 @@ export function RecordingDetailPage() {
           }
         />
 
+        {draft?.sourceProtocol === 'demonstration@1' ? (
+          <div className='flex items-center justify-between border-b pb-2'>
+            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as typeof viewMode)}>
+              <TabsList className='grid grid-cols-4 w-full sm:w-auto'>
+                <TabsTrigger value='workbench' className='gap-1.5'>
+                  <ListTree className='size-3.5' />
+                  流水工作台
+                </TabsTrigger>
+                <TabsTrigger value='generalization' className='gap-1.5'>
+                  <Sparkles className='size-3.5 text-primary' />
+                  AI 意图泛化
+                  {genData?.rounds.length ? (
+                    <span className='ml-1 rounded-full bg-primary/10 px-1.5 py-0.2 text-[10px] font-medium text-primary'>
+                      {genData.rounds.length}
+                    </span>
+                  ) : null}
+                </TabsTrigger>
+                <TabsTrigger value='candidate' className='gap-1.5'>
+                  <FileCode2 className='size-3.5' />
+                  候选场景预览
+                  {candidateDoc?.nodes.length !== undefined ? (
+                    <span className='ml-1 rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground'>
+                      {candidateDoc.nodes.length} 步
+                    </span>
+                  ) : null}
+                </TabsTrigger>
+                <TabsTrigger value='facts' className='gap-1.5'>
+                  <History className='size-3.5' />
+                  原始示教事实
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        ) : null}
+
         {query.isPending ? (
           <PageSkeleton />
         ) : query.isError || !draft ? (
           <QueryErrorState title='无法加载录制草稿' onRetry={() => void query.refetch()} />
+        ) : viewMode === 'generalization' ? (
+          <GeneralizationPanel
+            recordingId={recordingId}
+            generalization={genData}
+            candidateDocument={candidateDoc}
+            onGeneralizationUpdated={(gen, doc) => {
+              queryClient.setQueryData(['recording-generalization', recordingId], {
+                generalization: gen,
+                candidateDocument: doc ?? gen.candidateDocument,
+              })
+            }}
+            canWrite={canWrite}
+            selectedStepId={selectedItem ? `rec_${selectedItem.index}` : undefined}
+          />
+        ) : viewMode === 'candidate' ? (
+          <CandidateScenarioPreview
+            candidateDocument={candidateDoc}
+            generalization={genData}
+            onOpenHandoff={() => setHandoffOpen(true)}
+            canWrite={canWrite}
+          />
         ) : viewMode === 'facts' ? (
           <div className='flex flex-col gap-4'>
             <div className='flex items-center justify-between'>
@@ -249,6 +335,17 @@ export function RecordingDetailPage() {
                     ) : null}
                   </div>
                   <div className='flex items-center gap-2'>
+                    {draft.sourceProtocol === 'demonstration@1' ? (
+                      <Button
+                        variant='outline'
+                        size='sm'
+                        className='h-7 gap-1 text-label text-primary border-primary/30 hover:bg-primary/5'
+                        onClick={() => setViewMode('generalization')}
+                      >
+                        <Sparkles className='size-3 text-primary' />
+                        AI 意图泛化
+                      </Button>
+                    ) : null}
                     {draft.sourceProtocol === 'demonstration@1' ? (
                       <Button
                         variant='ghost'
@@ -356,6 +453,8 @@ export function RecordingDetailPage() {
           targetId={draft.targetId}
           targetName={draft.targetName}
           sourceProtocol={draft.sourceProtocol}
+          generalizationRevision={genData?.revision}
+          candidateDigest={genData?.candidateDigest}
         />
       ) : null}
     </>

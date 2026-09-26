@@ -16,13 +16,13 @@ import {
   fetchReports,
   fetchReport,
   previewReport,
+  previewReportRevision,
   fetchReportSourceOptions,
   deleteReport,
   previewDeleteReport,
 } from '@/lib/reports-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/select'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { ReportConfigFields } from './config-fields'
+import { ReportTitleInput } from './report-title-input'
 import { ReportDelivery, ExportJobCard } from './delivery'
 
 function newIdempotencyKey() {
@@ -103,6 +104,7 @@ function ReportPanelContent({
     ? (selected.data ?? allReports.find((item) => item.id === selectedReport))
     : allReports[0]
   const [title, setTitle] = useState('')
+  const [titlePreview, setTitlePreview] = useState<string>()
   const options = useQuery({
     queryKey: ['report-source-options', subject],
     queryFn: () => fetchReportSourceOptions(subject),
@@ -115,13 +117,13 @@ function ReportPanelContent({
     options.data?.config ??
     DEFAULT_REPORT_CONFIG
   const effectiveConfig = {
-    ...(override ?? {}),
+    ...(override ? (({ title: _title, titleSyntaxVersion: _syntax, ...rest }: ReportConfig) => rest)(override) : {}),
     ...(title.trim() ? { title: title.trim() } : {}),
   }
   const titleId = useId()
   const [stage, setStage] = useState<'final' | 'phase'>('final')
   const [busy, setBusy] = useState(false)
-  const [formats, setFormats] = useState<Array<'docx' | 'pdf'>>(['docx', 'pdf'])
+  const formats: Array<'html'> = ['html']
   const [jobId, setJobId] = useState<string | null>(null)
   const job = useQuery({
     queryKey: ['export-job', jobId],
@@ -206,9 +208,7 @@ function ReportPanelContent({
       )
       queryClient.setQueryData(['export-job', created.id], created)
       setJobId(created.id)
-      toast.success(
-        `已排队导出 ${formats.map((format) => (format === 'docx' ? 'Word' : 'PDF')).join(' 与 ')}`
-      )
+      toast.success('已排队导出 HTML 交互报告')
     } catch (error) {
       toast.error(error instanceof ApiRequestError ? error.message : '导出失败')
     } finally {
@@ -221,7 +221,7 @@ function ReportPanelContent({
       <div>
         <h2 className='text-title'>报告</h2>
         <p className='text-label text-muted-foreground'>
-          支持单场景报告与集合汇总报告，可导出 Word 和 PDF。
+          支持单场景执行复盘报告与场景集巡检总报告，自包含 HTML 交付，支持无损放大、交互筛选与直接打印 PDF。
         </p>
       </div>
       {reports.isError && (
@@ -283,12 +283,7 @@ function ReportPanelContent({
         <div className='grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end'>
           <div className='grid gap-2'>
             <Label htmlFor={titleId}>报告标题</Label>
-            <Input
-              id={titleId}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder='可留空使用默认模板'
-            />
+            <ReportTitleInput id={titleId} value={title} onChange={(value) => { setTitle(value); setTitlePreview(undefined) }} source={subject.kind} optional placeholder='可留空使用默认模板' />
           </div>
           <Select
             value={stage}
@@ -314,6 +309,18 @@ function ReportPanelContent({
               新修订
             </Button>
           ) : null}
+          <Button disabled={busy} variant='outline' onClick={async () => {
+            setBusy(true)
+            try {
+              const request = { stage, config: effectiveConfig, idempotencyKey: newIdempotencyKey() }
+              const preview = current
+                ? await previewReportRevision(current.id, { ...request, reason: '预览标题' })
+                : await previewReport({ ...request, subject, scope: subject.kind === 'RUN' ? 'run' : 'suite_summary' })
+              setTitlePreview(preview.title)
+            } catch (error) { toast.error(error instanceof Error ? error.message : '预览失败') }
+            finally { setBusy(false) }
+          }}>预览标题</Button>
+          {titlePreview ? <p aria-live='polite' className='sm:col-span-full text-label'>按当前运行数据预览：<strong>{titlePreview}</strong></p> : null}
         </div>
       ) : (
         <p className='text-label text-muted-foreground'>
@@ -355,37 +362,21 @@ function ReportPanelContent({
           </p>
           {canExport ? (
             <div className='space-y-3'>
-              <fieldset className='flex flex-wrap gap-3 text-label'>
-                <legend className='mb-2'>导出格式</legend>
-                {(['docx', 'pdf'] as const).map((format) => (
-                  <label key={format} className='flex items-center gap-2'>
-                    <input
-                      type='checkbox'
-                      checked={formats.includes(format)}
-                      onChange={(event) =>
-                        setFormats(
-                          event.target.checked
-                            ? [...formats, format]
-                            : formats.filter((item) => item !== format)
-                        )
-                      }
-                    />
-                    {format === 'docx' ? 'Word' : 'PDF'}
-                  </label>
-                ))}
-              </fieldset>
+              <div className='flex items-center gap-2 text-label'>
+                <span className='font-medium text-foreground'>交付格式：</span>
+                <span className='rounded bg-primary/10 px-2 py-0.5 text-small font-semibold text-primary'>
+                  HTML 交互报告 (自包含单文件)
+                </span>
+              </div>
               <Button
                 disabled={
                   busy ||
-                  !formats.length ||
                   current.currentRevision.sealedAt === null
                 }
                 variant='outline'
                 onClick={() => void exportFormats()}
               >
-                导出 {formats.includes('docx') ? 'Word' : ''}
-                {formats.length === 2 ? ' 与 ' : ''}
-                {formats.includes('pdf') ? 'PDF' : ''}
+                导出 HTML 交互报告
               </Button>
             </div>
           ) : null}

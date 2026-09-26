@@ -12,8 +12,14 @@ import {
   observationShowsFragileCss,
   RELATIVE_ANCHOR_SCOPES,
   RESOLUTION_MODE_LABELS,
-  RESOLUTION_POLICIES,
-  RESOLUTION_PREFERENCE_LABELS,
+  LOCATOR_PRESETS,
+  LOCATOR_PRESET_LABELS,
+  locatorPresetFor,
+  legacyPolicyRoutes,
+  resolveLocatorPlan,
+  locatorReadiness,
+  type LocatorPlan,
+  type LocatorRoute,
   type LocatorBy,
   type RelativeAnchorScope,
   type ResolutionPolicy,
@@ -34,7 +40,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { FieldHelp } from '@/components/ui/field-help'
 import { fetchTarget } from '@/lib/targets-api'
+import { fetchPlatformConfig } from '@/lib/platform-config-api'
+import { locatorRouteListLabel, locatorSkippedLabel } from '@/lib/locator-labels'
 import { useAuthoringObserve } from '../observe'
 import {
   alternativeLabels,
@@ -46,7 +55,7 @@ import {
   resolvedCandidate,
   targetFromPickedLabel,
 } from '../pick-apply'
-import { useResolutionTargetId } from '../resolution-source'
+import { useResolutionSource } from '../resolution-source'
 import { ANCHOR_LABELS, BY_LABELS } from './labels'
 
 export function TargetFields({
@@ -57,26 +66,47 @@ export function TargetFields({
   onChange,
   onPolicyChange,
   forceAdvanced,
+  ruleOnly,
 }: {
   target: TargetDescriptor
   disabled?: boolean
   optional?: boolean
-  policy?: { resolution?: ResolutionPolicy; deepLocate?: boolean }
+  policy?: { resolution?: ResolutionPolicy; locatorPlan?: LocatorPlan; deepLocate?: boolean }
   onChange: (target: TargetDescriptor) => void
-  onPolicyChange?: (policy: { resolution?: ResolutionPolicy; deepLocate?: boolean }) => void
+  onPolicyChange?: (policy: { resolution?: ResolutionPolicy; locatorPlan?: LocatorPlan; deepLocate?: boolean }) => void
   forceAdvanced?: boolean
+  ruleOnly?: boolean
 }) {
   const observe = useAuthoringObserve()
   const capabilities = useQuery({
     queryKey: ['scenarios', 'capabilities'],
     queryFn: fetchScenarioCapabilities,
   }).data?.resolution
-  const boundTargetId = useResolutionTargetId()
+  const resolutionSource = useResolutionSource()
+  const boundTargetId = resolutionSource.targetId
   const targetPolicy = useQuery({
     queryKey: ['target', boundTargetId],
     queryFn: () => fetchTarget(boundTargetId!),
     enabled: Boolean(boundTargetId),
   }).data?.resolutionPolicy
+  const platform = useQuery({ queryKey: ['platform-config'], queryFn: fetchPlatformConfig }).data?.document
+  const textReady = platform ? locatorReadiness(platform).textReady : capabilities?.textReady === true
+  const presetKeys = Object.keys(LOCATOR_PRESETS) as Array<keyof typeof LOCATOR_PRESETS>
+  let planPreview = ''
+  let actualLocatorRoutes: LocatorRoute[] | undefined
+  if (platform) {
+    try {
+      const result = resolveLocatorPlan({
+        platform: { plan: platform.locator?.defaultPlan, limits: platform.locator?.limits, defaultPolicy: platform.browserAi.defaultResolution, ceiling: platform.browserAi.resolutionCeiling },
+        target: targetPolicy ? { plan: targetPolicy.plan, limits: targetPolicy.limits, policy: targetPolicy.preference, ceiling: targetPolicy.ceiling } : undefined,
+        scenario: { plan: resolutionSource.scenarioPlan, policy: resolutionSource.scenarioPolicy },
+        step: { plan: policy?.locatorPlan, policy: policy?.resolution },
+        ...locatorReadiness(platform),
+      })
+      actualLocatorRoutes = result.actual
+      planPreview = `本步请求：${locatorRouteListLabel(result.requested)}；实际：${locatorRouteListLabel(result.actual)}${result.skipped.length ? `；跳过：${locatorSkippedLabel(result.skipped)}` : ''}`
+    } catch (error) { planPreview = error instanceof Error ? error.message : '定位路线不可用' }
+  }
   const candidates =
     target.candidates.length > 0
       ? target.candidates
@@ -96,21 +126,28 @@ export function TargetFields({
     aiRungAvailable: capabilities?.aiRungAvailable === true && effective !== 'deterministic_only',
   })
   const [advanced, setAdvanced] = useState(
-    Boolean(forceAdvanced || target.anchor || frames.length > 0 || policy?.resolution || policy?.deepLocate),
+    Boolean(forceAdvanced || target.anchor || frames.length > 0 || policy?.resolution || policy?.locatorPlan || policy?.deepLocate),
   )
 
   return (
     <div className='space-y-3'>
       <div className='space-y-2'>
         <div className='flex flex-wrap items-center justify-between gap-2'>
-          <Label htmlFor='target-semantic' className='flex items-center gap-1.5'>
-            <span>目标</span>
+          <div className='flex items-center gap-1.5'>
+            <Label htmlFor='target-semantic'>
+              {ruleOnly ? '成功条件检查的页面元素' : '要找的页面元素'}
+            </Label>
+            <FieldHelp label={ruleOnly ? '成功条件检查的页面元素' : '要找的页面元素'}>
+              {ruleOnly
+                ? '这是成功条件自己的检查目标，只按下方规则候选判定，不调用定位模型。'
+                : '描述页面元素，不写点击或填写动作。文本和视觉模型优先读取这里；下方的「页面文字」候选属于规则定位。'}
+            </FieldHelp>
             {!optional ? (
               <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
             ) : (
               <span className='rounded bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground' aria-hidden='true'>选填</span>
             )}
-          </Label>
+          </div>
         </div>
         {(target.semantic || target.candidates.some((c) => c.value.trim())) ? (
           <div className='flex items-center justify-between gap-2 rounded-md border border-border-default bg-card shadow-xs p-2.5'>
@@ -121,7 +158,7 @@ export function TargetFields({
                     ? `${BY_LABELS[target.candidates.find((c) => c.value.trim())!.by]}: "${target.candidates.find((c) => c.value.trim())!.value}"${target.candidates.find((c) => c.value.trim())!.name ? ` (${sanitizeLocatorLabel(target.candidates.find((c) => c.value.trim())!.name!)})` : ''}`
                     : sanitizeLocatorLabel(target.semantic ?? '')}
                 </span>
-                <StatusBadge tone='neutral'>{RESOLUTION_MODE_LABELS[badge.kind]}</StatusBadge>
+                <StatusBadge tone='neutral'>{ruleOnly ? '仅规则判定' : actualLocatorRoutes && (resolutionSource.locatorProtocol === 2 || policy?.locatorPlan || platform?.locator) ? locatorRouteListLabel(actualLocatorRoutes) : RESOLUTION_MODE_LABELS[badge.kind]}</StatusBadge>
               </div>
               {target.semantic && target.candidates.some((c) => c.value.trim()) ? (
                 <p className='truncate text-label text-muted-foreground'>
@@ -129,7 +166,7 @@ export function TargetFields({
                 </p>
               ) : null}
               {/* 解析方式只在这里出现一次；AI 兜底不可用的原因跟着它走，否则「规则 · AI 兜底」会误导。 */}
-              {badge.unavailable ? (
+              {!ruleOnly && badge.unavailable && !(resolutionSource.locatorProtocol === 2 || policy?.locatorPlan || platform?.locator) ? (
                 <p className='truncate text-label text-muted-foreground'>{badge.unavailable}</p>
               ) : null}
             </div>
@@ -154,11 +191,10 @@ export function TargetFields({
         ) : null}
         <Input
           id='target-semantic'
-          aria-label='目标'
+          aria-label={ruleOnly ? '成功条件检查的页面元素' : '要找的页面元素'}
           value={sanitizeLocatorLabel(target.semantic ?? '')}
           disabled={disabled}
-          placeholder='例如：订单列表第一行的删除按钮'
-          aria-describedby='target-semantic-hint'
+          placeholder='例如：左侧导航栏中名为 Groups 的链接'
           onChange={(event) => {
             const semantic = sanitizeLocatorLabel(event.target.value) || undefined
             onChange({
@@ -168,9 +204,7 @@ export function TargetFields({
             })
           }}
         />
-        <p id='target-semantic-hint' className='text-label text-muted-foreground'>
-          描述元素，不描述动作。可与下方确定性候选同时填写。
-        </p>
+        {!ruleOnly && !target.semantic && target.candidates.some((item) => item.value.trim()) ? <p className='text-label text-muted-foreground'>模型描述预览：{describeLocatorCandidates(target.candidates)}</p> : null}
         <div className='flex flex-wrap gap-2'>
           {observe.canIndicate ? (
             <Button
@@ -262,7 +296,7 @@ export function TargetFields({
       <Collapsible open={advanced} onOpenChange={setAdvanced}>
         <CollapsibleTrigger asChild>
           <Button type='button' variant='ghost' size='sm' className='gap-1.5 text-muted-foreground hover:text-foreground'>
-            <span>{advanced ? '收起高级定位' : '高级：候选、锚点与解析档位'}</span>
+            <span>{advanced ? '收起高级定位' : ruleOnly ? '高级：规则候选与锚点' : '高级：规则候选、锚点与定位顺序'}</span>
             {!advanced && (frames.length > 0 || Boolean(target.anchor) || candidates.filter(c => c.value.trim()).length > 1) && (
               <div className='flex items-center gap-1 ml-1' data-testid='target-active-pills'>
                 {frames.length > 0 && (
@@ -287,7 +321,12 @@ export function TargetFields({
         </CollapsibleTrigger>
         <CollapsibleContent className='space-y-3 pt-2'>
           <div className='flex flex-wrap items-center justify-between gap-2'>
-            <Label>页面元素{optional ? '（可选）' : ''}</Label>
+            <div className='flex items-center gap-1.5'>
+              <Label>规则定位候选{optional ? '（可选）' : ''}</Label>
+              <FieldHelp label='规则定位候选'>
+                通过页面文字、角色名称、CSS 或测试 ID 等确定性规则定位元素，不消耗模型 Token。按自上而下顺序依次尝试匹配。
+              </FieldHelp>
+            </div>
             <Button
               type='button'
               size='sm'
@@ -403,7 +442,12 @@ export function TargetFields({
           ))}
           <div className='space-y-2'>
             <div className='flex items-center justify-between'>
-              <Label>Frame 路径（可选）</Label>
+              <div className='flex items-center gap-1.5'>
+                <Label>Frame 路径（可选）</Label>
+                <FieldHelp label='Frame 路径'>
+                  若目标元素位于 iframe 内部，指定进入该 iframe 的选择器或名称路径。
+                </FieldHelp>
+              </div>
               <Button
                 type='button'
                 size='sm'
@@ -448,20 +492,25 @@ export function TargetFields({
             ))}
           </div>
           <div className='space-y-2'>
-            <label className='flex items-center gap-2 text-small'>
-              <input
-                type='checkbox'
-                checked={Boolean(target.anchor)}
-                disabled={disabled}
-                onChange={(event) =>
-                  onChange({
-                    ...target,
-                    anchor: event.target.checked ? { withinText: '', scope: 'nearest' } : undefined,
-                  })
-                }
-              />
-              相对锚点
-            </label>
+            <div className='flex items-center gap-1.5'>
+              <label className='flex items-center gap-2 text-small'>
+                <input
+                  type='checkbox'
+                  checked={Boolean(target.anchor)}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    onChange({
+                      ...target,
+                      anchor: event.target.checked ? { withinText: '', scope: 'nearest' } : undefined,
+                    })
+                  }
+                />
+                相对锚点
+              </label>
+              <FieldHelp label='相对锚点'>
+                当目标自身没有唯一定位特征时，可指定附近的参照文本来缩小范围查找。
+              </FieldHelp>
+            </div>
             {target.anchor ? (
               <div className='grid gap-2 sm:grid-cols-2'>
                 <Input
@@ -500,33 +549,35 @@ export function TargetFields({
               </div>
             ) : null}
           </div>
-          {onPolicyChange ? (
+          {onPolicyChange && !ruleOnly ? (
             <div className='grid gap-3 sm:grid-cols-2'>
               <div className='space-y-2'>
-                <Label>解析档位</Label>
+                <div className='flex items-center gap-1.5'>
+                  <Label>定位顺序</Label>
+                  <FieldHelp label='定位顺序'>
+                    控制本步查找元素时的策略流水线，如优先尝试规则定位，失败后再调用模型兜底。
+                  </FieldHelp>
+                </div>
                 <Select
-                  value={policy?.resolution ?? 'inherit'}
+                  value={policy?.locatorPlan ? locatorPresetFor(policy.locatorPlan) ?? 'custom' : policy?.resolution ? `old_${policy.resolution}` : 'inherit'}
                   disabled={disabled}
-                  onValueChange={(value) =>
-                    onPolicyChange({
-                      ...policy,
-                      resolution:
-                        value === 'inherit' ? undefined : (value as ResolutionPolicy),
-                    })
-                  }
+                  onValueChange={(value) => {
+                    if (value === 'custom' || value.startsWith('old_')) return
+                    const { resolution: _old, locatorPlan: _plan, ...rest } = policy ?? {}
+                    onPolicyChange(value === 'inherit' ? rest : { ...rest, locatorPlan: { v: 2, order: [...LOCATOR_PRESETS[value as keyof typeof LOCATOR_PRESETS].order] } })
+                  }}
                 >
-                  <SelectTrigger className='w-full' aria-label='解析档位'>
+                  <SelectTrigger className='w-full' aria-label='定位顺序'>
                     <SelectValue placeholder='跟随部署默认' />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='inherit'>跟随部署默认</SelectItem>
-                    {RESOLUTION_POLICIES.map((item) => (
-                      <SelectItem key={item} value={item}>
-                        {RESOLUTION_PREFERENCE_LABELS[item]}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value='inherit'>继承场景／目标／平台</SelectItem>
+                    {policy?.resolution ? <SelectItem value={`old_${policy.resolution}`}>旧版：{locatorRouteListLabel(legacyPolicyRoutes(policy.resolution, textReady && Boolean(platform && locatorReadiness(platform).visionReady)))}</SelectItem> : null}
+                    {policy?.locatorPlan && !locatorPresetFor(policy.locatorPlan) ? <SelectItem value='custom'>当前顺序：{locatorRouteListLabel(policy.locatorPlan.order)}</SelectItem> : null}
+                    {presetKeys.map((key) => <SelectItem key={key} value={key}>{LOCATOR_PRESET_LABELS[key]}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                {planPreview ? <p className='text-label text-muted-foreground'>{planPreview}</p> : null}
               </div>
               <label className='flex items-center gap-2 self-end pb-2 text-small'>
                 <input

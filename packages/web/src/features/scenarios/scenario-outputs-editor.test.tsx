@@ -1,7 +1,7 @@
 import '@/styles/index.css'
 import { render } from 'vitest-browser-react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ScenarioOutputDecl } from '@cairn/shared'
+import { scenarioOutputDeclSchema, type ScenarioOutputDecl } from '@cairn/shared'
 import { ScenarioOutputsEditor } from './scenario-outputs-editor'
 
 describe('ScenarioOutputsEditor', () => {
@@ -53,13 +53,14 @@ describe('ScenarioOutputsEditor', () => {
 
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({
-        summaryTemplate: '巡检完成，在售商品 ${item_count} 件 ${custom_val}',
+        summaryTemplate: '巡检完成，在售商品 ${item_count} 件${custom_val}',
       }),
     )
 
     // 测试添加指标
     const addMetricBtn = getByRole('button', { name: /添加指标/ })
     await addMetricBtn.click()
+    expect(() => scenarioOutputDeclSchema.parse(onChange.mock.lastCall?.[0])).not.toThrow()
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({
         metrics: expect.arrayContaining([
@@ -72,6 +73,7 @@ describe('ScenarioOutputsEditor', () => {
     // 测试添加宽表字段
     const addFieldBtn = getByRole('button', { name: /添加字段/ })
     await addFieldBtn.click()
+    expect(() => scenarioOutputDeclSchema.parse(onChange.mock.lastCall?.[0])).not.toThrow()
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({
         dataRowFields: expect.arrayContaining([

@@ -184,6 +184,7 @@ export function MemberNode({
             <div className='mt-1.5 min-w-[200px]'>
               <ReportProfileSelect
                 targetId={targetId}
+                source='RUN'
                 label={`${member.memberId} 子报告默认配置`}
                 value={member.reportProfileId}
                 disabled={!canWrite}
@@ -196,4 +197,3 @@ export function MemberNode({
     </div>
   )
 }
-

@@ -56,12 +56,21 @@ import { Can } from '@/components/rbac/can'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { dateRange, rangeToDayKeys } from '@/features/audit/range'
+import {
+  ReportsCenterPanel,
+  SearchPanel,
+  RetentionPanel,
+  type EvidencePageSearch,
+} from '@/features/evidence'
+import type { RunsPageSearch } from '@/routes/_authenticated/runs/index'
 import { CatalogName } from './catalog-name'
 import { RunCreateDialog } from './create-dialog'
 import {
   RUN_EVIDENCE_STATUS_LABELS,
+  RUN_REPORT_STATUS_LABELS,
   RUN_STATUS_LABELS,
   runEvidenceStatusTone,
+  runReportStatusTone,
   runStatusTone,
 } from './labels'
 import {
@@ -78,8 +87,31 @@ export function RunsPage() {
   const routeSearch = route.useSearch()
   const canReadTargets = useCan('target:read')
   const canReadScenarios = useCan('workflow:read')
+  const canReadReports = useCan('report:read')
   const canDelete = useCan('run:delete')
   const canCancel = useCan('run:cancel')
+
+  const currentView = routeSearch.view ?? 'runs'
+
+  const patch = (
+    next: Partial<RunsPageSearch>,
+    options?: { replace?: boolean }
+  ) => {
+    void navigate({
+      to: '/runs',
+      replace: options?.replace,
+      search: {
+        ...routeSearch,
+        ...next,
+        ...('cursor' in next ? {} : { cursor: undefined }),
+        ...('retentionCursor' in next
+          ? {}
+          : next.view || next.retentionView
+            ? { retentionCursor: undefined }
+            : {}),
+      },
+    })
+  }
 
   const targets = useQuery({
     queryKey: ['targets', { limit: 100 }],
@@ -132,6 +164,7 @@ export function RunsPage() {
       evidenceStatus: evidenceStatus === 'all' ? undefined : evidenceStatus,
       outcomeStatus: outcomeStatus === 'all' ? undefined : outcomeStatus,
       sourceKind: sourceKind === 'all' ? undefined : sourceKind,
+      hasReport: canReadReports ? routeSearch.hasReport : undefined,
       from: bounds.from?.toISOString(),
       to: bounds.to?.toISOString(),
       limit: page.pageSize,
@@ -147,6 +180,8 @@ export function RunsPage() {
     evidenceStatus,
     outcomeStatus,
     sourceKind,
+    canReadReports,
+    routeSearch.hasReport,
     range,
     page.pageSize,
     page.cursor,
@@ -228,15 +263,57 @@ export function RunsPage() {
             </Can>
           }
         />
-        <Tabs value='runs'>
+        <Tabs
+          value={currentView}
+          onValueChange={(val) => {
+            patch({ view: val as RunsPageSearch['view'] })
+          }}
+        >
           <TabsList>
             <TabsTrigger value='runs'>独立运行</TabsTrigger>
             <TabsTrigger value='suites' asChild>
               <Link to='/suite-runs'>场景集运行</Link>
             </TabsTrigger>
+            {canReadReports ? (
+              <TabsTrigger value='reports'>交付报告</TabsTrigger>
+            ) : null}
+            <TabsTrigger value='materials'>材料检索</TabsTrigger>
+            {canDelete ? (
+              <TabsTrigger value='retention'>留存与清理</TabsTrigger>
+            ) : null}
           </TabsList>
         </Tabs>
-        {query.isPending ? (
+        {currentView === 'reports' ? (
+          <ReportsCenterPanel
+            key={[
+              routeSearch.targetId,
+              routeSearch.runId,
+              routeSearch.suiteRunId,
+              routeSearch.suiteId,
+            ].join(':')}
+            search={routeSearch as unknown as EvidencePageSearch}
+          />
+        ) : currentView === 'materials' ? (
+          <SearchPanel
+            search={routeSearch as unknown as EvidencePageSearch}
+            patch={
+              patch as (
+                next: Partial<EvidencePageSearch>,
+                options?: { replace?: boolean }
+              ) => void
+            }
+          />
+        ) : currentView === 'retention' ? (
+          <RetentionPanel
+            search={routeSearch as unknown as EvidencePageSearch}
+            patch={
+              patch as (
+                next: Partial<EvidencePageSearch>,
+                options?: { replace?: boolean }
+              ) => void
+            }
+          />
+        ) : query.isPending ? (
           <PageSkeleton />
         ) : query.isError ? (
           <QueryErrorState
@@ -289,6 +366,22 @@ export function RunsPage() {
                 >
                   地图作业
                 </Button>
+
+                {canReadReports ? (
+                  <Button
+                    variant={routeSearch.hasReport ? 'secondary' : 'ghost'}
+                    size='sm'
+                    aria-pressed={Boolean(routeSearch.hasReport)}
+                    onClick={() => {
+                      patch({
+                        hasReport: routeSearch.hasReport ? undefined : true,
+                      })
+                      page.reset()
+                    }}
+                  >
+                    有报告
+                  </Button>
+                ) : null}
 
                 {canReadTargets &&
                 targets.data?.items &&
@@ -404,7 +497,7 @@ export function RunsPage() {
                   />
                   <Input
                     aria-label='搜索运行'
-                    placeholder='搜索场景或目标系统'
+                    placeholder='搜索运行编号、场景或目标系统'
                     value={search}
                     onChange={(event) => handleSearchChange(event.target.value)}
                     className='pl-9'
@@ -434,6 +527,7 @@ export function RunsPage() {
                   evidenceStatus !== 'all' ||
                   outcomeStatus !== 'all' ||
                   sourceKind !== 'all' ||
+                  routeSearch.hasReport ||
                   range ? (
                     <Button
                       variant='outline'
@@ -448,6 +542,7 @@ export function RunsPage() {
                         setOutcomeStatus('all')
                         setSourceKind('all')
                         setRange(undefined)
+                        patch({ hasReport: undefined })
                         page.reset()
                       }}
                     >
@@ -463,6 +558,7 @@ export function RunsPage() {
                     <TableHead>状态</TableHead>
                     <TableHead>业务结果</TableHead>
                     <TableHead>证据</TableHead>
+                    {canReadReports ? <TableHead>报告</TableHead> : null}
                     <TableHead>场景</TableHead>
                     <TableHead>目标系统</TableHead>
                     <TableHead>创建时间</TableHead>
@@ -513,20 +609,76 @@ export function RunsPage() {
                             </StatusBadge>
                           ) : null}
                         </TableCell>
+                        {canReadReports ? (
+                          <TableCell>
+                            {item.runReportStatus &&
+                            item.runReportStatus !== 'not_configured' ? (
+                              item.reportId ? (
+                                <Link
+                                  to='/reports/$reportId'
+                                  params={{ reportId: item.reportId }}
+                                  className='inline-flex hover:opacity-80'
+                                >
+                                  <StatusBadge
+                                    tone={runReportStatusTone(
+                                      item.runReportStatus
+                                    )}
+                                  >
+                                    {
+                                      RUN_REPORT_STATUS_LABELS[
+                                        item.runReportStatus
+                                      ]
+                                    }
+                                  </StatusBadge>
+                                </Link>
+                              ) : (
+                                <StatusBadge
+                                  tone={runReportStatusTone(
+                                    item.runReportStatus
+                                  )}
+                                >
+                                  {
+                                    RUN_REPORT_STATUS_LABELS[
+                                      item.runReportStatus
+                                    ]
+                                  }
+                                </StatusBadge>
+                              )
+                            ) : (
+                              <span className='text-xs text-muted-foreground'>
+                                —
+                              </span>
+                            )}
+                          </TableCell>
+                        ) : null}
                         <TableCell className='max-w-[240px] sm:max-w-xs md:max-w-sm'>
                           <div className='flex flex-col gap-0.5'>
-                            <CatalogName
-                              name={item.scenarioName}
-                              deleted={item.scenarioDeleted}
-                            >
-                              <Link
-                                to='/scenarios/$scenarioId'
-                                params={{ scenarioId: item.scenarioId }}
-                                className='font-medium text-primary hover:underline'
+                            <div className='flex items-center gap-1.5'>
+                              <CatalogName
+                                name={item.scenarioName}
+                                deleted={item.scenarioDeleted}
                               >
-                                {item.scenarioName}
-                              </Link>
-                            </CatalogName>
+                                <Link
+                                  to='/scenarios/$scenarioId'
+                                  params={{ scenarioId: item.scenarioId }}
+                                  className='font-medium text-primary hover:underline'
+                                >
+                                  {item.scenarioName}
+                                </Link>
+                              </CatalogName>
+                              <span
+                                className='inline-flex items-center rounded border border-border-divider bg-muted/60 px-1 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-muted cursor-pointer select-all'
+                                title={`完整运行编号：${item.id}（点击复制）`}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  navigator.clipboard.writeText(item.id)
+                                  toast.success(`已复制运行编号：${item.id}`)
+                                }}
+                              >
+                                #{item.id.slice(0, 8)}
+                              </span>
+                            </div>
                             {item.outputSummary ? (
                               <span
                                 className='text-xs text-muted-foreground truncate'

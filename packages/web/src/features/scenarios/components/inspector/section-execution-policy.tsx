@@ -8,6 +8,7 @@ import {
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { FieldHelp } from '@/components/ui/field-help'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -83,7 +84,14 @@ export function SectionExecutionPolicy({
         <CollapsibleContent className='space-y-4 pt-3 px-1'>
           {/* 副作用语义 */}
           <div className='space-y-1.5'>
-            <Label className='text-label'>副作用（重试与幂等语义）</Label>
+            <div className='flex items-center gap-1.5'>
+              <Label className='text-label'>副作用（重试与幂等语义）</Label>
+              <FieldHelp label='副作用'>
+                {aiLocked
+                  ? 'AI 步骤的副作用由模型类型锁定，不能调整为只读获得重试。'
+                  : '声明该步骤是否会对业务系统产生持久副作用。只读操作可在失败时安全自动重试，写操作默认不自动重试以防产生脏数据。'}
+              </FieldHelp>
+            </div>
             <Select
               value={step.effectType}
               disabled={disabled || aiLocked || step.type === 'wait'}
@@ -110,11 +118,6 @@ export function SectionExecutionPolicy({
                 ))}
               </SelectContent>
             </Select>
-            {aiLocked && (
-              <p className='text-label text-muted-foreground'>
-                AI 步骤的副作用由模型类型锁定，不能调整为只读获得重试。
-              </p>
-            )}
           </div>
 
           {/* 超时与重试网格 */}

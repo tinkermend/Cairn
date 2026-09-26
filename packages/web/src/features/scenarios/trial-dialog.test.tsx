@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { scenarioCapabilitiesFor } from '@cairn/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { ApiRequestError } from '@/lib/api-client'
 import { TrialDialog } from './trial-dialog'
 
 const SCENARIO_ID = '33333333-3333-4333-8333-333333333333'
@@ -83,5 +84,31 @@ describe('TrialDialog', () => {
     expect(mocks.trialScenario.mock.calls[0]![1]).toMatchObject({
       pauseBeforeStepId: 'step-123',
     })
+  })
+
+  it('服务端拒绝编译时在弹窗中展示可操作的诊断', async () => {
+    mocks.trialScenario.mockRejectedValueOnce(new ApiRequestError(400, {
+      code: 'SCENARIO_COMPILE_BLOCKED',
+      message: '场景编译未通过',
+      requestId: 'req-compile',
+      details: { diagnostics: [{ message: '点击步骤只有语义描述，请点选目标或调整解析档位' }] },
+    }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <TrialDialog
+          open
+          onOpenChange={vi.fn()}
+          scenarioId={SCENARIO_ID}
+          targetId={TARGET_ID}
+          revision={1}
+          inputs={[]}
+          onCreated={vi.fn()}
+          onConflict={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '开始试跑' }).click()
+    await expect.element(screen.getByRole('alert').getByText('点击步骤只有语义描述，请点选目标或调整解析档位')).toBeInTheDocument()
   })
 })

@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import type { FieldPath } from 'react-hook-form'
-import { CircleHelp } from 'lucide-react'
 import type { PlatformConfigDocument } from '@cairn/shared'
 import {
   FormControl,
@@ -11,40 +10,10 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
+import { FieldHelp } from '@/components/ui/field-help'
 import { cn } from '@/lib/utils'
 
-export function FieldHelp({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type='button'
-          className='inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none'
-          aria-label={`${label}的说明`}
-        >
-          <CircleHelp className='size-3.5' aria-hidden='true' />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        className='w-max max-w-60 text-left leading-5'
-        style={{ textWrap: 'wrap' }}
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
-  )
-}
+export { FieldHelp }
 
 export function SettingMark({ children }: { children: ReactNode }) {
   return (

@@ -6,9 +6,11 @@ import {
   AlertTriangle,
   Bell,
   CheckCircle2,
+  Copy,
   ExternalLink,
   Radio,
   RefreshCw,
+  Search,
   Send,
   Workflow,
 } from 'lucide-react'
@@ -194,6 +196,7 @@ function NotificationRecords({
   activeChannelsCount: number
 }) {
   const page = useCursorPage()
+  const [search, setSearch] = useState('')
   const [type, setType] = useState(''),
     [status, setStatus] = useState(''),
     [targetId, setTargetId] = useState('')
@@ -213,6 +216,7 @@ function NotificationRecords({
 
   const filter = useMemo(
     () => ({
+      search: search.trim() || undefined,
       type: type || undefined,
       status: status || undefined,
       targetId: targetId || undefined,
@@ -223,7 +227,7 @@ function NotificationRecords({
       limit: page.pageSize,
       cursor: page.cursor,
     }),
-    [type, status, targetId, runId, alertId, from, to, page.pageSize, page.cursor]
+    [search, type, status, targetId, runId, alertId, from, to, page.pageSize, page.cursor]
   )
 
   const list = useQuery({
@@ -326,6 +330,22 @@ function NotificationRecords({
             ))}
           </div>
           <div className='flex flex-wrap items-center gap-2'>
+            <div className='relative w-full sm:w-64'>
+              <Search
+                aria-hidden='true'
+                className='pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground'
+              />
+              <Input
+                aria-label='搜索通知'
+                placeholder='搜索通知/运行编号或标题'
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value)
+                  page.reset()
+                }}
+                className='h-8 pl-8 text-xs'
+              />
+            </div>
             <Select value={type || 'all'} onValueChange={handleTypeChange}>
               <SelectTrigger className='h-8 w-32' aria-label='通知类型'>
                 <SelectValue placeholder='全部类型' />
@@ -394,20 +414,21 @@ function NotificationRecords({
         ) : items.length === 0 ? (
           <EmptyState
             title={
-              status || type || targetId
+              status || type || targetId || search
                 ? '没有匹配的通知记录'
                 : '暂无符合条件的通知'
             }
             description={
-              status || type || targetId
+              status || type || targetId || search
                 ? '试试清除或调整筛选条件。'
                 : '启用结果通知或告警规则后，记录会显示在这里。'
             }
             action={
-              status || type || targetId ? (
+              status || type || targetId || search ? (
                 <Button
                   variant='outline'
                   onClick={() => {
+                    setSearch('')
                     setStatus('')
                     setType('')
                     setTargetId('')
@@ -463,8 +484,27 @@ function NotificationRecords({
                               : '通知')}
                         </p>
                         <div className='mt-0.5 flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
+                          <span
+                            className='inline-flex items-center rounded border border-border-divider bg-muted/60 px-1 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-muted cursor-pointer select-all'
+                            title={`完整事件编号：${event.id}（点击复制）`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              navigator.clipboard.writeText(event.id)
+                              toast.success(`已复制事件编号：${event.id}`)
+                            }}
+                          >
+                            #{event.id.slice(0, 8)}
+                          </span>
                           {event.runId && (
-                            <span>运行 #{event.runId.slice(0, 8)}</span>
+                            <Link
+                              to='/runs/$runId'
+                              params={{ runId: event.runId }}
+                              className='inline-flex items-center rounded border border-border-divider bg-muted/40 px-1 py-0.5 font-mono text-[11px] text-primary hover:underline'
+                              onClick={(e) => e.stopPropagation()}
+                              title={`查看运行详情：${event.runId}`}
+                            >
+                              运行 #{event.runId.slice(0, 8)}
+                            </Link>
                           )}
                           {event.alertId && (
                             <span>告警 #{event.alertId.slice(0, 8)}</span>
@@ -620,10 +660,22 @@ function NotificationDetail({ id }: { id: string }) {
                 <h3 className='font-semibold text-text-primary text-body'>
                   {event.payload?.title ?? stateLabels[event.state]}
                 </h3>
-                <p className='mt-1 text-label text-muted-foreground'>
-                  触发时间：{new Date(event.occurredAt).toLocaleString()} ·{' '}
-                  {stateLabels[event.state]}
-                </p>
+                <div className='mt-1 flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+                  <span>触发时间：{new Date(event.occurredAt).toLocaleString()} · {stateLabels[event.state]}</span>
+                  <span className='inline-flex items-center gap-1 font-mono text-[11px]'>
+                    <span>事件编号：</span>
+                    <span
+                      className='rounded border border-border-divider bg-muted/60 px-1.5 py-0.5 hover:bg-muted cursor-pointer select-all text-text-primary'
+                      title={`完整事件编号：${event.id}（点击复制）`}
+                      onClick={() => {
+                        navigator.clipboard.writeText(event.id)
+                        toast.success(`已复制事件编号：${event.id}`)
+                      }}
+                    >
+                      {event.id}
+                    </span>
+                  </span>
+                </div>
               </div>
               <StatusBadge
                 tone={
@@ -724,6 +776,31 @@ function NotificationDetail({ id }: { id: string }) {
                     {statusLabels[d.status]}
                     {d.closedAt ? ' · 已结案' : ''}
                   </StatusBadge>
+                </div>
+                <div className='flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground'>
+                  <span>通知编号：</span>
+                  <span
+                    className='rounded border border-border-divider bg-muted/60 px-1.5 py-0.5 hover:bg-muted cursor-pointer select-all text-text-primary'
+                    title={`完整通知编号：${d.id}（点击复制）`}
+                    onClick={() => {
+                      navigator.clipboard.writeText(d.id)
+                      toast.success(`已复制通知编号：${d.id}`)
+                    }}
+                  >
+                    {d.id}
+                  </span>
+                  <Button
+                    variant='ghost'
+                    size='icon'
+                    className='size-5 text-muted-foreground hover:text-foreground'
+                    title='复制通知编号'
+                    onClick={() => {
+                      navigator.clipboard.writeText(d.id)
+                      toast.success(`已复制通知编号：${d.id}`)
+                    }}
+                  >
+                    <Copy className='size-3' />
+                  </Button>
                 </div>
                 <p className='text-label text-muted-foreground break-all'>
                   接收方：{d.recipientLabel} · 自动尝试{' '}

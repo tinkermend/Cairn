@@ -107,7 +107,10 @@ type AuthoringObserveValue = {
   canIndicate: boolean
   canHighlight: boolean
   canDebugHold: boolean
-  setPickMode: (next: boolean) => void
+  setPickMode: (
+    next: boolean,
+    outcome?: { scope: 'step' | 'scenario'; contractId: string },
+  ) => void
   highlightTarget: (target: TargetDescriptor, options?: { silent?: boolean }) => Promise<TargetObservation | undefined>
   pickAt: (x: number, y: number) => void
   applyForTrial: (target?: TargetDescriptor) => void
@@ -190,6 +193,7 @@ export function AuthoringObserveProvider({
     Boolean(runId && enabled)
   )
   const [pickMode, setPickModeState] = useState(false)
+  const [pickOutcome, setPickOutcome] = useState<NonNullable<ApplyPickedExtras['outcomePick']>>()
   const [highlight, setHighlight] = useState<TargetObservation | undefined>()
   const [lastPicked, setLastPicked] = useState<TargetDescriptor | undefined>()
   const holding = Boolean(
@@ -206,6 +210,21 @@ export function AuthoringObserveProvider({
     observation: TargetObservation
   } | null>(null)
   const [disambiguationChoice, setDisambiguationChoice] = useState<'visible_text' | 'accessible_name'>('visible_text')
+
+  const applyPickedTarget = (target: TargetDescriptor, previewText: string) => {
+    onApplyTarget(target, {
+      previewText,
+      ...(pickOutcome ? { outcomePick: pickOutcome } : {}),
+    })
+    setPickOutcome(undefined)
+    if (pickOutcome) {
+      toast.success('已写入成功条件，请核对成功含义和期望')
+    } else {
+      toast.success(
+        previewText ? `已写入当前步骤。画面上读到「${previewText}」` : '已写入当前步骤',
+      )
+    }
+  }
 
   const confirmDisambiguation = (choice: 'visible_text' | 'accessible_name') => {
     if (!disambiguationModal) return
@@ -230,9 +249,8 @@ export function AuthoringObserveProvider({
     setPickModeState(false)
     setDisambiguationModal(null)
 
-    if (!holding) {
-      onApplyTarget(target, { previewText })
-      toast.success(`已用「${previewText}」写入当前步骤`)
+    if (!holding || pickOutcome) {
+      applyPickedTarget(target, previewText)
     } else {
       toast.success('已点到元素，可写入本次验证或写回草稿')
     }
@@ -265,11 +283,18 @@ export function AuthoringObserveProvider({
       canHighlight,
       canDebugHold,
       ensureStepOutputKey: onEnsureStepOutputKey,
-      setPickMode: (next) => {
+      setPickMode: (next, outcome) => {
         if (next && (!canIndicate || !livePage)) {
           toast.message('没有可点选的受管画面。请先连接目标账号会话，或开试跑并等到步骤挂起。')
           return
         }
+        if (next && outcome?.scope === 'step' && !selectedStepId) {
+          toast.message('请先选择要设置成功条件的步骤')
+          return
+        }
+        setPickOutcome(next && outcome
+          ? { ...outcome, ...(outcome.scope === 'step' ? { stepId: selectedStepId! } : {}) }
+          : undefined)
         setPickModeState(next)
         if (next && livePage) {
           void observePage({ op: 'highlight' }).catch(() => undefined)
@@ -337,13 +362,8 @@ export function AuthoringObserveProvider({
               setLastPicked(observation.target)
               setPickModeState(false)
               const previewText = observationPreviewText(observation)
-              if (!holding) {
-                onApplyTarget(observation.target, { previewText })
-                toast.success(
-                  previewText
-                    ? `已写入当前步骤。画面上读到「${previewText}」`
-                    : '已写入当前步骤',
-                )
+              if (!holding || pickOutcome) {
+                applyPickedTarget(observation.target, previewText)
               } else {
                 toast.success('已点到元素，可写入本次验证或写回草稿')
               }
@@ -369,6 +389,7 @@ export function AuthoringObserveProvider({
             ) {
               toast.error('观察授权已过期，请再点一次「在页面上指认」')
               setPickModeState(false)
+              setPickOutcome(undefined)
               return
             }
             toast.error(
@@ -447,8 +468,8 @@ export function AuthoringObserveProvider({
         const next = targetFromPickedLabel(label, highlight?.target ?? lastPicked)
         setLastPicked(next)
         setPickModeState(false)
-        if (!holding) onApplyTarget(next, { previewText: label })
-        toast.success(`已用「${label}」写入当前步骤`)
+        if (!holding || pickOutcome) applyPickedTarget(next, label)
+        else toast.success('已点到元素，可写入本次验证或写回草稿')
         void observePage({ op: 'highlight', target: next })
           .then((observation) => {
             setHighlight(observation)
@@ -486,6 +507,7 @@ export function AuthoringObserveProvider({
       observePage,
       onApplyTarget,
       onWriteBack,
+      pickOutcome,
       pickMode,
       refresh,
       run,

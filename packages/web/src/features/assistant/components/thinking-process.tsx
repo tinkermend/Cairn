@@ -105,7 +105,7 @@ export function ThinkingProcessBlock({
           <Loader2 className='size-3.5 animate-spin text-primary-600' />
           <span>{stageLabel(stage, queuePosition)}</span>
           {stage === 'generating' && elapsedSeconds > 0 ? (
-            <span className='text-caption text-text-muted'>({elapsedSeconds}s)</span>
+            <span className='text-label text-text-muted'>({elapsedSeconds}s)</span>
           ) : null}
         </div>
         {onCancel ? (
@@ -143,7 +143,7 @@ export function ThinkingProcessBlock({
             >
               <Brain className='size-3.5 shrink-0 animate-pulse text-primary-600' />
               <span className='truncate whitespace-nowrap'>大模型正在思考分析...</span>
-              <span className='shrink-0 text-caption text-primary-600/80 whitespace-nowrap'>({elapsedSeconds}s)</span>
+              <span className='shrink-0 text-label text-primary-600/80 whitespace-nowrap'>({elapsedSeconds}s)</span>
               {isOpen ? (
                 <ChevronDown className='size-3.5 shrink-0 text-text-muted transition-transform group-hover:text-text-secondary' />
               ) : (
@@ -209,7 +209,7 @@ export function ThinkingProcessBlock({
         <CollapsibleTrigger asChild>
           <button
             type='button'
-            className='flex flex-1 items-center gap-2 text-left text-caption font-medium text-text-muted select-none hover:text-text-primary'
+            className='flex flex-1 items-center gap-2 text-left text-label font-medium text-text-muted select-none hover:text-text-primary'
             aria-label={isOpen ? '收起思考过程' : '展开思考过程'}
           >
             <Brain className='size-3.5 text-text-muted transition-colors group-hover:text-primary-600' />
@@ -217,7 +217,7 @@ export function ThinkingProcessBlock({
               已深度思考
               {displayDuration ? ` (用时 ${displayDuration} 秒)` : ''}
             </span>
-            <span className='text-caption text-text-muted/70 group-hover:text-text-muted'>
+            <span className='text-label text-text-muted/70 group-hover:text-text-muted'>
               {isOpen ? '点击折叠' : '点击展开'}
             </span>
             {isOpen ? (
@@ -233,7 +233,7 @@ export function ThinkingProcessBlock({
             type='button'
             variant='ghost'
             size='sm'
-            className='h-6 px-1.5 text-caption text-text-muted hover:text-text-primary'
+            className='h-6 px-1.5 text-label text-text-muted hover:text-text-primary'
             title='复制思考过程'
             onClick={handleCopy}
           >
@@ -250,7 +250,7 @@ export function ThinkingProcessBlock({
         <div className='px-3 pb-2.5 pt-0.5'>
           <div
             ref={contentRef}
-            className='max-h-48 overflow-y-auto rounded border border-border-subtle bg-surface-card/60 p-2 font-mono text-caption leading-relaxed whitespace-pre-wrap text-text-secondary select-text'
+            className='max-h-48 overflow-y-auto rounded border border-border-subtle bg-surface-card/60 p-2 font-mono text-label leading-relaxed whitespace-pre-wrap text-text-secondary select-text'
           >
             {thinkingText}
           </div>

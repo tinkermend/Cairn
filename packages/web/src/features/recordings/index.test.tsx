@@ -11,7 +11,13 @@ const mocks = vi.hoisted(() => ({
   deleteRecording: vi.fn(),
 }))
 
-vi.mock('@/lib/recordings-api', () => mocks)
+vi.mock('@/lib/recordings-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/recordings-api')>()
+  return {
+    ...actual,
+    ...mocks,
+  }
+})
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {

@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   createExploration: vi.fn(),
   fetchTargetAccounts: vi.fn(),
   fetchPlatformConfig: vi.fn(),
+  fetchExploreCandidates: vi.fn(),
+  reviewExploreCandidate: vi.fn(),
+  runExploreCandidate: vi.fn(),
+  reviewUnknownExploreJob: vi.fn(),
+  fetchMapJob: vi.fn(),
 }))
 
 vi.mock('@/lib/map-api', () => mocks)
@@ -73,6 +78,8 @@ describe('有界探索卡片', () => {
     })
     mocks.fetchMapSafeEntries.mockResolvedValue({ items: [] })
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
+    mocks.fetchExploreCandidates.mockResolvedValue({ items: [], totalGaps: 0 })
+    mocks.fetchMapJob.mockResolvedValue({ jobId: 'j1', jobStatus: 'queued' })
     signIn()
   })
 
@@ -87,5 +94,41 @@ describe('有界探索卡片', () => {
     signIn(['target:read', 'map:read'])
     await renderCard()
     await expect.element(page.getByText('需要探索和维护权限才能触发探索。')).toBeVisible()
+  })
+
+  it('显示候选控件与审核试跑动作', async () => {
+    mocks.fetchExploreCandidates.mockResolvedValue({
+      items: [
+        {
+          id: 'c1',
+          targetId: TARGET_ID,
+          jobId: 'j1',
+          runId: 'r1',
+          sourcePresentationStateKey: 'pres-1',
+          controlFingerprint: 'fp-1',
+          accessibleName: '用户管理',
+          role: 'link',
+          ancestorPathJson: ['div', 'nav'],
+          frameSelector: null,
+          candidateCategory: 'explicit_url',
+          targetUrl: 'https://example.com/users',
+          targetDigest: null,
+          targetHint: '/users',
+          locatorDescriptorJson: null,
+          collectorVersion: 1,
+          evidenceStatus: 'complete',
+          rejectionReason: null,
+          status: 'discovered',
+          createdAt: '2026-09-26T00:00:00.000Z',
+        },
+      ],
+      totalGaps: 0,
+    })
+    await renderCard()
+    await expect.element(page.getByText('导航线索与候选控件')).toBeVisible()
+    const input = page.getByPlaceholder('输入探索作业 ID 审查')
+    await input.fill('j1')
+    await expect.element(page.getByText('用户管理')).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '审核批准' })).toBeVisible()
   })
 })

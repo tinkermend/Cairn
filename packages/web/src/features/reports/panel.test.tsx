@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/reports-api', () => ({
   previewReport: mocks.preview,
+  previewReportRevision: vi.fn(async () => ({ title: '修订预览' })),
+  previewMemberReport: vi.fn(async () => ({ title: '成员预览' })),
   createReport: mocks.create,
   createReportRevision: mocks.revise,
   fetchReports: mocks.list,
@@ -105,7 +107,7 @@ describe('报告生成与导出', () => {
 
   it('运行未就绪时阻止终稿创建，允许用户选择阶段报告并保留自定义标题', async () => {
     const screen = await setup()
-    await screen.getByRole('textbox', { name: '报告标题' }).fill('我的巡检报告')
+    await screen.getByRole('combobox', { name: '报告标题' }).fill('我的巡检报告')
     await screen.getByRole('button', { name: '生成报告', exact: true }).click()
     await expect.poll(() => mocks.preview.mock.calls.length).toBe(1)
     expect(mocks.create).not.toHaveBeenCalled()
@@ -186,7 +188,7 @@ describe('报告生成与导出', () => {
       </QueryClientProvider>
     )
     await screen
-      .getByRole('textbox', { name: '报告标题' })
+      .getByRole('combobox', { name: '报告标题' })
       .fill('上一运行的标题')
     await screen.getByRole('combobox', { name: '报告类型' }).click()
     await screen.getByRole('option', { name: '阶段报告' }).click()
@@ -201,7 +203,7 @@ describe('报告生成与导出', () => {
       </QueryClientProvider>
     )
     await expect
-      .element(screen.getByRole('textbox', { name: '报告标题' }))
+      .element(screen.getByRole('combobox', { name: '报告标题' }))
       .toHaveValue('')
     await expect
       .element(screen.getByRole('combobox', { name: '报告类型' }))

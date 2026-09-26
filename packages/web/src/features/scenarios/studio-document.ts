@@ -308,6 +308,8 @@ export function priorBindingsV2(
   const options: BindingOption[] = document.inputs.map((input) => ({
     key: input.key,
     label: `输入 · ${input.label}`,
+    typeLabel: input.type ?? '未声明类型',
+    description: input.description ?? '场景运行输入',
   }))
   for (const node of prior) {
     if (node.kind === 'step') {
@@ -315,6 +317,8 @@ export function priorBindingsV2(
         options.push({
           key: node.step.outputKey,
           label: `步骤 · ${node.step.name}`,
+          typeLabel: outputShapeForStep(node.step).kind,
+          description: `前序步骤「${node.step.name}」的输出`,
         })
       }
     } else if (node.kind === 'module') {
@@ -324,6 +328,8 @@ export function priorBindingsV2(
             options.push({
               key: exposedKey,
               label: `模块 · ${node.name || node.moduleId} · ${exposedKey}`,
+              typeLabel: '模块输出',
+              description: `前序模块「${node.name || node.moduleId}」对外暴露的输出`,
             })
           }
         }

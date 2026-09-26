@@ -1,5 +1,12 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  LOCATOR_PRESETS,
+  LOCATOR_PRESET_LABELS,
+  legacyCeilingRoutes,
+  legacyPolicyRoutes,
+  locatorPresetFor,
+  locatorReadiness,
+  resolveLocatorPlan,
   RESOLUTION_CEILING_LABELS,
   RESOLUTION_PREFERENCE_LABELS,
   RESOLUTION_POLICIES,
@@ -10,10 +17,12 @@ import {
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { updateTargetResolutionPolicy } from '@/lib/targets-api'
+import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
+import { locatorRouteListLabel, locatorSkippedLabel } from '@/lib/locator-labels'
 import {
   Select,
   SelectContent,
@@ -33,6 +42,31 @@ export function ResolutionPolicyCard({ target }: { target: TargetDto }) {
   const queryClient = useQueryClient()
   const override = target.resolutionPolicy ?? null
   const effective = target.effectiveResolution
+  const platform = useQuery({ queryKey: ['platform-config'], queryFn: fetchPlatformConfig }).data?.document
+  const textReady = platform ? locatorReadiness(platform).textReady : false
+  const presetKeys = Object.keys(LOCATOR_PRESETS) as Array<keyof typeof LOCATOR_PRESETS>
+  const plan = override?.plan
+  const limits = override?.limits
+  const oldPlan = override?.preference ? legacyPolicyRoutes(override.preference, textReady && Boolean(platform && locatorReadiness(platform).visionReady)) : undefined
+  const oldLimits = override?.ceiling ? legacyCeilingRoutes(override.ceiling) : undefined
+  const allowedOptions = [
+    { value: 'inherit', label: '继承平台允许集合' },
+    { value: 'rule', label: '仅规则' },
+    { value: 'rule,text_ai', label: '规则和文本模型' },
+    { value: 'rule,vision_ai', label: '规则和视觉模型' },
+    { value: 'rule,text_ai,vision_ai', label: '全部定位能力' },
+  ]
+  let planPreview = ''
+  if (platform) {
+    try {
+      const result = resolveLocatorPlan({
+        platform: { plan: platform.locator?.defaultPlan, limits: platform.locator?.limits, defaultPolicy: platform.browserAi.defaultResolution, ceiling: platform.browserAi.resolutionCeiling },
+        target: override ? { plan: override.plan, limits: override.limits, policy: override.preference, ceiling: override.ceiling } : undefined,
+        ...locatorReadiness(platform),
+      })
+      planPreview = `请求：${locatorRouteListLabel(result.requested)}；实际：${locatorRouteListLabel(result.actual)}${result.skipped.length ? `；跳过 ${locatorSkippedLabel(result.skipped)}` : ''}`
+    } catch (error) { planPreview = error instanceof Error ? error.message : '定位路线不可用' }
+  }
   const mutation = useMutation({
     mutationFn: (body: TargetResolutionPolicyPatch) => updateTargetResolutionPolicy(target.id, body),
     onSuccess: async () => {
@@ -47,12 +81,55 @@ export function ResolutionPolicyCard({ target }: { target: TargetDto }) {
   return (
     <Card className='min-w-0'>
       <CardHeader>
-        <CardTitle className='text-section font-semibold'>目标解析</CardTitle>
+        <CardTitle className='text-section font-semibold'>目标定位</CardTitle>
         <p className='mt-1 text-label text-muted-foreground'>
-          这个系统默认先用规则还是先用 AI。不能超过平台的 AI 定位能力上限；未配置时继承平台默认。只影响之后新建的运行。
+          本目标系统可收紧允许能力，也可覆盖默认尝试顺序。未设置时继承平台，只影响之后新建的运行。
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
+        {(override?.preference || override?.ceiling) ? (
+          <div className='space-y-2 rounded-md border border-border-default p-3 text-label'>
+            <p className='font-medium'>旧版定位策略</p>
+            <p>原实际顺序：{locatorRouteListLabel(oldPlan ?? legacyPolicyRoutes(effective?.preference ?? 'deterministic_only', textReady && Boolean(platform && locatorReadiness(platform).visionReady)))}；原允许路线：{(oldLimits ?? legacyCeilingRoutes(effective?.ceiling ?? 'deterministic_only')).join('、')}。</p>
+            <p className='text-muted-foreground'>升级后写步骤的模型结果均需核对业务名称；规则兜底会尝试地图修复；模型调用出错会停止并显示原因。</p>
+            <Button type='button' size='sm' variant='outline' disabled={!canWrite || mutation.isPending} onClick={() => mutation.mutate({
+              ...(oldPlan ? { plan: { v: 2, order: oldPlan } } : { preference: null }),
+              ...(oldLimits ? { limits: { v: 2, allowed: oldLimits } } : { ceiling: null }),
+            })}>升级目标定位设置</Button>
+          </div>
+        ) : null}
+        <div className='grid gap-4 sm:grid-cols-2'>
+          <div className='space-y-2'>
+            <Label>目标默认定位顺序</Label>
+            <Select disabled={!canWrite || mutation.isPending} value={plan ? locatorPresetFor(plan) ?? 'custom' : INHERIT} onValueChange={(value) => {
+              if (value === 'custom') return
+              mutation.mutate({
+                plan: value === INHERIT ? null : { v: 2, order: [...LOCATOR_PRESETS[value as keyof typeof LOCATOR_PRESETS].order] },
+                ...(override?.ceiling ? { limits: { v: 2, allowed: legacyCeilingRoutes(override.ceiling) } } : {}),
+              })
+            }}>
+              <SelectTrigger aria-label='目标默认定位顺序'><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={INHERIT}>继承平台默认</SelectItem>
+                {plan && !locatorPresetFor(plan) ? <SelectItem value='custom'>当前顺序：{locatorRouteListLabel(plan.order)}</SelectItem> : null}
+                {presetKeys.map((key) => <SelectItem key={key} value={key}>{LOCATOR_PRESET_LABELS[key]}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className='space-y-2'>
+            <Label>本目标允许的定位能力</Label>
+            <Select disabled={!canWrite || mutation.isPending} value={limits?.allowed.join(',') ?? INHERIT} onValueChange={(value) => mutation.mutate({
+              limits: value === INHERIT ? null : { v: 2, allowed: value.split(',') as NonNullable<TargetResolutionPolicyPatch['limits']>['allowed'] },
+              ...(override?.preference ? { plan: { v: 2, order: oldPlan ?? ['rule'] } } : {}),
+            })}>
+              <SelectTrigger aria-label='本目标允许的定位能力'><SelectValue /></SelectTrigger>
+              <SelectContent>{allowedOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+        </div>
+        <p className='text-label text-muted-foreground'>{planPreview || `请求：${locatorRouteListLabel(plan?.order ?? oldPlan ?? platform?.locator?.defaultPlan.order ?? legacyPolicyRoutes(effective?.preference ?? 'deterministic_only', textReady))}`}</p>
+        {(override?.preference || override?.ceiling || (!plan && !limits)) ? <details className='text-label text-muted-foreground'>
+          <summary className='cursor-pointer'>旧版设置与兼容说明</summary>
         <div className='grid gap-4 sm:grid-cols-2'>
           <div className='space-y-2'>
             <div className='flex items-center justify-between gap-2'>
@@ -140,6 +217,7 @@ export function ResolutionPolicyCard({ target }: { target: TargetDto }) {
             ) : null}
           </div>
         </div>
+        </details> : null}
       </CardContent>
     </Card>
   )

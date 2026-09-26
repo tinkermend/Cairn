@@ -24,12 +24,13 @@ function signIn(permissions = ['run:read', 'target:read']) {
 
 const STEP_RUN_ID = '00000000-0000-4000-8000-000000000022'
 
-async function renderDecisions() {
+async function renderDecisions(resolution?: Parameters<typeof RunResolutionDecisions>[0]['resolution']) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
       <RunResolutionDecisions
         runId='00000000-0000-4000-8000-000000000021'
+        resolution={resolution}
         steps={[
           {
             id: STEP_RUN_ID,
@@ -88,7 +89,36 @@ describe('运行页解析决策', () => {
     await expect.element(page.getByText('经 AI 定位')).toBeVisible()
     await expect.element(page.getByText(/提交查询/)).toBeVisible()
     await expect.element(page.getByText(/规则优先，AI 兜底/)).toBeVisible()
-    await expect.element(page.getByText(/D→M→A/)).toBeVisible()
+    await expect.element(page.getByText(/规则\(未找到目标\) → 地图修复\(未尝试\) → 模型\(命中\)/)).toBeVisible()
+  })
+
+  it('断点重试覆盖定位顺序时区分原始冻结计划和实际尝试', async () => {
+    mocks.fetchRunResolutionDecisions.mockResolvedValue({
+      items: [{
+        decisionId: '00000000-0000-4000-8000-000000000031',
+        runId: '00000000-0000-4000-8000-000000000021',
+        stepRunId: STEP_RUN_ID,
+        attemptId: '00000000-0000-4000-8000-000000000024',
+        stepId: '00000000-0000-4000-8000-000000000023',
+        effectivePolicy: 'deterministic_only',
+        plan: { v: 2, order: ['rule'] },
+        rungs: [{ rung: 'D', outcome: 'FOUND', spentMs: 10 }],
+        decision: 'deterministic',
+        evidenceRefs: [],
+      }],
+    })
+    await renderDecisions({
+      protocol: 'snapshot.resolution@2',
+      allowed: ['rule', 'text_ai'],
+      steps: {
+        '00000000-0000-4000-8000-000000000023': {
+          requested: ['text_ai'], actual: ['text_ai'], skipped: [], source: 'step',
+        },
+      },
+    })
+    await expect.element(page.getByText(/调试覆盖 规则/)).toBeVisible()
+    await page.getByText('创建运行时冻结的定位计划').click()
+    await expect.element(page.getByText(/请求 文本模型；实际 文本模型/)).toBeVisible()
   })
 
   it('分页只请求对应游标，SSE 提示触发重新读取', async () => {

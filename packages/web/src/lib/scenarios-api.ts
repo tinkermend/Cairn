@@ -14,6 +14,7 @@ import {
   resolutionStatsResponseSchema,
   scenarioCapabilitiesSchema,
   scenarioDetailSchema,
+  scenarioVersionListResponseSchema,
   scenarioListResponseSchema,
   trialRunBodySchema,
   updateScenarioBodySchema,
@@ -87,6 +88,10 @@ export function fetchScenarios(query?: ScenarioListQuery): Promise<ScenarioListR
 
 export function fetchScenario(id: string): Promise<ScenarioDetailDto> {
   return apiFetch(`/api/scenarios/${id}`, scenarioDetailSchema)
+}
+
+export function fetchScenarioVersions(id: string) {
+  return apiFetch(`/api/scenarios/${id}/versions`, scenarioVersionListResponseSchema)
 }
 
 export function previewDeleteScenario(id: string): Promise<DeletePreviewResponse> {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   isAiStepType,
   type EvidenceMetadata,
@@ -10,11 +10,14 @@ import {
   Bug,
   Copy,
   Database,
+  ExternalLink,
   Image as ImageIcon,
   MessageSquare,
   Sparkles,
   Target,
 } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -22,6 +25,7 @@ import { Can } from '@/components/rbac/can'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { buildStepQuote } from '@/features/assistant/quote-helper'
 import { translateStepError } from './error-translator'
+import { isAttemptHealed, isStepHealed } from './healed-helper'
 import { OutcomeConditionList } from './outcome-axis'
 import { ContextLists } from './context-lists'
 import { AiAttemptSummary } from './ai-evidence'
@@ -29,6 +33,7 @@ import { RunMapClues } from '@/features/map/run-clues'
 import { RunMapDecisions } from './map-decisions'
 import { RunResolutionDecisions } from './resolution-decisions'
 import { AiActionTracePanel } from './ai-action-trace'
+import { AttemptEvidenceList } from './evidence-viewer'
 import {
   formatDuration,
   STEP_RUN_STATUS_LABELS,
@@ -42,6 +47,7 @@ type Props = {
   selectedAttemptId: string | null
   evidenceItems: EvidenceMetadata[]
   eventSeq?: number
+  focusEvidenceId?: string
   onFocusEvidence?: (evidenceId: string) => void
 }
 
@@ -51,11 +57,19 @@ export function StepInspector({
   selectedAttemptId,
   evidenceItems,
   eventSeq = 0,
+  focusEvidenceId,
   onFocusEvidence,
 }: Props) {
   const [activeTab, setActiveTab] = useState<'evidence' | 'outcome' | 'data' | 'debug'>('evidence')
   const setQuote = useAssistantStore((s) => s.setQuote)
   const openAssistant = useAssistantStore((s) => s.openPanel)
+
+  // 当外部聚焦指定证据时，自动切至「诊断与证据」Tab
+  useEffect(() => {
+    if (focusEvidenceId) {
+      setActiveTab('evidence')
+    }
+  }, [focusEvidenceId])
 
   if (!step) {
     return (
@@ -71,13 +85,21 @@ export function StepInspector({
     step.attempts[step.attempts.length - 1]
 
   const attemptEvidences = activeAttempt
-    ? evidenceItems.filter((item) => item.attemptId === activeAttempt.id)
+    ? evidenceItems.filter(
+        (item) => item.attemptId === activeAttempt.id || (!item.attemptId && item.stepRunId === step.id)
+      )
     : []
 
   const isFailed = step.status === 'FAILED' || activeAttempt?.status === 'FAILED'
   const errorInfo = activeAttempt?.error
   const diagnosis = isFailed && errorInfo ? translateStepError(errorInfo) : null
   const isAi = isAiStepType(step.type)
+
+  const healedAttempt = step.attempts.find((a) => isAttemptHealed(a, evidenceItems))
+  const isHealed = Boolean(healedAttempt) || isStepHealed(step, evidenceItems)
+  const parentModule = (run.snapshot as any)?.moduleManifest?.entries?.find((e: any) =>
+    e.expandedStepIds?.includes(step.stepId),
+  )
 
   const askAssistantAboutError = () => {
     if (!errorInfo) return
@@ -109,6 +131,13 @@ export function StepInspector({
               {STEP_RUN_STATUS_LABELS[step.status]}
             </StatusBadge>
 
+            {isHealed && (
+              <Badge variant='outline' className='text-label border-primary/40 text-primary bg-primary/5 gap-1'>
+                <Sparkles className='size-3 text-primary' />
+                AI 救活
+              </Badge>
+            )}
+
             {activeAttempt ? (
               <span className='rounded bg-muted/60 px-1.5 py-0.5 font-mono text-caption text-muted-foreground'>
                 尝试 #{activeAttempt.attemptNo}
@@ -139,6 +168,56 @@ export function StepInspector({
           </div>
         </div>
       </div>
+
+      {/* AI 救活与受控修复候选提示横幅 */}
+      {isHealed && (
+        <div className='border-b border-border-divider p-3 bg-muted/10 shrink-0'>
+          {parentModule ? (
+            <div className='rounded-md border border-muted bg-muted/30 p-2.5 space-y-1.5 text-label'>
+              <div className='flex items-center gap-2 font-medium text-foreground'>
+                <Sparkles className='size-4 text-primary shrink-0' />
+                <span>此步骤已在运行时由 AI 自愈策略成功救活</span>
+              </div>
+              <p className='text-muted-foreground'>
+                该步骤属于动作模块 <span className='font-semibold text-foreground'>「{parentModule.name}」</span>。由模块定义纳管，请前往模块详情评估（不产生场景级草稿修复候选）。
+              </p>
+              {parentModule.moduleId && (
+                <Button variant='outline' size='sm' asChild className='h-7 text-label gap-1 mt-1'>
+                  <Link to='/action-modules/$moduleId' params={{ moduleId: parentModule.moduleId }}>
+                    <ExternalLink className='size-3' />
+                    前往动作模块详情
+                  </Link>
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className='rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-1.5 text-label'>
+              <div className='flex items-center justify-between'>
+                <div className='flex items-center gap-2 font-medium text-primary'>
+                  <Sparkles className='size-4 shrink-0' />
+                  <span>运行时已成功自愈，已生成受控修复候选 (Heal → Repair)</span>
+                </div>
+                <Badge variant='secondary' className='text-label font-mono'>
+                  受控修复
+                </Badge>
+              </div>
+              <p className='text-muted-foreground'>
+                {(healedAttempt?.output as any)?.healerHypothesis || '定位器已在运行时自动修正并救活执行。可前往场景编排草稿或维护中心受控采纳。'}
+              </p>
+              {run.scenarioId && (
+                <div className='flex items-center gap-2 pt-0.5'>
+                  <Button variant='default' size='sm' asChild className='h-7 text-label gap-1'>
+                    <Link to='/scenarios/$scenarioId' params={{ scenarioId: run.scenarioId }}>
+                      <ExternalLink className='size-3' />
+                      前往场景采纳修复候选
+                    </Link>
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 2. 检视器 Tab 导航与内容区 */}
       <Tabs
@@ -232,36 +311,31 @@ export function StepInspector({
             </div>
           ) : null}
 
-          {/* B. 关键截图证据 */}
-          <div className='space-y-2'>
-            <h3 className='text-label font-semibold text-foreground flex items-center gap-1.5'>
-              <ImageIcon className='size-3.5 text-primary' />
-              <span>现场截图与证据</span>
-            </h3>
+          {/* B. 关键现场截图与证据 */}
+          <div className='space-y-2.5'>
+            <div className='flex items-center justify-between'>
+              <h3 className='text-label font-semibold text-foreground flex items-center gap-1.5'>
+                <ImageIcon className='size-3.5 text-primary' />
+                <span>现场截图与证据清单</span>
+              </h3>
+              <span className='text-caption text-muted-foreground'>
+                {attemptEvidences.length > 0 ? `共 ${attemptEvidences.length} 项证据` : '暂无证据'}
+              </span>
+            </div>
 
-            {/* 步骤证据附件列表 */}
+            {/* 步骤证据卡片列表（支持图片大图预览、Playwright Trace下载、日志技术详情） */}
             {attemptEvidences.length > 0 ? (
-              <div className='pt-1 space-y-2'>
-                <p className='text-caption font-medium text-muted-foreground'>
-                  本步骤产生证据 ({attemptEvidences.length} 项)
-                </p>
-                <div className='space-y-1.5'>
-                  {attemptEvidences.map((ev) => (
-                    <div
-                      key={ev.id}
-                      className='flex items-center justify-between rounded border border-border-card bg-muted/20 px-3 py-2 text-label'
-                    >
-                      <div className='flex items-center gap-2'>
-                        <span className='font-medium text-foreground'>{ev.type}</span>
-                        <span className='font-mono text-caption text-muted-foreground'>#{ev.id.slice(0, 8)}</span>
-                      </div>
-                      <span className='text-caption text-muted-foreground'>{ev.status}</span>
-                    </div>
-                  ))}
-                </div>
+              <div className='pt-1'>
+                <AttemptEvidenceList
+                  runId={run.id}
+                  items={attemptEvidences}
+                  focusEvidenceId={focusEvidenceId}
+                />
               </div>
             ) : (
-              <p className='text-label text-muted-foreground'>该步骤无关键现场截图</p>
+              <div className='rounded-lg border border-border-card bg-muted/20 p-6 text-center text-label text-muted-foreground'>
+                该步骤本次尝试未产生证据附件。
+              </div>
             )}
           </div>
 
@@ -285,7 +359,10 @@ export function StepInspector({
               runId={run.id}
               run={run}
               evidenceItems={evidenceItems}
-              onFocusEvidence={onFocusEvidence}
+              onFocusEvidence={(evidenceId) => {
+                setActiveTab('evidence')
+                onFocusEvidence?.(evidenceId)
+              }}
             />
           ) : (
             <div className='py-12 text-center text-label text-muted-foreground'>
@@ -350,7 +427,7 @@ export function StepInspector({
           <div className='space-y-3 border-t border-border-divider pt-3'>
             <RunMapClues targetId={run.targetId} runId={run.id} />
             <RunMapDecisions runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
-            <RunResolutionDecisions runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
+            <RunResolutionDecisions runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} resolution={run.snapshot.resolution} />
           </div>
         </div>
       </Tabs>

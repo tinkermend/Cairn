@@ -181,6 +181,19 @@ describe('useRunObservation', () => {
     expect(calls - afterReady).toBeLessThanOrEqual(2)
   })
 
+  it('同一运行的多个面板共用一条实时连接', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <div data-testid='first'><Probe /></div>
+        <div data-testid='second'><Probe /></div>
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByTestId('first').getByText('连接正常')).toBeInTheDocument()
+    await expect.element(screen.getByTestId('second').getByText('连接正常')).toBeInTheDocument()
+    expect(mocks.subscribeRunEvents).toHaveBeenCalledTimes(1)
+  })
+
   it('complete 后停止重连', async () => {
     const stream = captureSubscribe()
     const { screen } = await renderHook()

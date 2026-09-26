@@ -39,6 +39,15 @@ vi.mock('@/lib/sessions-api', () => ({
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
 }))
+vi.mock('@/lib/platform-config-api', () => ({
+  fetchPlatformConfig: vi.fn().mockResolvedValue({
+    document: {
+      platformAi: { enabled: false },
+      browserAi: { enabled: false, defaultResolution: 'rule', resolutionCeiling: 'rule' },
+      locator: { defaultPlan: { v: 2, order: ['rule'] }, limits: { v: 2, allowed: ['rule'] } },
+    },
+  }),
+}))
 let routerSearch: { action?: string; prefill_username?: string; tab?: 'accounts' | 'scenarios' } = {}
 const navigateMock = vi.fn()
 const accountDialogMock = vi.fn()
@@ -68,6 +77,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 })
 
 function signIn(permissions = ['target:read', 'target:write', 'target:delete', 'map:read', 'session:read', 'workflow:read']) {
+  useAuthStore.getState().auth.setAccessToken('')
   useAuthStore.getState().auth.setUser({
     id: 'u1',
     displayName: '测试',
@@ -278,13 +288,14 @@ describe('TargetDetailPage 账号列表', () => {
   })
 
   it('支持切换到关联场景与访问范围标签页', async () => {
+    signIn()
     const screen = await renderPage()
     await screen.getByRole('tab', { name: /关联场景/ }).click()
     await expect.element(screen.getByText('商城冒烟巡检')).toBeInTheDocument()
 
     await screen.getByRole('tab', { name: /访问范围/ }).click()
-    await expect.element(screen.getByText('目标解析')).toBeInTheDocument()
-    await expect.element(screen.getByLabelText('解析优先顺序')).toBeInTheDocument()
+    await expect.element(screen.getByText('目标定位')).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('目标默认定位顺序')).toBeInTheDocument()
     await expect.element(screen.getByText(/已配置授权边界/)).toBeInTheDocument()
   })
 

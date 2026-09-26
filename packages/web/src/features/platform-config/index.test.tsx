@@ -170,6 +170,64 @@ describe('PlatformConfigPage', () => {
       .toBeInTheDocument()
   })
 
+  it('普通用户选定仅文本能力上限后保存，修订中保留所选档位', async () => {
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByLabelText('AI 定位能力上限', { exact: true }).click()
+    await screen.getByRole('option', { name: /文本定位（规则/ }).click()
+    await expect
+      .element(screen.getByLabelText('AI 定位能力上限', { exact: true }))
+      .toHaveTextContent('文本定位')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('仅文本验收')
+    await screen.getByRole('button', { name: '保存并生效' }).click()
+    await vi.waitFor(() => expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(1))
+    expect(mocks.updatePlatformConfig.mock.calls[0]![0].document.browserAi.resolutionCeiling)
+      .toBe('prefer_deterministic_text')
+    await expect.element(screen.getByText(/当前修订 2/)).toBeInTheDocument()
+  })
+
+  it('新版配置把允许集合与默认顺序分开选择并预览', async () => {
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByRole('button', { name: '升级为新版定位配置' }).click()
+    await screen.getByLabelText('平台允许的定位能力').click()
+    await screen.getByRole('option', { name: '规则和文本模型' }).click()
+    await screen.getByLabelText('平台默认定位顺序').click()
+    await screen.getByRole('option', { name: '仅文本模型' }).click()
+    await expect.element(screen.getByText(/定位计划没有可用路线/)).toBeInTheDocument()
+    await screen.getByLabelText('变更原因', { exact: true }).fill('文本定位试验')
+    await screen.getByRole('button', { name: '保存并生效' }).click()
+    await vi.waitFor(() => expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(1))
+    expect(mocks.updatePlatformConfig.mock.calls[0]![0].document.locator).toMatchObject({
+      limits: { allowed: ['rule', 'text_ai'] }, defaultPlan: { order: ['text_ai'] },
+    })
+  })
+
+  it('载入已保存的仅文本上限时，选择框显示当前修订的值', async () => {
+    mocks.fetchPlatformConfig.mockResolvedValue({
+      ...current,
+      revision: 14,
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        browserAi: {
+          ...FACTORY_PLATFORM_CONFIG.browserAi,
+          resolutionCeiling: 'prefer_deterministic_text',
+        },
+      },
+    })
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await expect.element(screen.getByText(/当前修订 14/)).toBeInTheDocument()
+    await screen.getByLabelText('变更原因', { exact: true }).fill('回读检查')
+    await screen.getByRole('button', { name: '保存并生效' }).click()
+    await vi.waitFor(() => expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(1))
+    expect(mocks.updatePlatformConfig.mock.calls[0]![0].document.browserAi.resolutionCeiling)
+      .toBe('prefer_deterministic_text')
+    await expect
+      .element(screen.getByLabelText('AI 定位能力上限', { exact: true }))
+      .toHaveTextContent('文本定位')
+  })
+
   it('存量文档缺解析上限时仍显示出厂仅规则', async () => {
     const { resolutionCeiling: _ceiling, defaultResolution: _default, ...browserAi } =
       FACTORY_PLATFORM_CONFIG.browserAi

@@ -18,6 +18,8 @@ import {
   targetObservationSchema,
   managedBrowserFrameSchema,
   managedBrowserMetaSchema,
+  closeManagedPageResponseSchema,
+  type CloseManagedPageResponse,
   persistedRunEventSchema,
   resumeAuthBodySchema,
   reviewRunBodySchema,
@@ -62,8 +64,11 @@ import {
 
   aiTaskListQuerySchema,
   aiTaskListResponseSchema,
+  createSolidificationDraftResponseSchema,
   type AiTaskListQuery,
-  type AiTaskListResponse,} from '@cairn/shared'
+  type AiTaskListResponse,
+  type CreateSolidificationDraftResponse,
+} from '@cairn/shared'
 import { z } from 'zod'
 import { ApiRequestError, apiFetch, apiFetchBlob, toQueryString } from '@/lib/api-client'
 import { REQUEST_ID_HEADER, apiErrorSchema } from '@cairn/shared'
@@ -113,6 +118,19 @@ export function fetchAttemptAiTasks(
       }).toString()}`
     : ''
   return apiFetch(`/api/runs/${runId}/attempts/${attemptId}/ai-tasks${qs}`, aiTaskListResponseSchema)
+}
+
+export function createSolidificationDraft(
+  runId: string,
+  attemptId: string,
+): Promise<CreateSolidificationDraftResponse> {
+  return apiFetch(
+    `/api/runs/${runId}/attempts/${attemptId}/solidification-drafts`,
+    createSolidificationDraftResponseSchema,
+    {
+      method: 'POST',
+    },
+  )
 }
 
 export function fetchRunResolutionDecisions(
@@ -309,6 +327,14 @@ export function releaseAuthControl(id: string, body: AuthControlTokenBody) {
   })
 }
 
+export function closeManagedPage(id: string, pageId: string): Promise<CloseManagedPageResponse> {
+  return apiFetch(`/api/runs/${id}/browser/pages/${encodeURIComponent(pageId)}/close`, closeManagedPageResponseSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
 export async function subscribeBrowserFrames(
   id: string,
   input: { signal: AbortSignal; pageId?: string; onFrame: (frame: ManagedBrowserFrame) => void },
@@ -351,3 +377,18 @@ export async function subscribeBrowserFrames(
     input.signal,
   )
 }
+
+export function retryRunReport(runId: string): Promise<{ runId: string; status: string; retrySeq: number }> {
+  return apiFetch(
+    `/api/runs/${runId}/reports/retry`,
+    z.object({
+      runId: z.string(),
+      status: z.string(),
+      retrySeq: z.number(),
+    }),
+    {
+      method: 'POST',
+    },
+  )
+}
+

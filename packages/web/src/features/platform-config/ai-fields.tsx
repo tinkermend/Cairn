@@ -7,6 +7,14 @@ import {
   RESOLUTION_CEILING_LABELS,
   RESOLUTION_POLICIES,
   RESOLUTION_PREFERENCE_LABELS,
+  LOCATOR_PRESETS,
+  LOCATOR_PRESET_LABELS,
+  legacyCeilingRoutes,
+  legacyPolicyRoutes,
+  mergeEffectiveResolution,
+  locatorPresetFor,
+  resolveLocatorPlan,
+  locatorReadiness,
   modelServiceOrigin,
   type PlatformConfigDocument,
 } from '@cairn/shared'
@@ -29,6 +37,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Can } from '@/components/rbac/can'
+import { locatorRouteListLabel, locatorSkippedLabel } from '@/lib/locator-labels'
 import {
   FieldGrid,
   FieldHelp,
@@ -62,6 +71,28 @@ export function AiFields({
 }) {
   const form = useFormContext<PlatformConfigDocument>()
   const currentUrl = form.watch('browserAi.baseUrl')
+  const visual = form.watch('browserAi')
+  const platformText = form.watch('platformAi')
+  const textReady = Boolean(platformText?.enabled && platformText.baseUrl && platformText.model && platformText.secretRef)
+  const visionReady = Boolean(visual.enabled && visual.baseUrl && visual.model && visual.modelFamily && visual.secretRef)
+  const locator = form.watch('locator')
+  let locatorPreview = ''
+  if (locator) {
+    try {
+      const result = resolveLocatorPlan({
+        platform: { plan: locator.defaultPlan, limits: locator.limits, defaultPolicy: visual.defaultResolution, ceiling: visual.resolutionCeiling },
+        ...locatorReadiness(form.getValues()),
+      })
+      locatorPreview = `实际：${locatorRouteListLabel(result.actual)}${result.skipped.length ? `；跳过 ${locatorSkippedLabel(result.skipped)}` : ''}`
+    } catch (error) { locatorPreview = error instanceof Error ? error.message : '定位路线不可用' }
+  }
+  const presetKeys = Object.keys(LOCATOR_PRESETS) as Array<keyof typeof LOCATOR_PRESETS>
+  const allowedOptions = [
+    { value: 'rule', label: '仅规则' },
+    { value: 'rule,text_ai', label: '规则和文本模型' },
+    { value: 'rule,vision_ai', label: '规则和视觉模型' },
+    { value: 'rule,text_ai,vision_ai', label: '规则、文本模型和视觉模型' },
+  ]
   const isOriginMismatched = React.useMemo(() => {
     if (!secretRef || !boundBaseUrl || !currentUrl) return false
     try {
@@ -78,6 +109,48 @@ export function AiFields({
         hint='用于看屏幕、定位按钮和图标。文字理解和判断使用「平台 AI」。'
       >
         <div className='space-y-4'>
+          <div className='flex flex-wrap items-center gap-2 text-label'>
+            <Badge variant='secondary'>规则定位：可用</Badge>
+            <Badge variant={textReady ? 'secondary' : 'outline'}>文本定位：{textReady ? '就绪' : '未就绪，请检查平台 AI'}</Badge>
+            <Badge variant={visionReady ? 'secondary' : 'outline'}>视觉定位：{visionReady ? '就绪' : '未就绪'}</Badge>
+          </div>
+          <div className='space-y-3 rounded-lg border border-border-default p-3'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <div>
+                <p className='font-medium'>普通步骤的定位路线</p>
+                <p className='text-label text-muted-foreground'>允许的能力与尝试顺序分别设置；只影响点击、填写等普通步骤。</p>
+              </div>
+              {!locator ? <Button type='button' variant='outline' size='sm' disabled={!canWrite} onClick={() => form.setValue('locator', {
+                limits: { v: 2, allowed: legacyCeilingRoutes(visual.resolutionCeiling) },
+                defaultPlan: { v: 2, order: legacyPolicyRoutes(mergeEffectiveResolution({ ceiling: visual.resolutionCeiling, defaultResolution: visual.defaultResolution, browserAiEnabled: visual.enabled }), textReady && visionReady) },
+              }, { shouldDirty: true })}>升级为新版定位配置</Button> : null}
+            </div>
+            {!locator ? <p className='text-label text-muted-foreground'>旧版实际顺序：{locatorRouteListLabel(legacyPolicyRoutes(mergeEffectiveResolution({ ceiling: visual.resolutionCeiling, defaultResolution: visual.defaultResolution, browserAiEnabled: visual.enabled }), textReady && visionReady))}。升级后可独立设置路线和上限；旧版已发布场景仍按旧快照执行。</p> : (
+              <div className='grid gap-3 sm:grid-cols-2'>
+                <div className='space-y-1.5'>
+                  <Label>平台允许的定位能力</Label>
+                  <Select value={locator.limits.allowed.join(',')} disabled={!canWrite} onValueChange={(value) => form.setValue('locator', { ...locator, limits: { v: 2, allowed: value.split(',') as typeof locator.limits.allowed } }, { shouldDirty: true })}>
+                    <SelectTrigger aria-label='平台允许的定位能力'><SelectValue /></SelectTrigger>
+                    <SelectContent>{allowedOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className='space-y-1.5'>
+                  <Label>平台默认定位顺序</Label>
+                  <Select value={locatorPresetFor(locator.defaultPlan) ?? 'custom'} disabled={!canWrite} onValueChange={(value) => {
+                    if (value === 'custom') return
+                    form.setValue('locator', { ...locator, defaultPlan: { v: 2, order: [...LOCATOR_PRESETS[value as keyof typeof LOCATOR_PRESETS].order] } }, { shouldDirty: true })
+                  }}>
+                    <SelectTrigger aria-label='平台默认定位顺序'><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {!locatorPresetFor(locator.defaultPlan) ? <SelectItem value='custom'>当前顺序：{locatorRouteListLabel(locator.defaultPlan.order)}</SelectItem> : null}
+                      {presetKeys.map((key) => <SelectItem key={key} value={key}>{LOCATOR_PRESET_LABELS[key]}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className='text-label text-muted-foreground sm:col-span-2'>请求：{locatorRouteListLabel(locator.defaultPlan.order)}；{locatorPreview}</p>
+              </div>
+            )}
+          </div>
           <SwitchGrid>
             <FormField
               name='browserAi.enabled'
@@ -178,13 +251,13 @@ export function AiFields({
               label='每步骤调用上限'
               canWrite={canWrite}
             />
-            <FormField
+            {!locator ? <FormField
               name='browserAi.resolutionCeiling'
               render={({ field }) => (
                 <FormItem>
                   <SettingLabel
                     label='AI 定位能力上限'
-                    help='本平台允许使用的最高定位方式。限制为规则或纯文本时，不会调用视觉模型。'
+                    help='只限制点击、填写等步骤找页面元素的方式。视觉操作会调用视觉模型；AI 提取和 AI 判断也可能回退视觉模型。'
                   />
                   <Select
                     value={field.value || FACTORY_RESOLUTION_CEILING}
@@ -209,8 +282,8 @@ export function AiFields({
                   <FormMessage />
                 </FormItem>
               )}
-            />
-            <FormField
+            /> : null}
+            {!locator ? <FormField
               name='browserAi.defaultResolution'
               render={({ field }) => (
                 <FormItem>
@@ -241,7 +314,7 @@ export function AiFields({
                   <FormMessage />
                 </FormItem>
               )}
-            />
+            /> : null}
             <NumberSetting
               name='browserAi.maxOutputTokens'
               label='单次输出 token 上限'

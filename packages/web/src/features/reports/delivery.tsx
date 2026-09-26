@@ -15,6 +15,7 @@ import {
   cancelReportJob,
   createReportBundle,
   deriveMemberReport,
+  previewMemberReport,
   downloadArtifact,
   exportReport,
   fetchExportJob,
@@ -25,7 +26,6 @@ import {
 } from '@/lib/reports-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -35,6 +35,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { StatusBadge } from '@/components/status-badge'
+import { ReportTitleInput } from './report-title-input'
 
 export function ExportJobCard({
   initial,
@@ -93,7 +94,7 @@ export function ExportJobCard({
           {
             {
               report_materialize: '报告材料',
-              report_render: 'Word / PDF',
+              report_render: 'HTML 交互报告',
               report_bundle: '报告包',
             }[value.kind]
           }
@@ -134,41 +135,50 @@ export function ExportJobCard({
       {canExport && (
         <div className='flex flex-wrap gap-2'>
           {value.artifactIds.map((artifactId, index) => (
-            <Button
-              key={artifactId}
-              variant='outline'
-              size='sm'
-              disabled={
-                value.artifacts?.find((file) => file.id === artifactId)
-                  ?.available === false
-              }
-              onClick={async () => {
-                try {
-                  const file = await downloadArtifact(artifactId),
-                    url = URL.createObjectURL(file.blob),
-                    anchor = document.createElement('a')
-                  anchor.href = url
-                  anchor.download = file.fileName ?? 'report'
-                  anchor.click()
-                  setTimeout(() => URL.revokeObjectURL(url), 1000)
-                } catch (error) {
-                  toast.error(
-                    error instanceof Error ? error.message : '下载失败'
-                  )
+            <div key={artifactId} className='flex items-center gap-2'>
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={
+                  value.artifacts?.find((file) => file.id === artifactId)
+                    ?.available === false
                 }
-              }}
-            >
-              下载
-              {value.artifacts?.find((file) => file.id === artifactId)?.kind ===
-              'report_pdf'
-                ? 'PDF'
-                : value.artifacts?.find((file) => file.id === artifactId)
-                      ?.kind === 'report_docx'
-                  ? 'Word'
+                onClick={async () => {
+                  try {
+                    const file = await downloadArtifact(artifactId),
+                      url = URL.createObjectURL(file.blob),
+                      anchor = document.createElement('a')
+                    anchor.href = url
+                    anchor.download = file.fileName ?? 'report.html'
+                    anchor.click()
+                    setTimeout(() => URL.revokeObjectURL(url), 1000)
+                  } catch (error) {
+                    toast.error(
+                      error instanceof Error ? error.message : '下载失败'
+                    )
+                  }
+                }}
+              >
+                下载
+                {value.artifacts?.find((file) => file.id === artifactId)?.kind ===
+                'report_html'
+                  ? ' HTML 报告'
                   : value.kind === 'report_bundle'
                     ? '报告包'
                     : `文件 ${index + 1}`}
-            </Button>
+              </Button>
+              {value.artifacts?.find((file) => file.id === artifactId)?.kind === 'report_html' && (
+                <Button
+                  variant='ghost'
+                  size='sm'
+                  onClick={() => {
+                    window.open(`/api/artifacts/${artifactId}/content?inline=true`, '_blank')
+                  }}
+                >
+                  新窗口预览
+                </Button>
+              )}
+            </div>
           ))}
           {value.artifacts?.map((file) => (
             <p
@@ -242,17 +252,18 @@ export function ExportJobCard({
 export function ReportDelivery({
   report,
   activeJobId,
-  formats = ['docx', 'pdf'],
+  formats = ['html'],
 }: {
   report: ReportDto
   activeJobId?: string | null
-  formats?: Array<'docx' | 'pdf'>
+  formats?: Array<'html'>
 }) {
   const canExport = useCan('report:export')
   const [selected, setSelected] = useState<string>(),
     [includeChildren, setIncludeChildren] = useState(true),
     [memberId, setMemberId] = useState(''),
     [childTitle, setChildTitle] = useState(''),
+    [childTitlePreview, setChildTitlePreview] = useState<string>(),
     [busy, setBusy] = useState(false),
     [extraJob, setExtraJob] = useState<ExportJobDto>()
   const revisions = useInfiniteQuery({
@@ -424,7 +435,7 @@ export function ReportDelivery({
                 )
               }
             >
-              生成 Word / PDF 报告包
+              生成 HTML 报告包 (ZIP)
             </Button>
             <div className='grid gap-2 border-t pt-3'>
               <Label>单独导出成员报告</Label>
@@ -450,13 +461,15 @@ export function ReportDelivery({
                     })}
                 </SelectContent>
               </Select>
-              <Input
-                aria-label='子报告独立标题'
-                value={childTitle}
-                maxLength={200}
-                placeholder='子报告独立标题（留空使用成员默认）'
-                onChange={(event) => setChildTitle(event.target.value)}
-              />
+              <ReportTitleInput label='子报告独立标题' value={childTitle} onChange={(value) => { setChildTitle(value); setChildTitlePreview(undefined) }} source='RUN' optional placeholder='子报告独立标题（留空使用成员默认）' />
+              <Button variant='outline' disabled={!revision?.sealedAt || !memberId || busy} onClick={async () => {
+                if (!revisionId) return
+                try {
+                  const preview = await previewMemberReport(report.id, revisionId, { memberId, config: childTitle.trim() ? { title: childTitle.trim() } : undefined, idempotencyKey: `preview-${Date.now()}` })
+                  setChildTitlePreview(preview.title)
+                } catch (error) { toast.error(error instanceof Error ? error.message : '预览失败') }
+              }}>预览成员标题</Button>
+              {childTitlePreview ? <p aria-live='polite' className='text-label'>按成员运行数据预览：<strong>{childTitlePreview}</strong></p> : null}
               <Button
                 className='justify-self-start'
                 variant='outline'

@@ -1,4 +1,4 @@
-import type { ExecutableStepType, Step } from '@cairn/shared'
+import type { ExecutableStepType, OutputShape, Step } from '@cairn/shared'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -20,7 +20,7 @@ export interface SectionActionDefProps {
   step: Step
   index: number
   bindings: BindingOption[]
-  shapes: Map<string, any>
+  shapes: Map<string, OutputShape>
   editableTypes: readonly ExecutableStepType[]
   disabled?: boolean
   onChange: (step: Step) => void
@@ -38,9 +38,9 @@ export function SectionActionDef({
   onRequestTypeChange,
 }: SectionActionDefProps) {
   const safeTypes = editableTypes ?? [step.type]
-  const typeOptions = safeTypes.includes(step.type)
-    ? safeTypes
-    : [step.type, ...safeTypes]
+  const typeOptions = (
+    safeTypes.includes(step.type) ? safeTypes : [step.type, ...safeTypes]
+  ).filter((type) => type !== 'ai_action')
 
   return (
     <div data-testid='section-action-def' className='space-y-4'>
@@ -81,29 +81,31 @@ export function SectionActionDef({
         />
       </div>
 
-      {/* 步骤类型选择 */}
-      <div className='space-y-1.5'>
-        <Label className='text-label'>动作类型</Label>
-        <Select
-          value={step.type}
-          disabled={disabled}
-          onValueChange={(value) => onRequestTypeChange(value as ExecutableStepType)}
-        >
-          <SelectTrigger className='w-full' aria-label={`步骤 ${index + 1} 类型`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {typeOptions.map((type) => (
-              <SelectItem key={type} value={type}>
-                <div className='flex items-center gap-2'>
-                  <StepTypeIcon type={type} className='size-3.5 text-muted-foreground' />
-                  <span>{STEP_TYPE_LABELS[type] ?? type}</span>
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {/* 视觉操作只在自身的动作类型中切换，保留 ai_action 的执行语义。 */}
+      {step.type !== 'ai_action' ? (
+        <div className='space-y-1.5'>
+          <Label className='text-label'>动作类型</Label>
+          <Select
+            value={step.type}
+            disabled={disabled}
+            onValueChange={(value) => onRequestTypeChange(value as ExecutableStepType)}
+          >
+            <SelectTrigger className='w-full' aria-label={`步骤 ${index + 1} 类型`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {typeOptions.map((type) => (
+                <SelectItem key={type} value={type}>
+                  <div className='flex items-center gap-2'>
+                    <StepTypeIcon type={type} className='size-3.5 text-muted-foreground' />
+                    <span>{STEP_TYPE_LABELS[type] ?? type}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
 
       {/* 动作核心输入字段 */}
       <div className='pt-1'>

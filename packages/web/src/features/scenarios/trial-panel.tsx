@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, RefreshCw } from 'lucide-react'
 import {
@@ -61,8 +61,9 @@ export function TrialPanel({
     source: 'chapter' | 'list' | 'deeplink' | 'pin'
   } | null>(null)
   const seekTokenRef = useRef(1)
+  const lastAutoSeekRef = useRef<string | null>(null)
   const video = findRunVideo(evidence?.items ?? [])
-  const videoPayload = readRunVideoPayload(video?.payload)
+  const videoPayload = useMemo(() => readRunVideoPayload(video?.payload), [video?.payload])
 
   useEffect(() => {
     if (!canRead || !run || !selectedDraftStepId || !video) return
@@ -77,6 +78,9 @@ export function TrialPanel({
     if (stepRun) {
       const chapter = chapterModel.chapters.find((c) => c.stepRunId === stepRun.id)
       if (chapter) {
+        const seekKey = `${run.id}:${selectedDraftStepId}:${chapter.fromMs}`
+        if (lastAutoSeekRef.current === seekKey) return
+        lastAutoSeekRef.current = seekKey
         setSeekRequest({ token: seekTokenRef.current++, ms: chapter.fromMs, source: 'list' })
       }
     }

@@ -78,12 +78,14 @@ function holdingFailureSummary(error?: { code?: string; safeMessage?: string }):
 export function HealingCard({
   run,
   currentStep,
+  retryTarget,
   onBeforeRetry,
   onChanged,
   onSaveToDraft,
 }: {
   run: RunDetailDto
   currentStep?: Step
+  retryTarget?: TargetDescriptor
   onBeforeRetry?: () => Promise<unknown>
   onChanged?: () => void
   onSaveToDraft?: (target: TargetDescriptor) => void
@@ -102,6 +104,7 @@ export function HealingCard({
   const status = stepRun?.status
   const failed = status === 'FAILED'
   const succeeded = status === 'SUCCEEDED'
+  const pausedBeforeStep = holding && run.checkpoint?.reason === 'author_pause' && !succeeded && !failed
 
   const [busy, setBusy] = useState(false)
   const [confirmSideEffect, setConfirmSideEffect] = useState(false)
@@ -125,7 +128,7 @@ export function HealingCard({
       }
       const finalAction: DebugAction = {
         ...action,
-        ...(action.action === 'retry_current' && currentStep ? { stepOverride: currentStep } : {}),
+        ...(action.action === 'retry_current' && currentStep?.id === checkpointStep?.id ? { stepOverride: currentStep } : {}),
       }
       return debugRun(run.id, finalAction).then(() => {
         onChanged?.()
@@ -154,7 +157,7 @@ export function HealingCard({
     const action: DebugAction = {
       action: 'retry_current',
       fencingToken: run.checkpoint?.fencingToken,
-      targetOverride,
+      targetOverride: targetOverride ?? retryTarget,
       confirmSideEffect: isSideEffect ? true : undefined,
       ...(pageChangedAck ? { pageChangedAck: true } : {}),
     }
@@ -290,21 +293,27 @@ export function HealingCard({
         </div>
       ) : null}
 
-      {holding && (succeeded || (!failed && (run.checkpoint?.reason === 'author_pause' || run.checkpoint?.reason === 'step_succeeded'))) ? (
+      {holding && (succeeded || pausedBeforeStep || (!failed && run.checkpoint?.reason === 'step_succeeded')) ? (
         <div className='space-y-3'>
           <div className='flex items-start gap-2'>
-            <CheckCircle2 className='mt-0.5 size-4 shrink-0 text-status-success-foreground' />
+            {pausedBeforeStep
+              ? <AlertTriangle className='mt-0.5 size-4 shrink-0 text-status-warning-foreground' />
+              : <CheckCircle2 className='mt-0.5 size-4 shrink-0 text-status-success-foreground' />}
             <div className='min-w-0 flex-1'>
               <div className='flex flex-wrap items-center gap-2'>
-                <h4 className='text-body font-semibold text-status-success-foreground'>
-                  {run.checkpoint?.reason === 'step_succeeded'
+                <h4 className={`text-body font-semibold ${pausedBeforeStep ? 'text-status-warning-foreground' : 'text-status-success-foreground'}`}>
+                  {pausedBeforeStep
+                    ? '已在当前步骤前暂停'
+                    : run.checkpoint?.reason === 'step_succeeded'
                     ? '单步重试已成功，已自动重新挂起'
                     : '当前步骤已通过验证'}
                 </h4>
-                <StatusBadge tone='success'>就绪</StatusBadge>
+                <StatusBadge tone={pausedBeforeStep ? 'warning' : 'success'}>{pausedBeforeStep ? '待执行' : '就绪'}</StatusBadge>
               </div>
               <p className='mt-0.5 text-small text-muted-foreground'>
-                {run.checkpoint?.reason === 'step_succeeded'
+                {pausedBeforeStep
+                  ? '本步尚未执行。可先调整目标与条件，再单步验证或继续运行。'
+                  : run.checkpoint?.reason === 'step_succeeded'
                   ? '本步重试成功，已保持受管画面。可继续执行后续步骤，或在此继续调整本步。'
                   : '本步已成功执行，点击继续执行后续安全步骤。'}
               </p>
@@ -322,7 +331,7 @@ export function HealingCard({
               }
             >
               <Play className='size-3.5' />
-              继续后续步骤
+              {pausedBeforeStep ? '继续执行当前步骤' : '继续后续步骤'}
             </Button>
             <Button
               variant='outline'

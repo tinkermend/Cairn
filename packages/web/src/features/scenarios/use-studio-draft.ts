@@ -133,6 +133,9 @@ export function useStudioDraft(
           schemaVersion: 1 as const,
           inputs: candidate.inputs,
           steps: stepNodes,
+          ...(candidate.resolution ? { resolution: candidate.resolution } : {}),
+          ...(candidate.locatorPlan ? { locatorPlan: candidate.locatorPlan } : {}),
+          ...(candidate.locatorProtocol === 2 ? { locatorProtocol: 2 as const } : {}),
         },
         {
           mode: 'save',

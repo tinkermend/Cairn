@@ -45,6 +45,22 @@ type TrialDialogProps = {
   onConflict: () => void
 }
 
+function trialFailure(error: unknown): { message: string; diagnostics: string[] } {
+  if (!(error instanceof ApiRequestError)) return { message: '试跑失败', diagnostics: [] }
+  const details = error.payload.details
+  const diagnostics = details && typeof details === 'object' && 'diagnostics' in details
+    ? (details as { diagnostics?: unknown }).diagnostics
+    : undefined
+  return {
+    message: error.message,
+    diagnostics: Array.isArray(diagnostics)
+      ? diagnostics.flatMap((item) => item && typeof item === 'object' && 'message' in item && typeof item.message === 'string'
+        ? [item.message]
+        : [])
+      : [],
+  }
+}
+
 function newIdempotencyKey(): string {
   const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}`
   return `trial-${id}`
@@ -81,11 +97,13 @@ export function TrialDialog({
   const emptyAccountReason = accounts.isPending ? undefined : unusableAccountReason(accountItems)
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
+  const [failure, setFailure] = useState<{ message: string; diagnostics: string[] } | null>(null)
   const fingerprint = JSON.stringify({ revision, targetAccountId, values, pauseBeforeStepId })
   const keyRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     keyRef.current = undefined
+    setFailure(null)
   }, [fingerprint])
 
   useEffect(() => {
@@ -147,6 +165,16 @@ export function TrialDialog({
               />
             </div>
           ))}
+          {failure ? (
+            <div role='alert' className='space-y-2 rounded-md border border-status-error-accent/30 bg-status-error-background p-3 text-small text-status-error-foreground'>
+              <p className='font-medium'>{failure.message}</p>
+              {failure.diagnostics.length > 0 ? (
+                <ul className='list-disc space-y-1 pl-5'>
+                  {failure.diagnostics.map((message, index) => <li key={`${index}-${message}`}>{message}</li>)}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <DialogFooter>
           <Button
@@ -159,6 +187,7 @@ export function TrialDialog({
                 return
               }
               keyRef.current ??= newIdempotencyKey()
+              setFailure(null)
               setSaving(true)
               void trialScenario(scenarioId, {
                 revision,
@@ -177,7 +206,9 @@ export function TrialDialog({
                     onConflict()
                     return
                   }
-                  toast.error(error instanceof ApiRequestError ? error.message : '试跑失败')
+                  const failure = trialFailure(error)
+                  setFailure(failure)
+                  toast.error(failure.message)
                 })
                 .finally(() => setSaving(false))
             }}

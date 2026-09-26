@@ -43,7 +43,9 @@ export function ContextMentionInput({
     const filtered = bindings.filter(
       (b) =>
         b.key.toLowerCase().includes(q) ||
-        b.label.toLowerCase().includes(q),
+        b.label.toLowerCase().includes(q) ||
+        b.description?.toLowerCase().includes(q) ||
+        b.typeLabel?.toLowerCase().includes(q),
     )
 
     return filtered.map((b) => {
@@ -64,15 +66,17 @@ export function ContextMentionInput({
     setSelectedIndex(0)
   }, [categorizedBindings.length, query])
 
-  function handleSelect(item: { key: string; label: string; stale?: boolean }) {
+  function handleSelect(item: BindingOption) {
+    if (item.stale) return
     const rawBinding: BindingOption = {
       key: item.key,
       label: item.label,
       ...(item.stale ? { stale: item.stale } : {}),
+      ...(item.typeLabel ? { typeLabel: item.typeLabel } : {}),
+      ...(item.description ? { description: item.description } : {}),
     }
     if (mode === 'binding_picker') {
       onSelectBinding?.(rawBinding)
-      onChange(rawBinding.key)
       setIsOpen(false)
       return
     }
@@ -140,7 +144,7 @@ export function ContextMentionInput({
       return
     }
 
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'Enter') {
       if (categorizedBindings.length > 0 && selectedIndex < categorizedBindings.length) {
         e.preventDefault()
         e.stopPropagation()
@@ -245,10 +249,12 @@ export function ContextMentionInput({
                     type='button'
                     role='option'
                     aria-selected={isSelected}
+                    aria-disabled={item.stale || undefined}
+                    disabled={item.stale}
                     className={`w-full text-left px-2 py-1.5 rounded flex items-center gap-2 text-small transition-colors ${
                       isSelected
                         ? 'bg-primary/10 text-primary font-medium'
-                        : 'text-foreground hover:bg-muted/50'
+                        : item.stale ? 'text-muted-foreground opacity-60' : 'text-foreground hover:bg-muted/50'
                     }`}
                     onMouseDown={(e) => {
                       e.preventDefault()
@@ -259,8 +265,9 @@ export function ContextMentionInput({
                     <div className='flex flex-col min-w-0 flex-1 leading-tight'>
                       <span className='truncate font-mono text-label'>{item.key}</span>
                       <span className='truncate text-2xs text-muted-foreground'>
-                        {item.label}
+                        {item.label}{item.typeLabel ? ` · ${item.typeLabel}` : ''}{item.stale ? ' · 不可用' : ''}
                       </span>
+                      {item.description ? <span className='truncate text-2xs text-muted-foreground' title={item.description}>{item.description}</span> : null}
                     </div>
                   </button>
                 )

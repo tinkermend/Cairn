@@ -17,13 +17,31 @@ const mocks = vi.hoisted(() => ({
   // 详情页里的目标定位字段（authoring/fields/target.tsx）会查能力清单；
   // 这里返回 undefined，页面按「能力未知」渲染，与真实的加载中状态一致。
   fetchScenarioCapabilities: vi.fn(async () => undefined),
+  fetchRecordingGeneralization: vi.fn(async () => null),
+  observeRecordingGeneralization: vi.fn(() => () => {}),
+  submitRecordingGeneralizationRound: vi.fn(),
+  acceptRecordingGeneralizationRound: vi.fn(),
+  rejectRecordingGeneralizationRound: vi.fn(),
+  revertRecordingGeneralizationRound: vi.fn(),
+  handoffCreateScenario: vi.fn(),
 }))
 
-vi.mock('@/lib/recordings-api', () => ({
-  fetchRecording: mocks.fetchRecording,
-  renameRecording: mocks.renameRecording,
-  deleteRecording: mocks.deleteRecording,
-}))
+vi.mock('@/lib/recordings-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/recordings-api')>()
+  return {
+    ...actual,
+    fetchRecording: mocks.fetchRecording,
+    renameRecording: mocks.renameRecording,
+    deleteRecording: mocks.deleteRecording,
+    fetchRecordingGeneralization: mocks.fetchRecordingGeneralization,
+    observeRecordingGeneralization: mocks.observeRecordingGeneralization,
+    submitRecordingGeneralizationRound: mocks.submitRecordingGeneralizationRound,
+    acceptRecordingGeneralizationRound: mocks.acceptRecordingGeneralizationRound,
+    rejectRecordingGeneralizationRound: mocks.rejectRecordingGeneralizationRound,
+    revertRecordingGeneralizationRound: mocks.revertRecordingGeneralizationRound,
+    handoffCreateScenario: mocks.handoffCreateScenario,
+  }
+})
 
 vi.mock('@/lib/demonstrations-api', () => ({
   fetchDemonstration: mocks.fetchDemonstration,
@@ -130,6 +148,7 @@ describe('录制草稿详情页', () => {
       permissions: ['workflow:write', 'workflow:delete'],
     })
     mocks.fetchRecording.mockResolvedValue(mockDraft)
+    mocks.fetchRecordingGeneralization.mockResolvedValue(null)
     mocks.fetchScenarios.mockResolvedValue({ items: [], nextCursor: null })
   })
 
@@ -279,5 +298,124 @@ describe('录制草稿详情页', () => {
     // 返回工作台
     await screen.getByRole('button', { name: '返回步骤流水线工作台' }).click()
     await expect.element(screen.getByText('操作步骤流水线 (3)')).toBeVisible()
+  })
+
+  it('支持 demonstration@1 协议草稿展示 AI 意图泛化与候选场景预览', async () => {
+    const demoDraft: RecordingDraftDetailDto = {
+      ...mockDraft,
+      sourceProtocol: 'demonstration@1',
+      sourceVersion: 'cairn-crx-capture@1',
+    }
+    mocks.fetchRecording.mockResolvedValue(demoDraft)
+
+    const mockGeneralizationData = {
+      generalization: {
+        id: 'gen-123',
+        recordingDraftId: 'rec-123',
+        revision: 1,
+        status: 'editing' as const,
+        factDigest: '11'.repeat(32),
+        suggestionDigest: '22'.repeat(32),
+        adapterVersion: 'midscene@1',
+        ruleVersion: 'recording-generalization@1',
+        candidateDigest: '33'.repeat(32),
+        decisions: [{ id: 'rec_0', disposition: 'accept' as const }],
+        rounds: [
+          {
+            roundId: 'round-1',
+            source: 'rule' as const,
+            intent: '放宽等待调参',
+            status: 'proposed' as const,
+            decisionPatches: [],
+            operations: [
+              {
+                kind: 'set_step_policy' as const,
+                id: 'op-1',
+                stepId: 'step_0',
+                timeoutMs: 30000,
+              },
+            ],
+            intentCoverage: [],
+            diffs: [],
+            diagnostics: [],
+            createdAt: '2026-09-26T12:00:00.000Z',
+          },
+        ],
+        createdAt: '2026-09-26T12:00:00.000Z',
+        updatedAt: '2026-09-26T12:00:00.000Z',
+      },
+      candidateDocument: {
+        authoringSchemaVersion: 2 as const,
+        schemaVersion: 1,
+        inputs: [{ key: 'account', label: '账号', type: 'string' as const }],
+        nodes: [
+          {
+            kind: 'step' as const,
+            step: {
+              type: 'navigate' as const,
+              id: 'step_0',
+              name: '打开登录页面',
+              effectType: 'READ_ONLY' as const,
+              timeoutMs: 30000,
+              input: { targetUrl: 'https://finance.example.com/login' },
+              outcomes: [
+                {
+                  id: 'oc-1',
+                  scope: 'step' as const,
+                  meaning: '页面加载成功',
+                  severity: 'MUST' as const,
+                  onViolation: 'halt' as const,
+                  provenance: 'manual' as const,
+                  rule: {
+                    kind: 'deterministic' as const,
+                    assert: { kind: 'status_ok' as const },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    }
+    mocks.fetchRecordingGeneralization.mockResolvedValue(mockGeneralizationData)
+    mocks.acceptRecordingGeneralizationRound.mockResolvedValue({
+      generalization: {
+        ...mockGeneralizationData.generalization,
+        revision: 2,
+        rounds: [
+          {
+            ...mockGeneralizationData.generalization.rounds[0]!,
+            status: 'accepted' as const,
+          },
+        ],
+      },
+      candidateDocument: mockGeneralizationData.candidateDocument,
+    })
+
+    const screen = await renderPage()
+
+    // 顶部展示 4 个分段页签
+    await expect.element(screen.getByRole('tab', { name: /流水工作台/ })).toBeVisible()
+    await expect.element(screen.getByRole('tab', { name: /AI 意图泛化/ })).toBeVisible()
+    await expect.element(screen.getByRole('tab', { name: /候选场景预览/ })).toBeVisible()
+    await expect.element(screen.getByRole('tab', { name: /原始示教事实/ })).toBeVisible()
+
+    // 切换到 AI 意图泛化
+    await screen.getByRole('tab', { name: /AI 意图泛化/ }).click()
+    await expect.element(screen.getByText(/泛化轮次历史/)).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '放宽等待调参' })).toBeVisible()
+    await expect.element(screen.getByText('待审查')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '采纳' })).toBeVisible()
+
+    // 点击采纳
+    await screen.getByRole('button', { name: '采纳' }).click()
+    expect(mocks.acceptRecordingGeneralizationRound).toHaveBeenCalledWith('rec-123', 'round-1')
+
+    // 切换到候选场景预览
+    await screen.getByRole('tab', { name: /候选场景预览/ }).click()
+    await expect.element(screen.getByText(/候选场景草稿/)).toBeVisible()
+    await expect.element(screen.getByText('打开登录页面')).toBeVisible()
+    await expect.element(screen.getByText('页面加载成功')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '以草稿新建场景' })).toBeVisible()
   })
 })

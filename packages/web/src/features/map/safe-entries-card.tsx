@@ -185,7 +185,9 @@ export function SafeEntriesCard({ targetId }: SafeEntriesCardProps) {
                   <TableCell>
                     <div className='space-y-0.5 text-caption'>
                       <div className='text-text-primary'>
-                        {BASIS_LABELS[entry.safetyBasis?.kind ?? ''] ?? entry.safetyBasis?.kind}
+                        {BASIS_LABELS[entry.safetyBasis?.kind ?? (entry as any).safetyBasisKind ?? ''] ??
+                          entry.safetyBasis?.kind ??
+                          (entry as any).safetyBasisKind}
                       </div>
                       <div className='text-text-muted text-[11px] truncate max-w-[200px]'>
                         到达判定：{entry.arrivalName || '页面就绪'}

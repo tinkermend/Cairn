@@ -30,7 +30,8 @@ import { Label } from '@/components/ui/label'
 import { DebugHoldBar } from './debug-hold-bar'
 import { resolveRunEvidenceFocus } from './evidence-focus'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, LayoutDashboard, Search, Video } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { RunCreateDialog } from './create-dialog'
 import { findRunVideo } from './run-video'
 import { RunHeroBanner } from './run-hero-banner'
@@ -39,6 +40,7 @@ import { MediaViewport } from './media-viewport'
 import { StepInspector } from './step-inspector'
 import { PlacementHint } from './placement-hint'
 import { AttemptEvidenceList } from './evidence-viewer'
+import { RunResultOverview } from './run-result-overview'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
@@ -52,8 +54,11 @@ export function RunDetailPage() {
   const canDelete = useCan('run:delete')
   const canCancel = useCan('run:cancel')
   const evidenceItems = evidence?.items ?? []
-  const runLevel = evidenceItems.filter((e) => !e.stepRunId && !e.attemptId)
+  // 过滤出真正的运行前错误（调度/校验崩溃），常规视频与日志不视为前置错误
+  const preRunErrors = evidenceItems.filter((e) => !e.stepRunId && !e.attemptId && e.type === 'error')
 
+  // 选中的工作台视图模式：overview (业务总览) | step (单步现场) | video (录像回放)
+  const [selectedMode, setSelectedMode] = useState<'overview' | 'step' | 'video'>('overview')
   // 选中的步骤与尝试
   const [currentStepRunId, setCurrentStepRunId] = useState<string | null>(null)
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null)
@@ -70,12 +75,19 @@ export function RunDetailPage() {
           runId,
           targetId: run.targetId,
           scenarioId: run.scenarioId,
+          statusLabel: selectedStep
+            ? `当前步骤 · 第 ${selectedStep.ordinal + 1} 步 · ${selectedStep.name}`
+            : `当前运行 · ${run.scenarioName || '运行'} #${run.id.slice(0, 8)}`,
           statusSummary: `${run.scenarioName || '运行'} (${run.status})`,
+          summaryText: selectedStep
+            ? `已聚焦步骤「${selectedStep.name}」（状态：${selectedStep.status}），可向助手询问错误原因或请求诊断。`
+            : `运行「${run.scenarioName || '运行'}」（状态：${run.status}），可进行全链路失败分析与结果复盘。`,
           ...(selectedStepId ? { selectedStepId } : {}),
         }
       : {
           page: 'run',
           runId,
+          statusLabel: '当前运行 · 加载中...',
           statusSummary: '加载中...',
         }
   )
@@ -92,6 +104,7 @@ export function RunDetailPage() {
     (stepRunId: string, attemptId?: string) => {
       setCurrentStepRunId(stepRunId)
       setSelectedAttemptId(attemptId ?? null)
+      setSelectedMode((prev) => (prev === 'video' ? 'video' : 'step'))
       if (!run) return
 
       const video = findRunVideo(evidenceItems)
@@ -116,19 +129,53 @@ export function RunDetailPage() {
     [run, evidenceItems]
   )
 
-  // 初始化默认选中的步骤（首屏直达失败步或深链步）
-  useEffect(() => {
-    if (!run || run.stepRuns.length === 0) return
-    const focus = resolveRunEvidenceFocus(run, evidenceItems, search)
+  // 聚焦特定证据（切换到步骤检视、选中该步与尝试、并高亮滚动到该证据）
+  const handleFocusEvidence = useCallback(
+    (evidenceId: string) => {
+      const target = evidenceItems.find((e) => e.id === evidenceId)
+      if (target?.stepRunId) {
+        setCurrentStepRunId(target.stepRunId)
+        setSelectedAttemptId(target.attemptId ?? null)
+      }
+      setSelectedMode('step')
+      void navigate({
+        search: ((prev: Record<string, unknown>) => ({ ...prev, evidenceId })) as any,
+      })
+    },
+    [evidenceItems, navigate]
+  )
 
-    if (focus.stepRunId && !focus.mismatch) {
-      setCurrentStepRunId(focus.stepRunId)
-      if (focus.attemptId) setSelectedAttemptId(focus.attemptId)
+  // 初始化默认选中的步骤（首屏直达失败步或深链步）
+  const lastFocusedSearchRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!run) return
+    const currentSearchKey = `${search.stepRunId ?? ''}:${search.attemptId ?? ''}:${search.evidenceId ?? ''}`
+
+    // 若处于等待认证状态，优先展示录像与浏览器画面
+    if (run.status === 'WAITING_FOR_AUTH') {
+      if (lastFocusedSearchRef.current === null) {
+        setSelectedMode('video')
+      }
+      lastFocusedSearchRef.current = currentSearchKey
       return
     }
 
-    // 若用户尚未手动选择，智能选择第一优先级步骤
-    if (!currentStepRunId) {
+    if (run.stepRuns.length === 0) return
+    const focus = resolveRunEvidenceFocus(run, evidenceItems, search)
+
+    // 仅当首次加载或 URL 深度链接参数发生实际变更时才触发现场定位
+    if (focus.stepRunId && !focus.mismatch) {
+      if (lastFocusedSearchRef.current !== currentSearchKey) {
+        setCurrentStepRunId(focus.stepRunId)
+        if (focus.attemptId) setSelectedAttemptId(focus.attemptId)
+        setSelectedMode('step')
+      }
+      lastFocusedSearchRef.current = currentSearchKey
+      return
+    }
+
+    // 若用户尚未手动选择，智能选择第一优先级步骤作为预选
+    if (lastFocusedSearchRef.current === null && !currentStepRunId) {
       const failed = run.stepRuns.find((s) => s.status === 'FAILED')
       const running = run.stepRuns.find((s) => s.status === 'RUNNING')
       const defaultStep = failed || running || run.stepRuns[0]
@@ -138,6 +185,7 @@ export function RunDetailPage() {
         if (lastAtt) setSelectedAttemptId(lastAtt.id)
       }
     }
+    lastFocusedSearchRef.current = currentSearchKey
   }, [run, evidenceItems, search, currentStepRunId])
 
   // 深链初始化录像 Seek
@@ -215,7 +263,7 @@ export function RunDetailPage() {
 
   return (
     <>
-      <Main className='flex h-[calc(100vh-theme(spacing.16))] flex-col overflow-hidden p-3 sm:p-4 gap-2.5'>
+      <Main className='flex min-w-0 flex-col gap-2.5 overflow-visible p-3 sm:p-4 md:h-[calc(100vh-theme(spacing.16))] md:overflow-hidden'>
         {/* 1. 紧凑业务身份带 (Hero Banner) */}
         <RunHeroBanner
           run={run}
@@ -253,23 +301,23 @@ export function RunDetailPage() {
           accountId={run.targetAccountId}
         />
 
-        {/* 3. 运行前失败提示与运行级证据 */}
+        {/* 3. 运行前失败提示与运行级证据（仅在步骤未开始且存在明确错误证据时展示） */}
         {run.status === 'FAILED' && run.stepRuns.every((step) => step.attempts.length === 0) ? (
           <p className='text-body text-status-warning-foreground font-medium shrink-0'>
-            {evidenceItems.some((item) => !item.attemptId)
+            {preRunErrors.length > 0
               ? '运行在步骤开始前失败。原因见运行级证据。'
               : '运行在步骤开始前失败，没有留下 Attempt 证据。常见原因是浏览器步骤未指定目标账号，或会话配置不被支持。'}
           </p>
         ) : null}
 
-        {runLevel.length > 0 ? (
+        {run.status === 'FAILED' && preRunErrors.length > 0 ? (
           <div className='rounded-lg border border-border-card bg-card p-4 shadow-card shrink-0 space-y-2'>
             <h2 className='text-body font-semibold text-foreground'>运行级证据</h2>
             <p className='text-label text-muted-foreground'>
               这些证据在第一个步骤执行前产生（例如参数校验、调度错误或全局准备失败）。
             </p>
             <div className='mt-2'>
-              <AttemptEvidenceList runId={run.id} items={runLevel} />
+              <AttemptEvidenceList runId={run.id} items={preRunErrors} />
             </div>
           </div>
         ) : null}
@@ -391,15 +439,16 @@ export function RunDetailPage() {
         ) : null}
 
         {/* 5. 主复盘工作台：视口锁定双栏联动布局 */}
-        <div className='flex flex-1 min-h-0 gap-3 overflow-hidden'>
+        <div className='flex min-w-0 flex-1 flex-col gap-3 md:min-h-0 md:flex-row md:overflow-hidden'>
           {/* 左栏：步骤流水线导轨 (Step Rail) */}
-          <div className='w-[310px] md:w-[340px] xl:w-[370px] shrink-0 h-full overflow-hidden'>
+          <div className='h-56 w-full shrink-0 overflow-hidden md:h-full md:w-[340px] xl:w-[370px]'>
             {(() => {
               const focus = resolveRunEvidenceFocus(run, evidenceItems, search)
               return (
                 <StepRail
                   run={run}
                   evidenceItems={evidenceItems}
+                  selectedMode={selectedMode}
                   selectedStepRunId={currentStepRunId}
                   selectedAttemptId={selectedAttemptId}
                   currentPlayingStepRunId={currentPlayingStepRunId}
@@ -407,39 +456,109 @@ export function RunDetailPage() {
                   focusStepRunId={focus.mismatch ? undefined : focus.stepRunId}
                   focusAttemptId={focus.mismatch ? undefined : focus.attemptId ?? selectedAttemptId ?? undefined}
                   focusEvidenceId={focus.mismatch ? undefined : focus.evidenceId}
+                  onSelectOverview={() => setSelectedMode('overview')}
                   onSelectStep={handleSelectStep}
                 />
               )
             })()}
           </div>
 
-          {/* 右栏：伴随媒体视口 + 步骤多维检视器 */}
-          <div className='flex flex-1 min-w-0 flex-col h-full overflow-hidden gap-2.5'>
-            {/* 上部：媒体视口 (录像或实时流) */}
-            <MediaViewport
-              run={run}
-              evidenceItems={evidenceItems}
-              currentStepRunId={currentPlayingStepRunId}
-              onChapterChange={setCurrentPlayingStepRunId}
-              seekRequest={seekRequest}
-              onSelectStep={handleSelectStep}
-              eventSeq={eventSeq}
-              onRunChanged={refresh}
-            />
+          {/* 右栏：双模态工作台 (运行总览 / 单步检视 / 录像回放) */}
+          <div className='flex h-[70vh] min-h-[28rem] min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-card bg-card shadow-card md:h-full md:min-h-0'>
+            {/* 工作台顶部视图切换栏 */}
+            <div className='shrink-0 overflow-x-auto border-b border-border-divider bg-surface-header px-3'>
+              <div className='flex min-w-max items-center gap-1'>
+                <button
+                  type='button'
+                  onClick={() => setSelectedMode('overview')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-all',
+                    selectedMode === 'overview'
+                      ? 'border-primary text-primary font-semibold'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <LayoutDashboard className='size-3.5' />
+                  <span>🎯 运行总览与指标</span>
+                </button>
 
-            {/* 下部：多维检视工作台 */}
-            <div className='flex-1 min-h-0 overflow-hidden'>
-              <StepInspector
+                <button
+                  type='button'
+                  onClick={() => setSelectedMode('step')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-all',
+                    selectedMode === 'step'
+                      ? 'border-primary text-primary font-semibold'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <Search className='size-3.5' />
+                  <span>🔍 步骤现场检视 {selectedStep ? `(#${selectedStep.ordinal + 1})` : ''}</span>
+                </button>
+
+                <button
+                  type='button'
+                  onClick={() => setSelectedMode('video')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-all',
+                    selectedMode === 'video'
+                      ? 'border-primary text-primary font-semibold'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <Video className='size-3.5' />
+                  <span>📺 录像与实时回放</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 视图 1：🎯 运行总览看板 */}
+            {selectedMode === 'overview' ? (
+              <div className='flex-1 min-h-0 overflow-hidden flex flex-col'>
+                <RunResultOverview
+                  run={run}
+                  evidenceItems={evidenceItems}
+                  onSelectStep={(stepId) => handleSelectStep(stepId)}
+                  onFocusEvidence={handleFocusEvidence}
+                />
+              </div>
+            ) : null}
+
+            {/* 视图 2：🔍 步骤多维检视工作台 */}
+            {selectedMode === 'step' ? (
+              <div className='flex-1 min-h-0 overflow-hidden flex flex-col'>
+                {(() => {
+                  const focus = resolveRunEvidenceFocus(run, evidenceItems, search)
+                  return (
+                    <StepInspector
+                      run={run}
+                      step={selectedStep}
+                      selectedAttemptId={selectedAttemptId}
+                      evidenceItems={evidenceItems}
+                      eventSeq={eventSeq}
+                      focusEvidenceId={focus.mismatch ? undefined : (focus.evidenceId ?? search.evidenceId)}
+                      onFocusEvidence={handleFocusEvidence}
+                    />
+                  )
+                })()}
+              </div>
+            ) : null}
+
+            {/* 视图 3：📺 伴随媒体视口 (保持挂载以保证单测与章节定位) */}
+            <div className={cn('flex-1 min-h-0 overflow-hidden flex flex-col p-3', selectedMode !== 'video' && 'hidden')}>
+              <MediaViewport
                 run={run}
-                step={selectedStep}
-                selectedAttemptId={selectedAttemptId}
                 evidenceItems={evidenceItems}
-                eventSeq={eventSeq}
-                onFocusEvidence={(evidenceId) => {
-                  void navigate({
-                    search: ((prev: Record<string, unknown>) => ({ ...prev, evidence: evidenceId })) as any,
-                  })
+                currentStepRunId={currentPlayingStepRunId}
+                onChapterChange={setCurrentPlayingStepRunId}
+                seekRequest={seekRequest}
+                onSelectStep={(stepRunId, attemptId) => {
+                  setCurrentStepRunId(stepRunId)
+                  setSelectedAttemptId(attemptId ?? null)
+                  setCurrentPlayingStepRunId(stepRunId)
                 }}
+                eventSeq={eventSeq}
+                onRunChanged={refresh}
               />
             </div>
           </div>

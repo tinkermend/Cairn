@@ -29,6 +29,7 @@ import {
   silenceIncident,
   splitIncident,
 } from '@/lib/reliability-api'
+import { fetchScenarioRepairCandidates } from '@/lib/repair-api'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -154,6 +155,14 @@ export function IncidentDetailPage() {
     queryKey: ['reliability-incident-impact', incidentId],
     queryFn: () => fetchIncidentImpact(incidentId),
     enabled: currentTab === 'impact',
+  })
+
+  // Scenario repair candidates query
+  const incidentScenarioId = detailQuery.data?.incident?.lineage?.scenarioId
+  const repairCandidatesQuery = useQuery({
+    queryKey: ['scenario-repair-candidates', incidentScenarioId],
+    queryFn: () => fetchScenarioRepairCandidates(incidentScenarioId!),
+    enabled: Boolean(incidentScenarioId) && currentTab === 'repairs',
   })
 
   // Impact & batch upgrade local state
@@ -1043,32 +1052,77 @@ export function IncidentDetailPage() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-section flex items-center gap-2">
-                    <Sparkles className="size-4 text-ai-foreground" />
-                    AI 受控自愈演进（AI-02 接管）
+                  <CardTitle className="text-section flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <Sparkles className="size-4 text-ai-foreground" />
+                      AI 受控自愈演进（AI-02 接管）
+                    </span>
+                    {repairCandidatesQuery.data && (
+                      <Badge variant="outline">
+                        {repairCandidatesQuery.data.length} 条候选
+                      </Badge>
+                    )}
                   </CardTitle>
                   <CardDescription>
-                    三重契约摘要保护、无副作用安全 Probe 与受控验证资质机制
+                    关联场景修复候选 (Repair Candidates)，可在 Studio 审查并采纳
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3 text-label text-muted-foreground leading-relaxed">
-                  <div className="p-3 bg-ai-background border border-ai-accent/20 rounded-md space-y-2">
-                    <div className="font-semibold text-ai-foreground">
-                      Phase 2.2 自动修复准备中
+                <CardContent className="space-y-4">
+                  {repairCandidatesQuery.isLoading ? (
+                    <div className="py-6 text-center text-label text-muted-foreground">正在加载修复候选...</div>
+                  ) : !repairCandidatesQuery.data?.length ? (
+                    <div className="py-6 text-center text-label text-muted-foreground">
+                      当前场景暂无待处理的定位修复候选（运行期确定性命中或尚未发生 AI 救活）
                     </div>
-                    <p className="text-ai-foreground">
-                      待平台 AI-02 大模型修复案正式获批并接通模型通道后，工作台将支持：
-                    </p>
-                    <ul className="list-disc list-inside space-y-1 text-ai-foreground">
-                      <li>自动基于源失败 Attempt 生成等价 Descriptor 修复候选；</li>
-                      <li>执行纯 READ_ONLY 安全验证 Attempt，确保 MUST 业务成功条件不改变；</li>
-                      <li>生成发布资格评估键（Triple Digest），防止草稿被非法篡改。</li>
-                    </ul>
-                  </div>
-
-                  <p>
-                    当前阶段平台坚决遵守宪法原则，不隐式制造未经验证的自动重试或伪绿色假通过。
-                  </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {repairCandidatesQuery.data.map((cand) => {
+                        const suggested = cand.patch?.suggestedCandidate
+                        return (
+                          <div
+                            key={cand.id}
+                            className="p-3 bg-muted/40 border rounded-lg space-y-2 text-label"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-foreground flex items-center gap-1.5">
+                                步骤「{cand.patchTargetRef.stepId}」
+                                <Badge variant={cand.status === 'validated' ? 'default' : cand.status === 'proposed' ? 'outline' : 'secondary'}>
+                                  {cand.status === 'proposed' ? '待验证' : cand.status === 'validating' ? '验证中' : cand.status === 'validated' ? '已验证' : cand.status === 'adopted' ? '已采纳' : cand.status === 'rejected' ? '已驳回' : cand.status}
+                                </Badge>
+                              </span>
+                              <span className="text-muted-foreground text-xs">
+                                观测 {cand.observationCount} 次
+                                {cand.rejectedObservationCount > 0 && ` (驳回后 ${cand.rejectedObservationCount} 次)`}
+                              </span>
+                            </div>
+                            <p className="text-muted-foreground">{cand.hypothesis}</p>
+                            {suggested && (
+                              <div className="text-xs bg-background p-2 rounded border font-mono">
+                                建议新增: {suggested.by} = {suggested.value}
+                                {suggested.name ? ` [name="${suggested.name}"]` : ''}
+                              </div>
+                            )}
+                            <div className="pt-1 flex items-center justify-between">
+                              <span className="text-xs text-muted-foreground">
+                                来源: {cand.sourceRunKind === 'published' ? '正式运行' : cand.sourceRunKind === 'trial' ? '试跑' : '调试'}
+                              </span>
+                              {incident?.lineage?.scenarioId && (
+                                <Button variant="ghost" size="sm" asChild className="h-7 text-xs">
+                                  <Link
+                                    to="/scenarios/$scenarioId"
+                                    params={{ scenarioId: incident.lineage.scenarioId }}
+                                  >
+                                    前往 Studio 审查与采纳
+                                    <ArrowRight className="ml-1 size-3" />
+                                  </Link>
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>

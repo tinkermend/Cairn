@@ -49,7 +49,7 @@ const preview = previewDemonstration({
 })
 const onApplied = vi.fn()
 
-function panel(canApply = true, initialPlaceholderStepId?: string) {
+function panel(canApply = true, initialPlaceholderStepId?: string, initialPlacement?: any) {
   return render(
     <QueryClientProvider
       client={
@@ -66,6 +66,7 @@ function panel(canApply = true, initialPlaceholderStepId?: string) {
         inputs={[]}
         independentSteps={[{ id: scenarioId, name: '旧步骤' }]}
         initialPlaceholderStepId={initialPlaceholderStepId}
+        initialPlacement={initialPlacement}
         canApply={canApply}
         hasLocalChanges={!canApply}
         onApplied={onApplied}
@@ -242,4 +243,12 @@ describe('demonstration review and atomic editing', () => {
     const batchButtons = screen.getByRole('button', { name: '整组采纳' })
     await batchButtons.first().click()
   })
+
+  it('supports replace_sequence placement and displays explanation', async () => {
+    const screen = await panel(true, undefined, { kind: 'replace_sequence', nodeId: scenarioId })
+    await expect
+      .element(screen.getByText('将原步骤替换为多个确定性步骤；原步骤的成功条件将转移至最后一个生成步骤。'))
+      .toBeVisible()
+  })
 })
+

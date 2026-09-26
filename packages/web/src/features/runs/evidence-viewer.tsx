@@ -44,6 +44,15 @@ export function AttemptEvidenceList({
   items: EvidenceMetadata[]
   focusEvidenceId?: string
 }) {
+  useEffect(() => {
+    if (focusEvidenceId) {
+      const el = document.getElementById(`evidence-${focusEvidenceId}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }
+    }
+  }, [focusEvidenceId])
+
   if (items.length === 0) {
     return (
       <p className='mt-2 text-label text-muted-foreground'>
@@ -58,6 +67,7 @@ export function AttemptEvidenceList({
           key={item.id}
           id={`evidence-${item.id}`}
           data-focused={focusEvidenceId === item.id ? 'true' : undefined}
+          className={focusEvidenceId === item.id ? 'ring-2 ring-primary/80 rounded-md transition-all' : ''}
         >
           <EvidenceItem runId={runId} item={item} forceOpen={focusEvidenceId === item.id} />
         </li>
@@ -89,7 +99,20 @@ function EvidenceItem({
       className='rounded-sm border border-border-card bg-card'
     >
       <CollapsibleTrigger className='flex w-full items-center justify-between px-3 py-2 text-left text-label'>
-        <span>{screenshotTitle(item)}</span>
+        <div className='flex items-center gap-2'>
+          <span>{screenshotTitle(item)}</span>
+          {item.externalAccess ? (
+            item.externalAccessSource === 'auto' ? (
+              <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'>
+                已自动交付
+              </span>
+            ) : (
+              <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300'>
+                已对外发布
+              </span>
+            )
+          ) : null}
+        </div>
         <span className='text-muted-foreground'>{statusHint(item)}</span>
       </CollapsibleTrigger>
       <CollapsibleContent className='space-y-2 border-t border-border-card px-3 py-2'>
@@ -369,37 +392,66 @@ function EvidenceRelease({
     [busy, setBusy] = useState(false)
   const queryClient = useQueryClient()
   const allowed = !!item.externalAccess
+  const isAuto = item.externalAccessSource === 'auto'
+
   async function save() {
     setBusy(true)
     try {
       await releaseEvidence(runId, item.id, !allowed)
       await queryClient.invalidateQueries({ queryKey: ['runs', runId] })
       setOpen(false)
-      toast.success(allowed ? '已取消对外发布' : '证据已对外发布')
+      toast.success(allowed ? '已撤回对外访问' : '证据已对外发布')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '更新失败')
     } finally {
       setBusy(false)
     }
   }
+
   return (
-    <div className='space-y-2'>
-      <p className='text-small text-muted-foreground'>
-        {allowed ? '已允许对应服务调用方读取此证据' : '此证据仅控制台可见'}
-      </p>
-      <Button variant='outline' size='sm' onClick={() => setOpen(true)}>
-        {allowed ? '取消对外发布' : '发布给外部调用方'}
-      </Button>
+    <div className='space-y-2 rounded-md border border-border-card/60 bg-muted/20 p-2.5'>
+      <div className='flex items-center justify-between'>
+        <div className='space-y-0.5'>
+          <div className='flex items-center gap-1.5'>
+            {allowed ? (
+              isAuto ? (
+                <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'>
+                  已自动交付
+                </span>
+              ) : (
+                <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300'>
+                  已对外发布
+                </span>
+              )
+            ) : null}
+            <span className='text-xs font-medium text-foreground'>
+              {allowed
+                ? isAuto
+                  ? '根据调用方交付策略已自动交付'
+                  : '已人工放行对外访问'
+                : '此证据仅控制台可见'}
+            </span>
+          </div>
+          <p className='text-xs text-muted-foreground'>
+            {allowed
+              ? '外部调用方可通过 OpenAPI 查询或下载此证据。'
+              : '默认不向外部调用方开放。如需放行请人工复核。'}
+          </p>
+        </div>
+        <Button variant='outline' size='sm' onClick={() => setOpen(true)}>
+          {allowed ? '撤回对外访问' : '发布给外部调用方'}
+        </Button>
+      </div>
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
-        title={allowed ? '取消证据对外发布' : '发布证据给外部调用方'}
+        title={allowed ? '撤回证据对外访问' : '发布证据给外部调用方'}
         desc={
           allowed
-            ? '取消后，外部 API 将无法读取此证据。'
+            ? '撤回对外访问将关闭后续 API 查询通道；已通过 Webhook 投递的快照无法撤回。确认撤回？'
             : '请确认已检查此证据，不含口令、令牌或不应对外公开的业务信息。发布后，拥有该运行和证据读取权限的服务调用方可以下载。'
         }
-        confirmText={allowed ? '取消发布' : '确认已检查并发布'}
+        confirmText={allowed ? '确认撤回' : '确认已检查并发布'}
         isLoading={busy}
         handleConfirm={() => void save()}
       />

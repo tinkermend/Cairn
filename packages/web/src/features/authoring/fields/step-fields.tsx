@@ -3,6 +3,7 @@ import {
   type ExecutionErrorCategory,
   type OutputShape,
   type ResolutionPolicy,
+  type LocatorPlan,
   type Step,
 } from '@cairn/shared'
 import { Input } from '@/components/ui/input'
@@ -15,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { FieldHelp } from '@/components/ui/field-help'
 import { fieldElementId, type BindingOption } from '../document'
 import { defaultTarget } from '../step-registry'
 import { AiStepFields } from './ai'
@@ -26,8 +28,10 @@ import { TargetFields } from './target'
 function policyHandlers(step: Step, onChange: (step: Step) => void) {
   return {
     policy: step.policy,
-    onPolicyChange: (policy: { resolution?: ResolutionPolicy; deepLocate?: boolean }) =>
-      onChange({ ...step, policy: { ...step.policy, ...policy } }),
+    onPolicyChange: (policy: { resolution?: ResolutionPolicy; locatorPlan?: LocatorPlan; deepLocate?: boolean }) => {
+      const { resolution: _oldResolution, locatorPlan: _oldPlan, ...preserved } = step.policy ?? {}
+      onChange({ ...step, policy: { ...preserved, ...policy } })
+    },
   }
 }
 
@@ -236,23 +240,28 @@ export function StepFields({
           }}
         />
         {step.type === 'fill' ? (
-          <label className='flex items-center gap-2 text-small'>
-            <input
-              type='checkbox'
-              checked={step.input.sensitive === true}
-              disabled={disabled}
-              onChange={(event) =>
-                onChange({
-                  ...step,
-                  input: {
-                    ...step.input,
-                    sensitive: event.target.checked || undefined,
-                  },
-                })
-              }
-            />
-            敏感输入
-          </label>
+          <div className='flex items-center gap-1.5'>
+            <label className='flex items-center gap-2 text-small'>
+              <input
+                type='checkbox'
+                checked={step.input.sensitive === true}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({
+                    ...step,
+                    input: {
+                      ...step.input,
+                      sensitive: event.target.checked || undefined,
+                    },
+                  })
+                }
+              />
+              敏感输入
+            </label>
+            <FieldHelp label='敏感输入'>
+              勾选后，录入的内容在执行日志和快照证据中将被脱敏遮蔽，防止密码或私密凭据泄露。
+            </FieldHelp>
+          </div>
         ) : null}
       </div>
     )
@@ -325,6 +334,9 @@ export function StepFields({
         <div className='space-y-2'>
           <div className='flex items-center gap-1.5'>
             <Label>点击后页面</Label>
+            <FieldHelp label='点击后页面'>
+              指定点击后期望保持当前页面或切换到弹出的新窗口/新标签页。
+            </FieldHelp>
             <span className='rounded bg-muted px-1.5 py-0.2 text-caption font-medium text-muted-foreground'>选填</span>
           </div>
           <Select
@@ -366,12 +378,12 @@ export function StepFields({
             onChange({ ...step, input: { ...step.input, target } })
           }
         />
-        <p className='text-caption text-muted-foreground bg-muted/40 p-2 rounded border border-border-divider/50'>
-          💡 提示：用于原生 HTML &lt;select&gt; 下拉框。若目标下拉框为浮层菜单或需动态／随机选择选项，推荐使用「AI 操作」（如：在当前分组下拉列表中随机选择一个分组）。
-        </p>
         <div className='space-y-2'>
           <div className='flex items-center gap-1.5'>
             <Label>选择方式</Label>
+            <FieldHelp label='选择方式'>
+              用于原生 HTML &lt;select&gt; 下拉框。若目标下拉框为浮层菜单或需动态／随机选择选项，可使用「视觉操作」（如：在当前分组下拉列表中随机选择一个分组）。
+            </FieldHelp>
             <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
           </div>
           <Select
@@ -492,13 +504,17 @@ export function StepFields({
           先聚焦目标再按键
         </label>
         <div className='space-y-2'>
-          <Label htmlFor={`step-keys-${step.id}`}>
-            按键（逗号分隔，如 Enter 或 Control+s）
-          </Label>
+          <div className='flex items-center gap-1.5'>
+            <Label htmlFor={`step-keys-${step.id}`}>按键</Label>
+            <FieldHelp label='按键'>
+              按键名称以逗号分隔，最多 4 个。例如 Enter、Tab、Escape 或 Control+s。
+            </FieldHelp>
+          </div>
           <Input
             id={`step-keys-${step.id}`}
             value={step.input.keys.join(',')}
             disabled={disabled}
+            placeholder='例如: Enter 或 Control+s'
             onChange={(event) =>
               onChange({
                 ...step,
@@ -625,7 +641,12 @@ export function StepFields({
         ) : null}
         {step.input.kind === 'semantic' ? (
           <div className='space-y-2'>
-            <Label htmlFor={`step-wait-semantic-${step.id}`}>等待描述</Label>
+            <div className='flex items-center gap-1.5'>
+              <Label htmlFor={`step-wait-semantic-${step.id}`}>等待描述</Label>
+              <FieldHelp label='等待描述'>
+                契约已预留，发布前会提示当前部署尚未开放语义等待。
+              </FieldHelp>
+            </div>
             <Input
               id={`step-wait-semantic-${step.id}`}
               disabled={disabled}
@@ -638,9 +659,6 @@ export function StepFields({
                 })
               }
             />
-            <p className='text-label text-muted-foreground'>
-              契约已预留，发布前会提示当前部署尚未开放语义等待。
-            </p>
           </div>
         ) : null}
         {step.input.kind === 'text' ? (
@@ -726,7 +744,12 @@ export function StepFields({
           ) : null}
         </div>
         <div className='flex items-center justify-between gap-3'>
-          <Label htmlFor={`step-many-${step.id}`}>提取全部匹配</Label>
+          <div className='flex items-center gap-1.5'>
+            <Label htmlFor={`step-many-${step.id}`}>提取全部匹配</Label>
+            <FieldHelp label='提取全部匹配'>
+              开启后提取所有匹配元素的内容并输出为数组列表；未开启时仅提取首个匹配项。
+            </FieldHelp>
+          </div>
           <Switch
             id={`step-many-${step.id}`}
             checked={Boolean(step.input.many)}
@@ -836,9 +859,13 @@ export function StepFields({
     return (
       <div className='space-y-3'>
         <div className='space-y-2'>
-          <Label className='text-small font-medium'>
-            触发下载目标（可选；留空则等待前序步骤触发的下载）
-          </Label>
+          <div className='flex items-center gap-1.5'>
+            <Label className='text-small font-medium'>触发下载目标</Label>
+            <FieldHelp label='触发下载目标'>
+              可选。留空则等待前序步骤触发的下载；若点击页面上某个按钮触发下载，可在此处指定目标。
+            </FieldHelp>
+            <span className='rounded bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground'>选填</span>
+          </div>
           <TargetFields
             {...policyHandlers(step, onChange)}
             target={step.input.target ?? defaultTarget('下载目标')}
@@ -978,7 +1005,12 @@ export function StepFields({
     return (
       <div className='space-y-4'>
         <div className='space-y-2'>
-          <Label>检查目标类型</Label>
+          <div className='flex items-center gap-1.5'>
+            <Label>检查目标类型</Label>
+            <FieldHelp label='检查目标类型'>
+              探测步骤用于在执行分支判断或前置确认时，轻量检测页面元素、包含文本或 URL 地址是否符合预期。
+            </FieldHelp>
+          </div>
           <Select
             value={probeInput.kind}
             disabled={disabled}
@@ -1087,7 +1119,12 @@ export function StepFields({
         )}
 
         <div className='space-y-1.5'>
-          <Label htmlFor={`step-probe-wait-${step.id}`}>最长等待时间 (毫秒，最大 5000ms)</Label>
+          <div className='flex items-center gap-1.5'>
+            <Label htmlFor={`step-probe-wait-${step.id}`}>最长等待时间（毫秒）</Label>
+            <FieldHelp label='最长等待时间'>
+              探测检查的最长等待超时时间，最大不超过 5000ms。
+            </FieldHelp>
+          </div>
           <Input
             id={`step-probe-wait-${step.id}`}
             type='number'
@@ -1113,7 +1150,12 @@ export function StepFields({
     return (
       <div className='space-y-4'>
         <div className='space-y-2'>
-          <Label htmlFor={`step-compute-out-${step.id}`}>输出变量名 (outputKey)</Label>
+          <div className='flex items-center gap-1.5'>
+            <Label htmlFor={`step-compute-out-${step.id}`}>输出变量名</Label>
+            <FieldHelp label='输出变量名'>
+              计算步骤执行后的结果将存储于该变量中，供后续步骤或断言引用。
+            </FieldHelp>
+          </div>
           <Input
             id={`step-compute-out-${step.id}`}
             placeholder='例如: computedResult'

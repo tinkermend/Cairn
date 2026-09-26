@@ -6,7 +6,7 @@ import type { BindingOption } from '@/features/authoring/document'
 
 describe('ContextMentionInput', () => {
   const bindings: BindingOption[] = [
-    { key: 'targetAccount', label: '输入 · 目标账号' },
+    { key: 'targetAccount', label: '输入 · 目标账号', typeLabel: 'string', description: '登录使用的账号' },
     { key: 'extractedToken', label: '步骤 · 提取令牌' },
     { key: 'moduleOutput', label: '模块 · 登录模块 · token' },
   ]
@@ -26,6 +26,7 @@ describe('ContextMentionInput', () => {
     await expect.element(screen.getByText('targetAccount')).toBeInTheDocument()
     await expect.element(screen.getByText('extractedToken')).toBeInTheDocument()
     await expect.element(screen.getByText('moduleOutput')).toBeInTheDocument()
+    await expect.element(screen.getByText('登录使用的账号')).toBeInTheDocument()
   })
 
   it('在 template 模式下选中变量，将 {{key}} 插入文本中', async () => {
@@ -67,6 +68,15 @@ describe('ContextMentionInput', () => {
     await accountOpt.click()
 
     expect(onSelectBinding).toHaveBeenCalledWith(bindings[0])
-    expect(onChange).toHaveBeenCalledWith('targetAccount')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('失效引用显示修复说明且不可重新选中', async () => {
+    const onSelectBinding = vi.fn()
+    const screen = await render(<ContextMentionInput mode='binding_picker' value='' bindings={[{ key: 'gone', label: '失效引用 · gone', stale: true, description: '上游已删除' }]} onChange={() => {}} onSelectBinding={onSelectBinding} />)
+    await screen.getByLabelText('插入变量引用').click()
+    await expect.element(screen.getByRole('option')).toHaveAttribute('aria-disabled', 'true')
+    await expect.element(screen.getByText('上游已删除')).toBeInTheDocument()
+    expect(onSelectBinding).not.toHaveBeenCalled()
   })
 })

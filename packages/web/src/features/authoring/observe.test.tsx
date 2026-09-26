@@ -61,6 +61,12 @@ function Probe() {
       <button type='button' onClick={() => observe.pickAt(12, 34)}>
         点选
       </button>
+      <button
+        type='button'
+        onClick={() => observe.setPickMode(true, { scope: 'step', contractId: 'condition-1' })}
+      >
+        选择成功条件
+      </button>
       <button type='button' onClick={() => observe.applyForTrial()}>
         本次验证
       </button>
@@ -167,6 +173,34 @@ describe('AuthoringObserveProvider', () => {
       expect(observeSession).toHaveBeenCalledWith(RUN_ID, {
         op: 'highlight',
         target: found.target,
+      }),
+    )
+  })
+
+  it('成功条件指认携带条件归属，不会被当成当前步骤目标', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    observeSession.mockResolvedValue(found)
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <AuthoringObserveProvider
+          sessionId={RUN_ID}
+          selectedStepId={STEP_ID}
+          enabled
+          onApplyTarget={onApplyTarget}
+        >
+          <Probe />
+        </AuthoringObserveProvider>
+      </QueryClientProvider>,
+    )
+
+    await screen.getByRole('button', { name: '选择成功条件' }).click()
+    await screen.getByRole('button', { name: '点选' }).click()
+    await vi.waitFor(() =>
+      expect(onApplyTarget).toHaveBeenCalledWith(found.target, {
+        previewText: '',
+        outcomePick: { scope: 'step', contractId: 'condition-1', stepId: STEP_ID },
       }),
     )
   })

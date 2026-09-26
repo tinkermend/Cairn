@@ -8,6 +8,7 @@ import {
   Edit2,
   Play,
   Save,
+  Settings,
   Sparkles,
 } from 'lucide-react'
 import type {
@@ -60,6 +61,7 @@ export type StudioToolbarProps = {
   onToggleStatus: () => void
   onOpenRemove: () => void
   onOpenAssistant: (question: string, hint: AssistantCapabilityId) => void
+  onOpenSettings?: () => void
   onLeave: (e: React.MouseEvent) => void
 }
 
@@ -94,6 +96,7 @@ export function StudioToolbar({
   onToggleStatus,
   onOpenRemove,
   onOpenAssistant,
+  onOpenSettings,
   onLeave,
 }: StudioToolbarProps) {
   const headerRef = useRef<HTMLElement>(null)
@@ -331,6 +334,18 @@ export function StudioToolbar({
                 </Link>
               </Button>
 
+              {onOpenSettings ? (
+                <Button
+                  size='sm'
+                  variant='outline'
+                  onClick={onOpenSettings}
+                  title='场景配置'
+                >
+                  <Settings className='size-3.5 mr-1' />
+                  场景配置
+                </Button>
+              ) : null}
+
               {canAssist && canReadTarget ? (
                 <Button
                   size='sm'
@@ -447,6 +462,12 @@ export function StudioToolbar({
               ) : null}
 
               {/* 常规操作项 */}
+              {onOpenSettings ? (
+                <DropdownMenuItem onClick={onOpenSettings}>
+                  <Settings className='mr-2 size-3.5' />
+                  场景配置
+                </DropdownMenuItem>
+              ) : null}
               {canWrite && !dirty && !unpublishedDraft ? (
                 <DropdownMenuItem disabled={!canPublish || publishing} onClick={onPublish}>
                   发布

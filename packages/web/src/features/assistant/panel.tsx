@@ -32,14 +32,14 @@ import { ThinkingProcessBlock } from './components/thinking-process'
 function contextLabel(context: AssistantPageContext | null): string {
   if (!context) return '帮你理解场景、分析运行、找到功能入口'
   if (context.page === 'run' && context.runId)
-    return `当前运行 · ${context.runId.slice(0, 8)}…`
+    return `当前运行 · #${context.runId.slice(0, 8)}`
   if (context.page === 'studio' && context.scenarioId) {
     return context.stepId
-      ? `当前步骤 · ${context.stepId.slice(0, 8)}…`
-      : `当前场景 · ${context.scenarioId.slice(0, 8)}…`
+      ? '当前场景 · 正在聚焦步骤'
+      : '当前场景编排'
   }
   if (context.page === 'target' && context.targetId)
-    return `当前目标 · ${context.targetId.slice(0, 8)}…`
+    return '当前目标'
   return '结合当前页面，为你提供帮助'
 }
 
@@ -91,8 +91,11 @@ function ContextCapsule({
           </span>
         ) : null}
         {boundContext?.entityId ? (
-          <span className='text-label text-text-muted ms-auto font-mono'>
-            {boundContext.entityId.slice(0, 8)}
+          <span
+            className='text-label text-text-muted ms-auto font-mono opacity-60 hover:opacity-100 transition-opacity'
+            title={`内部实体 ID: ${boundContext.entityId}`}
+          >
+            #{boundContext.entityId.slice(0, 8)}
           </span>
         ) : null}
       </div>
@@ -184,7 +187,7 @@ export function AssistantPanel({
   }
 
   return (
-    <section className='relative flex h-full min-h-0 w-full flex-col bg-surface-card text-body'>
+    <section className='@container relative flex h-full min-h-0 w-full flex-col bg-surface-card text-body'>
       {historyOpen ? <HistoryDrawer onClose={() => setHistoryOpen(false)} /> : null}
 
       <header
@@ -348,17 +351,26 @@ export function AssistantPanel({
                         }
                       }}
                       isAdopted={
-                        turn.result.kind === 'proposal' &&
-                        lastAdoptedProposalId === turn.result.stepId
+                        (turn.result.kind === 'authoring_proposal' &&
+                          lastAdoptedProposalId === turn.result.proposalId) ||
+                        (turn.result.kind === 'proposal' &&
+                          lastAdoptedProposalId === turn.result.stepId)
                       }
-                      onClarify={(optionId) => {
-                        openPanel({
-                          question: turn.question,
-                          capabilityHint:
-                            optionId as AssistantCapabilityId,
-                          pageContext: pageContext ?? undefined,
-                        })
-                        void submit()
+                      onClarify={(optionId, option) => {
+                        if (option?.kind === 'scenario') {
+                          openPanel({
+                            question: option?.label ?? optionId,
+                            pageContext: pageContext ?? undefined,
+                          })
+                          void submit({ selectedOptionId: optionId, replyToTurnId: turn.id })
+                        } else {
+                          openPanel({
+                            question: turn.question,
+                            capabilityHint: optionId as AssistantCapabilityId,
+                            pageContext: pageContext ?? undefined,
+                          })
+                          void submit({ selectedOptionId: optionId, replyToTurnId: turn.id })
+                        }
                       }}
                       onCancelTask={() => {
                         void cancelCurrentTask(turn.id)
@@ -372,7 +384,7 @@ export function AssistantPanel({
                         void submit()
                       }}
                       onAdopt={
-                        turn.result.kind === 'proposal'
+                        turn.result.kind === 'authoring_proposal' || turn.result.kind === 'proposal'
                           ? async (proposal) => {
                               if (!adoptHandler) {
                                 toast.error('请先打开对应场景工作区再采纳')
@@ -380,9 +392,11 @@ export function AssistantPanel({
                               }
                               setAdopting(true)
                               try {
-                                const adopted = await adoptHandler(proposal)
+                                const adopted = await adoptHandler(proposal as any)
                                 if (adopted.ok) {
-                                  setLastAdopted({ proposalId: proposal.stepId, digest: adopted.digest ?? '' })
+                                  const proposalId =
+                                    'proposalId' in proposal ? proposal.proposalId : proposal.stepId
+                                  setLastAdopted({ proposalId, digest: adopted.digest ?? '' })
                                   toast.success('已放入本地草稿，尚未保存')
                                 } else {
                                   toast.error(adopted.reason || '采纳失败')
@@ -394,9 +408,11 @@ export function AssistantPanel({
                           : undefined
                       }
                       onRollback={
-                        turn.result.kind === 'proposal' && rollbackHandler
+                        (turn.result.kind === 'authoring_proposal' ||
+                          turn.result.kind === 'proposal') &&
+                        rollbackHandler
                           ? async (proposal) => {
-                              const res = await rollbackHandler(proposal)
+                              const res = await rollbackHandler(proposal as any)
                               if (res.ok) {
                                 setLastAdopted(null)
                                 toast.success('已撤销本次采纳')

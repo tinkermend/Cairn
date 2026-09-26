@@ -69,6 +69,11 @@ export function CallerDialog({
       requestsPerMinute: Number(data.get('rpm')),
       maxOutstandingRuns: Number(data.get('capacity')),
       runTimeoutSeconds: Number(data.get('timeout')),
+      deliveryPolicy: {
+        runOutput: data.get('deliveryRunOutput') === 'on',
+        finalScreenshot: data.get('deliveryFinalScreenshot') === 'on',
+        failureScreenshot: data.get('deliveryFailureScreenshot') === 'on',
+      },
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]!.message)
@@ -166,6 +171,57 @@ export function CallerDialog({
               defaultValue={caller?.runTimeoutSeconds ?? 600}
             />
           </label>
+
+          <div className='space-y-3 rounded-lg border border-border-card p-3 bg-muted/30'>
+            <div>
+              <p className='text-small font-medium'>自动化交付策略</p>
+              <p className='text-xs text-muted-foreground'>
+                配置外部服务调用该应用时的自动化数据与证据交付范围。
+              </p>
+            </div>
+            <label className='flex items-start gap-2.5 text-small cursor-pointer'>
+              <input
+                type='checkbox'
+                name='deliveryRunOutput'
+                className='mt-0.5 size-4 accent-primary'
+                defaultChecked={caller?.deliveryPolicy?.runOutput ?? true}
+              />
+              <div className='space-y-0.5'>
+                <span className='font-medium text-foreground'>自动交付结构化输出 (RunOutput)</span>
+                <p className='text-xs text-muted-foreground'>
+                  运行终态后自动将场景声明的输出（业务结论、指标、数据行等）通过 Webhook 与 API 交付给外部调用方。
+                </p>
+              </div>
+            </label>
+            <label className='flex items-start gap-2.5 text-small cursor-pointer'>
+              <input
+                type='checkbox'
+                name='deliveryFinalScreenshot'
+                className='mt-0.5 size-4 accent-primary'
+                defaultChecked={caller?.deliveryPolicy?.finalScreenshot ?? false}
+              />
+              <div className='space-y-0.5'>
+                <span className='font-medium text-foreground'>运行成功自动交付终态截图</span>
+                <p className='text-xs text-muted-foreground'>
+                  场景运行成功后自动放行最终页面截图。若页面检测到敏感密码框或敏感选择器将自动阻断。
+                </p>
+              </div>
+            </label>
+            <label className='flex items-start gap-2.5 text-small cursor-pointer'>
+              <input
+                type='checkbox'
+                name='deliveryFailureScreenshot'
+                className='mt-0.5 size-4 accent-primary'
+                defaultChecked={caller?.deliveryPolicy?.failureScreenshot ?? false}
+              />
+              <div className='space-y-0.5'>
+                <span className='font-medium text-foreground'>运行失败自动交付现场截图</span>
+                <p className='text-xs text-muted-foreground'>
+                  运行失败或需人工介入时自动放行末次失败现场截图。若涉及认证失效或受管凭据引用将自动阻断。
+                </p>
+              </div>
+            </label>
+          </div>
           {error && (
             <p role='alert' className='text-small text-destructive'>
               {error}

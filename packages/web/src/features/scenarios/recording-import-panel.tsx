@@ -5,6 +5,7 @@ import { DemonstrationImportPanel } from './demonstration-import-panel'
 import {
   RECORDING_NORMALIZER_VERSION,
   targetDescriptorSchema,
+  type DemonstrationPlacement,
   type RecordingDisposition,
   type RecordingImportPreview,
   type RecordingImportPreviewItem,
@@ -60,6 +61,7 @@ export type RecordingImportPanelProps = {
   inputs: readonly ScenarioInputDecl[]
   independentSteps?: { id: string; name: string }[]
   initialPlaceholderStepId?: string
+  initialPlacement?: DemonstrationPlacement
   canApply: boolean
   hasLocalChanges?: boolean
   onOpenChange: (open: boolean) => void
@@ -71,7 +73,7 @@ export type RecordingImportPanelProps = {
 export function RecordingImportPanel(props: RecordingImportPanelProps) {
   const source = useQuery({ queryKey: ['recordings', props.recordingDraftId], queryFn: () => fetchRecording(props.recordingDraftId!), enabled: props.open && Boolean(props.recordingDraftId) })
   if (props.open && props.recordingDraftId && !source.data) return <Sheet open onOpenChange={props.onOpenChange}><SheetContent><SheetHeader><SheetTitle>录制回填预览</SheetTitle><SheetDescription>{source.isError ? '无法读取来源，请重试。' : '正在读取来源…'}</SheetDescription></SheetHeader>{source.isError && <Button onClick={() => void source.refetch()}>重试</Button>}</SheetContent></Sheet>
-  if (source.data?.sourceProtocol === 'demonstration@1') return <DemonstrationImportPanel key={`${props.recordingDraftId}:${props.initialPlaceholderStepId ?? ''}`} {...props} />
+  if (source.data?.sourceProtocol === 'demonstration@1') return <DemonstrationImportPanel key={`${props.recordingDraftId}:${props.initialPlaceholderStepId ?? ''}:${props.initialPlacement?.kind ?? ''}`} {...props} />
   return <LegacyRecordingImportPanel {...props} />
 }
 

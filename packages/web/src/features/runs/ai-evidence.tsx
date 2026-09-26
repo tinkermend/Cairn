@@ -64,6 +64,7 @@ export function AiAttemptSummary({
             {payload.inputTokens == null && payload.outputTokens == null
               ? ' · 用量未知'
               : ` · tokens ${payload.inputTokens ?? '未知'}/${payload.outputTokens ?? '未知'}`}
+            {payload.phase !== 'reserved' ? ` · 成本${payload.cost == null ? '未知' : ` ${payload.cost}`}` : ''}
           </p>
         )
       })}

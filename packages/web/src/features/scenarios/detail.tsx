@@ -1,12 +1,16 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { ScenarioReportSettings } from '@/features/reports/profiles'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
+  authoringDocumentDigest,
   canAdoptAssistantProposal,
+  canAdoptAuthoringProposal,
   entityIdSchema,
+  normalizeAuthoringDocument,
   scenarioDocumentDigest,
+  type AssistantAuthoringProposal,
   type AssistantProposal,
+  type AuthoringOperation,
   canExecuteRun,
   canTrialRun,
   authoringHasControlBlocks,
@@ -28,6 +32,7 @@ import {
   type AuthoringBlockNode,
   type CompileDiagnostic,
   type CompileResolutionContext,
+  type DemonstrationPlacement,
   type ExecutableStepType,
   type RecordingInsertAnchor,
   type RunDetailDto,
@@ -36,6 +41,7 @@ import {
   proposeOutcomeCandidate,
   type ScenarioModuleInvocationNode,
   type Step,
+  type RepairCandidate,
 } from '@cairn/shared'
 import {
   ArrowLeft,
@@ -45,11 +51,14 @@ import {
   ListOrdered,
   Monitor,
   Plus,
+  Settings,
+  Sparkles,
   Undo2,
   X,
   Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { applyAuthoringOperations } from '@cairn/authoring'
 import { ApiRequestError } from '@/lib/api-client'
 import { closeRecordingBinding } from '@/lib/recordings-api'
 import {
@@ -112,13 +121,14 @@ import {
   unavailableStudioTypes,
 } from './step-registry'
 import { AuthoringObserveProvider } from './authoring-observe'
-import { applyTargetToDraftStep, resolveHoldingDraftStepId } from './holding-writeback'
+import { applyTargetToDraftStep, resolveHoldingDraftStepId, retryTargetForCheckpoint } from './holding-writeback'
 import { ResolutionSourceProvider } from '@/features/authoring/resolution-source'
 import { InputsEditor } from './step-editor'
 import { ScenarioOutputsEditor } from './scenario-outputs-editor'
 import { withPickedSemantic } from '@/features/authoring/fields/target'
 import { expectFromPreviewText } from '@/features/authoring/pick-apply'
 import { ScenarioResolutionStats } from './resolution-stats'
+import { ScenarioSettingsDialog } from './scenario-settings-dialog'
 import { OutcomeListEditor } from '@/features/authoring/outcome-editor'
 import { RuntimeInvariantEditor } from '@/features/authoring/invariant-editor'
 import { resolveOutcomeWriteback } from '@cairn/authoring'
@@ -127,6 +137,14 @@ import { TrialDialog } from './trial-dialog'
 import { TrialPanel } from './trial-panel'
 import { StudioScreen } from './studio-screen'
 import { HealingCard } from '@/features/authoring/fields/healing-card'
+import { HealingPatchCard } from '@/features/authoring/healing-patch-card'
+import {
+  fetchScenarioRepairCandidates,
+  adoptRepairCandidate,
+  rejectRepairCandidate,
+  reopenRepairCandidate,
+  validateRepairCandidate,
+} from '@/lib/repair-api'
 import { stepTypeLabel } from './labels'
 import { StepTypeIcon } from './step-type-icon'
 import { MapStepBinding } from '@/features/map/step-binding'
@@ -141,6 +159,7 @@ import { ManagedStageScreen } from './components/managed-stage-screen'
 import { StudioInspectorHost } from './components/inspector/studio-inspector-host'
 import { SegmentedStepInspector } from './components/inspector/segmented-step-inspector'
 import { useStudioDraft } from './use-studio-draft'
+import { useScenarioLocatorHealth } from './use-scenario-locator-health'
 import {
   authoringNodes,
   consecutiveExtractStepIds,
@@ -179,6 +198,17 @@ export function ScenarioDetailPage() {
   const flowgram = (search as { editor?: string }).editor === 'flowgram'
   const runId = entityIdSchema.optional().safeParse((search as { runId?: unknown }).runId).data
   const importDraftId = entityIdSchema.optional().safeParse((search as { import?: unknown }).import).data
+  const importPlacementParam = (search as { importPlacement?: unknown }).importPlacement
+  const importNodeIdParam = entityIdSchema.optional().safeParse((search as { importNodeId?: unknown }).importNodeId).data
+  const initialImportPlacement = useMemo<DemonstrationPlacement | undefined>(() => {
+    if (importPlacementParam === 'replace_sequence' && importNodeIdParam) {
+      return { kind: 'replace_sequence', nodeId: importNodeIdParam }
+    }
+    if (importPlacementParam === 'replace' && importNodeIdParam) {
+      return { kind: 'replace', nodeId: importNodeIdParam }
+    }
+    return undefined
+  }, [importPlacementParam, importNodeIdParam])
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const user = useAuthStore((state) => state.auth.user)
@@ -218,7 +248,7 @@ export function ScenarioDetailPage() {
   const compileResolution = useMemo((): CompileResolutionContext | undefined => {
     const caps = capabilitiesQuery.data?.resolution
     const policy = target?.resolutionPolicy
-    if (!caps && !policy) return undefined
+    if (!caps && !policy && !platformConfigQuery.data) return undefined
     return {
       ceiling: caps?.ceiling ?? FACTORY_COMPILE_RESOLUTION.ceiling,
       default: caps?.default ?? FACTORY_COMPILE_RESOLUTION.default,
@@ -226,8 +256,10 @@ export function ScenarioDetailPage() {
       targetPreference: policy?.preference,
       aiRungAvailable: caps?.aiRungAvailable,
       waitKindsAvailable: caps?.waitKindsAvailable,
+      locatorDocument: platformConfigQuery.data?.document,
+      locatorTarget: policy,
     }
-  }, [capabilitiesQuery.data?.resolution, target?.resolutionPolicy])
+  }, [capabilitiesQuery.data?.resolution, target?.resolutionPolicy, platformConfigQuery.data])
   const draft = useStudioDraft(
     scenarioId,
     scenario?.draft
@@ -265,7 +297,18 @@ export function ScenarioDetailPage() {
           scenarioId,
           targetId: scenario.targetId,
           selectedStepId: draft.selected?.id,
+          statusLabel: draft.selected
+            ? `当前步骤 · ${(() => {
+                const steps = authoringSteps(draft.v2Document)
+                const idx = steps.findIndex((s) => s.id === draft.selected?.id)
+                const prefix = idx >= 0 ? `第 ${idx + 1} 步 · ` : ''
+                return `${prefix}${draft.selected.name || '未命名步骤'}`
+              })()}`
+            : `当前场景 · ${scenario.name}`,
           statusSummary: `${scenario.name} (草稿 r${draft.baseline?.revision ?? scenario.draft?.revision ?? 1})`,
+          summaryText: draft.selected
+            ? `已聚焦步骤「${draft.selected.name || '未命名步骤'}」，可向助手提问选择器诊断、断言编写或逻辑解释。`
+            : `场景「${scenario.name}」草稿编辑中，共 ${authoringSteps(draft.v2Document).length} 个步骤。`,
           isDirty: draft.dirty,
           ...(scenario.draft && scenario.draft.revision >= 1
             ? { draftRevision: scenario.draft.revision }
@@ -276,6 +319,7 @@ export function ScenarioDetailPage() {
       : {
           page: 'studio',
           scenarioId,
+          statusLabel: '当前场景 · 加载中...',
           statusSummary: '加载中...',
         }
   )
@@ -295,9 +339,12 @@ export function ScenarioDetailPage() {
   const [leaveOpen, setLeaveOpen] = useState(false)
   const [trialOpen, setTrialOpen] = useState(false)
   const [trialPauseBeforeStepId, setTrialPauseBeforeStepId] = useState<string | undefined>(undefined)
+  const [retryConfirm, setRetryConfirm] = useState<'side_effect' | 'page_changed' | null>(null)
+  const [retryingStep, setRetryingStep] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [nextName, setNextName] = useState('')
   const [removing, setRemoving] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -369,6 +416,68 @@ export function ScenarioDetailPage() {
   })
   const studioSessionId =
     sessionQuery.data?.session?.status === 'OPEN' ? sessionQuery.data.session.id : undefined
+
+  const repairCandidatesQuery = useQuery({
+    queryKey: ['scenario-repair-candidates', scenarioId],
+    queryFn: () => fetchScenarioRepairCandidates(scenarioId),
+    enabled: Boolean(scenarioId),
+  })
+  const [selectedRepairCandidateId, setSelectedRepairCandidateId] = useState<string | undefined>()
+
+  const stepRepairCandidates = useMemo(() => {
+    if (!draft.selected?.id || !repairCandidatesQuery.data) return []
+    return repairCandidatesQuery.data.filter(
+      (c) => c.patchTargetRef.stepId === draft.selected?.id && c.status !== 'expired',
+    )
+  }, [repairCandidatesQuery.data, draft.selected?.id])
+
+  const handleAdoptRepairCandidate = async (candidateId: string, expectedRevision: number) => {
+    try {
+      await adoptRepairCandidate(candidateId, { expectedRevision })
+      toast.success('已采纳修复候选到草稿')
+      void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
+      void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
+    } catch (err: any) {
+      toast.error(err?.message || '采纳修复候选失败')
+    }
+  }
+
+  const handleRejectRepairCandidate = async (candidateId: string, reason?: string) => {
+    try {
+      await rejectRepairCandidate(candidateId, { reason })
+      toast.success('已驳回修复候选')
+      void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
+    } catch (err: any) {
+      toast.error(err?.message || '驳回修复候选失败')
+    }
+  }
+
+  const handleReopenRepairCandidate = async (candidateId: string) => {
+    try {
+      await reopenRepairCandidate(candidateId)
+      toast.success('已重新打开修复候选')
+      void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
+    } catch (err: any) {
+      toast.error(err?.message || '重新打开修复候选失败')
+    }
+  }
+
+  const handleValidateRepairCandidate = async (candidateId: string) => {
+    try {
+      const res = await validateRepairCandidate(candidateId)
+      toast.success(`已发起验证试跑 (Run ${res.runId.slice(0, 8)})`)
+      void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
+      void navigate({
+        to: '/scenarios/$scenarioId',
+        params: { scenarioId },
+        search: (prev: any) => ({ ...prev, runId: res.runId }),
+        replace: true,
+      })
+    } catch (err: any) {
+      toast.error(err?.message || '发起验证试跑失败')
+    }
+  }
+
   const openedPageForRun = useRef<string | null>(null)
   const holdingSelectKey = useRef<string | null>(null)
   useEffect(() => {
@@ -410,6 +519,38 @@ export function ScenarioDetailPage() {
   const pendingImportDraftId = openBinding?.recordingDraftId ?? recordingQuery.data?.drafts[0]?.id
 
   const document = draft.candidate
+  const scenarioSteps = useMemo(() => (document ? authoringSteps(document) : []), [document])
+
+  const handleApplyCandidatesToDraft = (
+    candidatesToApply: Array<{
+      stepId: string
+      candidate: NonNullable<RepairCandidate['patch']['suggestedCandidate']>
+    }>,
+  ) => {
+    for (const { stepId, candidate } of candidatesToApply) {
+      const targetStep = authoringSteps(draft.v2Document).find((s) => s.id === stepId)
+      if (targetStep && 'target' in targetStep && (targetStep as any).target?.kind === 'element') {
+        const existingCandidates = (targetStep as any).target.candidates ?? []
+        const nextCandidates = [
+          candidate,
+          ...existingCandidates.filter((c: any) => !(c.by === candidate.by && c.value === candidate.value)),
+        ]
+        draft.updateStep({
+          ...targetStep,
+          target: {
+            ...(targetStep as any).target,
+            candidates: nextCandidates,
+          },
+        } as unknown as Step)
+      }
+    }
+  }
+
+  const locatorHealth = useScenarioLocatorHealth(
+    scenarioId,
+    scenarioSteps,
+    handleApplyCandidatesToDraft,
+  )
   const [addMenuOpen, setAddMenuOpen] = useState(false)
 
   useEffect(() => {
@@ -485,7 +626,9 @@ export function ScenarioDetailPage() {
     !draft.hasFieldDrafts &&
     !draft.conflict &&
     !draft.remoteStale &&
-    Boolean(scenario?.draft && draft.selected && document && !isAuthoringDocumentV2(document))
+    Boolean(scenario?.draft && document)
+
+  const preAdoptSnapshotRef = useRef<any>(null)
 
   useEffect(() => {
     if (!scenario?.draft || !document) {
@@ -496,7 +639,39 @@ export function ScenarioDetailPage() {
     const revision = scenario.draft.revision
     const current = document
 
-    registerAdoptHandler(async (proposal: AssistantProposal) => {
+    registerAdoptHandler(async (proposal: AssistantProposal | AssistantAuthoringProposal) => {
+      if (proposal.kind === 'authoring_proposal') {
+        const v2 = normalizeAuthoringDocument(current)
+        const allowed = await canAdoptAuthoringProposal({
+          proposal,
+          revision,
+          document: v2,
+          hasFieldDrafts: draft.hasFieldDrafts,
+          remoteConflict: draft.conflict || draft.remoteStale,
+        })
+        if (!allowed.ok) return allowed
+
+        const applied = applyAuthoringOperations(v2, proposal.operations)
+        if (!applied.ok) {
+          return { ok: false, reason: applied.error.message }
+        }
+
+        preAdoptSnapshotRef.current = structuredClone(v2)
+
+        const firstInsert = proposal.operations.find(
+          (op): op is Extract<AuthoringOperation, { kind: 'insert_step' }> => op.kind === 'insert_step',
+        )
+        const firstWithStepId = proposal.operations.find(
+          (op): op is Extract<AuthoringOperation, { stepId: string }> => 'stepId' in op,
+        )
+        const targetStepId = firstInsert?.step.id ?? firstWithStepId?.stepId ?? null
+
+        applyStructure(applied.document, targetStepId)
+        const newDigest = await authoringDocumentDigest(applied.document)
+        setLastAdopted({ proposalId: proposal.proposalId, digest: newDigest })
+        return { ok: true, digest: newDigest }
+      }
+
       if (!isAuthoringDocumentV2(current)) {
         const allowed = await canAdoptAssistantProposal({
           proposal,
@@ -536,7 +711,13 @@ export function ScenarioDetailPage() {
       return { ok: true, digest: newDigest }
     })
 
-    registerRollbackHandler(async () => {
+    registerRollbackHandler(async (proposal: AssistantProposal | AssistantAuthoringProposal) => {
+      if (proposal.kind === 'authoring_proposal' && preAdoptSnapshotRef.current) {
+        applyStructure(preAdoptSnapshotRef.current, null)
+        preAdoptSnapshotRef.current = null
+        setLastAdopted(null)
+        return { ok: true }
+      }
       draft.undoStructure()
       setLastAdopted(null)
       return { ok: true }
@@ -1042,21 +1223,30 @@ export function ScenarioDetailPage() {
     setTrialOpen(true)
   }
 
-  async function handleRetryCurrentStep() {
+  async function handleRetryCurrentStep(pageChangedAck = false) {
     if (!trialRun || trialRun.status !== 'HOLDING') return
     const savedRev = await ensureDraftSaved()
     if (savedRev === null) return
 
+    setRetryingStep(true)
     try {
       await debugRun(trialRun.id, {
         action: 'retry_current',
         fencingToken: trialRun.checkpoint?.fencingToken,
         stepOverride: draft.selected ?? undefined,
+        confirmSideEffect: trialRun.snapshot.steps.find((step) => step.id === trialRun.checkpoint?.stepId)?.effectType === 'SIDE_EFFECT' ? true : undefined,
+        ...(pageChangedAck ? { pageChangedAck: true } : {}),
       })
       toast.success('已下发单步重试，执行成功后将保持挂起')
       void queryClient.invalidateQueries({ queryKey: ['run-observation', trialRun.id] })
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : '单步重试失败')
+      if (error instanceof ApiRequestError && error.payload.code === 'PAGE_CHANGED_ACK_REQUIRED') {
+        setRetryConfirm('page_changed')
+      } else {
+        toast.error(error instanceof ApiRequestError ? error.message : '单步重试失败')
+      }
+    } finally {
+      setRetryingStep(false)
     }
   }
 
@@ -1100,29 +1290,70 @@ export function ScenarioDetailPage() {
         outputsCount={draft.displayOutputs?.metrics?.length ?? 0}
         diagnosticsCount={compile?.diagnostics?.length ?? 0}
         topHealing={
-          trialRun && trialRun.scenarioId === scenarioId ? (
-            <HealingCard
-              run={trialRun}
-              currentStep={draft.selected ?? undefined}
-              onBeforeRetry={ensureDraftSaved}
-              onChanged={() => void queryClient.invalidateQueries({ queryKey: ['run-observation', trialRun.id] })}
-              onSaveToDraft={(target) => {
-                const step = authoringSteps(draft.v2Document).find(
-                  (item) => item.id === holdingDraftStepId,
-                )
-                if (!step) {
-                  toast.message('找不到要写回的失败步骤，未改其他步骤')
-                  return
-                }
-                const next = applyTargetToDraftStep(step, target)
-                if (!next) {
-                  toast.message('挂起的步骤没有可写回的页面对象')
-                  return
-                }
-                draft.updateStep(next)
-              }}
-            />
-          ) : null
+          <>
+            {stepRepairCandidates.length > 0 && (
+              <div className="mb-4">
+                <HealingPatchCard
+                  candidates={stepRepairCandidates}
+                  candidate={
+                    stepRepairCandidates.find(
+                      (c) => c.id === selectedRepairCandidateId || c.candidateId === selectedRepairCandidateId,
+                    ) ?? stepRepairCandidates[0]
+                  }
+                  selectedCandidateId={selectedRepairCandidateId}
+                  onSelectCandidate={setSelectedRepairCandidateId}
+                  currentRevision={draft.baseline?.revision ?? scenario?.draft?.revision ?? 1}
+                  currentStep={draft.selected ?? undefined}
+                  onAdopt={handleAdoptRepairCandidate}
+                  onReject={handleRejectRepairCandidate}
+                  onReopen={handleReopenRepairCandidate}
+                  onValidate={handleValidateRepairCandidate}
+                />
+              </div>
+            )}
+            {trialRun && trialRun.scenarioId === scenarioId ? (
+              <HealingCard
+                run={trialRun}
+                currentStep={draft.selected ?? undefined}
+                retryTarget={retryTargetForCheckpoint({
+                  checkpointStepId: trialRun.checkpoint?.stepId,
+                  manifest: trialRun.snapshot.outcomeManifest,
+                  document: draft.v2Document,
+                  selectedStep: draft.selected,
+                })}
+                onBeforeRetry={ensureDraftSaved}
+                onChanged={() => void queryClient.invalidateQueries({ queryKey: ['run-observation', trialRun.id] })}
+                onSaveToDraft={(target) => {
+                  const writeback = resolveOutcomeWriteback(
+                    trialRun.snapshot.outcomeManifest,
+                    trialRun.checkpoint?.stepId,
+                  )
+                  if (writeback) {
+                    draft.updateOutcomeTarget({
+                      stepId: writeback.sourceStepId,
+                      contractId: writeback.contractId,
+                      target: withPickedSemantic(target),
+                      scenario: writeback.scope === 'scenario',
+                    })
+                    return
+                  }
+                  const step = authoringSteps(draft.v2Document).find(
+                    (item) => item.id === holdingDraftStepId,
+                  )
+                  if (!step) {
+                    toast.message('找不到要写回的失败步骤，未改其他步骤')
+                    return
+                  }
+                  const next = applyTargetToDraftStep(step, target)
+                  if (!next) {
+                    toast.message('挂起的步骤没有可写回的页面对象')
+                    return
+                  }
+                  draft.updateStep(next)
+                }}
+              />
+            ) : null}
+          </>
         }
         topHoldingRetry={
           trialRun?.status === 'HOLDING' && holdingDraftStepId === draft.selected?.id ? (
@@ -1139,8 +1370,12 @@ export function ScenarioDetailPage() {
               <Button
                 size='sm'
                 className='shrink-0'
-                disabled={saving}
-                onClick={() => void handleRetryCurrentStep()}
+                disabled={saving || retryingStep}
+                onClick={() => {
+                  const step = trialRun.snapshot.steps.find((item) => item.id === trialRun.checkpoint?.stepId)
+                  if (step?.effectType === 'SIDE_EFFECT') setRetryConfirm('side_effect')
+                  else void handleRetryCurrentStep()
+                }}
               >
                 <Zap className='size-3.5 mr-1' />
                 仅重试此步
@@ -1306,9 +1541,21 @@ export function ScenarioDetailPage() {
                 diagnostics={(compile?.diagnostics ?? []) as CompileDiagnostic[]}
                 disabled={disabled}
                 consumers={draft.selected?.outputKey ? outputConsumersAny(document, draft.selected.outputKey) : []}
+                origin={draft.selectedNode?.kind === 'step' ? draft.selectedNode.origin : undefined}
                 outcomes={
                   draft.selectedNode?.kind === 'step' ? draft.selectedNode.outcomes ?? [] : []
                 }
+                locatorHealth={draft.selected ? locatorHealth.healthMap.get(draft.selected.id) : undefined}
+                activeCandidate={draft.selected ? locatorHealth.healthMap.get(draft.selected.id)?.activeCandidate : undefined}
+                onAdoptCandidate={(candidate) => {
+                  void locatorHealth.adoptCandidate(
+                    candidate,
+                    draft.baseline?.revision ?? scenario?.draft?.revision ?? 1,
+                  )
+                }}
+                onRejectCandidate={(candidateId) => {
+                  void locatorHealth.rejectCandidate(candidateId)
+                }}
                 onChange={draft.updateStep}
                 onOutcomesChange={(outcomes) => { if (draft.selected) draft.updateOutcomes(draft.selected.id, outcomes) }}
                 onRequestTypeChange={(type) => {
@@ -1445,19 +1692,29 @@ export function ScenarioDetailPage() {
               ) : (
                 <div className='text-center py-12 space-y-3'>
                   <p className='text-label text-muted-foreground'>未选中任何步骤</p>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    onClick={() => {
-                      draft.setSelectedId(nodeId(draft.nodes[0]))
-                    }}
-                  >
-                    选择第 1 步 (
-                      {draft.nodes[0].kind === 'step'
-                        ? draft.nodes[0].step.name
-                        : draft.nodes[0].name || '步骤 1'}
-                    )
-                  </Button>
+                  <div className='flex flex-wrap items-center justify-center gap-2'>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => {
+                        draft.setSelectedId(nodeId(draft.nodes[0]))
+                      }}
+                    >
+                      选择第 1 步 (
+                        {draft.nodes[0].kind === 'step'
+                          ? draft.nodes[0].step.name
+                          : draft.nodes[0].name || '步骤 1'}
+                      )
+                    </Button>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => setSettingsOpen(true)}
+                    >
+                      <Settings className='size-3.5 mr-1.5' />
+                      场景配置
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1469,7 +1726,6 @@ export function ScenarioDetailPage() {
               disabled={disabled}
               onChange={draft.updateInputs}
             />
-            <ScenarioResolutionStats scenarioId={scenarioId} />
             <DiagnosticList
               diagnostics={compile?.diagnostics ?? []}
               onSelect={(item) => {
@@ -1499,27 +1755,6 @@ export function ScenarioDetailPage() {
               availableContextKeys={document ? Array.from(documentContextKeysAny(document)) : []}
               onChange={draft.updateOutputs}
             />
-            <ScenarioResolutionStats scenarioId={scenarioId} />
-            <DiagnosticList
-              diagnostics={compile?.diagnostics ?? []}
-              onSelect={(item) => {
-                if (item.stepId) {
-                  draft.setSelectedId(item.stepId)
-                  setRightTab('step')
-                }
-                queueMicrotask(() => focusStudioField(item))
-              }}
-            />
-            <div className='pt-3 border-t border-border-divider/60 flex items-center justify-between text-label text-muted-foreground'>
-              <span>配置场景预期或全局约束？</span>
-              <button
-                type='button'
-                className='text-link hover:underline font-medium'
-                onClick={() => setRightTab('outcomes')}
-              >
-                前往预期与诊断 →
-              </button>
-            </div>
           </>
         ) : (
           <>
@@ -1537,7 +1772,41 @@ export function ScenarioDetailPage() {
               }
               onChange={draft.updateRuntimeInvariants}
             />
-            <ScenarioResolutionStats scenarioId={scenarioId} />
+            {locatorHealth.candidateCount > 0 && (
+              <div
+                data-testid='batch-healing-banner'
+                className='flex items-center justify-between gap-3 p-3 rounded-lg border border-primary/20 bg-primary/5'
+              >
+                <div className='flex items-center gap-2 min-w-0'>
+                  <Sparkles className='size-4 text-primary shrink-0' />
+                  <span className='text-body font-medium truncate'>
+                    检测到 <strong>{locatorHealth.candidateCount}</strong> 个步骤有可用的定位自愈建议
+                  </span>
+                </div>
+                <Button
+                  size='sm'
+                  variant='default'
+                  disabled={disabled}
+                  className='shrink-0'
+                  onClick={() =>
+                    void locatorHealth.batchAdoptAll(
+                      draft.baseline?.revision ?? scenario?.draft?.revision ?? 1,
+                    )
+                  }
+                >
+                  <Sparkles className='size-3.5 mr-1' />
+                  一键批量自愈
+                </Button>
+              </div>
+            )}
+            <ScenarioResolutionStats
+              scenarioId={scenarioId}
+              steps={scenarioSteps}
+              onSelectStep={(stepId) => {
+                draft.setSelectedId(stepId)
+                setRightTab('step')
+              }}
+            />
             <DiagnosticList
               diagnostics={compile?.diagnostics ?? []}
               onSelect={(item) => {
@@ -1558,12 +1827,16 @@ export function ScenarioDetailPage() {
               }
               dirty={draft.dirty}
             />
-            {scenario && (
-              <ScenarioReportSettings
-                scenarioId={scenario.id}
-                targetId={scenario.targetId}
-              />
-            )}
+            <div className='pt-3 border-t border-border-divider/60 flex items-center justify-between text-label text-muted-foreground'>
+              <span>配置场景运行与定位策略、报告？</span>
+              <button
+                type='button'
+                className='text-link hover:underline font-medium'
+                onClick={() => setSettingsOpen(true)}
+              >
+                打开场景配置 →
+              </button>
+            </div>
           </>
         )}
 
@@ -1652,6 +1925,7 @@ export function ScenarioDetailPage() {
               })
           }}
           onOpenRemove={() => setRemoving(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
           onOpenAssistant={(question, hint) =>
             openAssistant({
               question,
@@ -1808,6 +2082,15 @@ export function ScenarioDetailPage() {
               onApplyTarget={(target, extras) => {
                 const picked = withPickedSemantic(target)
                 const previewText = extras?.previewText?.trim()
+                if (extras?.outcomePick) {
+                  draft.updateOutcomeTarget({
+                    stepId: extras.outcomePick.stepId,
+                    contractId: extras.outcomePick.contractId,
+                    target: picked,
+                    scenario: extras.outcomePick.scope === 'scenario',
+                  })
+                  return
+                }
                 const writeback = resolveOutcomeWriteback(
                   trialRun?.snapshot.outcomeManifest,
                   trialRun?.checkpoint?.stepId,
@@ -1874,7 +2157,7 @@ export function ScenarioDetailPage() {
                 } as typeof current)
               }}
             >
-            <ResolutionSourceProvider targetId={scenario.targetId}>
+            <ResolutionSourceProvider targetId={scenario.targetId} scenarioPlan={draft.v2Document?.locatorPlan} scenarioPolicy={draft.v2Document?.resolution} locatorProtocol={draft.v2Document?.locatorProtocol}>
             <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
               {flowgram ? (
                 <div className='flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row overflow-hidden'>
@@ -2203,6 +2486,7 @@ export function ScenarioDetailPage() {
                       canRecord={canRecord}
                       capabilitiesData={capabilitiesQuery.data}
                       flowgram={flowgram}
+                      locatorHealthMap={locatorHealth.healthMap}
                       onToggleFlowgram={(f) => {
                         void navigate({
                           to: '/scenarios/$scenarioId',
@@ -2301,6 +2585,30 @@ export function ScenarioDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={retryConfirm === 'side_effect'} onOpenChange={(open) => !open && setRetryConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>再试有副作用的步骤？</AlertDialogTitle>
+            <AlertDialogDescription>这一步可能对目标系统重复提交或改写数据。确认后才会发起新的尝试，历史证据会保留。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setRetryConfirm(null); void handleRetryCurrentStep() }}>确认再试</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={retryConfirm === 'page_changed'} onOpenChange={(open) => !open && setRetryConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>页面已变化，仍要再试？</AlertDialogTitle>
+            <AlertDialogDescription>当前页面与挂起时不同。确认后会发起新的尝试，并保留先前的运行证据。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setRetryConfirm(null); void handleRetryCurrentStep(true) }}>确认再试</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={Boolean(typeChange)}
         onOpenChange={(open) => {
@@ -2378,6 +2686,7 @@ export function ScenarioDetailPage() {
           inputs={document?.inputs ?? []}
           independentSteps={document ? authoringSteps(document).map((step) => ({ id: step.id, name: step.name })) : []}
           initialPlaceholderStepId={document && (draft.baseline?.revision ?? scenario.draft?.revision) === 1 && authoringSteps(document).length === 1 && isDemonstrationHandoffPlaceholder(authoringSteps(document)[0]!) ? authoringSteps(document)[0]!.id : undefined}
+          initialPlacement={initialImportPlacement}
           canApply={canWrite && !draft.dirty}
           hasLocalChanges={draft.dirty}
           onOpenChange={(open) => {
@@ -2533,6 +2842,19 @@ export function ScenarioDetailPage() {
         onClose={() => setPublishDiffOpen(false)}
         onConfirmPublish={() => void publish()}
       />
+      {draft.v2Document && scenario ? (
+        <ScenarioSettingsDialog
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          scenarioId={scenario.id}
+          targetId={scenario.targetId}
+          document={draft.v2Document}
+          platform={platformConfigQuery.data?.document}
+          target={target?.resolutionPolicy}
+          disabled={disabled}
+          onChange={(next) => draft.applyStructure(next, draft.selectedId)}
+        />
+      ) : null}
     </>
   )
 }

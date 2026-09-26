@@ -1,9 +1,12 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
 import type { AiTaskEvent } from '@cairn/shared'
-import { fetchAttemptAiTasks } from '@/lib/runs-api'
+import { createSolidificationDraft, fetchAttemptAiTasks } from '@/lib/runs-api'
 import { useCan } from '@/hooks/use-permissions'
+import { Button } from '@/components/ui/button'
+import { toast } from 'sonner'
 
 const PHASE_LABELS: Record<AiTaskEvent['phase'], string> = {
   prepared: '已派发',
@@ -35,6 +38,8 @@ const INTEGRITY_LABELS: Record<string, string> = {
 
 export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemptId: string }) {
   const canRead = useCan('run:read')
+  const canSolidify = useCan('workflow:write') && useCan('target:read')
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const query = useQuery({
     queryKey: ['runs', runId, 'ai-tasks', attemptId],
@@ -43,36 +48,103 @@ export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemp
     staleTime: 5_000,
   })
 
+  const solidifyMutation = useMutation({
+    mutationFn: () => createSolidificationDraft(runId, attemptId),
+    onSuccess: () => {
+      toast.success('已生成确定性草案')
+    },
+    onError: (err: Error) => {
+      toast.error(`生成草案失败：${err.message}`)
+    },
+  })
+
   if (!canRead) return null
   const observation = query.data?.observation
   const events = query.data?.events ?? []
+  const isBlocked = observation?.solidifiableLevel === 'blocked'
+  const isComplete = observation?.traceIntegrity === 'complete'
 
   return (
     <div className='rounded-md border border-border-card bg-card'>
-      <button
-        type='button'
-        className='flex w-full items-center gap-2 px-3 py-2 text-left'
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {open ? (
-          <ChevronDown className='size-4 shrink-0 text-muted-foreground' />
-        ) : (
-          <ChevronRight className='size-4 shrink-0 text-muted-foreground' />
+      <div className='flex items-center justify-between px-3 py-2'>
+        <button
+          type='button'
+          className='flex flex-1 items-center gap-2 text-left'
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? (
+            <ChevronDown className='size-4 shrink-0 text-muted-foreground' />
+          ) : (
+            <ChevronRight className='size-4 shrink-0 text-muted-foreground' />
+          )}
+          <span className='text-label font-medium'>AI 动作</span>
+          {observation ? (
+            <span className='text-label text-muted-foreground'>
+              {observation.actionCount} 个动作 · {LEVEL_LABELS[observation.solidifiableLevel] ?? observation.solidifiableLevel}
+              {' · '}
+              {INTEGRITY_LABELS[observation.traceIntegrity] ?? observation.traceIntegrity}
+            </span>
+          ) : open && query.isSuccess ? (
+            <span className='text-label text-muted-foreground'>未采集</span>
+          ) : null}
+        </button>
+        {canSolidify && observation && (
+          <Button
+            size='sm'
+            variant='outline'
+            className='h-7 gap-1 text-xs'
+            disabled={isBlocked || !isComplete || solidifyMutation.isPending}
+            title={
+              isBlocked
+                ? `该轨迹不可固化：${observation.solidifiableReasons.join(', ')}`
+                : !isComplete
+                ? '轨迹不完整，无法固化'
+                : '将本次 AI 执行轨迹生成为确定性步骤草案'
+            }
+            onClick={(e) => {
+              e.stopPropagation()
+              solidifyMutation.mutate()
+            }}
+          >
+            <Sparkles className='size-3' />
+            {solidifyMutation.isPending ? '生成中…' : '生成确定性草案'}
+          </Button>
         )}
-        <span className='text-label font-medium'>AI 动作</span>
-        {observation ? (
-          <span className='text-label text-muted-foreground'>
-            {observation.actionCount} 个动作 · {LEVEL_LABELS[observation.solidifiableLevel] ?? observation.solidifiableLevel}
-            {' · '}
-            {INTEGRITY_LABELS[observation.traceIntegrity] ?? observation.traceIntegrity}
-          </span>
-        ) : open && query.isSuccess ? (
-          <span className='text-label text-muted-foreground'>未采集</span>
-        ) : null}
-      </button>
+      </div>
       {open ? (
         <div className='space-y-2 border-t border-border-card px-3 py-2'>
+          {solidifyMutation.data && (
+            <div className='flex items-center justify-between rounded-md border border-primary/20 bg-primary/5 p-2.5 text-label'>
+              <div>
+                <span className='font-medium text-foreground'>确定性草案已就绪</span>
+                {solidifyMutation.data.definitionChanged && (
+                  <span className='ml-1 text-amber-600 dark:text-amber-400'>
+                    （原步骤定义在草稿中已变更，请在导入时核对）
+                  </span>
+                )}
+              </div>
+              <Button
+                size='sm'
+                className='h-7 text-xs'
+                onClick={() =>
+                  navigate({
+                    to: '/scenarios/$scenarioId',
+                    params: { scenarioId: solidifyMutation.data!.scenarioId },
+                    search: (prev: Record<string, unknown>) => ({
+                      ...prev,
+                      import: solidifyMutation.data!.recordingDraftId,
+                      importPlacement: 'replace_sequence',
+                      importNodeId: solidifyMutation.data!.sourceNodeId,
+                    }),
+                  })
+                }
+              >
+                前往工作台导入
+              </Button>
+            </div>
+          )}
+
           {query.isPending ? <p className='text-label text-muted-foreground'>读取中…</p> : null}
           {query.isError ? (
             <p className='text-label text-destructive'>读取失败：{query.error.message}</p>

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  AssistantAuthoringProposal,
   AssistantCapabilityId,
   AssistantCapabilitiesResponse,
   AssistantConversation,
@@ -42,11 +43,11 @@ export function summarizeConversationTitle(question: string, maxLen = 30): strin
 }
 
 export type AssistantAdoptHandler = (
-  proposal: AssistantProposal,
+  proposal: AssistantProposal | AssistantAuthoringProposal,
 ) => Promise<{ ok: true; digest?: string } | { ok: false; reason: string }>
 
 export type AssistantRollbackHandler = (
-  proposal: AssistantProposal,
+  proposal: AssistantProposal | AssistantAuthoringProposal,
 ) => Promise<{ ok: true } | { ok: false; reason: string }>
 
 export type AssistantWindowMode = 'floating' | 'docked'
@@ -121,7 +122,7 @@ type AssistantState = {
   registerAdoptHandler: (handler: AssistantAdoptHandler | null) => void
   registerRollbackHandler: (handler: AssistantRollbackHandler | null) => void
   loadCapabilities: () => Promise<void>
-  submit: () => Promise<void>
+  submit: (options?: { selectedOptionId?: string; replyToTurnId?: string }) => Promise<void>
   cancel: () => void
   cancelCurrentTask: (turnId?: string) => Promise<void>
 
@@ -275,7 +276,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     }
   },
 
-  submit: async () => {
+  submit: async (options?: { selectedOptionId?: string; replyToTurnId?: string }) => {
     const { question, conversationId, pageContext, capabilityHint, busy, activeQuote } = get()
     const trimmed = question.trim()
     if (!trimmed || busy) return
@@ -350,12 +351,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         : trimmed
 
       const latestTurnId = get().turns[0]?.id
-      const replyToTurnId = latestTurnId && isEntityId(latestTurnId) ? latestTurnId : undefined
+      const replyToTurnId =
+        options?.replyToTurnId ??
+        (latestTurnId && isEntityId(latestTurnId) ? latestTurnId : undefined)
       const accepted = await createAssistantTurn(activeConversationId, {
         clientTurnId: newClientTurnId(),
         question: effectiveQuestion,
         pageContext: finalPageContext,
         ...(replyToTurnId ? { replyToTurnId } : {}),
+        ...(options?.selectedOptionId ? { selectedOptionId: options.selectedOptionId } : {}),
         capabilityHint,
       })
 

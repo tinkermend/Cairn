@@ -6,6 +6,7 @@ import { fetchRunResolutionDecisions } from '@/lib/runs-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { SelectField, SelectFieldOption } from '@/components/ui/select'
+import { locatorRouteListLabel, locatorSkippedLabel } from '@/lib/locator-labels'
 
 const DECISION_LABELS: Record<ResolutionDecision['decision'], string> = {
   deterministic: '规则命中',
@@ -15,6 +16,7 @@ const DECISION_LABELS: Record<ResolutionDecision['decision'], string> = {
 }
 
 const REASON_LABELS: Record<string, string> = {
+  AI_CALL_FAILED: '定位模型调用失败，请检查对应模型配置',
   FRAME_UNSUPPORTED: '不支持 Frame',
   CEILING_CLOSED: '未开放 AI 定位',
   BUDGET_EXHAUSTED: '预算或期限不足',
@@ -33,12 +35,20 @@ const REASON_LABELS: Record<string, string> = {
   TARGET_NOT_FOUND: '未找到目标',
   TARGET_AMBIGUOUS: '目标不唯一',
   PERSISTENCE_FAILED: '决策写入失败',
+  FOUND: '命中',
+  SKIPPED: '未尝试',
+}
+
+const OUTCOME_CLASS_LABELS: Record<string, string> = {
+  miss: '未找到', ambiguous: '不唯一', hung: '调用未落定', budget: '预算不足',
+  cancelled: '已取消', lease_lost: '租约失效', error: '调用出错',
 }
 
 type RunResolutionDecisionsProps = {
   runId: string
   eventSeq?: number
   steps?: RunDetailDto['stepRuns']
+  resolution?: RunDetailDto['snapshot']['resolution']
 }
 
 export function RunResolutionDecisions(props: RunResolutionDecisionsProps) {
@@ -49,6 +59,19 @@ export function RunResolutionDecisions(props: RunResolutionDecisionsProps) {
   if (!canRead) return null
   return (
     <div className='space-y-3'>
+      {props.resolution?.protocol === 'snapshot.resolution@2' ? (
+        <details className='rounded-md border border-border-default p-3 text-label'>
+          <summary className='cursor-pointer font-medium'>创建运行时冻结的定位计划</summary>
+          <div className='mt-2 space-y-2 text-muted-foreground'>
+            {Object.entries(props.resolution.steps).map(([id, plan]) => (
+              <p key={id}>
+                {props.steps?.find((step) => step.stepId === id)?.name ?? id.slice(0, 8)}：请求 {locatorRouteListLabel(plan.requested)}；实际 {locatorRouteListLabel(plan.actual)}
+                {plan.skipped.length ? `；跳过 ${locatorSkippedLabel(plan.skipped)}` : ''}
+              </p>
+            ))}
+          </div>
+        </details>
+      ) : null}
       {props.steps ? (
         <details className='text-label text-muted-foreground'>
           <summary className='cursor-pointer'>按步骤筛选目标解析</summary>
@@ -71,6 +94,7 @@ export function RunResolutionDecisions(props: RunResolutionDecisionsProps) {
         eventSeq={props.eventSeq}
         stepRunId={selectedStep || undefined}
         steps={props.steps}
+        resolution={props.resolution}
       />
     </div>
   )
@@ -81,11 +105,13 @@ function DecisionPage({
   eventSeq,
   stepRunId,
   steps,
+  resolution,
 }: {
   runId: string
   eventSeq?: number
   stepRunId?: string
   steps?: RunDetailDto['stepRuns']
+  resolution?: RunDetailDto['snapshot']['resolution']
 }) {
   const canReadRun = useCan('run:read')
   const canReadTarget = useCan('target:read')
@@ -112,6 +138,12 @@ function DecisionPage({
   }
   const stepName = (stepRunIdValue: string) =>
     steps?.find((step) => step.id === stepRunIdValue)?.name ?? `步骤 ${stepRunIdValue.slice(0, 8)}`
+  const planLabel = (item: ResolutionDecision) => {
+    if (!item.plan) return RESOLUTION_PREFERENCE_LABELS[item.effectivePolicy]
+    const frozen = resolution?.protocol === 'snapshot.resolution@2' ? resolution.steps[item.stepId] : undefined
+    const overridden = frozen && frozen.actual.join(',') !== item.plan.order.join(',')
+    return `${overridden ? '调试覆盖' : '计划'} ${locatorRouteListLabel(item.plan.order)}`
+  }
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -141,8 +173,8 @@ function DecisionPage({
                 {item.reasonCode ? ` · ${REASON_LABELS[item.reasonCode] ?? item.reasonCode}` : ''}
               </p>
               <p className='text-label text-muted-foreground'>
-                {stepName(item.stepRunId)} · {RESOLUTION_PREFERENCE_LABELS[item.effectivePolicy]} ·{' '}
-                {item.rungs.map((rung) => rung.rung).join('→') || '无阶梯'}
+                {stepName(item.stepRunId)} · {planLabel(item)} ·{' '}
+                {item.rungs.map((rung) => `${rung.rung === 'D' ? '规则' : rung.rung === 'M' ? '地图修复' : '模型'}${rung.aiRoute ? `(${rung.aiRoute === 'text' ? '文本' : '视觉'}：${rung.outcomeClass ? OUTCOME_CLASS_LABELS[rung.outcomeClass] : REASON_LABELS[rung.outcome] ?? rung.outcome}，${rung.spentMs}ms${rung.aiCallNs?.length ? `，调用 ${rung.aiCallNs.join('、')}` : ''})` : `(${REASON_LABELS[rung.outcome] ?? rung.outcome})`}`).join(' → ') || '无阶梯'}
               </p>
             </li>
           ))}

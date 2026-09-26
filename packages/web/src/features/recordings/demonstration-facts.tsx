@@ -58,6 +58,7 @@ export const demonstrationProfileLabels = {
   'cairn-crx-capture@1': '识途浏览器录制',
   'midscene-recorder-json@1': 'Midscene 录制 JSON',
   'midscene-yaml-flow@1': 'Midscene Web YAML',
+  'cairn-ai-trace@1': 'AI 动作轨迹',
 }
 
 export function DemonstrationFacts({
@@ -140,6 +141,8 @@ export function DemonstrationFacts({
               输入：
               {fact.data.value.state === 'literal'
                 ? fact.data.value.text || '（空）'
+                : fact.data.value.state === 'reference'
+                ? `引用: ${fact.data.value.from}`
                 : fact.data.value.reason}
             </p>
           )}

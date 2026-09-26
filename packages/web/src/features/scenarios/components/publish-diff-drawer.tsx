@@ -5,6 +5,7 @@ import {
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { computeScenarioDiff, type ScenarioDiffResult } from '../scenario-diff'
+import { stepTypeLabel } from '@/features/authoring/step-registry'
 import {
   X,
   PlusCircle,
@@ -136,7 +137,7 @@ export function PublishDiffDrawer({
                             步骤：{change.step.name}
                           </span>
                           <span className='text-label text-status-success-foreground font-mono'>
-                            {change.step.type}
+                            {stepTypeLabel(change.step.type)}
                           </span>
                         </div>
                         <p className='text-label text-muted-foreground mt-0.5'>

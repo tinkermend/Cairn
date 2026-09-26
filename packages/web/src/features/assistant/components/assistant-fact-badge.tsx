@@ -52,7 +52,7 @@ export function AssistantFactItem({
               {scopeKind ? (
                 <StatusBadge
                   tone={scopeKind === 'platform' ? 'info' : 'neutral'}
-                  className='text-2xs py-0 px-1.5'
+                  className='text-label py-0 px-1.5'
                   hideIcon
                 >
                   {scopeKind === 'platform' ? '平台系统事实' : '目标业务事实'}
@@ -61,18 +61,18 @@ export function AssistantFactItem({
 
               {fact.validUntil ? (
                 isExpired ? (
-                  <StatusBadge tone='warning' className='text-2xs py-0 px-1.5'>
+                  <StatusBadge tone='warning' className='text-label py-0 px-1.5'>
                     时效已过期
                   </StatusBadge>
                 ) : (
-                  <StatusBadge tone='success' className='text-2xs py-0 px-1.5'>
+                  <StatusBadge tone='success' className='text-label py-0 px-1.5'>
                     时效有效
                   </StatusBadge>
                 )
               ) : null}
 
               {fact.observedAt ? (
-                <span className='inline-flex items-center gap-1 text-2xs text-text-muted font-mono'>
+                <span className='inline-flex items-center gap-1 text-label text-text-muted font-mono'>
                   <Clock className='size-2.5' aria-hidden />
                   {new Date(fact.observedAt).toLocaleTimeString()} 观测
                 </span>
@@ -85,7 +85,7 @@ export function AssistantFactItem({
           <button
             type='button'
             onClick={() => setExpanded(!expanded)}
-            className='shrink-0 text-2xs font-medium text-primary-600 hover:text-primary-700 underline underline-offset-2'
+            className='shrink-0 text-label font-medium text-primary-600 hover:text-primary-700 underline underline-offset-2'
           >
             {citations.length} 处依据 {expanded ? '收起' : '展开'}
           </button>
@@ -94,14 +94,14 @@ export function AssistantFactItem({
 
       {expanded && citations.length > 0 ? (
         <div className='mt-2 pt-2 border-t border-border-divider space-y-1'>
-          <div className='text-2xs font-medium text-text-muted'>事实证据链：</div>
+          <div className='text-label font-medium text-text-muted'>事实证据链：</div>
           <div className='flex flex-wrap gap-1'>
             {citations.map((cite) => (
               <span
                 key={cite}
                 onClick={() => onNavigateCitation?.(cite)}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-mono bg-surface-subtle border border-border-default text-text-secondary',
+                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-label font-mono bg-surface-subtle border border-border-default text-text-secondary',
                   onNavigateCitation && 'cursor-pointer hover:border-primary-400 hover:text-primary-600',
                 )}
                 title={cite}

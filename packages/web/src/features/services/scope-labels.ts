@@ -6,4 +6,6 @@ export const SCOPE_LABELS: Record<ServiceScope, string> = {
   'run:cancel': '取消本应用的运行',
   'evidence:read': '读取已发布证据',
   'ai:execute': '执行 AI 步骤',
+  'report:read': '读取报表',
+  'report:export': '导出报表',
 }

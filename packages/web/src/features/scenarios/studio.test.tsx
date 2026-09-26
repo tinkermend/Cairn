@@ -88,6 +88,15 @@ vi.mock('@/lib/demonstrations-api', async (original) => ({
 vi.mock('@/lib/platform-config-api', () => ({
   fetchPlatformConfig: vi.fn(async () => { throw new Error('Platform config is outside this fixture') }),
 }))
+vi.mock('@/lib/repair-api', () => ({
+  fetchScenarioRepairCandidates: vi.fn(async () => []),
+  fetchRunRepairCandidates: vi.fn(async () => []),
+  fetchRepairCandidate: vi.fn(async () => { throw new Error('not found') }),
+  validateRepairCandidate: vi.fn(async () => ({ candidate: {} as any, runId: 'run-val' })),
+  adoptRepairCandidate: vi.fn(async () => ({ candidate: {} as any, draftRevision: 2 })),
+  rejectRepairCandidate: vi.fn(async () => ({} as any)),
+  reopenRepairCandidate: vi.fn(async () => ({} as any)),
+}))
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: mocks.fetchTarget,
   fetchTargets: mocks.fetchTargets,
@@ -852,7 +861,7 @@ describe('Scenario Studio', () => {
     await expect.element(screen.getByRole('menuitem', { name: '下载文件' })).toBeEnabled()
     await expect.element(screen.getByRole('menuitem', { name: '文件上传' })).toBeEnabled()
     await expect
-      .element(screen.getByRole('menuitem', { name: /AI 操作/ }))
+      .element(screen.getByRole('menuitem', { name: /视觉操作/ }))
       .toBeDisabled()
     await expect
       .element(screen.getByRole('menuitem', { name: '导航' }))
@@ -1750,5 +1759,24 @@ describe('Scenario Studio', () => {
     // 切回步骤配置
     await screen.getByRole('tab', { name: /步骤配置/ }).click()
     await expect.element(screen.getByLabelText('页面地址')).toBeInTheDocument()
+  })
+
+  it('输入参数面板不包含场景默认定位顺序，可通过顶栏场景配置打开并调整', async () => {
+    const { screen } = await renderPage()
+
+    // 切换到输入参数 Tab，验证其纯粹性
+    await screen.getByRole('tab', { name: /输入参数/ }).click()
+    await expect.element(screen.getByRole('heading', { name: '场景输入' })).toBeInTheDocument()
+    await expect.element(screen.getByText('场景默认定位顺序')).not.toBeInTheDocument()
+
+    // 点击顶栏的「更多」->「场景配置」
+    await screen.getByRole('button', { name: '更多' }).click()
+    await screen.getByRole('menuitem', { name: '场景配置' }).click()
+    await expect.element(screen.getByRole('heading', { name: '场景配置' })).toBeInTheDocument()
+    await expect.element(screen.getByText('场景默认定位顺序')).toBeInTheDocument()
+
+    // 关闭弹窗
+    await screen.getByRole('button', { name: '完成' }).click()
+    await expect.element(screen.getByRole('heading', { name: '场景配置' })).not.toBeInTheDocument()
   })
 })

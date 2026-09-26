@@ -17,12 +17,14 @@ interface ScopeVariablesBarProps {
   inputs: ModuleInputDecl[]
   priorSteps: Step[]
   className?: string
+  onInsert?: (variable: ScopeVariable) => void
 }
 
 export function ScopeVariablesBar({
   inputs,
   priorSteps,
   className,
+  onInsert,
 }: ScopeVariablesBarProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
@@ -88,7 +90,7 @@ export function ScopeVariablesBar({
           <Variable className='size-3.5 text-primary' />
           <span>可用作用域变量 ({variables.length})</span>
         </div>
-        <span className='text-label'>点击复制插值表达式</span>
+        <span className='text-label'>{onInsert ? '点击插入到当前步骤的值字段' : '点击复制插值表达式'}</span>
       </div>
 
       <div className='flex flex-wrap gap-1.5'>
@@ -98,9 +100,9 @@ export function ScopeVariablesBar({
             <button
               key={`${v.source}-${v.key}`}
               type='button'
-              title={`${v.description}\n点击复制 ${v.expression}`}
-              aria-label={`复制变量 ${v.expression}`}
-              onClick={() => handleCopy(v)}
+              title={`${v.description}\n${onInsert ? '插入' : '复制'} ${v.expression}；仅支持作为完整值使用`}
+              aria-label={`${onInsert ? '插入' : '复制'}变量 ${v.expression}`}
+              onClick={() => onInsert ? onInsert(v) : void handleCopy(v)}
               className={cn(
                 'group inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 font-mono text-small transition-colors hover:border-primary/50 hover:bg-accent',
                 isCopied && 'border-status-success-accent bg-status-success-background'

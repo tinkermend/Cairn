@@ -7,6 +7,7 @@ import {
   authControlHeartbeatResponseSchema,
   authControlInputReceiptSchema,
   managedBrowserMetaSchema,
+  closeManagedPageResponseSchema,
   managedBrowserFrameSchema,
   sessionEventDtoSchema,
   sessionOperationDtoSchema,
@@ -192,6 +193,8 @@ export function sessionBrowserTransport(kind: 'operation' | 'session'): BrowserT
       apiFetch(`${base(id)}/auth-control/input`, authControlInputReceiptSchema, post(body)),
     releaseAuthControl: (id, body) =>
       apiFetch(`${base(id)}/auth-control/release`, z.object({ released: z.boolean() }), post(body)),
+    closeManagedPage: (id, pageId) =>
+      apiFetch(`${base(id)}/browser/pages/${encodeURIComponent(pageId)}/close`, closeManagedPageResponseSchema, post({})),
     resumeRunAuth: (id, body) => apiFetch(`${base(id)}/complete-auth`, z.unknown(), post(body)),
     subscribeBrowserFrames: (id, input) =>
       subscribeSessionStream(

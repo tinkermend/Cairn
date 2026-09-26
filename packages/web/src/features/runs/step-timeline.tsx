@@ -14,7 +14,7 @@ import {
   type StepRunDto,
   type StepRunStatus,
 } from '@cairn/shared'
-import { ChevronDown, ChevronRight, GitBranch, Layers, MessageSquare } from 'lucide-react'
+import { ChevronDown, ChevronRight, GitBranch, Layers, MessageSquare, Sparkles } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Can } from '@/components/rbac/can'
@@ -27,6 +27,7 @@ import { AiAttemptSummary } from './ai-evidence'
 import { AttemptEvidenceList } from './evidence-viewer'
 import { StepFaceScreenshot, stepFaceScreenshot } from './run-video'
 import { LoopIterationsPanel } from './loop-iterations'
+import { isStepHealed } from './healed-helper'
 import {
   ATTEMPT_STATUS_LABELS,
   formatDuration,
@@ -462,6 +463,15 @@ export function StepRunItem({
           ) : skipReason ? (
             <Badge variant='outline'>{SKIP_REASON_LABELS[skipReason]}</Badge>
           ) : null}
+          {isStepHealed(step, evidenceItems as any) && (
+            <Badge
+              variant='outline'
+              className='text-3xs font-medium border-primary/40 text-primary bg-primary/5 gap-0.5'
+            >
+              <Sparkles className='size-2.5 text-primary' />
+              AI 救活
+            </Badge>
+          )}
           {(() => {
             const lastAttempt = step.attempts[step.attempts.length - 1]
             const lastOutput = lastAttempt?.output as any
@@ -638,7 +648,7 @@ export function StepRunItem({
 }
 
 function topLevelIfBlocks(run: RunDetailDto): ControlFlowIfBlock[] {
-  return (run.snapshot.controlFlow?.blocks ?? []).filter(
+  return (run.snapshot?.controlFlow?.blocks ?? []).filter(
     (block): block is ControlFlowIfBlock => block.kind === 'if' && !block.parentBlockId,
   )
 }

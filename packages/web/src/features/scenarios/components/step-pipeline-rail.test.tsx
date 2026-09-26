@@ -145,4 +145,63 @@ describe('StepPipelineRail', () => {
     await screen.getByRole('button', { name: '解除包裹', exact: true }).click()
     expect(onUnwrapBlock).toHaveBeenCalledWith('block-1')
   })
+
+  it('展示就地定位健康徽标：满分静默、衰减标黄、自愈就绪带星', async () => {
+    const healthMap = new Map([
+      [
+        'step-1',
+        {
+          stepId: 'step-1',
+          status: 'healthy' as const,
+          deterministic: 10,
+          map: 0,
+          ai: 0,
+          failed: 0,
+          located: 10,
+          ruleHitRate: 1.0,
+          fallbackRate: 0,
+        },
+      ],
+      [
+        'step-2',
+        {
+          stepId: 'step-2',
+          status: 'fallback_warning' as const,
+          deterministic: 2,
+          map: 0,
+          ai: 8,
+          failed: 0,
+          located: 10,
+          ruleHitRate: 0.2,
+          fallbackRate: 0.8,
+          activeCandidate: {
+            id: 'cand-1',
+            scenarioId: 'sc-1',
+            status: 'proposed' as const,
+            patch: { kind: 'replace_element_target' as const },
+          } as any,
+        },
+      ],
+    ])
+
+    const screen = await render(
+      <div className='h-[600px] w-[320px] flex flex-col'>
+        <StepPipelineRail
+          document={sampleDoc}
+          selectedId='step-1'
+          canWrite={true}
+          disabled={false}
+          editableTypes={['navigate', 'extract']}
+          locatorHealthMap={healthMap}
+          onSelect={vi.fn()}
+          onAddStep={vi.fn()}
+        />
+      </div>,
+    )
+
+    // step-1 是健康规则（100%），默认低噪音静默，不展示醒目徽标
+    await expect.element(screen.getByText('打开登录页')).toBeInTheDocument()
+    // step-2 有自愈候选，展示自愈就绪徽标
+    await expect.element(screen.getByTestId('step-locator-health-step-2')).toHaveTextContent('自愈就绪 (20%)')
+  })
 })

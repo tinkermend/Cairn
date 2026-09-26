@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   inputAuthControl: vi.fn(),
   releaseAuthControl: vi.fn(),
   resumeRunAuth: vi.fn(),
+  closeManagedPage: vi.fn(),
 }))
 
 vi.mock('@/lib/runs-api', () => mocks)
@@ -953,6 +954,56 @@ describe('BrowserView', () => {
         }),
       )
     })
+  })
+
+  it('展示同名页面的区分徽标，并允许关闭 canClose 的页面', async () => {
+    signIn(['session:read', 'session:view', 'session:control'])
+    const page1 = {
+      pageRef: { sessionId: 's1', sessionGeneration: 1, pageId: 'p1', documentEpoch: 0 },
+      kind: 'base' as const,
+      viewing: true,
+      currentExecution: false,
+      url: 'https://example.com/admin',
+      canClose: false,
+    }
+    const page2 = {
+      pageRef: { sessionId: 's1', sessionGeneration: 1, pageId: 'p2', documentEpoch: 0 },
+      kind: 'run' as const,
+      viewing: false,
+      currentExecution: true,
+      url: 'https://example.com/admin',
+      canClose: true,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      ...meta,
+      runStatus: 'OPEN',
+      currentPage: page2,
+      pages: [page1, page2],
+    })
+    mocks.closeManagedPage.mockResolvedValue({
+      closed: true,
+      pageId: 'p2',
+      activePageId: 'p1',
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView runId={meta.runId} runStatus="OPEN" sessionMode defaultOpen />
+      </QueryClientProvider>,
+    )
+
+    // 验证同名页面带有徽标
+    await expect.element(screen.getByText('[底页]')).toBeInTheDocument()
+    await expect.element(screen.getByText('[运行页]')).toBeInTheDocument()
+
+    // 验证 page2 具有关闭按钮且底页没有关闭按钮
+    const closeBtn = screen.getByRole('button', { name: '关闭标签页 example.com/admin' })
+    await expect.element(closeBtn).toBeInTheDocument()
+
+    // 点击关闭按钮
+    await closeBtn.click()
+    expect(mocks.closeManagedPage).toHaveBeenCalledWith(meta.runId, 'p2')
   })
 })
 

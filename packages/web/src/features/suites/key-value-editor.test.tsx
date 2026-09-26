@@ -18,6 +18,17 @@ function ControlledKeyValueEditor({ initial }: { initial: Record<string, JsonVal
 }
 
 describe('KeyValueEditor & MemberInputDialog 参数编排增强组件', () => {
+  it('仅在字符串参数中插入前序输出，并保留数字参数类型', async () => {
+    function Fixture() {
+      const [val, setVal] = useState<Record<string, JsonValue>>({ token: '前缀', count: 3 })
+      return <><KeyValueEditor value={val} onChange={setVal} referenceOptions={[{ value: '${stage[s1].members[m1].output.summary}', label: '第一阶段业务结论', description: '前序输出' }]} /><output data-testid='stage-input'>{JSON.stringify(val)}</output></>
+    }
+    await render(<Fixture />)
+    await page.getByRole('button', { name: '插入输出' }).click()
+    await page.getByRole('option', { name: /第一阶段业务结论/ }).click()
+    await expect.element(page.getByTestId('stage-input')).toHaveTextContent('"count":3')
+    await expect.element(page.getByTestId('stage-input')).toHaveTextContent('stage[s1].members[m1].output.summary')
+  })
   it('支持键值对增删改，并自动识别数字、布尔与普通字符串类型', async () => {
     await render(<ControlledKeyValueEditor initial={{ region: 'cn-north-1', count: 10 }} />)
 

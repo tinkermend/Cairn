@@ -12,6 +12,11 @@ const FALLBACK_LABEL = /^#\d+$/
 export type ApplyPickedExtras = {
   previewText?: string
   addOutcome?: boolean
+  outcomePick?: {
+    scope: 'step' | 'scenario'
+    contractId: string
+    stepId?: string
+  }
 }
 
 export function expectFromPreviewText(text: string): AssertExpect {

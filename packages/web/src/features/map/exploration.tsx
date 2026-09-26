@@ -1,13 +1,29 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle2, Compass, Play, Search } from 'lucide-react'
+import {
+  AlertCircle,
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  Compass,
+  Play,
+  Search,
+  ShieldAlert,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
+import type { ExploreDiscovery } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   createExploration,
   fetchExplorationPolicy,
+  fetchMapJob,
   fetchMapSafeEntries,
+  fetchExploreCandidates,
   previewExploration,
+  reviewExploreCandidate,
+  reviewUnknownExploreJob,
+  runExploreCandidate,
   updateExplorationPolicy,
 } from '@/lib/map-api'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
@@ -32,6 +48,8 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
   const [pathPrefix, setPathPrefix] = useState('')
   const [accountId, setAccountId] = useState('')
   const [entryId, setEntryId] = useState('')
+  const [inspectJobId, setInspectJobId] = useState('')
+  const [candidateTab, setCandidateTab] = useState<'known_links' | 'reveal' | 'opaque' | 'rejected' | 'incomplete'>('known_links')
 
   const configQuery = useQuery({
     queryKey: ['platform-config'],
@@ -115,6 +133,7 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
       }),
     onSuccess: (result) => {
       toast.success(result.created ? '已创建探索作业' : '已返回相同作业')
+      setInspectJobId(result.job.jobId)
       void queryClient.invalidateQueries({ queryKey: ['map', targetId] })
     },
     onError: (error) => {
@@ -123,6 +142,91 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
       )
     },
   })
+
+  const activeJobId = inspectJobId || createMutation.data?.job.jobId || ''
+
+  const candidatesQuery = useQuery({
+    queryKey: ['map', targetId, 'explorations', activeJobId, 'candidates'],
+    queryFn: () => fetchExploreCandidates(targetId, activeJobId),
+    enabled: Boolean(canRead && activeJobId),
+    refetchInterval: 3000,
+  })
+
+  const jobQuery = useQuery({
+    queryKey: ['map-job', activeJobId],
+    queryFn: () => fetchMapJob(activeJobId),
+    enabled: Boolean(canRead && activeJobId),
+    refetchInterval: 3000,
+  })
+
+  const candidateReviewMutation = useMutation({
+    mutationFn: ({
+      candidateId,
+      decision,
+      actionCategory,
+    }: {
+      candidateId: string
+      decision: 'approved' | 'rejected'
+      actionCategory: 'reveal' | 'direct_url_open' | 'ui_activate'
+    }) =>
+      reviewExploreCandidate(targetId, activeJobId, candidateId, {
+        expectedRevision: 0,
+        idempotencyKey: `cand-rev:${Date.now()}:${candidateId.slice(0, 8)}`,
+        decision,
+        actionCategory,
+        securityBasis: decision === 'approved' ? '控制台人工审核批准单跳动作' : '控制台人工拒绝候选控件',
+        requestEnvelope: [],
+        validDurationHours: 24,
+      }),
+    onSuccess: (res) => {
+      toast.success(res.decision === 'approved' ? '候选已审核批准' : '候选已拒绝')
+      void queryClient.invalidateQueries({
+        queryKey: ['map', targetId, 'explorations', activeJobId, 'candidates'],
+      })
+    },
+    onError: (err) => {
+      toast.error(err instanceof ApiRequestError ? err.message : '候选审核失败')
+    },
+  })
+
+  const runCandidateMutation = useMutation({
+    mutationFn: (candidateId: string) =>
+      runExploreCandidate(targetId, activeJobId, candidateId, {
+        expectedReviewRevision: 0,
+        idempotencyKey: `run-cand:${Date.now()}:${candidateId.slice(0, 8)}`,
+      }),
+    onSuccess: (res) => {
+      toast.success('已触发受控单跳探索作业')
+      setInspectJobId(res.job.jobId)
+      void queryClient.invalidateQueries({ queryKey: ['map', targetId] })
+    },
+    onError: (err) => {
+      toast.error(err instanceof ApiRequestError ? err.message : '启动单跳探索失败')
+    },
+  })
+
+  const reviewUnknownMutation = useMutation({
+    mutationFn: (decision: 'failed' | 'cancelled') =>
+      reviewUnknownExploreJob(targetId, activeJobId, {
+        decision,
+        reason: '控制台人工审查未知结果判定',
+      }),
+    onSuccess: (res) => {
+      toast.success(`作业已判定为 ${res.status}`)
+      void queryClient.invalidateQueries({ queryKey: ['map-job', activeJobId] })
+      void queryClient.invalidateQueries({ queryKey: ['map', targetId] })
+    },
+    onError: (err) => {
+      toast.error(err instanceof ApiRequestError ? err.message : '未知审查失败')
+    },
+  })
+
+  const candidateItems = candidatesQuery.data?.items ?? []
+  const knownLinks = candidateItems.filter((c) => !c.rejectionReason && c.evidenceStatus === 'complete' && c.candidateCategory === 'explicit_url')
+  const revealControls = candidateItems.filter((c) => !c.rejectionReason && c.evidenceStatus === 'complete' && c.candidateCategory === 'reveal')
+  const opaqueMenus = candidateItems.filter((c) => !c.rejectionReason && c.evidenceStatus === 'complete' && c.candidateCategory === 'opaque_navigation')
+  const rejectedCandidates = candidateItems.filter((c) => Boolean(c.rejectionReason) || c.status === 'rejected')
+  const incompleteCandidates = candidateItems.filter((c) => c.evidenceStatus !== 'complete' && !c.rejectionReason && c.status !== 'rejected')
 
   if (!canRead) return null
   const factoryOn = configQuery.data?.document.mapExplorationEnabled === true
@@ -150,7 +254,7 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
             </div>
           </div>
           <p className='text-caption text-text-muted'>
-            AI 探索出厂默认关闭。仅在严格限定的域名与路径前缀下进行只读漫游，发现新页面与地标。
+            导航线索扫描 / 审核一步 / 继续扫描。出厂默认关闭，仅在严格限定的域名与路径前缀下进行只读线索扫描，发现新页面与地标。扫描发现的候选线索需经人工审查方可单跳试跑，绝不自动提拔为正式地图资产。
           </p>
           <p className='sr-only'>
             当前：{factoryOn ? '平台已开放' : '平台关闭'} ·{' '}
@@ -345,6 +449,263 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                   </span>
                 </div>
               ) : null}
+
+              {/* 探索线索与候选审核区 */}
+              <div className='rounded-lg border border-border-card bg-surface-subtle p-3 space-y-3 mt-3'>
+                <div className='flex flex-wrap items-center justify-between gap-2 border-b border-border-card pb-2'>
+                  <div className='space-y-0.5'>
+                    <div className='flex items-center gap-2'>
+                      <h3 className='text-caption font-semibold text-text-primary'>
+                        导航线索与候选控件
+                      </h3>
+                      {activeJobId ? (
+                        <span className='font-mono text-micro text-text-muted'>
+                          作业：{activeJobId.slice(0, 8)}…
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className='text-micro text-text-muted'>
+                      来源状态扫描发现的候选线索需经人工审查方可单跳试跑，绝不自动提拔为正式地图资产。
+                    </p>
+                  </div>
+                  <div className='flex items-center gap-2'>
+                    <Input
+                      placeholder='输入探索作业 ID 审查'
+                      value={inspectJobId}
+                      onChange={(e) => setInspectJobId(e.target.value.trim())}
+                      className='h-7 w-48 text-micro font-mono'
+                    />
+                  </div>
+                </div>
+
+                {/* 未知结果核查警示 */}
+                {jobQuery.data?.jobStatus === 'needs_review' ? (
+                  <div className='flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-warning bg-status-warning-subtle p-2.5 text-caption text-status-warning-foreground'>
+                    <div className='flex items-center gap-2'>
+                      <ShieldAlert className='size-4 shrink-0 text-status-warning-foreground' />
+                      <span>受控动作执行结果未决 (needs_review)，等待人工核查判定。</span>
+                    </div>
+                    <div className='flex items-center gap-2'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={reviewUnknownMutation.isPending}
+                        onClick={() => reviewUnknownMutation.mutate('failed')}
+                        className='h-7 text-micro'
+                      >
+                        判定为失败
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={reviewUnknownMutation.isPending}
+                        onClick={() => reviewUnknownMutation.mutate('cancelled')}
+                        className='h-7 text-micro'
+                      >
+                        取消并清理
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* 分组标签页 */}
+                <div className='flex flex-wrap gap-1 border-b border-border-card pb-1'>
+                  <button
+                    type='button'
+                    className={`px-2.5 py-1 text-micro rounded font-medium transition-colors ${
+                      candidateTab === 'known_links'
+                        ? 'bg-surface font-semibold text-link shadow-sm'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                    onClick={() => setCandidateTab('known_links')}
+                  >
+                    目标已知链接 ({knownLinks.length})
+                  </button>
+                  <button
+                    type='button'
+                    className={`px-2.5 py-1 text-micro rounded font-medium transition-colors ${
+                      candidateTab === 'reveal'
+                        ? 'bg-surface font-semibold text-link shadow-sm'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                    onClick={() => setCandidateTab('reveal')}
+                  >
+                    展开控件 ({revealControls.length})
+                  </button>
+                  <button
+                    type='button'
+                    className={`px-2.5 py-1 text-micro rounded font-medium transition-colors ${
+                      candidateTab === 'opaque'
+                        ? 'bg-surface font-semibold text-link shadow-sm'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                    onClick={() => setCandidateTab('opaque')}
+                  >
+                    目的地未知菜单 ({opaqueMenus.length})
+                  </button>
+                  <button
+                    type='button'
+                    className={`px-2.5 py-1 text-micro rounded font-medium transition-colors ${
+                      candidateTab === 'rejected'
+                        ? 'bg-surface font-semibold text-link shadow-sm'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                    onClick={() => setCandidateTab('rejected')}
+                  >
+                    已拒绝 ({rejectedCandidates.length})
+                  </button>
+                  <button
+                    type='button'
+                    className={`px-2.5 py-1 text-micro rounded font-medium transition-colors ${
+                      candidateTab === 'incomplete'
+                        ? 'bg-surface font-semibold text-link shadow-sm'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                    onClick={() => setCandidateTab('incomplete')}
+                  >
+                    采集不完整 ({incompleteCandidates.length})
+                  </button>
+                </div>
+
+                {/* 候选列表 */}
+                {candidatesQuery.isPending && activeJobId ? (
+                  <p className='py-4 text-center text-micro text-text-muted'>正在加载候选线索…</p>
+                ) : !activeJobId ? (
+                  <p className='py-4 text-center text-micro text-text-muted'>
+                    启动探索或输入作业 ID 后可查看采集到的候选线索。
+                  </p>
+                ) : (
+                  <div className='space-y-2 max-h-64 overflow-y-auto pr-1'>
+                    {((candidateTab === 'known_links'
+                      ? knownLinks
+                      : candidateTab === 'reveal'
+                        ? revealControls
+                        : candidateTab === 'opaque'
+                          ? opaqueMenus
+                          : candidateTab === 'rejected'
+                            ? rejectedCandidates
+                            : incompleteCandidates
+                    ) as ExploreDiscovery[]).map((cand) => (
+                      <div
+                        key={cand.id}
+                        className='flex flex-wrap items-center justify-between gap-2 rounded border border-border-card bg-surface p-2 text-caption'
+                      >
+                        <div className='space-y-0.5 min-w-0 flex-1'>
+                          <div className='flex items-center gap-2'>
+                            <span className='font-medium text-text-primary truncate'>
+                              {cand.accessibleName || '未命名控件'}
+                            </span>
+                            <span className='font-mono text-micro text-text-muted bg-surface-subtle px-1 rounded'>
+                              {cand.role}
+                            </span>
+                            <StatusBadge
+                              tone={
+                                cand.status === 'approved'
+                                  ? 'success'
+                                  : cand.status === 'rejected'
+                                    ? 'error'
+                                    : 'neutral'
+                              }
+                            >
+                              {cand.status === 'approved'
+                                ? '已批准'
+                                : cand.status === 'rejected'
+                                  ? '已拒绝'
+                                  : '待审核'}
+                            </StatusBadge>
+                          </div>
+                          <div className='flex items-center gap-2 text-micro text-text-muted font-mono truncate'>
+                            {cand.targetUrl ? (
+                              <span className='truncate text-link'>{cand.targetUrl}</span>
+                            ) : (
+                              <span className='truncate'>{cand.targetHint}</span>
+                            )}
+                            {cand.rejectionReason ? (
+                              <span className='text-status-danger-foreground'>· {cand.rejectionReason}</span>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {/* 操作按钮 */}
+                        <div className='flex items-center gap-1.5 shrink-0'>
+                          {cand.status === 'discovered' && canWrite ? (
+                            <>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                disabled={candidateReviewMutation.isPending}
+                                onClick={() =>
+                                  candidateReviewMutation.mutate({
+                                    candidateId: cand.id,
+                                    decision: 'approved',
+                                    actionCategory:
+                                      cand.candidateCategory === 'explicit_url'
+                                        ? 'direct_url_open'
+                                        : cand.candidateCategory === 'reveal'
+                                          ? 'reveal'
+                                          : 'ui_activate',
+                                  })
+                                }
+                                className='h-7 text-micro'
+                              >
+                                <Check className='size-3 mr-1 text-status-success-foreground' />
+                                审核批准
+                              </Button>
+                              <Button
+                                size='sm'
+                                variant='ghost'
+                                disabled={candidateReviewMutation.isPending}
+                                onClick={() =>
+                                  candidateReviewMutation.mutate({
+                                    candidateId: cand.id,
+                                    decision: 'rejected',
+                                    actionCategory:
+                                      cand.candidateCategory === 'explicit_url'
+                                        ? 'direct_url_open'
+                                        : cand.candidateCategory === 'reveal'
+                                          ? 'reveal'
+                                          : 'ui_activate',
+                                  })
+                                }
+                                className='h-7 text-micro text-text-muted hover:text-status-danger-foreground'
+                              >
+                                <X className='size-3 mr-1' />
+                                拒绝
+                              </Button>
+                            </>
+                          ) : null}
+
+                          {cand.status === 'approved' && canWrite ? (
+                            <Button
+                              size='sm'
+                              disabled={runCandidateMutation.isPending}
+                              onClick={() => runCandidateMutation.mutate(cand.id)}
+                              className='h-7 text-micro'
+                            >
+                              <ArrowRight className='size-3 mr-1' />
+                              {runCandidateMutation.isPending ? '试跑中…' : '审核一步 (单跳试跑)'}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                    {(candidateTab === 'known_links'
+                      ? knownLinks
+                      : candidateTab === 'reveal'
+                        ? revealControls
+                        : candidateTab === 'opaque'
+                          ? opaqueMenus
+                          : candidateTab === 'rejected'
+                            ? rejectedCandidates
+                            : incompleteCandidates
+                    ).length === 0 ? (
+                      <p className='py-3 text-center text-micro text-text-muted'>
+                        该分类下无候选控件。
+                      </p>
+                    ) : null}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>

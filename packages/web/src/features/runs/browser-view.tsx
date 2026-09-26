@@ -3,6 +3,7 @@ import {
   AUTH_CONTROL_HEARTBEAT_SECONDS,
   describeManagedAuthWait,
   hasAllPermissions,
+  managedPageBadge,
   managedPageCaption,
   type BrowserAuthInputCommand,
   type ManagedBrowserFrame,
@@ -14,6 +15,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   acquireAuthControl as runAcquireAuthControl,
+  closeManagedPage as runCloseManagedPage,
   fetchManagedBrowser as runFetchManagedBrowser,
   heartbeatAuthControl as runHeartbeatAuthControl,
   inputAuthControl as runInputAuthControl,
@@ -21,7 +23,7 @@ import {
   resumeRunAuth as runResumeRunAuth,
   subscribeBrowserFrames as runSubscribeBrowserFrames,
 } from '@/lib/runs-api'
-import { Loader2 } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { useAuthoringObserve } from '@/features/authoring'
@@ -108,6 +110,7 @@ export type BrowserTransport = {
   heartbeatAuthControl: typeof runHeartbeatAuthControl
   inputAuthControl: typeof runInputAuthControl
   releaseAuthControl: typeof runReleaseAuthControl
+  closeManagedPage?: typeof runCloseManagedPage
   resumeRunAuth: (id: string, body: { token?: string }) => Promise<unknown>
   subscribeBrowserFrames: typeof runSubscribeBrowserFrames
 }
@@ -117,6 +120,7 @@ const runTransport: BrowserTransport = {
   heartbeatAuthControl: runHeartbeatAuthControl,
   inputAuthControl: runInputAuthControl,
   releaseAuthControl: runReleaseAuthControl,
+  closeManagedPage: runCloseManagedPage,
   resumeRunAuth: runResumeRunAuth,
   subscribeBrowserFrames: runSubscribeBrowserFrames,
 }
@@ -184,6 +188,7 @@ export function BrowserView({
   const [viewPageId, setViewPageId] = useState<string | undefined>()
   const [streamError, setStreamError] = useState<string | null>(null)
   const [authError, setAuthError] = useState<string | null>(null)
+  const [closingPageId, setClosingPageId] = useState<string | null>(null)
   const seq = useRef(0)
   const composing = useRef(false)
   const tokenRef = useRef<string | null>(null)
@@ -585,6 +590,31 @@ export function BrowserView({
       .finally(() => setBusy(false))
   }
 
+  const handleClosePage = (targetPageId: string) => {
+    if (closingPageId) return
+    setClosingPageId(targetPageId)
+    const closeFn = transport.closeManagedPage ?? runCloseManagedPage
+    void closeFn(runId, targetPageId)
+      .then(() => {
+        toast.success('已关闭标签页')
+        if (viewPageId === targetPageId) {
+          setViewPageId(undefined)
+        }
+        return fetchManagedBrowser(runId, undefined)
+      })
+      .then((next) => {
+        if (next) setMeta(next)
+      })
+      .catch((error) => {
+        toast.error(
+          error instanceof ApiRequestError ? error.message : '无法关闭标签页'
+        )
+      })
+      .finally(() => {
+        setClosingPageId(null)
+      })
+  }
+
   return (
     <section
       aria-label='受管浏览器'
@@ -882,16 +912,57 @@ export function BrowserView({
                   const selected =
                     (viewPageId ?? meta.currentPage?.pageRef.pageId) ===
                     page.pageRef.pageId
+                  const duplicateCount = meta.pages.filter(
+                    (p) => managedPageCaption(p) === managedPageCaption(page),
+                  ).length
+                  const isClosing = closingPageId === page.pageRef.pageId
                   return (
-                    <Button
+                    <div
                       key={page.pageRef.pageId}
-                      size='sm'
-                      variant={selected ? 'secondary' : 'outline'}
-                      onClick={() => setViewPageId(page.pageRef.pageId)}
+                      className={cn(
+                        'inline-flex items-center rounded-md border text-small font-medium transition-[background-color,border-color,box-shadow,color]',
+                        selected
+                          ? 'border-transparent bg-secondary text-secondary-foreground shadow-sm'
+                          : 'border-border-default bg-background hover:bg-muted text-foreground',
+                      )}
                     >
-                      {managedPageCaption(page)}
-                      {page.currentExecution ? ' · 当前页' : ''}
-                    </Button>
+                      <button
+                        type='button'
+                        className={cn(
+                          'inline-flex items-center gap-1.5 py-1.5 outline-none',
+                          page.canClose && canControl ? 'pl-3 pr-1' : 'px-3',
+                        )}
+                        onClick={() => setViewPageId(page.pageRef.pageId)}
+                      >
+                        {duplicateCount > 1 ? (
+                          <span className='text-[10px] text-muted-foreground mr-0.5'>
+                            [{managedPageBadge(page.kind)}]
+                          </span>
+                        ) : null}
+                        <span className='truncate max-w-[200px]'>
+                          {managedPageCaption(page)}
+                        </span>
+                        {page.currentExecution ? ' · 当前页' : ''}
+                      </button>
+                      {page.canClose && canControl ? (
+                        <button
+                          type='button'
+                          aria-label={`关闭标签页 ${managedPageCaption(page)}`}
+                          disabled={isClosing}
+                          className={cn(
+                            'mr-1.5 rounded-sm p-1 hover:bg-card-hover text-muted-foreground hover:text-foreground transition-colors cursor-pointer',
+                            isClosing && 'opacity-50 pointer-events-none',
+                          )}
+                          onClick={() => handleClosePage(page.pageRef.pageId)}
+                        >
+                          {isClosing ? (
+                            <Loader2 className='size-3 animate-spin' />
+                          ) : (
+                            <X className='size-3' />
+                          )}
+                        </button>
+                      ) : null}
+                    </div>
                   )
                 })}
               </div>

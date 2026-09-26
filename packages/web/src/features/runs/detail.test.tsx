@@ -282,7 +282,7 @@ describe('RunDetailPage', () => {
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
 
     await screen.getByRole('button', { name: '更多操作' }).click()
-    await expect.element(screen.getByRole('link', { name: '在结果与报告中查看' })).toHaveAttribute('href', '/evidence')
+    await expect.element(screen.getByRole('link', { name: '现场材料检索' })).toHaveAttribute('href', '/runs')
 
     // 步骤、Attempt、错误、证据、context 一个都不许省
     await expect.element(screen.getByText('1. 提交订单')).toBeInTheDocument()
@@ -725,10 +725,12 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read'])
     const screen = await renderPage()
+    await screen.getByRole('button', { name: /录像与实时回放/ }).click()
     await expect.element(screen.getByRole('heading', { name: '本次录像' })).toBeInTheDocument()
     await expect.element(screen.getByText('历史录像，覆盖范围未验证')).toBeInTheDocument()
     await expect.element(screen.getByText('录像已截断')).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '下载录像' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '详细' }).click()
     await expect.element(screen.getByAltText('该步骤最后一次尝试的截图')).toBeInTheDocument()
   })
 

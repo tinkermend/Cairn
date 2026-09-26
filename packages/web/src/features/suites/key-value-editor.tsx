@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { JsonValue } from '@cairn/shared'
 import { Plus, Trash2, Code2, List } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -57,17 +57,35 @@ export function KeyValueEditor({
   disabled = false,
   placeholderKey = '参数名 (Key)',
   placeholderValue = '参数值 (Value)',
+  referenceOptions = [],
 }: {
   value: Record<string, JsonValue>
   onChange: (next: Record<string, JsonValue>) => void
   disabled?: boolean
   placeholderKey?: string
   placeholderValue?: string
+  referenceOptions?: Array<{ value: string; label: string; description: string }>
 }) {
   const [mode, setMode] = useState<'grid' | 'json'>('grid')
   const [rows, setRows] = useState<KeyValueRow[]>(() => objectToRows(value))
   const [jsonText, setJsonText] = useState<string>(() => JSON.stringify(value, null, 2))
   const [jsonError, setJsonError] = useState<string | null>(null)
+  const [referenceRow, setReferenceRow] = useState<number | null>(null)
+  const [referenceIndex, setReferenceIndex] = useState(0)
+  const valueInputs = useRef<Record<number, HTMLInputElement | null>>({})
+
+  function insertReference(index: number, reference: string) {
+    const row = rows[index]
+    if (!row) return
+    const input = valueInputs.current[index]
+    const start = input?.selectionStart ?? row.value.length
+    const end = input?.selectionEnd ?? start
+    const trigger = row.value.slice(0, start).lastIndexOf('${')
+    const begin = start === end && trigger >= 0 ? trigger : start
+    handleRowValueChange(index, row.value.slice(0, begin) + reference + row.value.slice(end))
+    setReferenceRow(null)
+    requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(begin + reference.length, begin + reference.length) })
+  }
 
   useEffect(() => {
     setRows(objectToRows(value))
@@ -167,14 +185,33 @@ export function KeyValueEditor({
                   className='w-1/3 min-w-[120px] font-mono text-small bg-card'
                   onChange={(e) => handleRowKeyChange(index, e.target.value)}
                 />
+                <div className='relative min-w-0 flex-1'>
                 <Input
+                  ref={(element) => { valueInputs.current[index] = element }}
                   value={row.value}
                   disabled={disabled}
                   placeholder={placeholderValue}
                   aria-label={`参数值 ${index + 1}`}
-                  className='flex-1 min-w-0 font-mono text-small bg-card'
-                  onChange={(e) => handleRowValueChange(index, e.target.value)}
+                  className='w-full min-w-0 font-mono text-small bg-card'
+                  onChange={(e) => {
+                    handleRowValueChange(index, e.target.value)
+                    const before = e.target.value.slice(0, e.target.selectionStart ?? e.target.value.length)
+                    setReferenceRow(referenceOptions.length && before.lastIndexOf('${') > before.lastIndexOf('}') ? index : null)
+                    setReferenceIndex(0)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || referenceRow !== index) return
+                    if (event.key === 'Escape') { event.preventDefault(); setReferenceRow(null) }
+                    if (event.key === 'ArrowDown') { event.preventDefault(); setReferenceIndex((current) => (current + 1) % referenceOptions.length) }
+                    if (event.key === 'ArrowUp') { event.preventDefault(); setReferenceIndex((current) => (current - 1 + referenceOptions.length) % referenceOptions.length) }
+                    if (event.key === 'Enter' && referenceOptions[referenceIndex]) { event.preventDefault(); insertReference(index, referenceOptions[referenceIndex].value) }
+                  }}
                 />
+                {referenceRow === index && referenceOptions.length ? <div role='listbox' aria-label='前序阶段输出' className='absolute z-50 max-h-48 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-lg'>
+                  {referenceOptions.map((option, optionIndex) => <div key={option.value} role='option' aria-selected={optionIndex === referenceIndex} className={`cursor-pointer rounded px-2 py-1 text-label ${optionIndex === referenceIndex ? 'bg-primary/10' : ''}`} onMouseDown={(event) => event.preventDefault()} onClick={() => insertReference(index, option.value)}>{option.label}<div className='font-mono text-muted-foreground'>{option.value}</div><div className='text-muted-foreground'>{option.description}</div></div>)}
+                </div> : null}
+                </div>
+                {referenceOptions.length && (typeof value[row.key] === 'string' || value[row.key] === undefined) ? <Button type='button' variant='ghost' size='sm' className='shrink-0 text-label' onClick={() => setReferenceRow(referenceRow === index ? null : index)}>插入输出</Button> : null}
                 {!disabled && (
                   <Button
                     variant='ghost'

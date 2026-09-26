@@ -1,7 +1,6 @@
 import {
   Activity,
   Bell,
-  FileSearch,
   Home,
   KeyRound,
   CircleDot,
@@ -80,7 +79,6 @@ export const sidebarData: SidebarData = {
       items: [
         navItem('schedules', CalendarClock),
         navItem('runs', Play),
-        navItem('evidence', FileSearch),
         navItem('maintenance', Wrench),
       ],
     },

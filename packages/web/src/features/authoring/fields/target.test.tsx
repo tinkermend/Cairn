@@ -73,7 +73,7 @@ describe('TargetFields', () => {
         />,
       ),
     )
-    await expect.element(screen.getByLabelText('目标')).toHaveValue('名为「配置管理」的菜单项')
+    await expect.element(screen.getByLabelText('要找的页面元素')).toHaveValue('名为「配置管理」的菜单项')
     await screen.unmount()
   })
 
@@ -97,8 +97,8 @@ describe('TargetFields', () => {
     const empty = await render(
       harness(<TargetFields target={{ framePath: [], candidates: [] }} onChange={vi.fn()} />),
     )
-    await expect.element(empty.getByLabelText('目标')).toBeInTheDocument()
-    await expect.element(empty.getByText('规则')).not.toBeInTheDocument()
+    await expect.element(empty.getByLabelText('要找的页面元素')).toBeInTheDocument()
+    await expect.element(empty.getByText('规则', { exact: true })).not.toBeInTheDocument()
     await empty.unmount()
 
     const filled = await render(
@@ -110,7 +110,7 @@ describe('TargetFields', () => {
       ),
     )
     // getByText 命中多个元素会直接报错，所以这一句同时断言了「只出现一次」
-    await expect.element(filled.getByText('规则')).toBeInTheDocument()
+    await expect.element(filled.getByText('规则', { exact: true })).toBeInTheDocument()
   })
 
   it('允许 AI 兜底但 AI 未开放时，「不可用」提示跟着摘要卡的徽标走', async () => {
@@ -146,11 +146,11 @@ describe('TargetFields', () => {
         />,
       ),
     )
-    await expect.element(screen.getByLabelText('目标')).toBeInTheDocument()
-    await expect.element(screen.getByText('规则')).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '高级：候选、锚点与解析档位' })).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('要找的页面元素')).toBeInTheDocument()
+    await expect.element(screen.getByText('规则', { exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '高级：规则候选、锚点与定位顺序' })).toBeInTheDocument()
     await expect.element(screen.getByLabelText('定位值 1')).not.toBeInTheDocument()
-    await screen.getByRole('button', { name: '高级：候选、锚点与解析档位' }).click()
+    await screen.getByRole('button', { name: '高级：规则候选、锚点与定位顺序' }).click()
     await expect.element(screen.getByLabelText('定位值 1')).toBeInTheDocument()
   })
 
@@ -384,5 +384,28 @@ describe('TargetFields', () => {
       const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1]
       expect(lastCall?.[0]).toEqual(original)
     })
+  })
+
+  it('标题后呈现小问号图标，默认隐藏长段说明，hover 时通过气泡提示展示说明', async () => {
+    const screen = await render(
+      harness(
+        <TargetFields
+          target={{ framePath: [], candidates: [{ by: 'label', value: '提交' }] }}
+          onChange={vi.fn()}
+        />,
+      ),
+    )
+    // 静态说明不再直接占用垂直空间
+    expect(screen.container.textContent).not.toMatch(/描述页面元素，不写点击或填写动作/)
+
+    // 问号按钮存在
+    const helpBtn = screen.getByRole('button', { name: '查看说明' })
+    await expect.element(helpBtn).toBeInTheDocument()
+
+    // 悬停后展示说明
+    await helpBtn.hover()
+    await expect
+      .element(screen.getByText(/描述页面元素，不写点击或填写动作/))
+      .toBeInTheDocument()
   })
 })

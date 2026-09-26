@@ -193,6 +193,9 @@ export function CommandMenu() {
                     runCommand(() => navigate({ to: '/runs/$runId', params: { runId: item.id } }))
                   }
                 >
+                  <span className='font-mono text-xs text-muted-foreground mr-1.5'>
+                    #{item.id.slice(0, 8)}
+                  </span>
                   <span className='truncate'>{item.scenarioName}</span>
                   {/* 同场景同目标的多条运行只靠状态分不开，必须带时间。 */}
                   <span className='ms-auto shrink-0 text-label text-muted-foreground'>

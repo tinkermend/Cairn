@@ -5,6 +5,7 @@ import {
   type NumberCompareOp,
 } from '@cairn/shared'
 import { validateAriaSnapshotTemplate } from '@cairn/authoring'
+import { FieldHelp } from '@/components/ui/field-help'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -63,7 +64,12 @@ export function AssertFields({
       {expect.kind === 'aria_snapshot' ? (
         <div className='space-y-2'>
           <div className='flex items-center justify-between'>
-            <Label htmlFor='assert-aria-template'>Aria 快照模板 (YAML)</Label>
+            <div className='flex items-center gap-1.5'>
+              <Label htmlFor='assert-aria-template'>Aria 快照模板 (YAML)</Label>
+              <FieldHelp label='Aria 快照模板'>
+                支持角色、无障碍名称与正则匹配（如 <code>- button /确认/</code>）。顶层必须以 <code>-</code> 开头。
+              </FieldHelp>
+            </div>
             <span className='text-label text-muted-foreground'>
               {expect.template.length} / 16384 字符
             </span>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   stepSchema,
   type ApplyDemonstrationBody,
@@ -11,6 +12,7 @@ import { ChevronDown, ChevronRight, CheckCheck } from 'lucide-react'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   applyDemonstrationImport,
+  fetchDemonstration,
   newDemonstrationId,
   previewDemonstrationImport,
 } from '@/lib/demonstrations-api'
@@ -121,12 +123,20 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
     onOpenChange,
   } = props
   const [placement, setPlacement] = useState<DemonstrationPlacement>(() =>
-    props.initialPlaceholderStepId
+    props.initialPlacement
+      ? props.initialPlacement
+      : props.initialPlaceholderStepId
       ? { kind: 'replace_initial', nodeId: props.initialPlaceholderStepId }
       : insertAnchor.kind === 'start'
       ? { kind: 'start' }
       : { kind: 'after', nodeId: insertAnchor.stepId }
   )
+  const demonstrationQuery = useQuery({
+    queryKey: ['demonstrations', recordingDraftId],
+    queryFn: () => fetchDemonstration(recordingDraftId!),
+    enabled: Boolean(recordingDraftId) && open,
+  })
+  const isAiTrace = demonstrationQuery.data?.source?.importProfile === 'cairn-ai-trace@1'
   const [preview, setPreview] = useState<DemonstrationPreview>()
   const [choices, setChoices] = useState<Record<string, Decision>>({})
   const [openGroups, setOpenGroups] = useState<string[]>([])
@@ -237,6 +247,8 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
           ? '录制步骤已替换新场景占位步骤'
           : placement.kind === 'replace'
           ? '已替换所选步骤，原有引用与成功条件已保留'
+          : placement.kind === 'replace_sequence'
+          ? '已将步骤替换为确定性序列，成功条件已转移至末步'
           : '已回填到当前草稿'
       )
     } catch (e) {
@@ -278,6 +290,11 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
               请先保存当前场景的修改，再确认回填。
             </p>
           )}
+          {isAiTrace && (
+            <div className='rounded-md border border-sky-500/20 bg-sky-500/10 p-2.5 text-label text-sky-800 dark:text-sky-300'>
+              💡 本次回填来自 AI 动作轨迹固化。建议检查并在最后一个步骤补充 MUST 业务成功条件，以便后续版本验证。
+            </div>
+          )}
           <div className='space-y-2'>
             <Label>回填位置</Label>
             <Select
@@ -286,6 +303,8 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                   ? `replace-initial:${placement.nodeId}`
                   : placement.kind === 'replace'
                   ? `replace:${placement.nodeId}`
+                  : placement.kind === 'replace_sequence'
+                  ? `replace-sequence:${placement.nodeId}`
                   : placement.kind === 'after'
                     ? `after:${placement.nodeId}`
                     : 'start'
@@ -296,7 +315,13 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                   v === 'start'
                     ? { kind: 'start' }
                     : {
-                        kind: v.startsWith('replace-initial:') ? 'replace_initial' : v.startsWith('replace:') ? 'replace' : 'after',
+                        kind: v.startsWith('replace-initial:')
+                          ? 'replace_initial'
+                          : v.startsWith('replace:')
+                          ? 'replace'
+                          : v.startsWith('replace-sequence:')
+                          ? 'replace_sequence'
+                          : 'after',
                         nodeId: v.slice(v.indexOf(':') + 1),
                       }
                 )
@@ -326,6 +351,11 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                     </SelectItem>
                   )}
                 {props.independentSteps?.map((s) => (
+                  <SelectItem key={`rs-${s.id}`} value={`replace-sequence:${s.id}`}>
+                    固化替换「{s.name}」（多步）
+                  </SelectItem>
+                ))}
+                {props.independentSteps?.map((s) => (
                   <SelectItem key={`r-${s.id}`} value={`replace:${s.id}`}>
                     重新示教「{s.name}」
                   </SelectItem>
@@ -335,6 +365,11 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
             {placement.kind === 'replace' && (
               <p className='text-label text-muted-foreground'>
                 保留原步骤身份、输出引用与成功条件；本次须恰好保留一个动作。模块内部步骤不在此处替换。
+              </p>
+            )}
+            {placement.kind === 'replace_sequence' && (
+              <p className='text-label text-muted-foreground'>
+                将原步骤替换为多个确定性步骤；原步骤的成功条件将转移至最后一个生成步骤。
               </p>
             )}
             {placement.kind === 'replace_initial' && (
@@ -533,6 +568,8 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
           >
             {placement.kind === 'replace'
               ? '替换所选步骤'
+              : placement.kind === 'replace_sequence'
+              ? `固化替换所选步骤（${kept} 项）`
               : `确认回填 ${kept} 项`}
           </Button>
         </SheetFooter>

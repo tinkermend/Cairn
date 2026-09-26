@@ -69,6 +69,7 @@ describe('安全进入路径管理卡片 (SafeEntriesCard)', () => {
           arrivalName: '控制台概览',
           arrivalTarget: { framePath: [], candidates: [{ by: 'css', value: 'body' }] },
           safetyBasisKind: 'confirmed_path',
+          safetyBasis: { kind: 'confirmed_path' },
           summary: '已核实主控入口',
           jobKinds: ['map_probe', 'map_refresh'],
           createdAt: '2026-09-24T00:00:00.000Z',

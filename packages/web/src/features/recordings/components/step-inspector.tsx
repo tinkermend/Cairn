@@ -189,6 +189,8 @@ export function RecordingStepInspector({
                   <span className='text-foreground font-mono'>
                     {relatedFact.data.value.state === 'literal'
                       ? relatedFact.data.value.text || '（空）'
+                      : relatedFact.data.value.state === 'reference'
+                      ? `引用: ${relatedFact.data.value.from}`
                       : relatedFact.data.value.reason}
                   </span>
                 </p>

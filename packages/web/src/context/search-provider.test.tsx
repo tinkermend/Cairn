@@ -161,7 +161,7 @@ describe('SearchProvider and CommandMenu', () => {
     await openCommandPalette(screen)
 
     await expect.element(screen.getByRole('option', { name: '运行记录', exact: true })).toBeInTheDocument()
-    await expect.element(screen.getByRole('option', { name: '结果与报告', exact: true })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '结果与报告', exact: true }).elements()).toHaveLength(0)
     expect(screen.getByRole('option', { name: '用户管理' }).elements()).toHaveLength(0)
     expect(screen.getByRole('option', { name: '录制草稿' }).elements()).toHaveLength(0)
   })

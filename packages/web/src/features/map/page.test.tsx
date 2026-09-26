@@ -49,7 +49,13 @@ vi.mock('@/lib/targets-api', () => ({
   fetchTargets: vi.fn(async () => ({ items: [] })),
   fetchTargetAccounts: mocks.fetchTargetAccounts,
 }))
-vi.mock('@/lib/map-api', () => mocks)
+vi.mock('@/lib/map-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/map-api')>()
+  return {
+    ...actual,
+    ...mocks,
+  }
+})
 vi.mock('@/lib/schedules-api', () => ({
   fetchSchedules: vi.fn(async () => ({ items: [] })),
   fetchSchedule: vi.fn(),

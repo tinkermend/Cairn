@@ -155,6 +155,17 @@ describe('HealingCard Component', () => {
     })
   })
 
+  it('重试成功条件时将已修正目标送入当前运行', async () => {
+    debugRunMock.mockResolvedValueOnce(mockRun)
+    const retryTarget = { framePath: [], candidates: [{ by: 'text' as const, value: 'grok分组' }] }
+    const screen = await render(<HealingCard run={mockRun} retryTarget={retryTarget} />)
+    await screen.getByRole('button', { name: '再试这一步' }).click()
+    expect(debugRunMock).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      action: 'retry_current',
+      targetOverride: retryTarget,
+    }))
+  })
+
   it('在成功或暂停态时展示继续后续步骤按钮', async () => {
     const succeededRun: RunDetailDto = {
       ...mockRun,
@@ -168,6 +179,19 @@ describe('HealingCard Component', () => {
     const screen = await render(<HealingCard run={succeededRun} />)
     await expect.element(screen.getByText('当前步骤已通过验证')).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '继续后续步骤' })).toBeInTheDocument()
+  })
+
+  it('步骤前暂停时不误报为已通过', async () => {
+    const pausedRun: RunDetailDto = {
+      ...mockRun,
+      checkpoint: { ...mockRun.checkpoint!, reason: 'author_pause' },
+      stepRuns: [],
+    }
+    const screen = await render(<HealingCard run={pausedRun} />)
+    await expect.element(screen.getByText('已在当前步骤前暂停')).toBeInTheDocument()
+    await expect.element(screen.getByText('本步尚未执行。可先调整目标与条件，再单步验证或继续运行。')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '继续执行当前步骤' })).toBeInTheDocument()
+    expect(screen.getByText('当前步骤已通过验证')).not.toBeInTheDocument()
   })
 
   it('checkpoint 缺失时不假装第一步失败', async () => {

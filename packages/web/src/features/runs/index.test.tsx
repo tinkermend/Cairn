@@ -17,13 +17,17 @@ const mocks = vi.hoisted(() => ({
 let routeSearch: { targetId?: string } = {}
 const navigateMock = vi.fn()
 
-vi.mock('@/lib/runs-api', () => ({
-  fetchRuns: mocks.fetchRuns,
-  cancelRun: mocks.cancelRun,
-  createRun: mocks.createRun,
-  previewDeleteRun: mocks.previewDeleteRun,
-  deleteRun: mocks.deleteRun,
-}))
+vi.mock('@/lib/runs-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/runs-api')>()
+  return {
+    ...actual,
+    fetchRuns: mocks.fetchRuns,
+    cancelRun: mocks.cancelRun,
+    createRun: mocks.createRun,
+    previewDeleteRun: mocks.previewDeleteRun,
+    deleteRun: mocks.deleteRun,
+  }
+})
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
   fetchScenario: vi.fn(),
@@ -340,5 +344,59 @@ describe('RunsPage', () => {
     await expect
       .element(screen.getByText('巡检发现 1 项登录超时异常'))
       .toBeInTheDocument()
+  })
+
+  it('无 report:read 权限时隐藏报告列与有报告筛选按钮', async () => {
+    mocks.fetchRuns.mockResolvedValue({
+      items: [
+        summary({
+          id: 'run-report-1',
+          runReportStatus: 'generated',
+          reportId: 'rep-1',
+        }),
+      ],
+    })
+
+    signIn(['run:read'])
+    const screen = await renderPage()
+    expect(screen.getByRole('button', { name: '有报告' }).elements()).toHaveLength(0)
+    const headers = [...document.querySelectorAll('thead th')].map((node) =>
+      node.textContent?.trim()
+    )
+    expect(headers).not.toContain('报告')
+    expect(screen.getByText('已生成').elements()).toHaveLength(0)
+  })
+
+  it('具备 report:read 时展示报告列与有报告筛选按钮及报告状态 Badge', async () => {
+    mocks.fetchRuns.mockResolvedValue({
+      items: [
+        summary({
+          id: 'run-report-1',
+          runReportStatus: 'generated',
+          reportId: 'rep-1',
+        }),
+      ],
+    })
+
+    signIn(['run:read', 'report:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('button', { name: '有报告' })).toBeInTheDocument()
+    const headers = [...document.querySelectorAll('thead th')].map((node) =>
+      node.textContent?.trim()
+    )
+    expect(headers).toContain('报告')
+    await expect.element(screen.getByText('已生成')).toBeInTheDocument()
+  })
+
+  it('点击「有报告」筛选按钮时触发带 hasReport 参数的路由更新', async () => {
+    signIn(['run:read', 'report:read'])
+    const screen = await renderPage()
+    await screen.getByRole('button', { name: '有报告' }).click()
+    expect(navigateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: '/runs',
+        search: expect.objectContaining({ hasReport: true }),
+      })
+    )
   })
 })

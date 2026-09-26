@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import type { HealingDiagnosis, Step } from '@cairn/shared'
+import type { HealingDiagnosis, RepairCandidate, Step } from '@cairn/shared'
 import { HealingPatchCard } from './healing-patch-card'
 
 describe('SH-3: HealingPatchCard Component', () => {
@@ -150,7 +150,7 @@ describe('SH-3: HealingPatchCard Component', () => {
 
     const screen = await render(
       <HealingPatchCard
-        candidate={mockCandidate}
+        candidate={mockCandidate as unknown as RepairCandidate}
         currentRevision={3}
         onAdopt={onAdopt}
       />,
@@ -209,12 +209,186 @@ describe('SH-3: HealingPatchCard Component', () => {
 
     const screen = await render(
       <HealingPatchCard
-        candidate={mockBlockedCandidate}
+        candidate={mockBlockedCandidate as unknown as RepairCandidate}
         currentRevision={3}
       />,
     )
 
     await expect.element(screen.getByText('护栏阻断')).toBeVisible()
     await expect.element(screen.getByText('安全护栏未通过，禁止采纳')).toBeVisible()
+  })
+
+  it('B4-R2: proposed 状态下可直接受控采纳为草稿', async () => {
+    const onAdopt = vi.fn()
+    const mockProposedCandidate = {
+      id: 'rep-proposed-1',
+      candidateId: 'rep_prop_1',
+      runId: '11111111-1111-4111-8111-111111111111',
+      sourceAttemptId: '22222222-2222-4222-8222-222222222222',
+      patchTargetRef: {
+        kind: 'scenario' as const,
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        stepId: 'step-1',
+        sourceDefinitionDigest: 'a'.repeat(64),
+      },
+      patch: {
+        kind: 'ADD_CANDIDATE' as const,
+        suggestedCandidate: { by: 'role' as const, value: 'button', name: '登录' },
+      },
+      hypothesis: '未经过完整隔离验证，但护栏全过',
+      digestManifest: {
+        sourceDefinitionDigest: 'a'.repeat(64),
+        postPatchExecutionDigest: 'b'.repeat(64),
+        originalContractDigest: 'c'.repeat(64),
+        algorithmVersion: 'v1',
+      },
+      guardResults: {
+        allowedFields: { name: 'allowedFields', status: 'passed' as const, reason: '通过' },
+        unchangedBusinessGoal: { name: 'unchangedBusinessGoal', status: 'passed' as const, reason: '通过' },
+        sideEffectSafety: { name: 'sideEffectSafety', status: 'passed' as const, reason: '通过' },
+        contextIntegrity: { name: 'contextIntegrity', status: 'passed' as const, reason: '通过' },
+        overallPassed: true,
+      },
+      status: 'proposed' as const,
+      validationScope: {
+        locatorValid: false,
+        stepPassed: false,
+        outcomePassed: false,
+        crossSampleStable: false,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    const screen = await render(
+      <HealingPatchCard
+        candidate={mockProposedCandidate as unknown as RepairCandidate}
+        currentRevision={5}
+        onAdopt={onAdopt}
+      />,
+    )
+
+    const adoptBtn = screen.getByRole('button', { name: '采纳为草稿 (v5)' })
+    await expect.element(adoptBtn).toBeVisible()
+    await adoptBtn.click()
+    expect(onAdopt).toHaveBeenCalledWith('rep-proposed-1', 5)
+  })
+
+  it('B4-R2: 驳回输入框交互与原因提交', async () => {
+    const onReject = vi.fn()
+    const mockCandidate = {
+      id: 'rep-rej-1',
+      candidateId: 'rep_rej_1',
+      runId: '11111111-1111-4111-8111-111111111111',
+      sourceAttemptId: '22222222-2222-4222-8222-222222222222',
+      patchTargetRef: {
+        kind: 'scenario' as const,
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        stepId: 'step-1',
+        sourceDefinitionDigest: 'a'.repeat(64),
+      },
+      patch: {
+        kind: 'ADD_CANDIDATE' as const,
+        suggestedCandidate: { by: 'role' as const, value: 'button', name: '登录' },
+      },
+      hypothesis: '候选测试',
+      digestManifest: {
+        sourceDefinitionDigest: 'a'.repeat(64),
+        postPatchExecutionDigest: 'b'.repeat(64),
+        originalContractDigest: 'c'.repeat(64),
+        algorithmVersion: 'v1',
+      },
+      guardResults: {
+        allowedFields: { name: 'allowedFields', status: 'passed' as const, reason: '通过' },
+        unchangedBusinessGoal: { name: 'unchangedBusinessGoal', status: 'passed' as const, reason: '通过' },
+        sideEffectSafety: { name: 'sideEffectSafety', status: 'passed' as const, reason: '通过' },
+        contextIntegrity: { name: 'contextIntegrity', status: 'passed' as const, reason: '通过' },
+        overallPassed: true,
+      },
+      status: 'proposed' as const,
+      validationScope: { locatorValid: false, stepPassed: false, outcomePassed: false, crossSampleStable: false },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    const screen = await render(
+      <HealingPatchCard
+        candidate={mockCandidate as unknown as RepairCandidate}
+        onReject={onReject}
+      />,
+    )
+
+    const rejectBtn = screen.getByRole('button', { name: '拒绝' })
+    await rejectBtn.click()
+
+    const input = screen.getByPlaceholder('请输入驳回原因（选填）')
+    await expect.element(input).toBeVisible()
+    await input.fill('选择器不够稳定')
+
+    const confirmBtn = screen.getByRole('button', { name: '确认驳回' })
+    await confirmBtn.click()
+    expect(onReject).toHaveBeenCalledWith('rep-rej-1', '选择器不够稳定')
+  })
+
+  it('B4-R2: 已驳回状态展示驳回原因、复现次数与重新打开按钮', async () => {
+    const onReopen = vi.fn()
+    const mockRejectedCandidate = {
+      id: 'rep-rej-2',
+      candidateId: 'rep_rej_2',
+      runId: '11111111-1111-4111-8111-111111111111',
+      sourceAttemptId: '22222222-2222-4222-8222-222222222222',
+      patchTargetRef: {
+        kind: 'scenario' as const,
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        stepId: 'step-1',
+        sourceDefinitionDigest: 'a'.repeat(64),
+      },
+      patch: {
+        kind: 'ADD_CANDIDATE' as const,
+        suggestedCandidate: { by: 'role' as const, value: 'button', name: '登录' },
+      },
+      hypothesis: '候选测试',
+      digestManifest: {
+        sourceDefinitionDigest: 'a'.repeat(64),
+        postPatchExecutionDigest: 'b'.repeat(64),
+        originalContractDigest: 'c'.repeat(64),
+        algorithmVersion: 'v1',
+      },
+      guardResults: {
+        allowedFields: { name: 'allowedFields', status: 'passed' as const, reason: '通过' },
+        unchangedBusinessGoal: { name: 'unchangedBusinessGoal', status: 'passed' as const, reason: '通过' },
+        sideEffectSafety: { name: 'sideEffectSafety', status: 'passed' as const, reason: '通过' },
+        contextIntegrity: { name: 'contextIntegrity', status: 'passed' as const, reason: '通过' },
+        overallPassed: true,
+      },
+      status: 'rejected' as const,
+      observationCount: 15,
+      rejectedObservationCount: 12,
+      rejection: {
+        rejectedAt: new Date().toISOString(),
+        rejectedBy: 'user-operator',
+        reason: '需要统一采用 testId 策略',
+      },
+      validationScope: { locatorValid: false, stepPassed: false, outcomePassed: false, crossSampleStable: false },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    const screen = await render(
+      <HealingPatchCard
+        candidate={mockRejectedCandidate as unknown as RepairCandidate}
+        onReopen={onReopen}
+      />,
+    )
+
+    await expect.element(screen.getByText('已驳回候选记录')).toBeVisible()
+    await expect.element(screen.getByText('需要统一采用 testId 策略')).toBeVisible()
+    await expect.element(screen.getByText('user-operator')).toBeVisible()
+    await expect.element(screen.getByText('驳回后在运行中又命中 12 次（总计观测 15 次）')).toBeVisible()
+    await expect.element(screen.getByText('高频复现 (≥10次)')).toBeVisible()
+
+    const reopenBtn = screen.getByRole('button', { name: '重新打开' })
+    await reopenBtn.click()
+    expect(onReopen).toHaveBeenCalledWith('rep-rej-2')
   })
 })

@@ -54,7 +54,7 @@ export const fetchReportRevisions = (id: string, cursor?: string) =>
     `/api/reports/${id}/revisions${toQueryString({ cursor })}`,
     z.object({
       items: z.array(reportRevisionDtoSchema),
-      nextCursor: z.string().nullable(),
+      nextCursor: z.string().nullish(),
     })
   )
 export const fetchReportRevision = (id: string, revision: string) =>
@@ -71,7 +71,7 @@ export const fetchReportJobs = (id: string, cursor?: string) =>
     `/api/reports/${id}/export-jobs${toQueryString({ cursor })}`,
     z.object({
       items: z.array(exportJobDtoSchema),
-      nextCursor: z.string().nullable(),
+      nextCursor: z.string().nullish(),
     })
   )
 export const cancelReportJob = (id: string) =>
@@ -94,6 +94,8 @@ export const deriveMemberReport = (
     reportDtoSchema,
     post(body)
   )
+export const previewMemberReport = (id: string, revision: string, body: DeriveMemberReportBody) =>
+  apiFetch(`/api/reports/${id}/revisions/${revision}/member-preview`, z.object({ title: z.string() }), post(body))
 export const fetchReportProfiles = (targetId: string, cursor?: string) =>
   apiFetch(
     `/api/report-profiles${toQueryString({ targetId, cursor, limit: 100 })}`,
@@ -125,7 +127,11 @@ export const fetchScenarioReportDefaults = (id: string) =>
   )
 export const saveScenarioReportDefaults = (
   id: string,
-  body: { profileId: string | null; expectedRevision: number }
+  body: {
+    profileId: string | null
+    expectedRevision: number
+    outputPolicy?: import('@cairn/shared').OutputPolicy
+  }
 ) =>
   apiFetch(
     `/api/scenarios/${id}/report-defaults`,
@@ -175,6 +181,10 @@ export function previewReport(body: CreateReportBody) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(createReportBodySchema.parse(body)),
   })
+}
+
+export function previewReportRevision(reportId: string, body: CreateReportRevisionBody) {
+  return apiFetch(`/api/reports/${reportId}/revision-preview`, reportPreviewResponseSchema, post(createReportRevisionBodySchema.parse(body)))
 }
 
 export function createReport(body: CreateReportBody) {
@@ -243,4 +253,3 @@ export function createReportShareToken(reportId: string) {
     { method: 'POST' },
   )
 }
-

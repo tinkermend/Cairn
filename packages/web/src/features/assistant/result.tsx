@@ -1,6 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
-import type { AssistantProposal, AssistantResult } from '@cairn/shared'
+import type { AssistantAuthoringProposal, AssistantProposal, AssistantResult } from '@cairn/shared'
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -21,6 +22,17 @@ import {
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { AssistantFactItem } from './components/assistant-fact-badge'
+
+function formatDiffValue(val: unknown): string {
+  if (val === undefined || val === null) return ''
+  if (typeof val === 'string') return val
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val)
+  try {
+    return JSON.stringify(val, null, 2)
+  } catch {
+    return String(val)
+  }
+}
 
 export function assistantHrefTo(href: string) {
   try {
@@ -87,23 +99,36 @@ function ProposalDiffViewer({
   isAdopted,
   canRollback,
 }: {
-  proposal: AssistantProposal
+  proposal: AssistantProposal | AssistantAuthoringProposal
   onPreviewStep?: (stepId: string) => void
-  onAdopt?: (proposal: AssistantProposal) => void
-  onRollback?: (proposal: AssistantProposal) => void
+  onAdopt?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
+  onRollback?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
   adopting?: boolean
   isAdopted?: boolean
   canRollback?: boolean
 }) {
+  const isV2 = proposal.kind === 'authoring_proposal'
+  const reason = isV2 ? '已按要求生成受限编排候选' : proposal.reason
+  const firstInsert = isV2 ? proposal.operations.find((op) => op.kind === 'insert_step') : null
+  const firstWithStepId = isV2 ? proposal.operations.find((op): op is Extract<typeof op, { stepId: string }> => 'stepId' in op) : null
+  const stepId = isV2
+    ? firstInsert?.step.id ?? firstWithStepId?.stepId
+    : proposal.stepId
+  const stepName = isV2
+    ? (firstInsert?.step.name ?? proposal.diffs.find((d) => d.stepName)?.stepName)
+    : null
+
   return (
     <div className='space-y-3 rounded-lg border border-border-default bg-surface-card p-3.5 shadow-2xs'>
       <div>
-        <p className='text-body font-medium text-text-primary'>
-          {proposal.reason}
-        </p>
-        {proposal.stepId ? (
+        <p className='text-body font-medium text-text-primary'>{reason}</p>
+        {stepName ? (
+          <p className='mt-0.5 text-small text-text-muted'>
+            {isV2 ? '涉及步骤' : '建议修改步骤'} · {stepName}
+          </p>
+        ) : stepId ? (
           <p className='mt-0.5 font-mono text-small text-text-muted'>
-            建议修改步骤 · {proposal.stepId.slice(0, 8)}…
+            {isV2 ? '涉及步骤' : '建议修改步骤'} · {stepId.slice(0, 8)}…
           </p>
         ) : null}
       </div>
@@ -113,44 +138,98 @@ function ProposalDiffViewer({
           变更比对
         </div>
         <div className='space-y-2 font-mono text-small'>
-          {proposal.diffs.map((item, idx) => {
-            const path = item.fieldPath.join('.')
-            const changeType =
-              item.changeType ??
-              (item.from === undefined
-                ? 'add'
-                : item.to === undefined
-                  ? 'remove'
-                  : 'modify')
-            return (
-              <div
-                key={`${path}-${idx}`}
-                className='space-y-1 rounded border border-border-divider bg-surface-card p-2'
-              >
-                <div className='font-sans text-label font-medium text-text-muted'>
-                  {path}
+          {isV2 ? (
+            proposal.diffs.map((diff, idx) => {
+              if (diff.type === 'add') {
+                const name = diff.stepName
+                const type = diff.stepType
+                return (
+                  <div key={idx} className='space-y-1 rounded border border-border-divider bg-surface-card p-2'>
+                    <div className='font-sans text-label font-medium text-status-success-foreground'>
+                      + 新增节点：{name} ({type})
+                    </div>
+                    {diff.detail ? <div className='text-label text-text-muted'>{diff.detail}</div> : null}
+                  </div>
+                )
+              }
+              if (diff.type === 'remove') {
+                const name = diff.stepName
+                return (
+                  <div key={idx} className='space-y-1 rounded border border-border-divider bg-surface-card p-2'>
+                    <div className='font-sans text-label font-medium text-status-error-foreground line-through'>
+                      - 删除节点：{name}
+                    </div>
+                    {diff.detail ? <div className='text-label text-text-muted'>{diff.detail}</div> : null}
+                  </div>
+                )
+              }
+              if (diff.type === 'modify') {
+                const path = diff.fieldPath.join('.')
+                return (
+                  <div key={idx} className='space-y-1 rounded border border-border-divider bg-surface-card p-2'>
+                    <div className='font-sans text-label font-medium text-text-muted'>{path}</div>
+                    <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through whitespace-pre-wrap'>
+                      - {formatDiffValue(diff.from)}
+                    </div>
+                    <div className='rounded bg-status-success-background px-2 py-1 font-medium break-all text-status-success-foreground whitespace-pre-wrap'>
+                      + {formatDiffValue(diff.to)}
+                    </div>
+                  </div>
+                )
+              }
+              if (diff.type === 'move') {
+                const name = diff.stepName
+                return (
+                  <div key={idx} className='space-y-1 rounded border border-border-divider bg-surface-card p-2'>
+                    <div className='font-sans text-label font-medium text-status-info-foreground'>
+                      ↕ 移动节点：{name}（从第 {diff.fromIndex + 1} 位移至第 {diff.toIndex + 1} 位）
+                    </div>
+                    {diff.detail ? <div className='text-label text-text-muted'>{diff.detail}</div> : null}
+                  </div>
+                )
+              }
+              return null
+            })
+          ) : (
+            proposal.diffs.map((item, idx) => {
+              const path = item.fieldPath.join('.')
+              const changeType =
+                item.changeType ??
+                (item.from === undefined
+                  ? 'add'
+                  : item.to === undefined
+                    ? 'remove'
+                    : 'modify')
+              return (
+                <div
+                  key={`${path}-${idx}`}
+                  className='space-y-1 rounded border border-border-divider bg-surface-card p-2'
+                >
+                  <div className='font-sans text-label font-medium text-text-muted'>
+                    {path}
+                  </div>
+                  {changeType === 'remove' ? (
+                    <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through whitespace-pre-wrap'>
+                      - {formatDiffValue(item.from)}
+                    </div>
+                  ) : changeType === 'add' ? (
+                    <div className='rounded bg-status-success-background px-2 py-1 font-medium break-all text-status-success-foreground whitespace-pre-wrap'>
+                      + {formatDiffValue(item.to)}
+                    </div>
+                  ) : (
+                    <div className='space-y-1'>
+                      <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through whitespace-pre-wrap'>
+                        - {formatDiffValue(item.from)}
+                      </div>
+                      <div className='rounded bg-status-success-background px-2 py-1 font-medium break-all text-status-success-foreground whitespace-pre-wrap'>
+                        + {formatDiffValue(item.to)}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                {changeType === 'remove' ? (
-                  <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through'>
-                    - {String(item.from ?? '')}
-                  </div>
-                ) : changeType === 'add' ? (
-                  <div className='rounded bg-status-success-background px-2 py-1 font-medium break-all text-status-success-foreground'>
-                    + {String(item.to ?? '')}
-                  </div>
-                ) : (
-                  <div className='space-y-1'>
-                    <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through'>
-                      - {String(item.from ?? '')}
-                    </div>
-                    <div className='rounded bg-status-success-background px-2 py-1 font-medium break-all text-status-success-foreground'>
-                      + {String(item.to ?? '')}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          })}
+              )
+            })
+          )}
         </div>
       </div>
 
@@ -168,13 +247,13 @@ function ProposalDiffViewer({
       </div>
 
       <div className='flex flex-wrap items-center gap-2 border-t border-border-divider pt-1'>
-        {onPreviewStep ? (
+        {onPreviewStep && stepId ? (
           <Button
             type='button'
             variant='outline'
             size='sm'
             className='gap-1.5 text-label text-text-secondary hover:text-text-primary'
-            onClick={() => onPreviewStep(proposal.stepId)}
+            onClick={() => onPreviewStep(stepId)}
           >
             <Eye className='size-3.5' aria-hidden='true' />在 Studio 中定位
           </Button>
@@ -290,10 +369,10 @@ export function AssistantResultView({
   canRollback = true,
 }: {
   result: AssistantResult
-  onAdopt?: (proposal: AssistantProposal) => void
-  onRollback?: (proposal: AssistantProposal) => void
+  onAdopt?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
+  onRollback?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
   onPreviewStep?: (stepId: string) => void
-  onClarify?: (optionId: string) => void
+  onClarify?: (optionId: string, option?: any) => void
   onCancelTask?: () => void
   onNextPage?: (nextCursor: string) => void
   onNavigate?: () => void
@@ -325,15 +404,20 @@ export function AssistantResultView({
           <span>{result.question}</span>
         </div>
         {result.options?.length ? (
-          <div className='grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2'>
+          <div className='grid grid-cols-1 gap-2 pt-1 @[440px]:grid-cols-2'>
             {result.options.map((item) => (
               <button
                 key={item.id}
                 type='button'
-                onClick={() => onClarify?.(item.id)}
+                onClick={() => onClarify?.(item.id, item)}
                 className='group hover:border-primary-400 hover:text-primary-600 flex items-center justify-between rounded-lg border border-border-default bg-surface-subtle px-3 py-2 text-start text-small text-text-secondary shadow-2xs transition-colors select-none hover:bg-surface-card'
               >
-                <span className='truncate font-medium'>{item.label}</span>
+                <div className='min-w-0 flex-1'>
+                  <div className='truncate font-medium'>{item.label}</div>
+                  {'targetName' in item && item.targetName ? (
+                    <div className='truncate text-label text-text-muted'>目标：{item.targetName}</div>
+                  ) : null}
+                </div>
                 <ArrowRight
                   className='group-hover:text-primary-600 ms-1 size-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5'
                   aria-hidden='true'
@@ -360,10 +444,32 @@ export function AssistantResultView({
     )
   }
   if (result.kind === 'unsupported') {
-    return <p>{result.message}</p>
+    return (
+      <div
+        className='flex items-start gap-2.5 rounded-lg border border-status-warning-foreground/20 bg-status-warning-background p-3 text-small text-status-warning-foreground'
+        data-testid='unsupported-card'
+      >
+        <AlertTriangle className='size-4 shrink-0 mt-0.5' aria-hidden='true' />
+        <div className='space-y-1 min-w-0 flex-1'>
+          <p className='font-medium leading-tight'>暂不支持此操作</p>
+          <p className='text-label leading-normal opacity-90'>{result.message}</p>
+        </div>
+      </div>
+    )
   }
   if (result.kind === 'inaccessible') {
-    return <p>{result.message}</p>
+    return (
+      <div
+        className='flex items-start gap-2.5 rounded-lg border border-status-warning-foreground/20 bg-status-warning-background p-3 text-small text-status-warning-foreground'
+        data-testid='inaccessible-card'
+      >
+        <AlertTriangle className='size-4 shrink-0 mt-0.5' aria-hidden='true' />
+        <div className='space-y-1 min-w-0 flex-1'>
+          <p className='font-medium leading-tight'>无访问权限</p>
+          <p className='text-label leading-normal opacity-90'>{result.message}</p>
+        </div>
+      </div>
+    )
   }
   if (result.kind === 'guide') {
     return (
@@ -408,7 +514,7 @@ export function AssistantResultView({
                   </div>
                   <span
                     className={cn(
-                      'text-2xs inline-flex shrink-0 items-center gap-1',
+                      'text-label inline-flex shrink-0 items-center gap-1',
                       avail.textClass
                     )}
                   >
@@ -423,7 +529,7 @@ export function AssistantResultView({
                 {/* 次行：说明文本截断 + 紧凑进入按钮 */}
                 <div className='mt-1 flex min-w-0 items-center justify-between gap-2'>
                   <p
-                    className='line-clamp-1 min-w-0 flex-1 text-2xs leading-tight text-text-secondary'
+                    className='line-clamp-1 min-w-0 flex-1 text-label leading-tight text-text-secondary'
                     title={item.steps}
                   >
                     {item.steps}
@@ -435,7 +541,7 @@ export function AssistantResultView({
                       size='sm'
                       aria-label='打开入口'
                       title='打开入口'
-                      className='text-2xs h-5 shrink-0 gap-0.5 px-1.5 font-medium text-primary hover:bg-primary/5 hover:text-primary'
+                      className='h-6 shrink-0 gap-1 px-2 text-label font-medium text-primary hover:bg-primary/5 hover:text-primary'
                       onClick={(e) => {
                         e.stopPropagation()
                         go(item.href!)
@@ -455,18 +561,26 @@ export function AssistantResultView({
   }
   if (result.kind === 'explanation') {
     return (
-      <div className='space-y-2'>
-        <p>{result.summary}</p>
-        {result.stepSummary ? <p>{result.stepSummary}</p> : null}
+      <div className='space-y-2.5 rounded-lg border border-border-default bg-surface-card p-3.5 shadow-2xs'>
+        <p className='text-body text-text-primary leading-relaxed'>{result.summary}</p>
+        {result.stepSummary ? (
+          <p className='text-small text-text-secondary'>{result.stepSummary}</p>
+        ) : null}
         {result.diagnostics.length > 0 ? (
-          <ul className='space-y-1 text-label'>
-            {result.diagnostics.map((item) => (
-              <li key={`${item.code}-${item.stepId ?? ''}`}>
-                {item.baseline ? '原有问题：' : ''}
-                {item.message}
-              </li>
-            ))}
-          </ul>
+          <div className='rounded-md border border-border-divider bg-surface-subtle p-2.5 space-y-1.5'>
+            <div className='text-label font-medium text-text-secondary'>诊断分析</div>
+            <ul className='space-y-1 text-label text-text-muted'>
+              {result.diagnostics.map((item) => (
+                <li key={`${item.code}-${item.stepId ?? ''}`} className='flex items-start gap-1.5'>
+                  <span className='size-1.5 rounded-full bg-status-warning-foreground mt-1.5 shrink-0' />
+                  <span>
+                    {item.baseline ? '原有问题：' : ''}
+                    {item.message}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
       </div>
     )
@@ -475,7 +589,7 @@ export function AssistantResultView({
     return (
       <div className='space-y-3.5'>
         {result.observedAt ? (
-          <div className='text-2xs flex items-center gap-1.5 border-b border-border-divider pb-1 text-text-muted'>
+          <div className='text-label flex items-center gap-1.5 border-b border-border-divider pb-1 text-text-muted'>
             <span>数据观测基准时间：</span>
             <span className='font-mono font-medium'>
               {new Date(result.observedAt).toLocaleString()}
@@ -488,7 +602,7 @@ export function AssistantResultView({
             <h3 className='text-label font-medium text-text-primary'>
               已确认事实
             </h3>
-            <span className='text-2xs text-text-muted'>
+            <span className='text-label text-text-muted'>
               {result.facts.length} 条事实依据
             </span>
           </div>
@@ -525,7 +639,7 @@ export function AssistantResultView({
                       {item.citations.map((c) => (
                         <span
                           key={c}
-                          className='text-2xs inline-flex items-center rounded border border-border-default bg-surface-card px-1.5 py-0.5 font-mono text-text-muted'
+                          className='text-label inline-flex items-center rounded border border-border-default bg-surface-card px-1.5 py-0.5 font-mono text-text-muted'
                         >
                           {c}
                         </span>
@@ -569,24 +683,26 @@ export function AssistantResultView({
   }
   if (result.kind === 'compare') {
     return (
-      <div className='space-y-3'>
-        <p>{result.summary}</p>
-        <section>
-          <h3 className='text-label font-medium'>对比差异</h3>
-          <ul className='mt-1 list-disc space-y-1 ps-5'>
+      <div className='space-y-3 rounded-lg border border-border-default bg-surface-card p-3.5 shadow-2xs'>
+        <p className='text-body font-medium text-text-primary'>{result.summary}</p>
+        <section className='space-y-1.5 rounded-md border border-border-divider bg-surface-subtle p-2.5'>
+          <h3 className='text-label font-medium text-text-secondary'>对比差异</h3>
+          <ul className='space-y-1 text-small text-text-primary'>
             {result.differences.map((diff, index) => (
-              <li key={index}>
-                {diff.stepName}: {diff.baseStatus ?? '空'} →{' '}
-                {diff.targetStatus ?? '空'}
-                {diff.errorDiff ? ` (${diff.errorDiff})` : ''}
+              <li key={index} className='flex items-center gap-1.5 font-mono text-label'>
+                <span className='font-sans font-medium'>{diff.stepName}:</span>
+                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{diff.baseStatus ?? '空'}</span>
+                <span>→</span>
+                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{diff.targetStatus ?? '空'}</span>
+                {diff.errorDiff ? <span className='text-status-error-foreground font-sans'>({diff.errorDiff})</span> : null}
               </li>
             ))}
           </ul>
         </section>
         {result.nextActions.length > 0 ? (
           <section>
-            <h3 className='text-label font-medium'>建议操作</h3>
-            <div className='mt-2 flex flex-wrap gap-2'>
+            <h3 className='text-label font-medium text-text-secondary mb-1.5'>建议操作</h3>
+            <div className='flex flex-wrap gap-2'>
               {result.nextActions.map((item) => (
                 <Button
                   key={item.kind}
@@ -605,16 +721,16 @@ export function AssistantResultView({
   }
   if (result.kind === 'knowledge_proposal') {
     return (
-      <div className='space-y-3'>
-        <p>{result.reason}</p>
-        <p className='text-small text-muted-foreground'>
+      <div className='space-y-3 rounded-lg border border-border-default bg-surface-card p-3.5 shadow-2xs'>
+        <p className='text-body font-medium text-text-primary'>{result.reason}</p>
+        <p className='text-small text-text-muted'>
           知识建议已保存。请在场景中核对完整步骤与来源，再显式接受到草稿。
         </p>
-        <p className='text-small break-all'>建议编号：{result.proposalId}</p>
+        <p className='text-label font-mono text-text-muted break-all'>建议编号：{result.proposalId}</p>
         {result.diffs.length ? (
-          <details>
-            <summary>查看具体变更</summary>
-            <pre className='max-h-80 overflow-auto text-small break-all whitespace-pre-wrap'>
+          <details className='rounded-md border border-border-divider bg-surface-subtle p-2 text-label'>
+            <summary className='cursor-pointer font-medium text-text-secondary hover:text-text-primary'>查看具体变更 ({result.diffs.length} 项)</summary>
+            <pre className='mt-2 max-h-80 overflow-auto font-mono text-label break-all whitespace-pre-wrap text-text-secondary'>
               {JSON.stringify(result.diffs, null, 2)}
             </pre>
           </details>
@@ -648,18 +764,18 @@ export function AssistantResultView({
                       {c.name}
                     </span>
                     <span
-                      className='text-2xs shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-text-muted'
+                      className='text-label shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-text-muted'
                       title={c.targetName}
                     >
                       {c.targetName}
                     </span>
                     {c.versionOrRevision ? (
-                      <span className='text-2xs shrink-0 font-mono text-text-muted'>
+                      <span className='text-label shrink-0 font-mono text-text-muted'>
                         v{c.versionOrRevision}
                       </span>
                     ) : null}
                   </div>
-                  <p className='text-2xs mt-0.5 truncate font-mono text-text-muted'>
+                  <p className='text-label mt-0.5 truncate font-mono text-text-muted'>
                     ID: {c.id}
                   </p>
                 </div>
@@ -667,7 +783,7 @@ export function AssistantResultView({
                   type='button'
                   variant='outline'
                   size='sm'
-                  className='text-2xs h-7 shrink-0'
+                  className='h-7 px-2.5 text-label shrink-0'
                   onClick={() =>
                     c.kind === 'scenario'
                       ? go(`/scenarios/${c.id}`)
@@ -683,7 +799,7 @@ export function AssistantResultView({
           <p className='text-small text-text-muted'>未找到匹配的项目。</p>
         )}
         <div className='flex items-center justify-between pt-1'>
-          <span className='text-2xs text-text-muted'>
+          <span className='text-label text-text-muted'>
             当前显示 {result.candidates.length} 条
           </span>
           {result.coverage.hasMore && onNextPage ? (
@@ -691,7 +807,7 @@ export function AssistantResultView({
               type='button'
               variant='ghost'
               size='sm'
-              className='text-2xs text-primary-600 hover:text-primary-700 h-6'
+              className='h-6 px-2 text-label text-primary-600 hover:text-primary-700'
               onClick={() => onNextPage(result.coverage.nextCursor ?? '')}
               data-testid='discovery-next-page-btn'
             >
@@ -703,7 +819,7 @@ export function AssistantResultView({
     )
   }
 
-  if (result.kind === 'proposal') {
+  if (result.kind === 'proposal' || result.kind === 'authoring_proposal') {
     return (
       <ProposalDiffViewer
         proposal={result}
@@ -725,7 +841,7 @@ export function AssistantResultView({
           <div className='space-y-1.5 min-w-0 flex-1'>
             <p className='font-medium text-text-primary'>{result.directAnswer}</p>
             {result.visualPath?.length ? (
-              <ol className='space-y-1 text-2xs text-text-secondary list-none pt-1'>
+              <ol className='space-y-1 text-label text-text-secondary list-none pt-1'>
                 {result.visualPath.map((step, idx) => (
                   <li key={idx} className='flex items-center gap-1.5'>
                     <span className='size-1 rounded-full bg-primary-500 shrink-0' />
@@ -735,7 +851,7 @@ export function AssistantResultView({
               </ol>
             ) : null}
             {result.shortcutHint ? (
-              <p className='text-2xs text-text-muted font-mono pt-0.5'>
+              <p className='text-label text-text-muted font-mono pt-0.5'>
                 快捷键：{result.shortcutHint}
               </p>
             ) : null}
@@ -747,7 +863,7 @@ export function AssistantResultView({
               type='button'
               variant='outline'
               size='sm'
-              className='h-6 gap-1 px-2 text-2xs font-medium text-primary hover:bg-primary/5'
+              className='h-6 gap-1 px-2 text-label font-medium text-primary hover:bg-primary/5'
               onClick={() => {
                 window.dispatchEvent(
                   new CustomEvent('cairn:assistant-action', {
@@ -786,7 +902,7 @@ export function AssistantResultView({
                     <div className='flex items-center gap-1.5 flex-wrap'>
                       <span
                         className={cn(
-                          'inline-flex items-center rounded px-1.5 py-0.5 text-3xs font-medium',
+                          'inline-flex items-center rounded px-1.5 py-0.5 text-label font-medium',
                           claim.factKind === 'observed' &&
                             'bg-status-success-background text-status-success-foreground border border-status-success-foreground/20',
                           claim.factKind === 'human_confirmed' &&
@@ -802,7 +918,7 @@ export function AssistantResultView({
                       {claim.citations?.map((cit, cIdx) => (
                         <span
                           key={cIdx}
-                          className='inline-flex items-center font-mono text-3xs text-text-muted bg-surface-base px-1.5 py-0.5 rounded border border-border-default/40'
+                          className='inline-flex items-center font-mono text-label text-text-muted bg-surface-base px-1.5 py-0.5 rounded border border-border-default/40'
                         >
                           {cit}
                         </span>
@@ -810,7 +926,7 @@ export function AssistantResultView({
                     </div>
                     <p className='text-small text-text-secondary leading-normal'>{claim.text}</p>
                     {claim.premises?.length ? (
-                      <p className='text-3xs text-text-muted'>
+                      <p className='text-label text-text-muted'>
                         依据前提: {claim.premises.join('; ')}
                       </p>
                     ) : null}
@@ -821,7 +937,7 @@ export function AssistantResultView({
 
             {result.missing?.length ? (
               <div
-                className='rounded-lg border border-status-warning-foreground/20 bg-status-warning-background p-2.5 text-2xs space-y-1'
+                className='rounded-lg border border-status-warning-foreground/20 bg-status-warning-background p-2.5 text-label space-y-1'
                 data-testid='knowledge-missing-list'
               >
                 <p className='font-medium text-status-warning-foreground flex items-center gap-1'>
@@ -841,14 +957,14 @@ export function AssistantResultView({
 
             {result.nextActions?.length ? (
               <div className='flex items-center gap-2 flex-wrap pt-2 border-t border-border-divider'>
-                <span className='text-2xs text-text-muted'>推荐操作:</span>
+                <span className='text-label text-text-muted'>推荐操作:</span>
                 {result.nextActions.map((action, idx) => (
                   <Button
                     key={idx}
                     type='button'
                     variant='outline'
                     size='sm'
-                    className='h-6 gap-1 px-2 text-2xs font-medium text-primary hover:bg-primary/5'
+                    className='h-6 gap-1 px-2 text-label font-medium text-primary hover:bg-primary/5'
                     onClick={() => {
                       if (action.href) go(action.href)
                     }}

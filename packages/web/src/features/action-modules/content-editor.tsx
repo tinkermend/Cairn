@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import {
   MAX_MODULE_IMPLEMENTATIONS,
   MAX_SCENARIO_STEPS,
@@ -1490,6 +1491,14 @@ export function ModuleContentEditor({
                     <ScopeVariablesBar
                       inputs={contract.inputs}
                       priorSteps={impl.steps.slice(0, index)}
+                      onInsert={(variable) => {
+                        if (step.type !== 'fill' && step.type !== 'echo' && step.type !== 'select') {
+                          toast.error('当前步骤不支持值字段引用，请选择填写、选择或回显步骤')
+                          return
+                        }
+                        const nextStep = { ...step, input: { ...step.input, value: variable.expression, from: undefined, fromField: undefined } } as typeof step
+                        updateImpl({ steps: impl.steps.map((item, itemIndex) => itemIndex === index ? nextStep : item) })
+                      }}
                     />
                     <StepEditor
                       step={step}

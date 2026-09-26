@@ -18,8 +18,8 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Plus, Trash2 } from 'lucide-react'
-import { fieldElementId } from '../document'
-import type { BindingOption } from '../document'
+import { FieldHelp } from '@/components/ui/field-help'
+import { fieldElementId, type BindingOption } from '../document'
 import { BindingFields } from './binding'
 
 const TYPE_LABELS: Record<OutputFieldType, string> = {
@@ -46,7 +46,7 @@ export function AiStepFields({
       {step.type === 'ai_action' ? (
         <div className='space-y-3'>
           <div className='flex items-center gap-1.5'>
-            <Label>操作方式</Label>
+            <Label>视觉动作类型</Label>
             <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
           </div>
           <Select value={'operation' in step.input ? step.input.operation : 'intent'} disabled={disabled} onValueChange={(operation) => {
@@ -57,7 +57,7 @@ export function AiStepFields({
               : { operation: 'scroll' as const, direction: 'down' as const, distance: 300 }
             onChange({ ...step, input, policy: { ...step.policy, retryLimit: 0 } })
           }}>
-            <SelectTrigger className='w-full' aria-label='AI 操作方式'><SelectValue /></SelectTrigger>
+            <SelectTrigger className='w-full' aria-label='视觉操作动作类型'><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value='intent'>业务意图</SelectItem><SelectItem value='tap'>点击目标</SelectItem><SelectItem value='input'>输入文字</SelectItem><SelectItem value='keyboard'>按键</SelectItem><SelectItem value='scroll'>相对滚动</SelectItem></SelectContent>
           </Select>
           {'operation' in step.input ? <AtomicActionFields step={step} disabled={disabled} bindings={bindings} shapes={shapes} onChange={onChange} /> : <InstructionFields step={step} disabled={disabled} onChange={onChange} />}
@@ -111,11 +111,11 @@ export function ContextBindingsField({
   return (
     <div className='space-y-2 rounded-md border p-3 bg-muted/20'>
       <div className='flex items-center justify-between'>
-        <div>
+        <div className='flex items-center gap-1.5'>
           <Label className='text-label font-medium'>显式运行上下文绑定 (Context Bindings)</Label>
-          <p className='text-label text-muted-foreground'>
+          <FieldHelp label='运行上下文绑定'>
             仅显式声明的输入或步骤输出才会注入大模型决策上下文，杜绝全量上下文与凭据泄露。
-          </p>
+          </FieldHelp>
         </div>
         <Button
           type='button'
@@ -186,9 +186,16 @@ function AtomicActionFields({ step, disabled, bindings, shapes, onChange }: { st
   if (!('operation' in input)) return null
   const update = (patch: Record<string, unknown>) => onChange({ ...step, input: { ...input, ...patch } } as Step)
   return <div className='space-y-3'>
-    <div className='space-y-2'><Label htmlFor={`atom-target-${step.id}`}>目标描述{input.operation === 'keyboard' || input.operation === 'scroll' ? '（可选）' : ''}</Label>
+    <div className='space-y-2'>
+      <div className='flex items-center gap-1.5'>
+        <Label htmlFor={`atom-target-${step.id}`}>目标描述{input.operation === 'keyboard' || input.operation === 'scroll' ? '（可选）' : ''}</Label>
+        <FieldHelp label='目标描述'>
+          {input.operation === 'keyboard'
+            ? '不填写目标时，在当前焦点上发送按键。'
+            : '描述要操作的页面元素，供视觉模型识别定位。每次执行一个明确动作；属于页面变更操作，不会自动盲目重试。'}
+        </FieldHelp>
+      </div>
       <Textarea id={`atom-target-${step.id}`} value={input.targetDescription ?? ''} disabled={disabled} onChange={(e) => update({ targetDescription: e.target.value || undefined })} />
-      {input.operation === 'keyboard' && <p className='text-label text-muted-foreground'>不填写目标时，在当前焦点上发送按键。</p>}
     </div>
     {input.operation === 'input' && <>
       <Label>输入模式</Label><Select value={input.mode} disabled={disabled} onValueChange={(mode) => onChange({ ...step, input: mode === 'clear' ? { operation: 'input', mode, targetDescription: input.targetDescription } : { ...input, mode: mode as 'replace' | 'type_only', ...(input.from ? {} : { value: input.value ?? '' }) } })}>
@@ -202,7 +209,6 @@ function AtomicActionFields({ step, disabled, bindings, shapes, onChange }: { st
     </>}
     {input.operation === 'keyboard' && <div className='space-y-2'><Label htmlFor={`atom-key-${step.id}`}>按键组合</Label><Input id={`atom-key-${step.id}`} disabled={disabled} value={input.key} placeholder='Control+a / Enter' onChange={(e) => update({ key: e.target.value })} /></div>}
     {input.operation === 'scroll' && <div className='grid gap-3 sm:grid-cols-2'><div className='space-y-2'><Label>滚动方向</Label><Select disabled={disabled} value={input.direction} onValueChange={(direction) => update({ direction })}><SelectTrigger aria-label='滚动方向'><SelectValue /></SelectTrigger><SelectContent>{([['up', '向上'], ['down', '向下'], ['left', '向左'], ['right', '向右']] as const).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></div><div className='space-y-2'><Label htmlFor={`atom-distance-${step.id}`}>距离（CSS 像素）</Label><Input id={`atom-distance-${step.id}`} type='number' min={1} max={10000} value={input.distance} disabled={disabled} onChange={(e) => update({ distance: Number(e.target.value) })} /></div></div>}
-    <p className='text-label text-muted-foreground'>每次执行一个明确动作。属于页面变更操作，不会自动盲目重试。</p>
   </div>
 }
 
@@ -211,10 +217,17 @@ function InstructionFields({ step, disabled, onChange }: { step: Extract<Step, {
   return (
     <div className='space-y-3'>
       <div className='space-y-2'>
-        <Label htmlFor={fieldElementId(step.id, ['input', 'instruction'])} className='flex items-center gap-1.5'>
-          <span>业务指令</span>
+        <div className='flex items-center gap-1.5'>
+          <Label htmlFor={fieldElementId(step.id, ['input', 'instruction'])}>
+            业务指令
+          </Label>
+          <FieldHelp label='业务指令'>
+            {step.type === 'ai_action'
+              ? '视觉操作会使用视觉模型查看当前页面并执行动作；业务意图可能包含多个动作，异常时不会盲目重发。'
+              : '此步骤为只读检查；符合条件时可先用 Aria 文本模型，未命中会回退视觉模型。“仅文本定位”只限制普通步骤找元素。'}
+          </FieldHelp>
           <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
-        </Label>
+        </div>
         <Textarea
           id={fieldElementId(step.id, ['input', 'instruction'])}
           aria-label='业务指令'
@@ -240,11 +253,6 @@ function InstructionFields({ step, disabled, onChange }: { step: Extract<Step, {
           }
         />
       ) : null}
-      <p className='text-label text-muted-foreground'>
-        {step.type === 'ai_action'
-          ? 'AI 步骤为单次智能决策，异常时不会盲目重发操作。'
-          : '此步骤为只读检查，不改变页面内容。'}
-      </p>
     </div>
   )
 }

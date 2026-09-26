@@ -13,6 +13,7 @@ import { OutcomeListEditor } from './outcome-editor'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ChevronDown, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { FieldHelp } from '@/components/ui/field-help'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -56,9 +57,9 @@ export function StepEditor({
 }: StepEditorProps) {
   const own = diagnostics.filter((item) => item.stepId === step.id)
   const aiLocked = isAiStepType(step.type)
-  const typeOptions = editableTypes.includes(step.type)
-    ? editableTypes
-    : [step.type, ...editableTypes]
+  const typeOptions = (
+    editableTypes.includes(step.type) ? editableTypes : [step.type, ...editableTypes]
+  ).filter((type) => type !== 'ai_action')
 
   function replace(next: Step) {
     onChange(next)
@@ -81,30 +82,32 @@ export function StepEditor({
             onChange={(event) => replace({ ...step, name: event.target.value })}
           />
         </div>
-        <div className='space-y-1.5'>
-          <Label>类型</Label>
-          <Select
-            value={step.type}
-            disabled={disabled}
-            onValueChange={(value) =>
-              onRequestTypeChange(value as ExecutableStepType)
-            }
-          >
-            <SelectTrigger
-              className='w-full'
-              aria-label={`步骤 ${index + 1} 类型`}
+        {step.type !== 'ai_action' ? (
+          <div className='space-y-1.5'>
+            <Label>类型</Label>
+            <Select
+              value={step.type}
+              disabled={disabled}
+              onValueChange={(value) =>
+                onRequestTypeChange(value as ExecutableStepType)
+              }
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {typeOptions.map((type) => (
-                <SelectItem key={type} value={type}>
-                  {STEP_TYPE_LABELS[type] ?? type}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+              <SelectTrigger
+                className='w-full'
+                aria-label={`步骤 ${index + 1} 类型`}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {typeOptions.map((type) => (
+                  <SelectItem key={type} value={type}>
+                    {STEP_TYPE_LABELS[type] ?? type}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
         <div className='border-t border-border-divider pt-4'>
           <StepFields
             step={step}
@@ -159,7 +162,14 @@ export function StepEditor({
           </CollapsibleTrigger>
           <CollapsibleContent className='space-y-4 pt-3'>
             <div className='space-y-1.5'>
-              <Label>副作用（重试与幂等语义）</Label>
+              <div className='flex items-center gap-1.5'>
+                <Label>副作用（重试与幂等语义）</Label>
+                <FieldHelp label='副作用'>
+                  {aiLocked
+                    ? 'AI 步骤的副作用由类型锁定，不能改成只读来获得重试。'
+                    : '声明该步骤是否会对业务系统产生持久副作用。只读操作可在失败时安全自动重试，写操作默认不自动重试以防产生脏数据。'}
+                </FieldHelp>
+              </div>
               <Select
                 value={step.effectType}
                 disabled={disabled || aiLocked || step.type === 'wait'}
@@ -188,11 +198,6 @@ export function StepEditor({
                   ))}
                 </SelectContent>
               </Select>
-              {aiLocked ? (
-                <p className='text-label text-muted-foreground'>
-                  AI 步骤的副作用由类型锁定，不能改成只读来获得重试。
-                </p>
-              ) : null}
             </div>
             <div className='grid gap-3 sm:grid-cols-2'>
               <div className='space-y-2'>
@@ -420,11 +425,11 @@ export function InputsEditor({
               <Select
                 value={input.type ?? 'string'}
                 disabled={disabled}
-                onValueChange={(val: any) =>
+                onValueChange={(val: string) =>
                   onChange(
                     inputs.map((item, itemIndex) =>
                       itemIndex === index
-                        ? { ...item, type: val }
+                        ? { ...item, type: val as ScenarioInputDecl['type'] }
                         : item
                     )
                   )

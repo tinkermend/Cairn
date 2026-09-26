@@ -203,7 +203,7 @@ export function PromptCards({
         id={`${categoryTabsId}-panel-${currentCategory.key}`}
         role='tabpanel'
         aria-labelledby={`${categoryTabsId}-tab-${currentCategory.key}`}
-        className='grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1'
+        className='grid grid-cols-1 @[420px]:grid-cols-2 gap-2.5 pt-1'
       >
         {currentCategory.cards
           .filter((card) => {

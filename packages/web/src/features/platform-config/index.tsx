@@ -88,9 +88,9 @@ export function PlatformConfigPage() {
   useEffect(() => {
     if (
       !current.data ||
-      isDirty ||
       busy ||
-      editingRevision === current.data.revision
+      editingRevision === current.data.revision ||
+      (editingRevision !== undefined && isDirty)
     )
       return
     form.reset(cloneDocument(current.data.document))
@@ -360,6 +360,8 @@ export function PlatformConfigPage() {
             title='无法加载平台配置'
             onRetry={() => void current.refetch()}
           />
+        ) : editingRevision === undefined ? (
+          <PageSkeleton />
         ) : (
           <section className='min-w-0 rounded-lg border border-border-card bg-card p-5 shadow-card'>
             <p className='text-label text-muted-foreground'>

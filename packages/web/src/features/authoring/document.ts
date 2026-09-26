@@ -32,7 +32,14 @@ export function uniqueOutputKey(base: string, used: Set<string>): string {
   return `${base}${index}`
 }
 
-export type BindingOption = { key: string; label: string; stale?: boolean }
+export type BindingOption = { key: string; label: string; stale?: boolean; typeLabel?: string; description?: string }
+
+function outputTypeLabel(shape: OutputShape): string {
+  if (shape.kind === 'scalar') return shape.type
+  if (shape.kind === 'list') return '列表'
+  if (shape.kind === 'object') return '对象'
+  return '运行时确定'
+}
 
 export function priorBindings(
   document: ScenarioDocument,
@@ -43,14 +50,16 @@ export function priorBindings(
   const options: BindingOption[] = document.inputs.map((input) => ({
     key: input.key,
     label: `输入 · ${input.label}`,
+    typeLabel: input.type ?? '未声明类型',
+    description: input.description ?? '场景运行输入',
   }))
   for (const step of prior) {
     if (!step.outputKey) continue
-    options.push({ key: step.outputKey, label: `步骤 · ${step.name}` })
+    options.push({ key: step.outputKey, label: `步骤 · ${step.name}`, typeLabel: outputTypeLabel(outputShapeForStep(step)), description: `前序步骤「${step.name}」的输出` })
   }
   const from = current ? stepBindingFrom(current) : undefined
   if (from && !options.some((item) => item.key === from)) {
-    options.push({ key: from, label: `失效引用 · ${from}`, stale: true })
+    options.push({ key: from, label: `失效引用 · ${from}`, stale: true, description: '上游输入或步骤已不存在，请重新选择' })
   }
   return options
 }
