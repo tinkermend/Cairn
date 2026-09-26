@@ -128,13 +128,12 @@ describe('AI 端口边界', () => {
         return { ok: true, value, screenshotBytes: capture ? Buffer.from('png') : undefined }
       },
     } as unknown as BrowserSessionManager
-    const objects = {
-      putObjectEvidence: async () => ({
+    const putObjectEvidence = vi.fn(async () => ({
         status: 'stored',
         objectKey: 'runs/r1/shot.png',
         contentType: 'image/png',
-      }),
-    } as unknown as ObjectService
+      }))
+    const objects = { putObjectEvidence } as unknown as ObjectService
 
     const port = createAiPort({
       manager,
@@ -160,6 +159,56 @@ describe('AI 端口边界', () => {
     )
     expect(captureDecisions).toEqual([true])
     expect(result.screenshot?.objectKey).toBe('runs/r1/shot.png')
+    expect(putObjectEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      artifactKey: 'screenshot:a1:on_error:0',
+      payload: expect.objectContaining({ role: 'on_error', viewport: 'full_page' }),
+    }))
+  })
+
+  it('AI 操作成功截图带 after_action 证据槽，可满足运行证据结算', async () => {
+    const putObjectEvidence = vi.fn(async () => ({
+      status: 'stored',
+      objectKey: 'runs/r1/action.png',
+      contentType: 'image/png',
+    }))
+    const manager = {
+      withManagedPage: async () => ({
+        ok: true,
+        value: { ok: true, output: { summary: '已完成' } },
+        screenshotBytes: Buffer.from('png'),
+        screenshotCapturedAt: '2026-09-24T00:00:00.000Z',
+        faceRole: 'after_action',
+      }),
+    } as unknown as BrowserSessionManager
+    const port = createAiPort({
+      manager,
+      handle: {} as DbHandle,
+      resolveApiKey: async () => 'key',
+      objects: { putObjectEvidence } as unknown as ObjectService,
+    })
+    const result = await port.execute(
+      { sessionId: 's1', leaseId: 'l1', fencingToken: 1 } as unknown as SessionGrant,
+      { ...command, type: 'ai_action', instruction: '点击按钮' },
+      new AbortController().signal,
+      {
+        runId: 'r1',
+        stepRunId: 'sr1',
+        attemptId: 'a1',
+        screenshot: 'always',
+        grant: { runId: 'r1', holderWorkerId: 'w1' } as unknown as RunGrant,
+        maxCalls: 2,
+        config: {} as AiExecuteEvidence['config'],
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(putObjectEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      artifactKey: 'screenshot:a1:after_action:0',
+      payload: expect.objectContaining({
+        role: 'after_action',
+        viewport: 'full_page',
+        capturedAt: '2026-09-24T00:00:00.000Z',
+      }),
+    }))
   })
 
   it('取消后在窗口内落定则返回结果', async () => {
@@ -456,6 +505,22 @@ describe('AI 端口边界', () => {
       expect(result.ok).toBe(false)
       expect(result.summary).toContain('不允许视觉多模态定位')
       expect(result.error?.code).toBe('AI_NOT_FOUND')
+
+      const { reserveAiModelCall, completeAiModelCall } = await import('@cairn/db')
+      expect(reserveAiModelCall).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          model: 'deepseek-chat',
+          route: 'aria_text',
+        }),
+      )
+      expect(completeAiModelCall).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          model: 'deepseek-chat',
+          route: 'aria_text',
+        }),
+      )
     } finally {
       globalThis.fetch = originalFetch
     }

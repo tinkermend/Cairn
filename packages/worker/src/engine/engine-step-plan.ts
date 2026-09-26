@@ -1,10 +1,12 @@
 import {
   asRunFileHandle,
   fillTextFromContext,
+  isOpenStepRunStatus,
   jsonValueSchema,
   readContextValue,
   runObjectIdFromKey,
   REDACTED,
+  stepRunFor,
   stepUsesBrowser,
   type ExecutionError,
   type JsonValue,
@@ -259,16 +261,17 @@ export function isRunnableStepRun(stepRun: {
 /**
  * 当前步骤是否为「最后一个未完成步骤」。
  * RUNNING 与 PENDING 都算未完成——接管后不得把后面的步骤当成最后一步写 SUCCEEDED。
+ * 停用步骤建 Run 时已是 SKIPPED，不算未完成。
  */
 export function isLastOpenStep(
-  detail: { stepRuns: Array<{ stepId: string; ordinal: number; status: string }> },
+  detail: { stepRuns: Array<{ stepId: string; ordinal: number; status: string; scopePath?: string | null }> },
   stepId: string,
+  scopePath?: string,
 ): boolean {
-  const current = detail.stepRuns.find((item) => item.stepId === stepId)
+  const current = stepRunFor(detail.stepRuns, stepId, scopePath ?? detail.stepRuns[0]?.scopePath ?? '')
   if (!current) return false
   return detail.stepRuns.every(
-    (item) =>
-      item.ordinal <= current.ordinal || (item.status !== 'PENDING' && item.status !== 'RUNNING'),
+    (item) => item.ordinal <= current.ordinal || !isOpenStepRunStatus(item.status),
   )
 }
 

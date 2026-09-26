@@ -39,6 +39,20 @@ describe('报告渲染', () => {
         stepRuns: [{ name: '停用的核对', status: 'SKIPPED', skipReason: 'disabled', outcomeStatus: 'NOT_EVALUATED', attempts: [] }],
       },
     }).some((line) => line.text.includes('停用的核对：跳过（已停用）'))).toBe(true)
+    const loopLines = reportLines({
+      ...document,
+      source: {
+        ...document.source,
+        stepRuns: [{ id: 'loop-header', name: '循环头: 逐项检查告警', status: 'FAILED', outcomeStatus: 'NOT_EVALUATED', attempts: [] }],
+        loops: [{
+          headerStepRunId: 'loop-header', kind: 'for_each', total: 5, succeeded: 3, failed: 1, skipped: 1,
+          stoppedEarly: false, limitReached: false,
+          failures: [{ index: 4, item: 'ALERT-9', stepName: '打开告警详情', code: 'TARGET_NOT_FOUND', message: '未找到' }],
+        }],
+      },
+    }).map((line) => line.text)
+    expect(loopLines).toContain('逐项处理 5 项：成功 3；失败 1；未执行 1')
+    expect(loopLines).toContain('第 4 项（ALERT-9）：步骤「打开告警详情」失败，TARGET_NOT_FOUND / 未找到')
 
     const pdf = await renderReportPdf(document)
     expect(pdf.subarray(0, 5).toString('utf8')).toBe('%PDF-')

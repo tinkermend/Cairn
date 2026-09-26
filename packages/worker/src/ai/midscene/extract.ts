@@ -8,6 +8,16 @@ import type { AiOutputSchema } from '@cairn/shared'
 export function buildDataDemand(instruction: string, schema: AiOutputSchema | undefined): string {
   if (!schema) return instruction
   if (schema.kind === 'scalar') return `${schema.type}, ${instruction}`
+  if (schema.kind === 'list') {
+    const maxItems = schema.maxItems ?? 50
+    if (schema.item.kind === 'scalar') {
+      return `${schema.item.type}[]，最多 ${maxItems} 项。${instruction}`
+    }
+    const shape = schema.item.fields
+      .map((field) => `${field.name}${field.required === false ? '?' : ''}: ${field.type}`)
+      .join(', ')
+    return `{${shape}}[]，最多 ${maxItems} 项，只返回这些键，键名原样使用。${instruction}`
+  }
   const shape = schema.fields
     .map((field) => `${field.name}${field.required === false ? '?' : ''}: ${field.type}`)
     .join(', ')

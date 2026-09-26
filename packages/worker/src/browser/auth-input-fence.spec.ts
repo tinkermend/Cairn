@@ -189,4 +189,38 @@ describe('认证输入 fencing', () => {
     expect(res.status).toBe('accepted')
     expect(r.press).toHaveBeenCalledWith('PageDown')
   })
+
+  it('页面跳转代次递增后，使用最新代次的命令校验通过并执行（解决连续点击报错问题）', async () => {
+    const r = rig()
+    // 第一次点击/输入：代次为 1
+    const firstRes = await r.manager.inputRunAuthControl({
+      runId,
+      actorId,
+      token,
+      command: r.command,
+    })
+    expect(firstRes.status).toBe('accepted')
+    expect(r.insertText).toHaveBeenCalledTimes(1)
+
+    // 页面发生了主框导航，documentEpoch 自增到 2
+    const entry = r.live.pages.get(pageId)
+    if (entry) entry.documentEpoch = 2
+
+    // 第二次点击携带新画面帧解析出的 documentEpoch: 2
+    const secondCommand = {
+      ...r.command,
+      commandId: '00000000-0000-4000-8000-000000000007',
+      seq: 2,
+      pageRef: { sessionId, sessionGeneration: 1, pageId, documentEpoch: 2 },
+    }
+    const secondRes = await r.manager.inputRunAuthControl({
+      runId,
+      actorId,
+      token,
+      command: secondCommand,
+    })
+    expect(secondRes.status).toBe('accepted')
+    expect(r.insertText).toHaveBeenCalledTimes(2)
+  })
 })
+

@@ -60,26 +60,26 @@ function cookieHandle(baseUrl: string, jar: { cookie: string }, profileDir: stri
     selector.includes('button[type=submit]') ||
     selector.includes('#username') ||
     selector.includes('#password')
-  const locator = (selector = '') => ({
-    fill: async () => undefined,
-    click: async () => {
-      const res = await fetch(`${baseUrl}/login`, {
-        method: 'POST',
-        redirect: 'manual',
-      })
-      const setCookie = res.headers.get('set-cookie')
-      if (setCookie?.includes('bsm=ok')) jar.cookie = 'bsm=ok'
-      address = `${baseUrl}/`
-    },
-    count: async () => (loginField(selector) ? 1 : 0),
-    first: () => ({
+  const locator = (selector = '') => {
+    const self = {
+      fill: async () => undefined,
+      click: async () => {
+        const res = await fetch(`${baseUrl}/login`, {
+          method: 'POST',
+          redirect: 'manual',
+        })
+        const setCookie = res.headers.get('set-cookie')
+        if (setCookie?.includes('bsm=ok')) jar.cookie = 'bsm=ok'
+        address = `${baseUrl}/`
+      },
+      count: async () => (loginField(selector) ? 1 : 0),
+      first: () => self,
       isVisible: async () => loginField(selector),
       waitFor: async () => undefined,
-    }),
-    isVisible: async () => loginField(selector),
-    waitFor: async () => undefined,
-    innerText: async () => '',
-  })
+      innerText: async () => '',
+    }
+    return self
+  }
   const page = {
     evaluate: async () => true,
     goto: async (url: string) => {
@@ -99,6 +99,9 @@ function cookieHandle(baseUrl: string, jar: { cookie: string }, profileDir: stri
   }
   return {
     profileDir,
+    isolation: 'DEDICATED',
+    hostId: null,
+    basePage: page as any,
     context: {
       close: async () => undefined,
       browser: () => null,

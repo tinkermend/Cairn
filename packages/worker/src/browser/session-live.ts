@@ -15,6 +15,10 @@ export type BrowserSessionManagerOptions = {
   defaultAuthWaitSeconds: number
   heartbeatMs: number
   workerInstanceId?: string
+  poolMaxContextsPerHost?: number
+  poolHostMaxAgeSeconds?: number
+  poolHostRssHighWatermarkMb?: number
+  poolTargetSpread?: 'strict' | 'prefer'
 }
 
 export type SessionAcquireResult =
@@ -35,6 +39,7 @@ export type LiveHandle = {
   handle: BrowserHandle
   sessionId: string
   generation: number
+  hostId?: string | null
   runPageIds: Set<string>
   runPages: Map<string, Awaited<ReturnType<typeof openRunPage>>>
   lastPage?: Awaited<ReturnType<typeof openRunPage>>
@@ -66,11 +71,17 @@ export type ObserveGrantEntry = { grant: ObserveGrant; expiresAt: number }
 /** 进程内唯一状态源就是经理类本身，禁止复制 Map。 */
 export type SessionManagerContext = BrowserSessionManager
 
-export function emptyLive(handle: BrowserHandle, sessionId: string, generation = 1): LiveHandle {
+export function emptyLive(
+  handle: BrowserHandle,
+  sessionId: string,
+  generation = 1,
+  hostId: string | null = handle.hostId,
+): LiveHandle {
   return {
     handle,
     sessionId,
     generation,
+    hostId: hostId ?? handle.hostId ?? null,
     runPageIds: new Set(),
     runPages: new Map(),
     pages: new Map(),

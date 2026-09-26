@@ -13,6 +13,7 @@ export class DebugHoldRegistry {
     }
   >()
   private readonly pauseRequested = new Set<string>()
+  private readonly stopBeforeStep = new Map<string, string>()
 
   wait(runId: string, timeoutMs: number, signal?: AbortSignal): Promise<DebugResumeRequest | 'timeout' | 'cancelled'> {
     this.cancel(runId)
@@ -42,6 +43,9 @@ export class DebugHoldRegistry {
       this.pauseRequested.add(runId)
       return true
     }
+    if (action.action === 'continue_to_step' && action.targetStepId) {
+      this.setStopBeforeStep(runId, action.targetStepId)
+    }
     const wait = this.waits.get(runId)
     if (!wait) return false
     clearTimeout(wait.timer)
@@ -54,6 +58,18 @@ export class DebugHoldRegistry {
     const had = this.pauseRequested.has(runId)
     this.pauseRequested.delete(runId)
     return had
+  }
+
+  setStopBeforeStep(runId: string, stepId: string): void {
+    this.stopBeforeStep.set(runId, stepId)
+  }
+
+  getStopBeforeStep(runId: string): string | undefined {
+    return this.stopBeforeStep.get(runId)
+  }
+
+  clearStopBeforeStep(runId: string): void {
+    this.stopBeforeStep.delete(runId)
   }
 
   has(runId: string): boolean {

@@ -352,10 +352,10 @@ async function attachRecorder(
 ): Promise<void> {
   const entry = live.pages.get(pageId)
   if (!entry || entry.page.isClosed()) return
-  const pageRef = pageRefFor(live.sessionId, live.generation, entry)
+  const getPageRef = () => pageRefFor(live.sessionId, live.generation, entry)
   let cast = live.screencasts.get(pageId)
   if (!cast) {
-    cast = await startScreencast(entry.page, pageRef)
+    cast = await startScreencast(entry.page, getPageRef)
     live.screencasts.set(pageId, cast)
   }
   recorder.pageId = pageId

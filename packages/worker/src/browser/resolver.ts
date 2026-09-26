@@ -13,7 +13,13 @@ export function decideResolverOutcome(tried: { matches: number }[]): Exclude<Res
 
 export function pickResolvedCandidate(
   counts: number[],
+  allowMultiple?: boolean,
 ): { kind: 'found'; index: number } | { kind: 'miss'; outcome: 'NOT_FOUND' | 'AMBIGUOUS' } {
+  if (allowMultiple) {
+    const index = counts.findIndex((count) => count >= 1)
+    if (index >= 0) return { kind: 'found', index }
+    return { kind: 'miss', outcome: 'NOT_FOUND' }
+  }
   const index = counts.findIndex((count) => count === 1)
   if (index >= 0) return { kind: 'found', index }
   return { kind: 'miss', outcome: decideResolverOutcome(counts.map((matches) => ({ matches }))) }

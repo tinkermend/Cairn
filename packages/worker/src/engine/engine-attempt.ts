@@ -10,7 +10,10 @@ import {
 } from '@cairn/db'
 import {
   CANCELLED_ATTEMPT_ERROR,
+  MAX_STEP_OUTPUT_BYTES,
+  MAX_STEP_OUTPUT_KB,
   authGateClosedError,
+  isOpenStepRunStatus,
   jsonValueSchema,
   resolveEvidencePolicy,
   type DebugMode,
@@ -26,6 +29,7 @@ import {
 import { isAbortError, type EngineClock } from './clock.js'
 import { persistBeforeObservation, buildAfterMapFacts, type CapturePhaseBudget } from '../map/passive-capture.js'
 import { planCandidateFailure, planCandidateHalt, planCandidateSuccess } from './engine-candidate-plan.js'
+import { planBranchSuccess } from './engine-branch-plan.js'
 import { chargedAttemptCount, contextValue, evidencePayloadForStep, sessionLeaseFor } from './engine-step-plan.js'
 import { isTrialOrDebugRun, shouldNeedsReview, shouldRetry, shouldAttemptSelfHeal } from './engine-decisions.js'
 import { applyPatchToStep, verifyPageContext } from './engine-healer.js'
@@ -67,6 +71,28 @@ export type CompleteAttemptInput = {
   mapSourceType: MapRunSourceType
   mapBudget: CapturePhaseBudget
   authGate?: { restored: boolean }
+  scopePath?: string
+  iterationUpdate?: FinishAttemptInput['iterationUpdate']
+  headerFinish?: FinishAttemptInput['headerFinish']
+  rootContextToPersist?: Record<string, JsonValue>
+  suppressMediaEvidence?: boolean
+  onStepSuccess?: (
+    stepOutput: JsonValue | undefined,
+    context: Record<string, JsonValue>,
+    meta: StepSuccessMeta,
+  ) => StepSuccessPlan | void
+}
+
+/** 本次收尾之后，本作用域（循环的一项）里是否已没有未完成步骤。 */
+export type StepSuccessMeta = { endsScope: boolean }
+
+export type StepSuccessPlan = {
+  iterationUpdate?: FinishAttemptInput['iterationUpdate']
+  headerFinish?: FinishAttemptInput['headerFinish']
+  rootContextToPersist?: Record<string, JsonValue>
+  isLast?: boolean
+  runStatus?: 'SUCCEEDED' | 'FAILED'
+  skipRemaining?: boolean
 }
 
 export async function completeAttempt(this: ExecutionEngine, input: CompleteAttemptInput): Promise<AttemptOutcome> {
@@ -90,6 +116,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         stepRunStatus: 'CANCELLED',
         runStatus: 'CANCELLED',
         cancelPending: true,
+        scopePath: input.scopePath,
         grant: input.grant,
         sessionLease: sessionLeaseFor(input),
         secrets: input.secrets,
@@ -236,6 +263,25 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       }
     }
 
+    if (outcome.kind === 'success' && outcome.output !== undefined) {
+      const serialized = JSON.stringify(outcome.output)
+      const byteSize = Buffer.byteLength(serialized, 'utf8')
+      if (byteSize > MAX_STEP_OUTPUT_BYTES) {
+        outcome = {
+          kind: 'failed',
+          error: {
+            code: 'OUTPUT_TOO_LARGE',
+            category: 'EXECUTOR',
+            retryable: false,
+            safeMessage: `尝试输出体积超过 ${MAX_STEP_OUTPUT_KB} KB 上限（实际 ${byteSize} 字节）`,
+          },
+          output: undefined,
+          timedOut: false,
+          aborted: false,
+        }
+      }
+    }
+
     const { outcomeResults: stepOutcomeResults, continueMode } = collectAttemptOutcomeResults({
       snapshot: input.snapshot,
       step: input.step,
@@ -257,34 +303,87 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
           [input.step.outputKey]: jsonValueSchema.parse(contextValue(input.step, stepOutput)),
         }
       }
+      const stepStates = await loadRunStepStates(db, input.runId, input.scopePath)
       const groupPlan = planCandidateSuccess({
         snapshot: input.snapshot,
         stepId: input.step.id,
         context,
         last: input.last,
-        detail: { stepRuns: await loadRunStepStates(db, input.runId) },
+        detail: { stepRuns: stepStates },
       })
       if (groupPlan?.context) context = groupPlan.context
-      const pause = this.holds.consumePause(input.runId)
+      const branchPlan = planBranchSuccess({
+        snapshot: input.snapshot,
+        step: input.step,
+        output: stepOutput,
+        detail: { stepRuns: stepStates },
+      })
+      const combinedSkips = [
+        ...(groupPlan?.skips ?? []),
+        ...(branchPlan?.skips ?? []),
+      ]
+      const combinedSkipStepIds = Array.from(
+        new Set([
+          ...(groupPlan?.skipStepIds ?? []),
+          ...(branchPlan?.skipStepIds ?? []),
+        ]),
+      )
+      const skippedBreakpoint = Boolean(
+        input.snapshot.pauseBeforeStepId &&
+          branchPlan?.skipStepIds?.includes(input.snapshot.pauseBeforeStepId),
+      )
+      const pause = this.holds.consumePause(input.runId) || skippedBreakpoint
       const hold = input.debugMode === 'holdAfterEach' || pause
+      let iterationUpdate = input.iterationUpdate
+      let headerFinish = input.headerFinish
+      let rootContextToPersist = input.rootContextToPersist
+      let dynamicIsLast: boolean | undefined = undefined
+      let dynamicRunStatus: 'SUCCEEDED' | 'FAILED' | undefined = undefined
+      let dynamicSkipRemaining: boolean | undefined = undefined
+
+      if (input.onStepSuccess) {
+        const skippedNow = new Set(combinedSkipStepIds)
+        const endsScope = scopeDrainsAfter(stepStates, input.stepRunId, skippedNow)
+        const plan = input.onStepSuccess(stepOutput, context, { endsScope })
+        if (plan) {
+          if (plan.iterationUpdate !== undefined) iterationUpdate = plan.iterationUpdate
+          if (plan.headerFinish !== undefined) headerFinish = plan.headerFinish
+          if (plan.rootContextToPersist !== undefined) rootContextToPersist = plan.rootContextToPersist
+          if (plan.isLast !== undefined) dynamicIsLast = plan.isLast
+          if (plan.runStatus !== undefined) dynamicRunStatus = plan.runStatus
+          if (plan.skipRemaining !== undefined) dynamicSkipRemaining = plan.skipRemaining
+        }
+      }
+
+      // 循环作用域内的步骤不自行判断 Run 收尾：本项之外还有后续项与后续步骤，由循环驱动决定。
+      const isLastStep = input.scopePath
+        ? (dynamicIsLast ?? false)
+        : (dynamicIsLast ?? (branchPlan?.last ?? groupPlan?.last ?? input.last))
+      const screenshot = input.suppressMediaEvidence ? undefined : outcome.screenshot
+      const trace = input.suppressMediaEvidence ? undefined : outcome.trace
+      const isFailedOverall = dynamicRunStatus === 'FAILED' || headerFinish?.status === 'FAILED'
       const closed = await this.close({
         runId: input.runId,
         attemptId,
         attemptStatus: 'SUCCEEDED',
         output: stepOutput,
-        context,
-        screenshot: outcome.screenshot,
-        trace: outcome.trace,
+        context: input.scopePath ? rootContextToPersist : context,
+        scopePath: input.scopePath,
+        iterationUpdate,
+        headerFinish,
+        screenshot,
+        trace,
         stepRunStatus: 'SUCCEEDED',
         runStatus: hold
           ? 'HOLDING'
-          : haltAfterSurface
+          : haltAfterSurface || isFailedOverall
             ? 'FAILED'
-            : groupPlan?.last ?? input.last
-              ? 'SUCCEEDED'
-              : undefined,
-        skipRemaining: haltAfterSurface,
-        skipStepIds: groupPlan?.skipStepIds,
+            : input.scopePath
+              ? dynamicRunStatus
+              : (dynamicRunStatus ?? (isLastStep ? 'SUCCEEDED' : undefined)),
+        skipRemaining: dynamicSkipRemaining ?? (haltAfterSurface || isFailedOverall),
+        skipStepIds: combinedSkipStepIds.length > 0 ? combinedSkipStepIds : undefined,
+        skips: combinedSkips.length > 0 ? combinedSkips : undefined,
         selectionDecision: groupPlan?.selectionDecision,
         checkpoint: hold
           ? await this.buildCheckpoint({
@@ -297,6 +396,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
               sessionGrant: input.sessionGrant,
               grant: input.grant,
               overlay: input.overlay,
+              scopePath: input.scopePath,
             })
           : undefined,
         grant: input.grant,
@@ -308,7 +408,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       if (!closed) return input.stop.aborted && !input.yielding() ? 'cancelled' : input.yielding() ? 'yielded' : 'stopped'
       if (hold) return 'await_hold'
       if (haltAfterSurface) return 'failed'
-      return input.last ? 'completed' : 'next'
+      return isLastStep ? 'completed' : 'next'
     }
 
     const error = outcome.error
@@ -337,7 +437,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         stepId: input.step.id,
         error,
         runStatus: 'NEEDS_REVIEW',
-        detail: { stepRuns: await loadRunStepStates(db, input.runId) },
+        detail: { stepRuns: await loadRunStepStates(db, input.runId, input.scopePath) },
       })
       await this.close({
         runId: input.runId,
@@ -349,7 +449,11 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         trace: outcome.trace,
         stepRunStatus: 'FAILED',
         runStatus: 'NEEDS_REVIEW',
+        scopePath: input.scopePath,
+        iterationUpdate: input.iterationUpdate,
+        headerFinish: input.headerFinish,
         skipStepIds: reviewPlan?.skipStepIds,
+        skips: reviewPlan?.skips,
         selectionDecision: reviewPlan?.selectionDecision,
         grant: input.grant,
         sessionLease: sessionLeaseFor(input),
@@ -375,6 +479,9 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         stepRunStatus: 'CANCELLED',
         runStatus: 'CANCELLED',
         cancelPending: true,
+        scopePath: input.scopePath,
+        iterationUpdate: input.iterationUpdate,
+        headerFinish: input.headerFinish,
         grant: input.grant,
         sessionLease: sessionLeaseFor(input),
         secrets: input.secrets,
@@ -384,7 +491,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       return 'cancelled'
     }
 
-    const stepStates = await loadRunStepStates(db, input.runId)
+    const stepStates = await loadRunStepStates(db, input.runId, input.scopePath)
     const currentAttemptCount = stepStates.length ? chargedAttemptCount({ stepRuns: stepStates }, input.stepRunId) : attemptNo
     const retry = shouldRetry(
       input.step,
@@ -425,6 +532,69 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       })
 
     const shouldKeepRunning = retry || selfHeal
+
+    const isOptionalAbsent =
+      Boolean(input.step.optional) &&
+      !shouldKeepRunning &&
+      (error.code === 'TARGET_NOT_FOUND' || error.code === 'RESOLVER_EXHAUSTED')
+
+    if (isOptionalAbsent) {
+      const pause = this.holds.consumePause(input.runId)
+      const hold = input.debugMode === 'holdAfterEach' || pause
+      // 循环体内的可选步骤没出现也可能是本项最后一步：同样交给循环驱动收尾本项。
+      const scopePlan =
+        input.scopePath && input.onStepSuccess
+          ? input.onStepSuccess(undefined, context, {
+              endsScope: scopeDrainsAfter(stepStates, input.stepRunId, new Set()),
+            }) || undefined
+          : undefined
+      const absentRunStatus = input.scopePath
+        ? scopePlan?.runStatus
+        : input.last
+          ? ('SUCCEEDED' as const)
+          : undefined
+      const closed = await this.close({
+        runId: input.runId,
+        attemptId,
+        attemptStatus: 'FAILED',
+        error,
+        output: outcome.output,
+        diagnostics: outcome.diagnostics,
+        screenshot: outcome.screenshot,
+        trace: outcome.trace,
+        stepRunStatus: 'SKIPPED',
+        stepSkipReason: 'optional_absent',
+        runStatus: hold ? 'HOLDING' : absentRunStatus,
+        skipRemaining: scopePlan?.skipRemaining ?? false,
+        scopePath: input.scopePath,
+        iterationUpdate: scopePlan?.iterationUpdate ?? input.iterationUpdate,
+        headerFinish: scopePlan?.headerFinish ?? input.headerFinish,
+        ...(input.scopePath && scopePlan?.rootContextToPersist ? { context: scopePlan.rootContextToPersist } : {}),
+        checkpoint: hold
+          ? await this.buildCheckpoint({
+              runId: input.runId,
+              debugMode: input.debugMode,
+              reason: pause ? 'author_pause' : 'step_failed',
+              stepId: input.step.id,
+              stepOrdinal: input.stepOrdinal,
+              contextKeys: Object.keys(context),
+              sessionGrant: input.sessionGrant,
+              grant: input.grant,
+              overlay: input.overlay,
+              scopePath: input.scopePath,
+            })
+          : undefined,
+        grant: input.grant,
+        sessionLease: sessionLeaseFor(input),
+        secrets: input.secrets,
+        mapFacts,
+        outcomeResults,
+      })
+      if (!closed) return input.stop.aborted && !input.yielding() ? 'cancelled' : input.yielding() ? 'yielded' : 'stopped'
+      if (hold) return 'await_hold'
+      if (input.scopePath) return scopePlan?.runStatus === 'FAILED' ? 'failed' : scopePlan?.isLast ? 'completed' : 'next'
+      return input.last ? 'completed' : 'next'
+    }
     const hold =
       !shouldKeepRunning && (input.debugMode === 'holdOnFailure' || input.debugMode === 'holdAfterEach')
     const failPlan = !shouldKeepRunning
@@ -448,7 +618,11 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       stepRunStatus: shouldKeepRunning ? 'RUNNING' : 'FAILED',
       runStatus: shouldKeepRunning || failPlan?.keepRunOpen ? undefined : hold ? 'HOLDING' : 'FAILED',
       skipRemaining: !shouldKeepRunning && !hold && !failPlan?.keepRunOpen,
+      scopePath: input.scopePath,
+      iterationUpdate: input.iterationUpdate,
+      headerFinish: input.headerFinish,
       skipStepIds: failPlan?.keepRunOpen ? failPlan.skipStepIds : undefined,
+      skips: failPlan?.keepRunOpen ? failPlan.skips : undefined,
       selectionDecision: failPlan?.selectionDecision,
       checkpoint: hold
         ? await this.buildCheckpoint({
@@ -461,6 +635,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
             sessionGrant: input.sessionGrant,
             grant: input.grant,
             overlay: input.overlay,
+            scopePath: input.scopePath,
           })
         : undefined,
       grant: input.grant,
@@ -716,4 +891,14 @@ export async function alreadyClosedContinues(this: ExecutionEngine, input: Finis
     .flatMap((step) => step.attempts)
     .find((item) => item.id === input.attemptId)
   return attempt?.status === 'SUCCEEDED'
+}
+
+function scopeDrainsAfter(
+  stepStates: ReadonlyArray<{ id: string; stepId: string; status: string }>,
+  currentStepRunId: string,
+  skippedStepIds: ReadonlySet<string>,
+): boolean {
+  return stepStates.every(
+    (item) => item.id === currentStepRunId || skippedStepIds.has(item.stepId) || !isOpenStepRunStatus(item.status),
+  )
 }

@@ -9,11 +9,12 @@ import { ExecutionEngine } from "../engine/engine";
 import { EvidenceSettleService } from "../evidence/settle.service";
 import { ObjectService } from "../objects/object.service";
 import { parseWorkerRoles, protocolCapabilitiesForRoles } from "@cairn/shared";
-import { config } from "../config/env";
+import { config, resolveWorkerEnv } from "../config/env";
 import { LifecycleService } from "./lifecycle.service";
 
 vi.mock("./browser-processes", () => ({
   countManagedBrowserProcesses: vi.fn(async () => 0),
+  scanManagedBrowserProcesses: vi.fn(async () => ({ count: 0, rssBytes: 0 })),
 }));
 
 vi.mock("./service-webhook-delivery", () => ({
@@ -22,6 +23,7 @@ vi.mock("./service-webhook-delivery", () => ({
 
 vi.mock("@cairn/db", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@cairn/db")>();
+  const mockClaimRun = vi.fn(async (..._args: unknown[]) => null as import('@cairn/shared').RunGrant | null);
   return {
     ...actual,
     registerWorker: vi.fn(async () => ({
@@ -62,7 +64,15 @@ vi.mock("@cairn/db", async (importOriginal) => {
     settleRevokedRuns: vi.fn(async () => undefined),
     markWorkerDraining: vi.fn(async () => undefined),
     markWorkerStopped: vi.fn(async () => undefined),
-    claimRun: vi.fn(async () => null),
+    claimRun: mockClaimRun,
+    claimRunWithCursor: vi.fn(async (database: unknown, input: { cursor?: import('@cairn/db').ClaimScanCursor }) => {
+      const grant = await mockClaimRun(database, input);
+      return {
+        grant,
+        cursor: input.cursor ?? { RECOVERING: null, QUEUED: null },
+        reason: grant ? 'claimed' : 'idle',
+      };
+    }),
     claimSessionOperation: vi.fn(async () => null),
     hasQueuedSessionCreateOperation: vi.fn(async () => false),
     appendSessionEvent: vi.fn(async () => {}),
@@ -107,11 +117,13 @@ vi.mock("@cairn/db", async (importOriginal) => {
     collectWorkerSamples: vi.fn(async () => []),
     insertMonitorSamples: vi.fn(async () => 0),
     purgeMonitorSamples: vi.fn(async () => 0),
+    purgeScenarioAiCalls: vi.fn(async () => 0),
     upsertObjectStoreProbe: vi.fn(async () => undefined),
     touchRuntimeWatermark: vi.fn(async () => undefined),
     renewRunLease: vi.fn(async () => new Date()),
     loadRunRow: vi.fn(async () => ({ status: "RUNNING" })),
     expireRunDeadlines: vi.fn(async () => ({ settled: 0, scanned: 0 })),
+    expireMapJobClaimWindows: vi.fn(async () => ({ scanned: 0 })),
     markLostApiInstances: vi.fn(async () => []),
     expireStaleRunLeases: vi.fn(async () => ({ expired: 0, outcomes: [] })),
     sweepDriftedRuns: vi.fn(async () => ({ settled: 0, scanned: 0 })),
@@ -549,6 +561,36 @@ describe("LifecycleService", () => {
         excludeRunIds: expect.arrayContaining(["run-yielded"]),
       }),
     );
+  });
+
+  it("一次补位填满容量，并在短 Run 结束后立即领取下一条", async () => {
+    const env = resolveWorkerEnv();
+    const originalCapacity = env.CAIRN_WORKER_CAPACITY;
+    env.CAIRN_WORKER_CAPACITY = 4;
+    const completions: Array<() => void> = [];
+    try {
+      const svc = await buildLifecycle();
+      await (svc as unknown as { claimTask?: Promise<void> }).claimTask;
+      const engine = (svc as unknown as { engine: { execute: (...args: unknown[]) => Promise<void> } }).engine;
+      engine.execute = vi.fn(() => new Promise<void>((resolve) => completions.push(resolve)));
+      const { claimRun } = await import('@cairn/db');
+      const grant = (n: number) => ({
+        runId: `run-fill-${n}`, leaseId: `lease-fill-${n}`, fencingToken: 1,
+        holderWorkerId: 'w', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      vi.mocked(claimRun).mockClear();
+      for (let n = 1; n <= 5; n += 1) vi.mocked(claimRun).mockResolvedValueOnce(grant(n));
+      await (svc as unknown as { pump: () => Promise<void> }).pump();
+      expect(vi.mocked(claimRun).mock.calls).toHaveLength(4);
+      expect(completions).toHaveLength(4);
+      completions[0]!();
+      await vi.waitFor(() => expect(vi.mocked(claimRun).mock.calls).toHaveLength(5));
+      expect(completions).toHaveLength(5);
+      completions.forEach((resolve) => resolve());
+      await svc.onApplicationShutdown();
+    } finally {
+      env.CAIRN_WORKER_CAPACITY = originalCapacity;
+    }
   });
 
   it("Run 已终态后续租失败不中止收尾编码", async () => {
@@ -1261,6 +1303,20 @@ describe("LifecycleService", () => {
     });
     expect(claimRun).not.toHaveBeenCalled();
     await svc.onApplicationShutdown();
+  });
+
+  it("仅 executor 角色也能领取全局恢复槽位并清理地图窗口", async () => {
+    const { claimDuePeriodicSlots, expireRunDeadlines, expireMapJobClaimWindows } = await import('@cairn/db');
+    const svc = await buildLifecycle();
+    vi.mocked(claimDuePeriodicSlots).mockClear();
+    vi.mocked(expireRunDeadlines).mockClear();
+    vi.mocked(expireMapJobClaimWindows).mockClear();
+    await (svc as unknown as { runExecutorRecovery: () => Promise<void> }).runExecutorRecovery();
+    expect(claimDuePeriodicSlots).toHaveBeenCalledWith(
+      expect.anything(), [expect.objectContaining({ name: 'reaper.recovery' })],
+    );
+    expect(expireRunDeadlines).toHaveBeenCalled();
+    expect(expireMapJobClaimWindows).toHaveBeenCalled();
   });
 
   it("PS09 executor 不领平台槽位，仍写本节点样本", async () => {

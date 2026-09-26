@@ -104,6 +104,8 @@ function stubBrowserHandle(
   }
   return {
     profileDir,
+    isolation: 'DEDICATED',
+    hostId: null,
     context: {
       close: async () => undefined,
       browser: () => null,

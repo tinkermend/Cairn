@@ -21,9 +21,9 @@ vi.mock('./screencast.js', async (original) => {
   const actual = await original<typeof import('./screencast.js')>()
   return {
     ...actual,
-    startScreencast: vi.fn(async (_page: unknown, pageRef: { pageId: string }) => ({
+    startScreencast: vi.fn(async (_page: unknown, pageRef: { pageId: string } | (() => { pageId: string })) => ({
       latest: {
-        pageRef,
+        pageRef: typeof pageRef === 'function' ? pageRef() : pageRef,
         frameId: 'f-1',
         width: 1280,
         height: 720,

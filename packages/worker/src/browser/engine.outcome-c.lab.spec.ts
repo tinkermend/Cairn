@@ -31,6 +31,7 @@ import {
   DEV_CREDENTIAL_KEY,
   LOCAL_SECRET_PROVIDER,
   createRuntimeInvariant,
+  stepRunFor,
   targetAuthProfileDefinitionSchema,
   type AuthoringNode,
   type RuntimeInvariant,
@@ -570,8 +571,7 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
     expect(invariantRow(detail, invariantId)?.verdict).toBe('FAIL')
     expect(detail.outcomeStatus).toBe('WARN')
     expect(
-      detail.stepRuns
-        .find((item) => item.stepId === stepLogoutId)
+      stepRunFor(detail.stepRuns, stepLogoutId)
         ?.attempts.some((attempt) => attempt.error?.code === 'AUTH_GATE_CLOSED'),
     ).toBe(true)
   })
@@ -604,9 +604,10 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
 
   it('OCC-05：真页面错误弹窗记 FAIL 并脱敏；正常 alert 不误报', async () => {
     const failId = newId()
+    const nextId = newId()
     const failed = await executeScenario({
       name: `occ-05-fail-${newId()}`,
-      steps: [navigate(newId(), '/error'), click(newId(), '#next')],
+      steps: [navigate(newId(), '/error'), click(nextId, '#next')],
       runtimeInvariants: [createRuntimeInvariant('error_surface', failId)],
     })
     expect(failed.status).toBe('FAILED')
@@ -616,7 +617,7 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
     expect(JSON.stringify(row?.actual)).toMatch(/password=\*\*\*/)
     expect(JSON.stringify(row?.actual)).toMatch(/\[redacted-email\]/)
     expect(JSON.stringify(row?.actual)).not.toMatch(/hunter2/)
-    expect(failed.stepRuns.at(-1)?.attempts[0]?.error?.code).toBe('ERROR_SURFACE_VIOLATED')
+    expect(stepRunFor(failed.stepRuns, nextId)?.attempts ?? []).toHaveLength(0)
 
     const passId = newId()
     const passed = await executeScenario({
@@ -725,7 +726,7 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
     })
     expect(detail.status).toBe('FAILED')
     expect(detail.stepRuns[0]?.attempts[0]?.error?.code).toBe('NAVIGATE_OUT_OF_SCOPE')
-    expect(detail.stepRuns.find((item) => item.stepId === afterId)?.attempts ?? []).toHaveLength(0)
+    expect(stepRunFor(detail.stepRuns, afterId)?.attempts ?? []).toHaveLength(0)
     expect(invariantRow(detail, continueId)?.verdict).toBe('FAIL')
   })
 
@@ -748,7 +749,7 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
       runtimeInvariants: [createRuntimeInvariant('error_surface', haltId)],
     })
     expect(halted.status).toBe('FAILED')
-    expect(halted.stepRuns.find((item) => item.stepId === afterHaltId)?.attempts ?? []).toHaveLength(0)
+    expect(stepRunFor(halted.stepRuns, afterHaltId)?.attempts ?? []).toHaveLength(0)
     expect(invariantRow(halted, haltId)?.onViolation).toBe('halt')
 
     const continueId = newId()
@@ -775,7 +776,7 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
     })
     expect(continued.status).toBe('SUCCEEDED')
     expect(continued.outcomeStatus).toBe('FAIL')
-    expect(continued.stepRuns.find((item) => item.stepId === afterContinueId)?.status).toBe('SUCCEEDED')
+    expect(stepRunFor(continued.stepRuns, afterContinueId)?.status).toBe('SUCCEEDED')
     expect(invariantRow(continued, continueId)?.verdict).toBe('FAIL')
   })
 })

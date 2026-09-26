@@ -163,6 +163,34 @@ export class BrowserStepExecutor implements StepExecutor {
       return this.handleDownloadOutcome(ctx, step, rawResult)
     }
 
+    if (step.type === 'probe') {
+      const rawResult = await this.browser.execute(
+        sessionGrant,
+        commandOutcome.command,
+        signal,
+        { ...evidence, commandType: 'probe' },
+      )
+
+      if (!rawResult.ok) {
+        return {
+          kind: 'failed',
+          error: rawResult.error,
+          timedOut: rawResult.error.category === 'TIMEOUT',
+          aborted: rawResult.error.code === 'CANCELLED',
+          diagnostics: rawResult.diagnostics,
+          screenshot: rawResult.screenshot,
+          trace: rawResult.trace,
+        }
+      }
+
+      return {
+        kind: 'success',
+        output: rawResult.output,
+        screenshot: rawResult.screenshot,
+        trace: rawResult.trace,
+      }
+    }
+
     return runResolutionLadder({
       handle: this.handle,
       ctx,
@@ -400,6 +428,10 @@ export class BrowserStepExecutor implements StepExecutor {
 
     if (step.type === 'extract') {
       const target = descriptorFrom(input) ?? step.input.target
+      const many =
+        input && typeof input === 'object' && !Array.isArray(input) && 'many' in input && (input as any).many
+          ? (input as any).many
+          : step.input.many
       return {
         ok: true,
         command: {
@@ -407,6 +439,7 @@ export class BrowserStepExecutor implements StepExecutor {
           target,
           as: step.input.as,
           ...(step.input.attribute ? { attribute: step.input.attribute } : {}),
+          ...(many ? { many } : {}),
         },
       }
     }
@@ -492,6 +525,22 @@ export class BrowserStepExecutor implements StepExecutor {
           waitMs: step.input.waitMs ?? 30_000,
           saveDir,
           ...(step.input.expect ? { expect: step.input.expect } : {}),
+        },
+      }
+    }
+
+    if (step.type === 'probe') {
+      const target = descriptorFrom(input) ?? (step.input.kind === 'element' ? step.input.target : (step.input.kind === 'text' ? step.input.target : undefined))
+      return {
+        ok: true,
+        command: {
+          type: 'probe',
+          probeKind: step.input.kind,
+          ...(target ? { target } : {}),
+          ...(step.input.kind === 'element' ? { state: step.input.state ?? 'visible' } : {}),
+          ...(step.input.kind === 'text' ? { text: step.input.text } : {}),
+          ...(step.input.kind === 'url' ? { urlPattern: step.input.urlPattern } : {}),
+          waitMs: step.input.waitMs ?? 1000,
         },
       }
     }

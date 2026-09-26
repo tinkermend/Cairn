@@ -340,11 +340,23 @@ export async function pickOnPage(page: Page, x: number, y: number): Promise<Targ
     tag: picked.tag,
     text: picked.text?.slice(0, 80),
   }
+  const visible = picked.text?.trim()
+  const accessible = picked.accessibleName?.trim()
+  const disambiguation =
+    visible && accessible && visible !== accessible
+      ? {
+          visibleText: visible.slice(0, 80),
+          accessibleName: accessible.slice(0, 80),
+          recommended: 'visible_text' as const,
+        }
+      : undefined
+
   const unique = observation.diagnostics.candidatesTried.find((item) => item.matches === 1)
-  if (unique?.by !== 'css') return { ...observation, preview }
+  if (unique?.by !== 'css') return { ...observation, preview, ...(disambiguation ? { disambiguation } : {}) }
   return {
     ...observation,
     preview,
+    ...(disambiguation ? { disambiguation } : {}),
     diagnostics: {
       ...observation.diagnostics,
       framePathResolved: [...(observation.diagnostics.framePathResolved ?? []), 'fragile-css'],

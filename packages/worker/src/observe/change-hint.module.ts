@@ -1,8 +1,10 @@
 import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common'
 import { createChangeHint, type ChangeHintBus } from '@cairn/db'
 import { config, resolveDbEnv } from '../config/env'
+import { RunControlHintService } from './run-control-hint.service'
+import { CHANGE_HINT } from './change-hint.token'
 
-export const CHANGE_HINT = Symbol('CHANGE_HINT')
+export { CHANGE_HINT } from './change-hint.token'
 
 @Global()
 @Module({
@@ -17,8 +19,9 @@ export const CHANGE_HINT = Symbol('CHANGE_HINT')
           dbEnv: resolveDbEnv(),
         }),
     },
+    RunControlHintService,
   ],
-  exports: [CHANGE_HINT],
+  exports: [CHANGE_HINT, RunControlHintService],
 })
 export class ChangeHintModule implements OnApplicationShutdown {
   constructor(@Inject(CHANGE_HINT) private readonly bus: ChangeHintBus) {}

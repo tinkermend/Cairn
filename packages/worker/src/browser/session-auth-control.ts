@@ -188,7 +188,7 @@ export async function executeAuthInput(this: SessionManagerContext, params: {
         await refreshScreencastIfStale(
           entry.page,
           cast,
-          pageRefFor(latest.id, latest.generation, entry),
+          () => pageRefFor(latest.id, latest.generation, entry),
           2_000,
         )
       }

@@ -29,6 +29,9 @@ import {
   loadTargetForExecution,
   recordCaptchaLoginAttempt,
   enqueueTakeoverNotification,
+  writeSessionStateSnapshot,
+  MAX_SNAPSHOT_BYTE_SIZE,
+  type WriteSessionSnapshotAuthority,
   type SessionRecord
 } from '@cairn/db'
 import {
@@ -260,6 +263,21 @@ export async function completeOccupiedAuth(this: SessionManagerContext,
               : false,
             operationId: operation.id,
           })
+          const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === ownerId)?.[0]
+          await captureSessionSnapshot(
+            this,
+            session,
+            leaseId
+              ? {
+                  kind: 'lease',
+                  leaseId,
+                  workerId: this.options.workerId,
+                }
+              : {
+                  kind: 'owner',
+                  workerId: this.options.workerId,
+                },
+          ).catch(() => undefined)
         }
         await this.finishMaintenance(
           operation.id,
@@ -1397,4 +1415,111 @@ export async function resolveAccountCredential(
     secretId: materials.passwordSecretId,
   }
 }
+
+export async function captureSessionSnapshot(
+  ctx: SessionManagerContext,
+  session: SessionRecord,
+  authority: WriteSessionSnapshotAuthority,
+): Promise<{ ok: boolean; action?: string; reason?: string }> {
+  const live = ctx.lives.get(session.id)
+  if (!live) return { ok: false, reason: 'no_live_handle' }
+
+  // 1. 新鲜度检查 (§4.4)
+  const now = Date.now()
+  const lastSuccessMs = session.lastAuthSuccessAt ? new Date(session.lastAuthSuccessAt).getTime() : 0
+  let isFresh = session.authState === 'AUTHENTICATED' && now - lastSuccessMs <= 5 * 60 * 1000
+
+  if (!isFresh) {
+    try {
+      const target = await loadTargetForExecution(ctx.dbHandle, session.targetId).catch(() => null)
+      if (target) {
+        const probed = await probeAuth(live.handle, target)
+        if (probed === 'AUTHENTICATED') {
+          isFresh = true
+        }
+      }
+    } catch {
+      // probe failed
+    }
+  }
+
+  if (!isFresh) {
+    return { ok: false, reason: 'not_authenticated_or_fresh' }
+  }
+
+  // 2. 采集 storageState
+  let state: { cookies?: any[]; origins?: any[] }
+  try {
+    state = (await live.handle.context.storageState()) as any
+  } catch {
+    return { ok: false, reason: 'storage_state_error' }
+  }
+
+  const stateStr = JSON.stringify(state)
+  const hasIndexedDb = false
+
+  // 3. 大小检查（§4.4：默认 2MB）
+  if (stateStr.length > MAX_SNAPSHOT_BYTE_SIZE) {
+    await appendSessionEvent(ctx.dbHandle, {
+      key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
+      type: 'session.state_capture_skipped',
+      sessionId: session.id,
+      generation: session.generation,
+      payload: { reason: 'too_large', byteSize: stateStr.length },
+    }).catch(() => undefined)
+    return { ok: false, reason: 'too_large' }
+  }
+
+  const cookies = Array.isArray(state.cookies) ? state.cookies : []
+  const origins = Array.isArray(state.origins) ? state.origins : []
+
+  let earliestExpiry: Date | null = null
+  for (const c of cookies) {
+    if (c.expires && typeof c.expires === 'number' && c.expires > 0) {
+      const d = new Date(c.expires * 1000)
+      if (!earliestExpiry || d < earliestExpiry) {
+        earliestExpiry = d
+      }
+    }
+  }
+
+  // 4. 击剑写入
+  const writeResult = await writeSessionStateSnapshot(ctx.dbHandle, {
+    targetId: session.targetId,
+    targetAccountId: session.targetAccountId,
+    accountSlot: session.accountSlot ?? 1,
+    state: state as Record<string, unknown>,
+    formatVersion: 1,
+    cookieCount: cookies.length,
+    originCount: origins.length,
+    hasIndexedDb,
+    earliestCookieExpiry: earliestExpiry,
+    identity: session.lastExpectedIdentity,
+    sessionId: session.id,
+    sessionGeneration: session.generation,
+    sessionFencingToken: session.fencingToken,
+    authority,
+  })
+
+  if (!writeResult.ok) {
+    return { ok: false, reason: writeResult.code }
+  }
+
+  // 5. 登记 session.state_captured 事件
+  await appendSessionEvent(ctx.dbHandle, {
+    key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
+    type: 'session.state_captured',
+    sessionId: session.id,
+    generation: session.generation,
+    payload: {
+      action: writeResult.action,
+      cookieCount: cookies.length,
+      originCount: origins.length,
+      byteSize: writeResult.byteSize,
+    },
+  }).catch(() => undefined)
+
+  return { ok: true, action: writeResult.action }
+}
+
 

@@ -10,7 +10,13 @@ it('导航销毁探针的执行上下文只表示本次未知，不能关闭健�
   const context = await browser.newContext()
   try {
     const page = await context.newPage()
-    const handle: BrowserHandle = { context, basePage: page, profileDir: '' }
+    const handle: BrowserHandle = {
+      context,
+      basePage: page,
+      isolation: 'DEDICATED',
+      hostId: null,
+      profileDir: '',
+    }
     let started!: () => void
     const probing = new Promise<void>(resolve => { started = resolve })
     await page.exposeFunction('__healthProbeStarted', started)
@@ -33,4 +39,20 @@ it('导航销毁探针的执行上下文只表示本次未知，不能关闭健�
     await context.close()
     vi.restoreAllMocks()
   }
+})
+
+it('宿主断开直接判 UNHEALTHY', async () => {
+  const localBrowser = await chromium.launch({ headless: true })
+  const context = await localBrowser.newContext()
+  const page = await context.newPage()
+  const handle: BrowserHandle = {
+    context,
+    basePage: page,
+    isolation: 'SHARED',
+    hostId: 'test-host-id',
+    profileDir: null,
+  }
+  expect(await probeHealth(handle)).toBe('HEALTHY')
+  await localBrowser.close()
+  expect(await probeHealth(handle)).toBe('UNHEALTHY')
 })

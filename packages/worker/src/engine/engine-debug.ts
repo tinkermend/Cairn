@@ -1,4 +1,5 @@
 import {
+  loadRunStepStates,
   appendRunEvents,
   conflict,
   continueRunDebug,
@@ -13,6 +14,7 @@ import {
 } from '@cairn/db'
 import {
   pageIdentityChanged,
+  stepRunFor,
   type DebugAction,
   type DebugCheckpoint,
   type DebugCheckpointReason,
@@ -39,6 +41,7 @@ export async function holdRun(
     contextKeys: string[]
     sessionGrant?: SessionGrant
     overlay?: DebugOverlay | null
+    scopePath?: string
   },
 ): Promise<boolean> {
   return enterRunHolding(this.handle, {
@@ -58,7 +61,7 @@ export async function indexAfterContinue(
 ): Promise<number> {
   const after = await loadRunDetail(this.handle, runId)
   const currentId = snapshot.steps[index]?.id
-  const current = after?.stepRuns.find((item) => item.stepId === currentId)
+  const current = after && currentId ? stepRunFor(after.stepRuns, currentId) : undefined
   return current?.status === 'SUCCEEDED' ? index + 1 : index
 }
 
@@ -117,7 +120,10 @@ export async function awaitHold(
     }
     return 'stop'
   }
-  if (result.action === 'continue') {
+  if (result.action === 'continue' || result.action === 'continue_to_step') {
+    if (result.action === 'continue_to_step' && result.targetStepId) {
+      this.holds.setStopBeforeStep(input.runId, result.targetStepId)
+    }
     const resumed = await continueRunDebug(this.handle, {
       runId: input.runId,
       grant: input.grant,
@@ -143,8 +149,14 @@ export async function assertCanResume(this: ExecutionEngine, runId: string, acti
       throw conflict('DEBUG_FENCING_MISMATCH', '浏览器会话已变化，不能再试这一步')
     }
   }
-  const current = detail.stepRuns.find((item) => item.stepId === checkpoint.stepId)
-  if (action.action === 'continue') {
+  // 循环体内的检查点：运行详情只含根作用域记录，要按作用域取本项的步骤记录。
+  const scopedStates = checkpoint.scopePath
+    ? await loadRunStepStates(this.handle, runId, checkpoint.scopePath)
+    : undefined
+  const current = scopedStates
+    ? stepRunFor(scopedStates, checkpoint.stepId, checkpoint.scopePath)
+    : stepRunFor(detail.stepRuns, checkpoint.stepId)
+  if (action.action === 'continue' || action.action === 'continue_to_step') {
     if (checkpoint.reason === 'author_pause' && current?.status === 'PENDING') return
     if (current?.status !== 'SUCCEEDED') {
       throw conflict('STEP_CANNOT_RETRY', '只有当前步骤已成功时才能继续下一步')
@@ -157,7 +169,9 @@ export async function assertCanResume(this: ExecutionEngine, runId: string, acti
   ) {
     throw conflict('STEP_CANNOT_RETRY', '当前步骤不能再试')
   }
-  const missing = checkpoint.contextKeys.filter((key) => !(key in detail.context))
+  // 本项帧里的名字（循环体输出、当前项、序号）不在根上下文里，不能当成丢失。
+  const scoped = checkpoint.scopePath ? loopScopedKeys(detail.snapshot) : new Set<string>()
+  const missing = checkpoint.contextKeys.filter((key) => !(key in detail.context) && !scoped.has(key))
   if (missing.length > 0) {
     throw conflict('CONTEXT_KEY_MISSING', `缺少上下文：${missing.join('、')}`)
   }
@@ -194,8 +208,26 @@ export async function buildCheckpoint(
     sessionGrant?: SessionGrant
     grant: RunGrant
     overlay?: DebugOverlay | null
+    scopePath?: string
   },
 ): Promise<DebugCheckpoint> {
   const page = await this.browser?.describeHold?.(input.runId)
   return checkpointOf({ ...input, pageRef: page?.pageRef, url: page?.url })
+}
+
+function loopScopedKeys(snapshot: RunSnapshot): Set<string> {
+  const keys = new Set<string>()
+  for (const block of snapshot.controlFlow?.blocks ?? []) {
+    if (block.kind !== 'for_each' && block.kind !== 'repeat') continue
+    const body = new Set(block.bodyStepIds ?? [])
+    for (const step of snapshot.steps) {
+      if (body.has(step.id) && step.outputKey) keys.add(step.outputKey)
+      if (step.id === block.headerStepId) {
+        const control = (step.input as { control?: { as?: string; indexAs?: string } }).control
+        if (control?.as) keys.add(control.as)
+        if (control?.indexAs) keys.add(control.indexAs)
+      }
+    }
+  }
+  return keys
 }

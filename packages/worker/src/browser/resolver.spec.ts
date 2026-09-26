@@ -18,6 +18,11 @@ describe('TargetResolver 判定', () => {
     expect(pickResolvedCandidate([0, 2])).toEqual({ kind: 'miss', outcome: 'AMBIGUOUS' })
   })
 
+  it('提取全部匹配模式下（allowMultiple），多匹配也视为命中', () => {
+    expect(pickResolvedCandidate([0, 5], true)).toEqual({ kind: 'found', index: 1 })
+    expect(pickResolvedCandidate([0, 0], true)).toEqual({ kind: 'miss', outcome: 'NOT_FOUND' })
+  })
+
   it('AMBIGUOUS 证据带出每个候选的匹配数', () => {
     const candidates = [
       { by: 'role' as const, value: 'button', name: '删除' },

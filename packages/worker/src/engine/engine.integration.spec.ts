@@ -37,11 +37,13 @@ import {
   SESSION_OCCUPANCY_PROTOCOL,
   runGrantSchema,
   runSnapshotSchema,
+  stepRunFor,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,
   type Step,
 } from '@cairn/shared'
 import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
+import type { RunControlHintService } from '../observe/run-control-hint.service.js'
 import { ExecutionEngine } from './engine.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_eng`
@@ -472,6 +474,73 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     expect(detail.stepRuns.map((step) => step.status)).toEqual(['CANCELLED'])
     expect(detail.stepRuns[0]?.attempts.map((attempt) => attempt.status)).toEqual(['CANCELLED'])
     expect(detail.context).toEqual({})
+  })
+
+  it('运行控制提示及时打断在途步骤', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '提示唤醒取消',
+      steps: [{
+        id: ids.delay,
+        name: '慢步骤',
+        type: 'delay',
+        effectType: 'READ_ONLY',
+        input: { durationMs: 5_000 },
+      }],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await claimThis(created.detail.id)
+    let wake: (() => void) | undefined
+    const hints = {
+      ready: true,
+      enabled: true,
+      register: (_runId: string, callback: () => void) => {
+        wake = callback
+        return () => { wake = undefined }
+      },
+    } as unknown as RunControlHintService
+    const hintedEngine = new ExecutionEngine(handle, undefined, undefined, undefined, undefined, undefined, undefined, hints)
+    const running = hintedEngine.execute(created.detail.id, { grant, cancelPollMs: 10_000 })
+    await waitForFirstAttempt(created.detail.id)
+    await requestRunCancel(handle.db, created.detail.id, { id: actorId })
+    const signalledAt = Date.now()
+    expect(wake).toBeTypeOf('function')
+    wake?.()
+    await running
+    expect(Date.now() - signalledAt).toBeLessThan(2_000)
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('CANCELLED')
+    expect(wake).toBeUndefined()
+  })
+
+  it('截止时间到达时无需等待取消兜底轮询', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '截止时间定时中止',
+      steps: [{
+        id: ids.delay,
+        name: '慢步骤',
+        type: 'delay',
+        effectType: 'READ_ONLY',
+        input: { durationMs: 10_000 },
+      }],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+      deadlineAt: new Date(Date.now() + 3_000),
+    })
+    const grant = await claimThis(created.detail.id)
+    const startedAt = Date.now()
+    await engine.execute(created.detail.id, { grant, cancelPollMs: 10_000 })
+    expect(Date.now() - startedAt).toBeLessThan(6_000)
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('CANCELLED')
+    const [row] = await handle.db.select({ cancelReason: runs.cancelReason }).from(runs).where(eq(runs.id, created.detail.id))
+    expect(row?.cancelReason).toBe('RUN_DEADLINE_EXCEEDED')
   })
 
   it('执行器抛出的非中止异常记为 EXECUTOR，并按次数重试', async () => {
@@ -1234,8 +1303,8 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     expect(detail.status).toBe('SUCCEEDED')
     expect(detail.context.exposed).toBe('from-alt')
     expect(detail.context.seen).toBe('from-alt')
-    expect(detail.stepRuns.find((item) => item.stepId === leftover.id)?.status).toBe('SKIPPED')
-    expect(detail.stepRuns.find((item) => item.stepId === second.id)?.status).toBe('SUCCEEDED')
+    expect(stepRunFor(detail.stepRuns, leftover.id)?.status).toBe('SKIPPED')
+    expect(stepRunFor(detail.stepRuns, second.id)?.status).toBe('SUCCEEDED')
     const evidence = await listRunEvidence(handle.db, runId)
     expect(evidence.items.some((item) => {
       const payload = item.payload as { protocol?: string; invocationId?: string; selected?: string } | undefined
@@ -1272,7 +1341,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     await engine.execute(runId, { grant })
     const detail = await getRun(handle.db, runId)
     expect(detail.status).toBe('FAILED')
-    expect(detail.stepRuns.find((item) => item.stepId === second.id)?.status).toBe('SKIPPED')
+    expect(stepRunFor(detail.stepRuns, second.id)?.status).toBe('SKIPPED')
     expect(detail.context.exposed).toBeUndefined()
   })
 
@@ -1304,7 +1373,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     await engine.execute(runId, { grant })
     const detail = await getRun(handle.db, runId)
     expect(detail.status).toBe('NEEDS_REVIEW')
-    expect(detail.stepRuns.find((item) => item.stepId === second.id)?.status).toBe('SKIPPED')
+    expect(stepRunFor(detail.stepRuns, second.id)?.status).toBe('SKIPPED')
   })
 
   it('AMF-10 未声明候选组协议的 Worker 不领取', async () => {
@@ -1349,6 +1418,56 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     ).toBeNull()
     const grant = await claimThis(runId)
     expect(grant.runId).toBe(runId)
+  })
+
+  it('disabled: true 的步骤自动 SKIPPED，不生成 Attempt 并继续推进后续步骤', async () => {
+    const detail = await createAndRun('跳过停用步骤', [
+      {
+        id: ids.echo1,
+        name: '步骤1',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        input: { value: 'first' },
+      },
+      {
+        id: ids.fail,
+        name: '被停用的失败步骤',
+        type: 'fail',
+        effectType: 'SIDE_EFFECT',
+        disabled: true,
+        input: { message: 'should not fail because disabled', category: 'EXECUTOR' },
+      },
+      {
+        id: ids.echo2,
+        name: '步骤3',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        input: { value: 'third' },
+      },
+    ])
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.stepRuns[0]?.status).toBe('SUCCEEDED')
+    expect(detail.stepRuns[1]?.status).toBe('SKIPPED')
+    expect(detail.stepRuns[1]?.attempts).toHaveLength(0)
+    expect(detail.stepRuns[2]?.status).toBe('SUCCEEDED')
+  })
+
+  it('末尾步骤停用时，最后一个启用步骤成功即收尾为 SUCCEEDED', async () => {
+    const detail = await createAndRun('末尾停用', [
+      { id: ids.echo1, name: '步骤1', type: 'echo', effectType: 'READ_ONLY', input: { value: 'first' } },
+      { id: ids.echo2, name: '步骤2', type: 'echo', effectType: 'READ_ONLY', input: { value: 'second' } },
+      {
+        id: ids.echoP,
+        name: '末尾停用',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        disabled: true,
+        input: { value: 'tail' },
+      },
+    ])
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.stepRuns.map((step) => step.status)).toEqual(['SUCCEEDED', 'SUCCEEDED', 'SKIPPED'])
+    expect(detail.stepRuns[2]?.attempts).toHaveLength(0)
   })
 
   /** 把 Run 推到 RUNNING 并伪造一份有效 grant：模拟"持有者已经跑了一半"。 */

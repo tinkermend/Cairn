@@ -18,15 +18,16 @@ export const systemClock: EngineClock = {
         reject(abortError())
         return
       }
-      const timer = setTimeout(resolve, ms)
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer)
-          reject(abortError())
-        },
-        { once: true },
-      )
+      const onAbort = () => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', onAbort)
+        reject(abortError())
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      signal.addEventListener('abort', onAbort, { once: true })
     })
   },
 }

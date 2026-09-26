@@ -289,14 +289,14 @@ export async function pipeFrames(this: SessionManagerContext, input: {
     await touchViewedSession(this.dbHandle, session, true)
     const entry = this.pageForView(live, input.runId, input.pageId)
     if (!entry) throw conflict('PAGE_STALE', '没有可观察的页面')
-    const pageRef = pageRefFor(session.id, session.generation, entry)
+    const getPageRef = () => pageRefFor(session.id, session.generation, entry)
     let cast = live.screencasts.get(entry.pageId)
     if (!cast) {
-      cast = await startScreencast(entry.page, pageRef)
+      cast = await startScreencast(entry.page, getPageRef)
       live.screencasts.set(entry.pageId, cast)
     }
     live.screencastObservers.set(entry.pageId, (live.screencastObservers.get(entry.pageId) ?? 0) + 1)
-    if (cast) await refreshScreencastIfStale(entry.page, cast, pageRef)
+    if (cast) await refreshScreencastIfStale(entry.page, cast, getPageRef)
     const interval = Math.max(500, Math.floor(1000 / BROWSER_FRAME_MAX_FPS))
     try {
       await new Promise<void>((resolve) => {
@@ -350,7 +350,7 @@ export async function pipeFrames(this: SessionManagerContext, input: {
                 return
               }
               if (cast) {
-                await refreshScreencastIfStale(entry.page, cast, pageRef)
+                await refreshScreencastIfStale(entry.page, cast, getPageRef)
               }
               if (closed || input.signal.aborted) return
               if (cast?.latest) input.onFrame(cast.latest)

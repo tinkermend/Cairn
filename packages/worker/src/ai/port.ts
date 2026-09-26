@@ -1,6 +1,8 @@
 import {
   completeAiModelCall,
+  newId,
   reserveAiModelCall,
+  settleAiActionTrace,
   type DbHandle,
 } from '@cairn/db'
 import {
@@ -11,13 +13,21 @@ import {
   type AiCommand,
   type AiExecutionConfig,
   type AiResult,
+  type AiCallRoute,
+  type AiCallIntent,
   type BrowserCommandEvidence,
   type CompiledAccessScope,
   type ExecutionError,
   type RunGrant,
   type SessionGrant,
 } from '@cairn/shared'
-import { authGateClosedError, OBJECT_MISSING_REASONS, shouldCaptureEvidence } from '@cairn/shared'
+import {
+  authGateClosedError,
+  OBJECT_MISSING_REASONS,
+  requiredScreenshotRole,
+  shouldCaptureEvidence,
+  writeEvidenceArtifactKey,
+} from '@cairn/shared'
 import type { Page } from 'playwright'
 import { installedCompiledScope } from '../browser/target-scope.js'
 import type { BrowserSessionManager } from '../browser/session-manager.js'
@@ -32,7 +42,9 @@ import {
   validateBrowserAiModelFamily,
   type FormalAgentHandle,
 } from './midscene/formal-agent.js'
+import { detectFabrication } from './midscene/extract.js'
 import type { OpenAiLike } from './midscene/model-client.js'
+import { ActionRecorder } from './midscene/action-recorder.js'
 import { AI_PORT, type AiLocateResult, type AiPort } from '../engine/ports.js'
 import {
   createDirectOpenAiClient,
@@ -95,7 +107,9 @@ export function createAiPort(input: {
                 baseUrl: textBaseUrl,
                 apiKey: textApiKey,
               }),
+              model: textModel,
               route: 'aria_text',
+              intent: intentForCommand(command),
             })
 
             let ariaBranchResult: AriaBranchExecutionResult | undefined
@@ -130,6 +144,31 @@ export function createAiPort(input: {
             )
           }
 
+          const shouldRecord =
+            command.type === 'ai_action' &&
+            evidence.snapshot?.aiTaskEvidence?.actionEdge === 'record'
+
+          const recorder =
+            shouldRecord
+              ? new ActionRecorder({
+                  page,
+                  attemptId: evidence.attemptId,
+                  runId: evidence.runId,
+                  stepRunId: evidence.stepRunId,
+                  agentInstanceId: `agent-${newId()}`,
+                  grant: evidence.grant,
+                  // verifySessionLeaseForCommit 按 holderWorkerId 比对，缺了它每个动作都会被当成丢租拦下
+                  sessionLease: { ...grant, holderWorkerId: evidence.grant.holderWorkerId },
+                  db: input.handle,
+                  runInput: evidence.runInput,
+                  contextBindings: evidence.contextBindings
+                    ? new Map(Object.entries(evidence.contextBindings))
+                    : undefined,
+                  allowedOrigins: evidence.snapshot?.allowedOrigins,
+                  sensitiveSelectors: evidence.snapshot?.targetAuth?.sensitiveSelectors,
+                })
+              : undefined
+
           const agent = await createFormalMidsceneAgent({
             page,
             gate,
@@ -143,13 +182,18 @@ export function createAiPort(input: {
                 signal,
                 gate,
                 inner,
+                model: evidence.model,
                 route: 'vision',
+                intent: intentForCommand(command),
               }),
             modelConfig: midsceneModelConfig({ config: evidence.config, apiKey }),
             readonly: command.type !== 'ai_action',
+            recorder,
           })
+          let commandResult: any
           try {
             const result = await runCommand(agent, command, signal)
+            commandResult = result
             hung = result.hung === true
             if (command.type === 'ai_action' && gate.actionsStarted > 0) input.manager.markTransientPageState(grant)
             const authFailure = await input.manager.observeInRunAuth(grant, gate.actionsStarted > 0 ? 'dispatched' : 'not_dispatched', signal)
@@ -166,6 +210,31 @@ export function createAiPort(input: {
             }
             return await settleAiCommand(page, pagesBefore, command, result)
           } finally {
+            if (shouldRecord && evidence.step && evidence.snapshot) {
+              const stepResult =
+                commandResult?.ok === true
+                  ? 'SUCCEEDED'
+                  : signal.aborted
+                    ? 'CANCELLED'
+                    : hung
+                      ? 'UNKNOWN'
+                      : 'FAILED'
+              await settleAiActionTrace(input.handle, {
+                attemptId: evidence.attemptId,
+                runId: evidence.runId,
+                stepRunId: evidence.stepRunId,
+                step: evidence.step,
+                snapshot: evidence.snapshot,
+                stepResult,
+                errorCode: commandResult?.error?.code,
+                grant: evidence.grant,
+              }).catch((err) => {
+                aiLogger.warn(`settleAiActionTrace failed: ${err.message}`)
+              })
+            }
+            if (recorder) {
+              recorder.destroy()
+            }
             await agent.destroy().catch(() => undefined)
           }
         },
@@ -173,7 +242,36 @@ export function createAiPort(input: {
         (result) => evidenceFailed(command.type, result),
       )
       const failed = evidenceFailed(command.type, scoped.ok ? scoped.value : undefined)
-      const screenshot = shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', failed)
+      const captureScreenshot = shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', failed)
+      if (captureScreenshot) {
+        for (const extra of scoped.extraShots ?? []) {
+          await attachObjectEvidence({
+            type: 'screenshot',
+            bytes: extra.bytes,
+            contentType: 'image/png',
+            objects: input.objects,
+            evidence,
+            retainUntil: evidence.screenshotRetainUntil,
+            emptyReason: OBJECT_MISSING_REASONS.captureFailed,
+            artifactKey: writeEvidenceArtifactKey({
+              type: 'screenshot',
+              attemptId: evidence.attemptId,
+              role: extra.role,
+              seq: extra.seq,
+            }),
+            payload: {
+              role: extra.role,
+              viewport: evidence.screenshotViewport ?? 'full_page',
+              capturedAt: extra.capturedAt ?? new Date().toISOString(),
+              ...(extra.pageRef ? { pageRef: extra.pageRef } : {}),
+              ...(extra.seq ? { seq: extra.seq } : {}),
+              ...(extra.diagnosis ? { diagnosis: extra.diagnosis } : {}),
+            },
+          })
+        }
+      }
+      const screenshotRole = scoped.faceRole ?? requiredScreenshotRole({ failed, commandType: command.type })
+      const screenshot = captureScreenshot
         ? await attachObjectEvidence({
             type: 'screenshot',
             bytes: scoped.screenshotBytes,
@@ -182,6 +280,21 @@ export function createAiPort(input: {
             evidence,
             retainUntil: evidence.screenshotRetainUntil,
             emptyReason: OBJECT_MISSING_REASONS.captureFailed,
+            artifactKey: writeEvidenceArtifactKey({
+              type: 'screenshot',
+              attemptId: evidence.attemptId,
+              role: screenshotRole,
+              seq: scoped.screenshotSeq,
+            }),
+            payload: {
+              role: screenshotRole,
+              viewport: evidence.screenshotViewport ?? 'full_page',
+              capturedAt: scoped.screenshotCapturedAt ?? new Date().toISOString(),
+              ...(scoped.pageRef ? { pageRef: scoped.pageRef } : {}),
+              ...(scoped.screenshotSeq ? { seq: scoped.screenshotSeq } : {}),
+              ...(scoped.screenshotDiagnosis ? { diagnosis: scoped.screenshotDiagnosis } : {}),
+              ...(scoped.omittedBefore ? { omittedBefore: scoped.omittedBefore } : {}),
+            },
           })
         : undefined
       let trace
@@ -256,7 +369,9 @@ export function createAiPort(input: {
                 baseUrl: textConfig.baseUrl,
                 apiKey: textApiKey,
               }),
+              model: textConfig.model,
               route: 'aria_text',
+              intent: 'ai_locate',
               onReserved: (n) => {
                 callNs.push(n)
               },
@@ -317,6 +432,9 @@ export function createAiPort(input: {
               signal,
               gate,
               inner,
+              model: evidence.model,
+              route: 'vision',
+              intent: 'ai_locate',
               onReserved: (n) => {
                 callNs.push(n)
               },
@@ -481,6 +599,13 @@ export function createStepGate(
   )
 }
 
+/** 调用意图归因：按调用点静态判定，不解析提示词。aiAct 内部的规划与定位统一记 ai_act。 */
+function intentForCommand(command: AiCommand): AiCallIntent {
+  if (command.type === 'ai_action') return command.action ? 'ai_atomic' : 'ai_act'
+  if (command.type === 'ai_extract') return 'ai_extract'
+  return 'ai_assert'
+}
+
 function createBudgetClient(input: {
   handle: DbHandle
   grant: RunGrant
@@ -491,13 +616,21 @@ function createBudgetClient(input: {
   gate: ActionGate
   inner: OpenAiLike
   onReserved?: (n: number) => void
-  route?: string
+  route?: AiCallRoute
+  intent?: AiCallIntent
+  model?: string
 }): OpenAiLike {
   return {
     chat: {
       completions: {
         create: async (params, options) => {
           input.gate.assertAllowed('model')
+          const paramModel =
+            params && typeof params === 'object' && 'model' in params && typeof (params as { model?: unknown }).model === 'string'
+              ? (params as { model: string }).model.trim()
+              : undefined
+          const actualModel = paramModel || input.model || input.evidence.model
+          const actualRoute: AiCallRoute = input.route ?? 'vision'
           const reserved = await reserveAiModelCall(input.handle, {
             runId: input.evidence.runId,
             stepRunId: input.evidence.stepRunId,
@@ -508,7 +641,8 @@ function createBudgetClient(input: {
               ...input.sessionGrant,
               holderWorkerId: input.grant.holderWorkerId,
             },
-            model: input.evidence.model,
+            model: actualModel,
+            route: actualRoute,
           })
           if (!reserved.ok) {
             const error = new Error(reserved.code)
@@ -531,19 +665,21 @@ function createBudgetClient(input: {
             await completeAiModelCall(input.handle, {
               evidenceId: reserved.evidenceId,
               phase: 'completed',
-              model: input.evidence.model,
+              model: actualModel,
+              route: actualRoute,
+              intent: input.intent,
               durationMs,
               inputTokens,
               outputTokens,
               cost: null,
-              summary: input.route === 'aria_text' ? 'aria_text' : undefined,
+              summary: actualRoute === 'aria_text' ? 'aria_text' : undefined,
             })
             emitAiModelCallLog(aiLogger, {
               runId: input.evidence.runId,
               stepRunId: input.evidence.stepRunId,
               attemptId: input.evidence.attemptId,
-              model: input.evidence.model,
-              route: input.route ?? 'vision',
+              model: actualModel,
+              route: actualRoute,
               durationMs,
               phase: 'completed',
               inputTokens,
@@ -557,17 +693,19 @@ function createBudgetClient(input: {
             await completeAiModelCall(input.handle, {
               evidenceId: reserved.evidenceId,
               phase: 'failed',
-              model: input.evidence.model,
+              model: actualModel,
+              route: actualRoute,
+              intent: input.intent,
               durationMs,
               errorCode,
-              summary: input.route === 'aria_text' ? 'aria_text' : undefined,
+              summary: actualRoute === 'aria_text' ? 'aria_text' : undefined,
             })
             emitAiModelCallLog(aiLogger, {
               runId: input.evidence.runId,
               stepRunId: input.evidence.stepRunId,
               attemptId: input.evidence.attemptId,
-              model: input.evidence.model,
-              route: input.route ?? 'vision',
+              model: actualModel,
+              route: actualRoute,
               durationMs,
               phase: 'failed',
               errorCode,
@@ -632,8 +770,26 @@ async function invoke(agent: FormalAgentHandle, command: AiCommand): Promise<AiR
   if (command.type === 'ai_extract') {
     const schema = command.outputSchema
     if (!schema) return { ok: false, summary: '缺少 Output Schema' }
-    const parsed = parseAiOutput(await agent.aiQuery(command.instruction!, schema), schema)
+    const raw = await agent.aiQuery(command.instruction!, schema)
+    const parsed = parseAiOutput(raw, schema)
     if (!parsed.ok) return { ok: false, summary: parsed.message }
+    if (schema.kind === 'list' && agent.page) {
+      const pageText = await agent.page.locator('body').innerText().catch(() => '')
+      const list = parsed.value as unknown[]
+      for (const item of list) {
+        if (typeof item === 'string') {
+          if (detectFabrication(pageText, item)) {
+            return { ok: false, summary: `提取项包含编造值：${item}` }
+          }
+        } else if (item && typeof item === 'object') {
+          for (const val of Object.values(item)) {
+            if (typeof val === 'string' && val.trim() !== '' && detectFabrication(pageText, val)) {
+              return { ok: false, summary: `提取项包含编造值：${val}` }
+            }
+          }
+        }
+      }
+    }
     return { ok: true, output: parsed.value }
   }
   const asserted = await agent.aiAssert(command.instruction!)

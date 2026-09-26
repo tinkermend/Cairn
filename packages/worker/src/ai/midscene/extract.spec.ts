@@ -22,6 +22,25 @@ describe('buildDataDemand', () => {
     expect(buildDataDemand('读取总数', { kind: 'scalar', type: 'number' })).toBe('number, 读取总数')
   })
 
+  it('列表输出带上数组符号和上限约束', () => {
+    const listDemand = buildDataDemand('读取表格前几行', {
+      kind: 'list',
+      item: {
+        kind: 'object',
+        fields: [{ name: 'orderNo', type: 'string' }],
+      },
+      maxItems: 10,
+    })
+    expect(listDemand).toContain('{orderNo: string}[]，最多 10 项，只返回这些键，键名原样使用。读取表格前几行')
+
+    const scalarListDemand = buildDataDemand('读取单号列表', {
+      kind: 'list',
+      item: { kind: 'scalar', type: 'string' },
+      maxItems: 20,
+    })
+    expect(scalarListDemand).toBe('string[]，最多 20 项。读取单号列表')
+  })
+
   it('没有声明 Schema 时原样透传', () => {
     expect(buildDataDemand('随便读点什么', undefined)).toBe('随便读点什么')
   })

@@ -21,12 +21,15 @@ export type ExecuteOptions = {
   grant: RunGrant
   signal?: AbortSignal
   clock?: EngineClock
-  /** 轮询取消请求的间隔。取消只能查库发现（NOTIFY 属 P7），测试用它把窗口压小。 */
+  /** 兜底核验间隔覆盖值；测试用它把取消发现窗口压小。 */
   cancelPollMs?: number
 }
 
-/** 取消请求的轮询间隔：更密只增加查询，不会更早发现取消。 */
+/** 变化提示不可用时，维持原有的取消发现窗口。 */
 export const DEFAULT_CANCEL_POLL_MS = 250
+
+/** 变化提示可用时，低频核验持久化事实以覆盖丢失的提示。 */
+export const DEFAULT_CANCEL_RECONCILE_MS = 5_000
 
 export type ExecutorOutcome = StepExecutionOutcome & {
   timedOut: boolean

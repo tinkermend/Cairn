@@ -50,6 +50,7 @@ import {
   type BrowserHandle,
   type TargetAuthInfo
 } from './runtime'
+import { BrowserHostPool, DEFAULT_HOST_POOL_CONFIG, type HostPoolConfig } from './host-pool.js'
 import { type ManagedPageEntry } from './page-identity'
 import {
   emptyLive,
@@ -137,6 +138,8 @@ export class BrowserSessionManager {
     return dropLocalHandle.call(this, sessionId, options)
   }
 
+  readonly hostPool: BrowserHostPool
+
   constructor(
     @Inject(DB_HANDLE) readonly dbHandle: DbHandle,
     @Inject(BROWSER_SESSION_OPTIONS) readonly options: BrowserSessionManagerOptions,
@@ -144,6 +147,38 @@ export class BrowserSessionManager {
     @Optional() @Inject(ObjectService) readonly objects?: ObjectService,
   ) {
     this.workerInstanceId = options.workerInstanceId ?? randomUUID()
+    const poolConfig: HostPoolConfig = {
+      maxContextsPerHost: options.poolMaxContextsPerHost ?? DEFAULT_HOST_POOL_CONFIG.maxContextsPerHost,
+      hostMaxAgeSeconds: options.poolHostMaxAgeSeconds ?? DEFAULT_HOST_POOL_CONFIG.hostMaxAgeSeconds,
+      hostRssHighWatermarkMb: options.poolHostRssHighWatermarkMb ?? DEFAULT_HOST_POOL_CONFIG.hostRssHighWatermarkMb,
+      targetSpread: options.poolTargetSpread ?? DEFAULT_HOST_POOL_CONFIG.targetSpread,
+      idleCloseDelayMs: DEFAULT_HOST_POOL_CONFIG.idleCloseDelayMs,
+    }
+    this.hostPool = new BrowserHostPool(
+      options.workerId,
+      poolConfig,
+      undefined,
+      (hostId, sessionIds) => {
+        this.logger.error({ hostId, sessionIds }, 'browser_host_crashed')
+        for (const sid of sessionIds) {
+          const live = this.lives.get(sid)
+          if (live) {
+            void this.markSessionLost(sid, 'browser_crashed')
+          }
+        }
+      },
+      (hostId, sessionId) => {
+        this.logger.warn({ hostId, sessionId }, 'browser_context_crashed')
+        const live = this.lives.get(sessionId)
+        if (live) {
+          void this.markSessionLost(sessionId, 'browser_crashed')
+        }
+      },
+      {
+        headless: options.headless,
+        executablePath: options.executablePath,
+      },
+    )
   }
 
   startHeartbeat(): void {
@@ -484,12 +519,24 @@ export class BrowserSessionManager {
     evidence: BrowserCommandEvidence | undefined,
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean = () => false,
+    signal?: AbortSignal,
   ): Promise<
     | {
         ok: true
         value: T
         screenshotBytes?: Buffer
-        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        extraShots?: {
+          role: import('@cairn/shared').ScreenshotRole
+          bytes: Buffer
+          capturedAt?: string
+          pageRef?: import('@cairn/shared').PageRef
+          seq?: number
+          diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        }[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: import('@cairn/shared').ScreenshotRole
         pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
@@ -498,13 +545,24 @@ export class BrowserSessionManager {
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
-        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        extraShots?: {
+          role: import('@cairn/shared').ScreenshotRole
+          bytes: Buffer
+          capturedAt?: string
+          pageRef?: import('@cairn/shared').PageRef
+          seq?: number
+          diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        }[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: import('@cairn/shared').ScreenshotRole
         pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
       }
   > {
-    return (withManagedPage as typeof withManagedPage<T>).call(this, grant, evidence, fn, failed)
+    return (withManagedPage as typeof withManagedPage<T>).call(this, grant, evidence, fn, failed, signal)
   }
 
   async runManagedPage<T>(
@@ -512,12 +570,24 @@ export class BrowserSessionManager {
     evidence: BrowserCommandEvidence | undefined,
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean,
+    signal?: AbortSignal,
   ): Promise<
     | {
         ok: true
         value: T
         screenshotBytes?: Buffer
-        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        extraShots?: {
+          role: import('@cairn/shared').ScreenshotRole
+          bytes: Buffer
+          capturedAt?: string
+          pageRef?: import('@cairn/shared').PageRef
+          seq?: number
+          diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        }[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: import('@cairn/shared').ScreenshotRole
         pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
@@ -526,13 +596,24 @@ export class BrowserSessionManager {
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
-        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        extraShots?: {
+          role: import('@cairn/shared').ScreenshotRole
+          bytes: Buffer
+          capturedAt?: string
+          pageRef?: import('@cairn/shared').PageRef
+          seq?: number
+          diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        }[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: import('@cairn/shared').ScreenshotRole
         pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
       }
   > {
-    return (runManagedPage as typeof runManagedPage<T>).call(this, grant, evidence, fn, failed)
+    return (runManagedPage as typeof runManagedPage<T>).call(this, grant, evidence, fn, failed, signal)
   }
 
   /**
@@ -546,9 +627,20 @@ export class BrowserSessionManager {
   ): Promise<
     BrowserCommandResult & {
       screenshotBytes?: Buffer
-      extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+      extraShots?: {
+        role: import('@cairn/shared').ScreenshotRole
+        bytes: Buffer
+        capturedAt?: string
+        pageRef?: import('@cairn/shared').PageRef
+        seq?: number
+        diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+      }[]
       faceRole?: import('@cairn/shared').ScreenshotRole
       pageRef?: import('@cairn/shared').PageRef
+      screenshotCapturedAt?: string
+      screenshotDiagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+      screenshotSeq?: number
+      omittedBefore?: 'initial_blank_page'
       tracePath?: string
     }
   > {

@@ -7,12 +7,14 @@ import {
   remainingStepIdsOfAlternative,
   selectionDecisionFromGroup,
   shouldFallbackToNext,
+  stepRunMapByStep,
   type CandidateGroup,
   type ExecutionError,
   type JsonValue,
   type RunDetailDto,
   type RunSnapshot,
   type SelectionDecision,
+  type StepSkipReason,
 } from '@cairn/shared'
 import { jsonContext } from './engine-step-plan.js'
 
@@ -29,7 +31,7 @@ export function attemptedFromDetail(
   detail: CandidatePlanDetail | null | undefined,
   current: { implementationKey: string; outcome: 'succeeded' | 'failed'; attribution?: 'MODULE' | 'EXTERNAL_INFRA' | 'UNKNOWN'; failedStepId?: string },
 ) {
-  const byId = new Map(detail?.stepRuns.map((item) => [item.stepId, item]) ?? [])
+  const byId = stepRunMapByStep(detail?.stepRuns ?? [])
   const attempts = group.alternatives.map((alternative) => {
     if (alternative.implementationKey === current.implementationKey) return current
     const failed = alternative.stepIds.find((stepId) => byId.get(stepId)?.status === 'FAILED')
@@ -59,7 +61,7 @@ export function planCandidateSuccess(input: {
   context: Record<string, JsonValue>
   last: boolean
   detail: CandidatePlanDetail | null
-}): { context?: Record<string, JsonValue>; skipStepIds?: string[]; selectionDecision?: SelectionDecision; last: boolean } | undefined {
+}): { context?: Record<string, JsonValue>; skipStepIds?: string[]; skips?: Array<{ stepIds: string[]; reason: StepSkipReason }>; selectionDecision?: SelectionDecision; last: boolean } | undefined {
   const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
   if (!found) return undefined
   const alternative = found.group.alternatives[found.alternativeIndex]!
@@ -79,6 +81,7 @@ export function planCandidateSuccess(input: {
   return {
     context: jsonContext(commitStagedOutputs(input.context, alternative.outputStaging)),
     skipStepIds,
+    skips: skipStepIds.length > 0 ? [{ stepIds: skipStepIds, reason: 'fallback_not_selected' as const }] : undefined,
     selectionDecision: selectionDecisionFromGroup({
       group: found.group,
       attempted: attemptedFromDetail(found.group, input.detail, {
@@ -97,7 +100,7 @@ export function planCandidateFailure(input: {
   error: ExecutionError
   debugHold: boolean
   detail: CandidatePlanDetail | null
-}): { keepRunOpen?: boolean; skipStepIds?: string[]; selectionDecision?: SelectionDecision } | undefined {
+}): { keepRunOpen?: boolean; skipStepIds?: string[]; skips?: Array<{ stepIds: string[]; reason: StepSkipReason }>; selectionDecision?: SelectionDecision } | undefined {
   const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
   if (!found) return undefined
   const attribution = fallbackAttribution(input.error)
@@ -115,9 +118,11 @@ export function planCandidateFailure(input: {
       hasNextAlternative: hasNext,
     })
   ) {
+    const skipStepIds = remainingStepIdsOfAlternative(found.group, found.alternativeIndex, input.stepId)
     return {
       keepRunOpen: true,
-      skipStepIds: remainingStepIdsOfAlternative(found.group, found.alternativeIndex, input.stepId),
+      skipStepIds,
+      skips: skipStepIds.length > 0 ? [{ stepIds: skipStepIds, reason: 'fallback_abandoned' as const }] : undefined,
     }
   }
   return {
@@ -135,14 +140,16 @@ export function planCandidateHalt(input: {
   error: ExecutionError
   runStatus: 'NEEDS_REVIEW'
   detail: CandidatePlanDetail | null
-}): { skipStepIds?: string[]; selectionDecision?: SelectionDecision } | undefined {
+}): { skipStepIds?: string[]; skips?: Array<{ stepIds: string[]; reason: StepSkipReason }>; selectionDecision?: SelectionDecision } | undefined {
   const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
   if (!found) return undefined
+  const skipStepIds = [
+    ...remainingStepIdsOfAlternative(found.group, found.alternativeIndex, input.stepId),
+    ...laterAlternativeStepIds(found.group, found.alternativeIndex),
+  ]
   return {
-    skipStepIds: [
-      ...remainingStepIdsOfAlternative(found.group, found.alternativeIndex, input.stepId),
-      ...laterAlternativeStepIds(found.group, found.alternativeIndex),
-    ],
+    skipStepIds,
+    skips: skipStepIds.length > 0 ? [{ stepIds: skipStepIds, reason: 'run_halted' as const }] : undefined,
     selectionDecision: selectionDecisionFromGroup({
       group: found.group,
       attempted: attemptedFromDetail(found.group, input.detail, {

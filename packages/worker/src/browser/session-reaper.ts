@@ -17,6 +17,7 @@ import {
 import { DEFAULT_SESSION_POLICY, type SessionPolicy } from '@cairn/shared'
 import { closePage, probeHealth, stopSession } from './runtime'
 import { SessionLeaseError, type SessionManagerContext } from './session-live.js'
+import { captureSessionSnapshot } from './session-maintenance-runtime.js'
 
 export function ownerScope(this: SessionManagerContext) {
     return {
@@ -48,6 +49,9 @@ export async function dropLocalHandle(
     }
     if (live.lastPage && live.lastPage !== live.handle.basePage && !live.lastPage.isClosed()) {
       await closePage(live.lastPage)
+    }
+    if (live.handle.isolation === 'SHARED') {
+      await this.hostPool.releaseContext(sessionId).catch(() => undefined)
     }
     const stopResult = await stopSession(live.handle)
     this.lives.delete(sessionId)
@@ -103,6 +107,19 @@ export async function renew(this: SessionManagerContext, leaseId: string, leaseT
 
 export async function release(this: SessionManagerContext, leaseId: string, reason: string): Promise<void> {
     const sessionId = this.leaseToSession.get(leaseId)
+    if (sessionId) {
+      const live = this.lives.get(sessionId)
+      if (live) {
+        const session = await getSessionById(this.dbHandle, sessionId)
+        if (session) {
+          await captureSessionSnapshot(this, session, {
+            kind: 'lease',
+            leaseId,
+            workerId: this.options.workerId,
+          }).catch(() => undefined)
+        }
+      }
+    }
     const sealed = await this.sealVideoForLease(leaseId)
     await this.stopTracingForLease(leaseId, sessionId)
     await this.closeRunPage(leaseId)
@@ -150,6 +167,25 @@ export async function close(this: SessionManagerContext, sessionId: string, reas
     })
 
     const live = this.lives.get(sessionId)
+    if (
+      live &&
+      ![
+        'resource_deleted',
+        'disposed',
+        'lost',
+        'capacity_evict',
+        'acquire_aborted',
+        'worker_shutdown',
+        'browser_crashed',
+      ].includes(reason)
+    ) {
+      await captureSessionSnapshot(this, session, {
+        kind: 'owner',
+        workerId: this.options.workerId,
+        instanceId: this.workerInstanceId,
+      }).catch(() => undefined)
+    }
+
     let stopResult: 'stopped' | 'unconfirmed' = 'stopped'
     if (live) {
       stopResult = await this.dropLocalHandle(sessionId, dropOptions)
@@ -302,6 +338,7 @@ export async function shutdown(this: SessionManagerContext): Promise<void> {
     for (const sessionId of [...this.lives.keys()]) {
       await this.close(sessionId, 'worker_shutdown')
     }
+    await this.hostPool?.shutdown().catch(() => undefined)
     this.guard.clear()
   }
 

@@ -80,6 +80,10 @@ export class AiStepExecutor implements StepExecutor {
       model: snapshot.aiExecution.modelName,
       config: snapshot.aiExecution,
       sensitiveSelectors: snapshot.targetAuth?.sensitiveSelectors ?? [],
+      runInput: ctx.input,
+      contextBindings: contextValues,
+      step,
+      snapshot,
     })
 
     if (result.hung) {

@@ -59,11 +59,10 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
       evidence?: BrowserCommandEvidence,
     ) {
       const raw = await manager.execute(grant, command, signal, evidence)
-      const { screenshotBytes, extraShots, faceRole, pageRef, tracePath, ...result } = raw
+      const { screenshotBytes, extraShots, faceRole, pageRef, screenshotCapturedAt, screenshotDiagnosis, screenshotSeq, omittedBefore, tracePath, ...result } = raw
       const failed = !result.ok
       const shotMode = evidence?.screenshot ?? 'on_failure'
       const traceMode = evidence?.trace ?? 'off'
-      const capturedAt = new Date().toISOString()
       const viewport = evidence?.screenshotViewport ?? 'full_page'
       const role = faceRole ?? requiredScreenshotRole({ failed, commandType: command.type })
 
@@ -82,9 +81,13 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
                   type: 'screenshot',
                   attemptId: evidence.attemptId,
                   role: extra.role,
+                  seq: extra.seq,
                 })
               : undefined,
-            payload: screenshotPayload(extra.role, viewport, capturedAt, pageRef),
+            payload: screenshotPayload(extra.role, viewport, extra.capturedAt ?? new Date().toISOString(), extra.pageRef ?? pageRef, {
+              seq: extra.seq,
+              diagnosis: extra.diagnosis,
+            }),
           })
         }
       }
@@ -104,9 +107,14 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
                 type: 'screenshot',
                 attemptId: evidence.attemptId,
                 role,
+                seq: screenshotSeq,
               })
             : undefined,
-          payload: screenshotPayload(role, viewport, capturedAt, pageRef),
+          payload: screenshotPayload(role, viewport, screenshotCapturedAt ?? new Date().toISOString(), pageRef, {
+            seq: screenshotSeq,
+            diagnosis: screenshotDiagnosis,
+            omittedBefore,
+          }),
         })
       }
 
@@ -244,12 +252,20 @@ function screenshotPayload(
   viewport: 'viewport' | 'full_page',
   capturedAt: string,
   pageRef?: PageRef,
+  extra?: {
+    seq?: number
+    diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
+    omittedBefore?: 'initial_blank_page'
+  },
 ): JsonValue {
   return {
     role,
     viewport,
     capturedAt,
     ...(pageRef ? { pageRef } : {}),
+    ...(extra?.seq ? { seq: extra.seq } : {}),
+    ...(extra?.diagnosis ? { diagnosis: extra.diagnosis } : {}),
+    ...(extra?.omittedBefore ? { omittedBefore: extra.omittedBefore } : {}),
   }
 }
 

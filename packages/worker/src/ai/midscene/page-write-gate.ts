@@ -2,7 +2,10 @@ import type { Page } from 'playwright'
 import type { ActionGate } from './action-gate.js'
 
 /** SDK actions contain multiple awaited writes. Check ownership before each browser call. */
-export function gatePageWrites(page: Page, gate: ActionGate): Page {
+export function gatePageWrites(
+  page: Page,
+  gate: ActionGate,
+): Page {
   const cache = new WeakMap<object, object>()
   const checkedMethods = new Set([
     'click',

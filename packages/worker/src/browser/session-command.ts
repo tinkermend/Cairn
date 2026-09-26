@@ -10,6 +10,7 @@ import {
   type BrowserCommandEvidence,
   type BrowserCommandResult,
   type PageRef,
+  type ScreenshotDiagnosis,
   type ScreenshotRole,
   authGateClosedError,
   type RunSnapshot,
@@ -28,6 +29,22 @@ import { executeOnPage } from './surface'
 import { handoffMessage } from './managed-helpers'
 import { createManagedPage, pageRefFor, pickPopupHandoff, type ManagedPageEntry } from './page-identity'
 import { type LiveHandle, type SessionManagerContext } from './session-live.js'
+import {
+  diagnoseScreenshot,
+  isOmittableInitialBlank,
+  waitForVisibleContent,
+} from './screenshot-quality.js'
+
+const RETAKE_BUDGET_MS = 2_000
+
+type ManagedShot = {
+  role: ScreenshotRole
+  bytes: Buffer
+  capturedAt?: string
+  pageRef?: PageRef
+  seq?: number
+  diagnosis?: ScreenshotDiagnosis
+}
 
 export function assertCommand(this: SessionManagerContext, leaseId: string): SessionGrant {
     return this.guard.assertHeld(leaseId)
@@ -38,12 +55,17 @@ export async function withManagedPage<T>(this: SessionManagerContext,
     evidence: BrowserCommandEvidence | undefined,
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean = () => false,
+    signal?: AbortSignal,
   ): Promise<
     | {
         ok: true
         value: T
         screenshotBytes?: Buffer
-        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        extraShots?: ManagedShot[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: ScreenshotRole
         tracePath?: string
       }
@@ -51,7 +73,11 @@ export async function withManagedPage<T>(this: SessionManagerContext,
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
-        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        extraShots?: ManagedShot[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: ScreenshotRole
         tracePath?: string
       }
@@ -73,7 +99,7 @@ export async function withManagedPage<T>(this: SessionManagerContext,
       throw error
     }
     return this.withHeldOccupancy(grant.leaseId, grant, () =>
-      this.runManagedPage(grant, evidence, fn, failed),
+      this.runManagedPage(grant, evidence, fn, failed, signal),
     )
   }
 
@@ -82,12 +108,17 @@ export async function runManagedPage<T>(this: SessionManagerContext,
     evidence: BrowserCommandEvidence | undefined,
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean,
+    signal?: AbortSignal,
   ): Promise<
     | {
         ok: true
         value: T
         screenshotBytes?: Buffer
-        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        extraShots?: ManagedShot[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: ScreenshotRole
         pageRef?: PageRef
         tracePath?: string
@@ -96,7 +127,11 @@ export async function runManagedPage<T>(this: SessionManagerContext,
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
-        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        extraShots?: ManagedShot[]
+        screenshotCapturedAt?: string
+        screenshotDiagnosis?: ScreenshotDiagnosis
+        screenshotSeq?: number
+        omittedBefore?: 'initial_blank_page'
         faceRole?: ScreenshotRole
         pageRef?: PageRef
         tracePath?: string
@@ -137,16 +172,36 @@ export async function runManagedPage<T>(this: SessionManagerContext,
       fullPage: (evidence?.screenshotViewport ?? 'full_page') === 'full_page',
       selectors: evidence?.sensitiveSelectors ?? [],
     }
-    const extraShots: { role: ScreenshotRole; bytes: Buffer }[] = []
+    const extraShots: ManagedShot[] = []
+    const pageRefAt = (pageId: string | undefined): PageRef | undefined => {
+      const entry = pageId ? live?.pages.get(pageId) : undefined
+      return live && entry ? pageRefFor(live.sessionId, live.generation, entry) : undefined
+    }
     const startPageId = live?.currentPageIdByLease.get(grant.leaseId)
+    let omittedBefore: 'initial_blank_page' | undefined
     if (
       evidence &&
       evidence.commandType &&
       isSideEffectBrowserCommand(evidence.commandType) &&
       shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', false)
     ) {
-      const before = await screenshotPage(page, shotOpts).catch(() => undefined)
-      if (before) extraShots.push({ role: 'before_action', bytes: before })
+      const beforeAt = new Date().toISOString()
+      const beforeRef = pageRefAt(startPageId)
+      if (await isOmittableInitialBlank(page, evidence.commandType)) {
+        omittedBefore = 'initial_blank_page'
+      } else {
+        const before = await screenshotPage(page, shotOpts).catch(() => undefined)
+        if (before) {
+          extraShots.push({
+            role: 'before_action',
+            bytes: before,
+            capturedAt: beforeAt,
+            pageRef: beforeRef,
+            seq: 0,
+            diagnosis: await diagnoseScreenshot(page, before),
+          })
+        }
+      }
     }
     try {
       assertPageTargetScope(page)
@@ -167,11 +222,71 @@ export async function runManagedPage<T>(this: SessionManagerContext,
         commandType: evidence?.commandType,
       })
       if (wantShot && startPageId && currentId && startPageId !== currentId) {
+        const handoffAt = new Date().toISOString()
         const handoff = await screenshotPage(current, shotOpts).catch(() => undefined)
-        if (handoff) extraShots.push({ role: 'handoff', bytes: handoff })
+        if (handoff) {
+          extraShots.push({
+            role: 'handoff',
+            bytes: handoff,
+            capturedAt: handoffAt,
+            pageRef,
+            seq: 0,
+            diagnosis: await diagnoseScreenshot(current, handoff),
+          })
+        }
       }
-      const screenshotBytes = wantShot ? await screenshotPage(current, shotOpts).catch(() => undefined) : undefined
-      return { ok: true, value, screenshotBytes, extraShots, faceRole, pageRef, tracePath }
+      let screenshotBytes = wantShot ? await screenshotPage(current, shotOpts).catch(() => undefined) : undefined
+      let screenshotCapturedAt = screenshotBytes ? new Date().toISOString() : undefined
+      let screenshotSeq = 0
+      const canRetake =
+        wantShot &&
+        !failedNow &&
+        evidence?.commandType === 'navigate' &&
+        faceRole === 'after_action' &&
+        !signal?.aborted
+      if (canRetake && !screenshotBytes) {
+        await waitForVisibleContent(current, RETAKE_BUDGET_MS, signal)
+        if (!signal?.aborted) {
+          screenshotBytes = await screenshotPage(current, shotOpts).catch(() => undefined)
+          screenshotCapturedAt = screenshotBytes ? new Date().toISOString() : undefined
+        }
+      }
+      let screenshotDiagnosis = screenshotBytes ? await diagnoseScreenshot(current, screenshotBytes) : undefined
+      if (canRetake && screenshotBytes && screenshotDiagnosis === 'suspected_blank' && !signal?.aborted) {
+        const firstBytes = screenshotBytes
+        const firstAt = screenshotCapturedAt ?? new Date().toISOString()
+        await waitForVisibleContent(current, RETAKE_BUDGET_MS, signal)
+        if (!signal?.aborted) {
+          const retake = await screenshotPage(current, shotOpts).catch(() => undefined)
+          if (retake) {
+            extraShots.push({
+              role: 'after_action',
+              bytes: firstBytes,
+              capturedAt: firstAt,
+              pageRef,
+              seq: 0,
+              diagnosis: 'suspected_blank',
+            })
+            screenshotBytes = retake
+            screenshotCapturedAt = new Date().toISOString()
+            screenshotSeq = 1
+            screenshotDiagnosis = await diagnoseScreenshot(current, retake)
+          }
+        }
+      }
+      return {
+        ok: true,
+        value,
+        screenshotBytes,
+        extraShots,
+        faceRole,
+        pageRef,
+        tracePath,
+        screenshotCapturedAt,
+        screenshotDiagnosis,
+        screenshotSeq,
+        omittedBefore,
+      }
     } catch (error) {
       if (error instanceof TargetScopeError) return { ok: false, error: { code: error.code, category: 'VALIDATION', retryable: false, safeMessage: error.message } }
       if (error instanceof OccupancyRequiredError) {
@@ -224,9 +339,13 @@ export async function execute(this: SessionManagerContext,
   ): Promise<
     BrowserCommandResult & {
       screenshotBytes?: Buffer
-      extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+      extraShots?: ManagedShot[]
       faceRole?: ScreenshotRole
       pageRef?: PageRef
+      screenshotCapturedAt?: string
+      screenshotDiagnosis?: ScreenshotDiagnosis
+      screenshotSeq?: number
+      omittedBefore?: 'initial_blank_page'
       tracePath?: string
     }
   > {
@@ -238,6 +357,7 @@ export async function execute(this: SessionManagerContext,
       evidence ? { ...evidence, commandType: evidence.commandType ?? command.type } : undefined,
       (page) => this.runSurfaceCommand(grant, page, command, signal, evidence),
       (result) => !result.ok,
+      signal,
     )
     const authClosed = await this.observeInRunAuth(grant, 'dispatched', signal)
     if (authClosed) {
@@ -248,6 +368,10 @@ export async function execute(this: SessionManagerContext,
         extraShots: scoped.extraShots,
         faceRole: scoped.faceRole,
         pageRef: scoped.pageRef,
+        screenshotCapturedAt: scoped.screenshotCapturedAt,
+        screenshotDiagnosis: scoped.screenshotDiagnosis,
+        screenshotSeq: scoped.screenshotSeq,
+        omittedBefore: scoped.omittedBefore,
         tracePath: scoped.tracePath,
       }
     }
@@ -259,6 +383,10 @@ export async function execute(this: SessionManagerContext,
         extraShots: scoped.extraShots,
         faceRole: scoped.faceRole,
         pageRef: scoped.pageRef,
+        screenshotCapturedAt: scoped.screenshotCapturedAt,
+        screenshotDiagnosis: scoped.screenshotDiagnosis,
+        screenshotSeq: scoped.screenshotSeq,
+        omittedBefore: scoped.omittedBefore,
         tracePath: scoped.tracePath,
       }
     }
@@ -268,6 +396,10 @@ export async function execute(this: SessionManagerContext,
       extraShots: scoped.extraShots,
       faceRole: scoped.faceRole,
       pageRef: scoped.pageRef,
+      screenshotCapturedAt: scoped.screenshotCapturedAt,
+      screenshotDiagnosis: scoped.screenshotDiagnosis,
+      screenshotSeq: scoped.screenshotSeq,
+      omittedBefore: scoped.omittedBefore,
       tracePath: scoped.tracePath,
     }
   }

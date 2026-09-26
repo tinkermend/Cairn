@@ -82,12 +82,15 @@ export function checkpointOf(input: {
   overlay?: DebugOverlay | null
   pageRef?: PageRef
   url?: string
+  /** 循环体内挂起时的作用域；恢复校验按它找本项的步骤记录。 */
+  scopePath?: string
 }): DebugCheckpoint {
   return {
     mode: input.debugMode === 'holdAfterEach' ? 'holdAfterEach' : 'holdOnFailure',
     reason: input.reason,
     stepId: input.stepId,
     stepOrdinal: input.stepOrdinal,
+    ...(input.scopePath ? { scopePath: input.scopePath } : {}),
     ...(input.pageRef ? { pageRef: input.pageRef } : {}),
     ...(input.url ? { url: input.url } : {}),
     contextKeys: input.contextKeys,

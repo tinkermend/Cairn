@@ -33,6 +33,7 @@ import {
   DEV_CREDENTIAL_KEY,
   LOCAL_SECRET_PROVIDER,
   OUTCOME_MANIFEST_PROTOCOL,
+  stepRunFor,
   type OutcomeContract,
   type ScenarioAuthoringDocumentV2,
   type Step,
@@ -281,7 +282,7 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
 
     // 步骤级验证
     expect(detail.stepRuns).toHaveLength(2)
-    const assertStepRun = detail.stepRuns.find((s) => s.stepId === stepAssertId)!
+    const assertStepRun = stepRunFor(detail.stepRuns, stepAssertId)!
     expect(assertStepRun.status).toBe('SUCCEEDED')
     expect(assertStepRun.outcomeStatus).toBe('PASS')
 
@@ -434,17 +435,17 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
     expect(detail.stepRuns).toHaveLength(4)
     expect(detail.stepRuns.every((s) => s.status === 'SUCCEEDED')).toBe(true)
 
-    const continueStepRun = detail.stepRuns.find((s) => s.stepId === stepAssertId)!
+    const continueStepRun = stepRunFor(detail.stepRuns, stepAssertId)!
     // continue 模式下 Attempt 与 StepRun 均记为 SUCCEEDED，error 为 null
     expect(continueStepRun.status).toBe('SUCCEEDED')
     expect(continueStepRun.outcomeStatus).toBe('FAIL')
     expect(continueStepRun.attempts[0]?.status).toBe('SUCCEEDED')
     expect(continueStepRun.attempts[0]?.error).toBeNull()
 
-    const clickStepRun = detail.stepRuns.find((s) => s.stepId === stepClickId)!
+    const clickStepRun = stepRunFor(detail.stepRuns, stepClickId)!
     expect(clickStepRun.status).toBe('SUCCEEDED')
 
-    const afterStepRun = detail.stepRuns.find((s) => s.stepId === stepAssertAfterId)!
+    const afterStepRun = stepRunFor(detail.stepRuns, stepAssertAfterId)!
     expect(afterStepRun.status).toBe('SUCCEEDED')
     expect(afterStepRun.outcomeStatus).toBe('PASS')
 
@@ -526,14 +527,14 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
     expect(detail.outcomeStatus).toBe('FAIL')
 
     // 失败步骤产生 ASSERT_FAILED 错误码，后续步骤被终止
-    const assertStepRun = detail.stepRuns.find((s) => s.stepId === stepAssertId)!
+    const assertStepRun = stepRunFor(detail.stepRuns, stepAssertId)!
     expect(assertStepRun.status).toBe('FAILED')
     expect(assertStepRun.outcomeStatus).toBe('FAIL')
     expect(assertStepRun.attempts[0]?.status).toBe('FAILED')
     expect(assertStepRun.attempts[0]?.error?.code).toBe('ASSERT_FAILED')
 
     // 第三步未被执行（无 attempt）
-    const clickStepRun = detail.stepRuns.find((s) => s.stepId === stepClickId)
+    const clickStepRun = stepRunFor(detail.stepRuns, stepClickId)
     expect(clickStepRun?.attempts ?? []).toHaveLength(0)
 
     // outcome_results 同样持久化记录 FAIL
@@ -595,7 +596,7 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
     // 核心规范约束：元素定位失败绝不判定为 FAIL 或 PASS，必须判定为 UNKNOWN！
     expect(detail.outcomeStatus).toBe('UNKNOWN')
 
-    const assertStepRun = detail.stepRuns.find((s) => s.stepId === stepAssertId)!
+    const assertStepRun = stepRunFor(detail.stepRuns, stepAssertId)!
     expect(assertStepRun.status).toBe('FAILED')
     expect(assertStepRun.outcomeStatus).toBe('UNKNOWN')
     expect(assertStepRun.attempts[0]?.error?.code).toBe('TARGET_NOT_FOUND')

@@ -37,17 +37,22 @@ function emitCaptured(
 export async function refreshScreencastIfStale(
   page: Page,
   state: ScreencastHandle,
-  pageRef: PageRef,
+  pageRef: PageRef | (() => PageRef),
   staleMs = 1000,
 ): Promise<void> {
+  const currentRef = typeof pageRef === 'function' ? pageRef() : pageRef
   const age = state.latest ? Date.now() - Date.parse(state.latest.capturedAt) : Number.POSITIVE_INFINITY
-  if (Number.isFinite(age) && age <= staleMs) return
+  const epochMatches =
+    state.latest?.pageRef.documentEpoch === currentRef.documentEpoch &&
+    state.latest?.pageRef.sessionGeneration === currentRef.sessionGeneration &&
+    state.latest?.pageRef.pageId === currentRef.pageId
+  if (Number.isFinite(age) && age <= staleMs && epochMatches) return
   if (page.isClosed()) return
   try {
     const buffer = await page.screenshot({ type: 'jpeg', quality: BROWSER_FRAME_QUALITY })
     const viewport = page.viewportSize() ?? DEFAULT_MANAGED_VIEWPORT
     const frame: ManagedBrowserFrame = {
-      pageRef,
+      pageRef: currentRef,
       frameId: `s-${Date.now().toString(36)}`,
       width: viewport.width,
       height: viewport.height,
@@ -67,7 +72,8 @@ export async function refreshScreencastIfStale(
   }
 }
 
-export async function startScreencast(page: Page, pageRef: PageRef): Promise<ScreencastHandle> {
+export async function startScreencast(page: Page, pageRef: PageRef | (() => PageRef)): Promise<ScreencastHandle> {
+  const getPageRef = typeof pageRef === 'function' ? pageRef : () => pageRef
   const cdp: CDPSession = await page.context().newCDPSession(page)
   const liveListeners = new Set<(frame: ManagedBrowserFrame) => void>()
   const capturedListeners = new Set<(frame: CapturedFrame) => void>()
@@ -105,6 +111,7 @@ export async function startScreencast(page: Page, pageRef: PageRef): Promise<Scr
     } catch {
       return
     }
+    const currentRef = getPageRef()
     const width = event.metadata?.deviceWidth ?? BROWSER_FRAME_MAX_EDGE
     const height = event.metadata?.deviceHeight ?? BROWSER_FRAME_MAX_EDGE
     const sourceTimestampMs =
@@ -112,7 +119,7 @@ export async function startScreencast(page: Page, pageRef: PageRef): Promise<Scr
         ? event.metadata.timestamp * 1000
         : undefined
     const captured: CapturedFrame = {
-      pageId: pageRef.pageId,
+      pageId: currentRef.pageId,
       captureEpoch,
       sourceSeq,
       origin: 'cdp',
@@ -124,7 +131,7 @@ export async function startScreencast(page: Page, pageRef: PageRef): Promise<Scr
     }
     emitCaptured(capturedListeners, captured)
     emitLive(state, {
-      pageRef,
+      pageRef: currentRef,
       frameId: `f-${captureEpoch}-${sourceSeq}`,
       width,
       height,

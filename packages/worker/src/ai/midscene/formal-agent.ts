@@ -5,8 +5,10 @@ import { ActionGate, gateActions } from './action-gate.js'
 import { beginMidsceneLogScope } from './run-dir.js'
 import { buildDataDemand } from './extract.js'
 import type { OpenAiLike } from './model-client.js'
+import type { ActionRecorder } from './action-recorder.js'
 
 export type FormalAgentHandle = {
+  page?: Page
   gate: ActionGate
   aiAct(instruction: string, signal?: AbortSignal): Promise<string | undefined>
   aiAtomic(action: AiAtomicActionInput): Promise<void>
@@ -30,13 +32,23 @@ export function wrapActionSpace<A extends { name: string; call: (...args: never[
   actions: readonly A[],
   gate: ActionGate,
   readonly: boolean,
+  recorder?: ActionRecorder,
 ): A[] {
   const gated = gateActions(actions, gate)
-  if (!readonly) return gated
   return gated.map((action) => ({
     ...action,
-    call: (async () => {
-      throw new Error(`CAIRN_READONLY:${action.name}`)
+    call: (async function (this: unknown, ...args: never[]) {
+      if (readonly) {
+        throw new Error(`CAIRN_READONLY:${action.name}`)
+      }
+      // 派发边：参数已由 SDK 换算为逻辑坐标。点检与 prepared 都在动作发出之前。
+      await recorder?.onDispatch(action.name, args[0])
+      try {
+        return await (action.call as Function).apply(this, args)
+      } catch (error) {
+        await recorder?.onDispatchFailed(action.name, error)
+        throw error
+      }
     }) as A['call'],
   }))
 }
@@ -47,6 +59,7 @@ export async function createFormalMidsceneAgent(input: {
   wrapClient: (inner: OpenAiLike) => OpenAiLike
   modelConfig: ReturnType<typeof midsceneModelConfig>
   readonly: boolean
+  recorder?: ActionRecorder
 }): Promise<FormalAgentHandle> {
   const web = await import('@midscene/web/playwright/agent')
   const core = (await import('@midscene/core')) as unknown as { Agent?: unknown; default?: unknown }
@@ -80,12 +93,19 @@ export async function createFormalMidsceneAgent(input: {
     destroy?: () => Promise<void>
   }
 
-  const webPage = new PlaywrightWebPage(gatePageWrites(input.page, input.gate), {
+  const proxiedPage = gatePageWrites(input.page, input.gate)
+  // 收尾钩子经构造参数传入：SDK 自己的 afterInvokeAction 会先等导航与网络空闲再回调
+  // （base-page.ts:1302），绝不能用实例属性覆盖，否则 AI 执行不再等待页面稳定。
+  const webPage = new PlaywrightWebPage(proxiedPage, {
     forceSameTabNavigation: false,
     forceChromeSelectRendering: false,
-  })
+    ...(input.recorder
+      ? { afterInvokeAction: (name: string, param: unknown) => input.recorder!.onSettled(name, param) }
+      : {}),
+  } as ConstructorParameters<typeof web.PlaywrightWebPage>[1])
   const originalSpace = webPage.actionSpace.bind(webPage)
-  webPage.actionSpace = () => wrapActionSpace(originalSpace(), input.gate, input.readonly)
+  webPage.actionSpace = () =>
+    wrapActionSpace(originalSpace(), input.gate, input.readonly, input.recorder)
 
   // SDK 日志以 Agent 存活期计数，全部销毁后才轮换删除，见 run-dir.ts。
   const endLogScope = beginMidsceneLogScope()
@@ -102,6 +122,7 @@ export async function createFormalMidsceneAgent(input: {
   }
 
   return {
+    page: input.page,
     gate: input.gate,
     aiAct: (instruction, signal) => agent.aiAct(instruction, { abortSignal: signal }),
     aiAtomic: async (action) => {

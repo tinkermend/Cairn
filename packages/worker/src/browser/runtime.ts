@@ -103,12 +103,17 @@ export type LaunchSessionOpts = {
   executablePath?: string
   viewport?: { width: number; height: number } | null
   storageState?: unknown
+  workerId?: string
+  sessionId?: string
+  cairnHost?: string
 }
 
 export type BrowserHandle = {
   context: BrowserContext
   basePage: Page
-  profileDir: string
+  isolation: 'SHARED' | 'DEDICATED'
+  hostId: string | null
+  profileDir: string | null
 }
 
 export type TargetAuthInfo = {
@@ -286,9 +291,13 @@ export async function injectStorageState(
       await context
         .addInitScript(
           `if (window.location.origin === ${JSON.stringify(origin)}) {
-            const items = ${JSON.stringify(entries)};
-            for (const item of items) {
-              try { window.localStorage.setItem(item.name, item.value); } catch (_) {}
+            const flagKey = '__cairn_storage_injected__';
+            if (!window.localStorage.getItem(flagKey)) {
+              window.localStorage.setItem(flagKey, '1');
+              const items = ${JSON.stringify(entries)};
+              for (const item of items) {
+                try { window.localStorage.setItem(item.name, item.value); } catch (_) {}
+              }
             }
           }`,
         )
@@ -297,7 +306,15 @@ export async function injectStorageState(
   }
 }
 
-export async function launchSession(
+export function buildContextOptions(opts: LaunchSessionOpts) {
+  return {
+    serviceWorkers: 'block' as const,
+    viewport: opts.viewport !== undefined ? (opts.viewport ?? undefined) : DEFAULT_MANAGED_VIEWPORT,
+    acceptDownloads: true,
+  }
+}
+
+export async function openDedicatedSession(
   profileDir: string,
   opts: LaunchSessionOpts,
 ): Promise<BrowserHandle> {
@@ -312,19 +329,35 @@ export async function launchSession(
     )
   }
 
+  const cairnHostArg = opts.cairnHost
+    ? `--cairn-host=${opts.cairnHost}`
+    : opts.workerId && opts.sessionId
+      ? `--cairn-host=${opts.workerId}/dedicated/${opts.sessionId}`
+      : undefined
+
+  const args = ['--disable-dev-shm-usage']
+  if (cairnHostArg) args.push(cairnHostArg)
+
+  const common = buildContextOptions(opts)
+
   try {
     const context = await chromium.launchPersistentContext(profileDir, {
       headless: opts.headless,
       executablePath: opts.executablePath,
-      args: ['--disable-dev-shm-usage'],
-      serviceWorkers: 'block',
-      viewport: opts.viewport !== undefined ? (opts.viewport ?? undefined) : DEFAULT_MANAGED_VIEWPORT,
+      args,
+      ...common,
     })
     if (opts.storageState) {
       await injectStorageState(context, opts.storageState)
     }
     const basePage = context.pages()[0] ?? (await context.newPage())
-    return { context, basePage, profileDir }
+    return {
+      context,
+      basePage,
+      isolation: 'DEDICATED',
+      hostId: null,
+      profileDir,
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/SingletonLock|user data directory is already in use|ProcessSingleton/i.test(message)) {
@@ -337,7 +370,44 @@ export async function launchSession(
   }
 }
 
+export async function openSharedSession(
+  host: { browser: import('playwright').Browser; hostId: string },
+  opts: LaunchSessionOpts,
+): Promise<BrowserHandle> {
+  if ((restartAuthority.getStore()?.expiresAt ?? 0) <= Date.now()) requireOccupancy('launchSession')
+  const common = buildContextOptions(opts)
+  try {
+    const context = await host.browser.newContext({
+      ...common,
+      ...(opts.storageState && typeof opts.storageState === 'object'
+        ? { storageState: opts.storageState as any }
+        : {}),
+    })
+    const basePage = await context.newPage()
+    return {
+      context,
+      basePage,
+      isolation: 'SHARED',
+      hostId: host.hostId,
+      profileDir: null,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new BrowserRuntimeError('BROWSER_LAUNCH_FAILED', message)
+  }
+}
+
+export async function launchSession(
+  profileDir: string,
+  opts: LaunchSessionOpts,
+): Promise<BrowserHandle> {
+  return openDedicatedSession(profileDir, opts)
+}
+
 export async function probeHealth(handle: BrowserHandle): Promise<'HEALTHY' | 'UNHEALTHY' | 'UNKNOWN'> {
+  if (handle.context.browser()?.isConnected() === false) {
+    return 'UNHEALTHY'
+  }
   try {
     await handle.basePage.evaluate(() => true)
     return 'HEALTHY'
@@ -957,6 +1027,21 @@ export async function navigateInScope(
     return { outOfScope: true, href: resolved.href }
   }
   await page.goto(resolved.href, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  // SPA shells often reach DOMContentLoaded before their first usable paint.
+  // A following AI step would otherwise see only the shell background and
+  // conclude that a visible control is absent. Bound the wait so pages with
+  // intentionally empty or canvas-only bodies still retain navigation semantics.
+  if (typeof page.waitForFunction === 'function') {
+    await page.waitForFunction(
+      () => {
+        const doc = (globalThis as unknown as { document?: { body?: { innerText?: string } } }).document
+        const text = doc?.body?.innerText?.replace(/\s+/g, ' ').trim() ?? ''
+        return text.length > 0 && !/^(loading\.{0,3}|加载中[.。…]*)$/i.test(text)
+      },
+      undefined,
+      { timeout: 10_000, polling: 250 },
+    ).catch(() => undefined)
+  }
   return { href: page.url() }
 }
 
@@ -1094,6 +1179,25 @@ export async function readLocator(
   if (as === 'value') return locator.inputValue({ timeout: 5_000 })
   if (as === 'attribute') return (await locator.getAttribute(attribute ?? '', { timeout: 5_000 })) ?? ''
   return locator.innerText({ timeout: 5_000 })
+}
+
+export async function readLocatorMany(
+  locator: Locator,
+  as: 'text' | 'value' | 'attribute',
+  attribute?: string,
+): Promise<string[]> {
+  const elements = await locator.all()
+  const results: string[] = []
+  for (const el of elements) {
+    if (as === 'value') {
+      results.push(await el.inputValue({ timeout: 5_000 }))
+    } else if (as === 'attribute') {
+      results.push((await el.getAttribute(attribute ?? '', { timeout: 5_000 })) ?? '')
+    } else {
+      results.push(await el.innerText({ timeout: 5_000 }))
+    }
+  }
+  return results
 }
 
 export async function isLocatorVisible(locator: Locator): Promise<boolean> {
@@ -1265,4 +1369,3 @@ export async function uploadToLocator(
 }
 
 export type { Locator, Frame, Page }
-

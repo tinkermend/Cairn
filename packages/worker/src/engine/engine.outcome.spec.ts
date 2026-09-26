@@ -21,6 +21,7 @@ import {
   type DbHandle,
 } from '@cairn/db/testing'
 import {
+  stepRunFor,
   type AuthoringNode,
   type OutcomeContract,
   type RuntimeInvariant,
@@ -481,8 +482,8 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
 
     // 关键断言 2：两个步骤逻辑状态均为 SUCCEEDED
     expect(run.stepRuns).toHaveLength(2)
-    const step1Run = run.stepRuns.find((s) => s.stepId === step1Id)
-    const step2Run = run.stepRuns.find((s) => s.stepId === step2Id)
+    const step1Run = stepRunFor(run.stepRuns, step1Id)
+    const step2Run = stepRunFor(run.stepRuns, step2Id)
     expect(step1Run?.status).toBe('SUCCEEDED')
     expect(step2Run?.status).toBe('SUCCEEDED')
 
@@ -669,11 +670,11 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
     expect(executeCalls).toBe(0)
     const run = await getRun(handle.db, created.detail.id)
     expect(run.status).toBe('FAILED')
-    expect(run.stepRuns.find((item) => item.stepId === step2Id)?.status).toBe('SKIPPED')
+    expect(stepRunFor(run.stepRuns, step2Id)?.status).toBe('SKIPPED')
     const detail = await loadRunDetail(handle.db, created.detail.id)
     expect(detail?.outcomeStatus).toBe('FAIL')
     expect(detail?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toBe(true)
-    expect(detail?.stepRuns.find((item) => item.stepId === step1Id)?.attempts[0]?.error).toMatchObject({
+    expect(stepRunFor(detail?.stepRuns ?? [], step1Id)?.attempts[0]?.error).toMatchObject({
       code: 'ERROR_SURFACE_VIOLATED',
     })
   })
@@ -729,7 +730,7 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
     expect(executeCalls).toBe(1)
     const run = await getRun(handle.db, created.detail.id)
     expect(run.status).toBe('SUCCEEDED')
-    expect(run.stepRuns.find((item) => item.stepId === step2Id)?.status).toBe('SUCCEEDED')
+    expect(stepRunFor(run.stepRuns, step2Id)?.status).toBe('SUCCEEDED')
     const detail = await loadRunDetail(handle.db, created.detail.id)
     expect(detail?.outcomeStatus).toBe('FAIL')
     expect(detail?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toBe(true)

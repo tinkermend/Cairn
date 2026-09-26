@@ -7,7 +7,7 @@ const labels: Record<string, string> = {
   COMPLETED: '已完成', WAITING: '等待中', PASS: '通过', FAIL: '异常', WARN: '提示', UNKNOWN: '未知', NOT_EVALUATED: '未评估',
   PENDING: '待处理', ACTIVE: '执行中', SETTLED: '已结束', SKIPPED: '已跳过', COMPLETE: '完整', INCOMPLETE: '不完整',
   disabled: '已停用', fallback_not_selected: '未采用的备选', fallback_abandoned: '备选已放弃',
-  run_halted: '前序失败未执行', condition_not_met: '条件不满足', optional_absent: '未出现',
+  run_halted: '前序失败未执行', condition_not_met: '条件不满足', optional_absent: '未出现', loop_empty: '循环未执行任何项',
   all_pass: '全部通过', pass_with_warnings: '通过但有提示', anomalies_found: '发现异常', incomplete: '结论不完整',
   failure_policy_stop: '按失败策略停止', suite_cancelled: '集合已取消', deadline_elapsed: '超过运行期限',
   available: '可用', missing: '缺失', screenshot: '截图',
@@ -57,6 +57,14 @@ export function reportLines(document: ReportDocument): ReportLine[] {
         ? `跳过（${step.skipReason ? text(step.skipReason) : '已跳过'}）`
         : text(step.status)
       add(`${text(step.name)}：${statusText}；业务结果：${text(step.outcomeStatus)}`)
+      const loop = records(run.loops).find((item) => item.headerStepRunId === step.id)
+      if (loop) {
+        const flags = [loop.stoppedEarly ? '提前结束' : '', loop.limitReached ? '达到上限' : ''].filter(Boolean).join('、')
+        add(`${loop.kind === 'repeat' ? '重复执行' : '逐项处理'} ${text(loop.total)} 项：成功 ${text(loop.succeeded)}；失败 ${text(loop.failed)}；未执行 ${text(loop.skipped)}${flags ? `（${flags}）` : ''}`)
+        for (const failure of records(loop.failures)) {
+          add(`第 ${text(failure.index)} 项${failure.item ? `（${text(failure.item)}）` : ''}：${failure.stepName ? `步骤「${text(failure.stepName)}」` : ''}失败${failure.code ? `，${text(failure.code)} / ${text(failure.message)}` : ''}`)
+        }
+      }
       for (const attempt of attempts) {
         const error = record(attempt.error)
         if (error.message) add(`尝试 ${text(attempt.id)}：${text(error.code)} / ${text(error.message)}`)

@@ -9,7 +9,8 @@ import {
   type OnApplicationShutdown,
 } from "@nestjs/common";
 import {
-  claimRun,
+  claimRunWithCursor,
+  expireMapJobClaimWindows,
   claimSessionOperation,
   hasQueuedSessionCreateOperation,
   expireRunDeadlines,
@@ -29,6 +30,7 @@ import {
   evaluateAlerts,
   insertMonitorSamples,
   purgeMonitorSamples,
+  purgeScenarioAiCalls,
   reapSessionLeases,
   upsertObjectStoreProbe,
   touchRuntimeWatermark,
@@ -49,7 +51,9 @@ import {
   backfillModuleInvocationResults,
   backfillOutcomeResults,
   reapServiceRequestLogs,
+  type MonitorSampleWrite,
   type DbHandle,
+  type ClaimScanCursor,
   getMapJobPolicy,
   getMapSafeEntry,
   getMapSummary,
@@ -128,11 +132,12 @@ import { MapReferenceScanService } from "../map/reference-scan.service";
 import { ExecutionEngine } from "../engine/engine";
 import { EvidenceSettleService } from "../evidence/settle.service";
 import { ObjectService } from "../objects/object.service";
-import { countManagedBrowserProcesses } from "./browser-processes";
+import { countManagedBrowserProcesses, scanManagedBrowserProcesses } from "./browser-processes";
 import { sampleProfileDisk, type DiskSample } from "./disk-sample";
 import { sampleProcessResources } from "./process-sample";
 
 const TICK_INTERVAL_MS = 1_000;
+const CLAIM_FILL_BUDGET = 16;
 
 function timerJitter(baseMs: number, maxJitterMs = 200): number {
   return baseMs + Math.floor(Math.random() * maxJitterMs);
@@ -187,12 +192,18 @@ export class LifecycleService
   private sampling = false;
   private probing = false;
   private browserProcessCount: number | null = null;
+  private browserProcessRssBytes: number | null = null;
   private browserCounting: Promise<void> | undefined;
   /** 测试可覆写装配角色；生产读 CAIRN_WORKER_ROLES。 */
   rolesForAssembly: WorkerRoleSet | undefined;
   private scheduleTask: Promise<void> | undefined;
   private stopped = false;
   private claiming = false;
+  private refillRequested = false;
+  private refillScheduled = false;
+  private claimCursor: ClaimScanCursor = { RECOVERING: null, QUEUED: null };
+  private refillPendingAt: number | null = null;
+  private lastRefillDelayMs: number | null = null;
   private claimTask: Promise<void> | undefined;
   private pendingClaim: AbortController | undefined;
   private cleanupInFlight: Promise<{ purged: number }> | undefined;
@@ -274,6 +285,11 @@ export class LifecycleService
       this.heartbeatTick = setInterval(() => {
         void this.beat();
       }, timerJitter(config.CAIRN_WORKER_HEARTBEAT_MS));
+      if (roles.executor && !roles.maintenance) {
+        this.reaperTick = setInterval(() => {
+          void this.runExecutorRecovery();
+        }, timerJitter(config.CAIRN_SESSION_REAPER_INTERVAL_MS));
+      }
       if (roles.maintenance) {
         this.startMaintenance();
         this.notificationTick = setInterval(
@@ -392,7 +408,7 @@ export class LifecycleService
     if (this.tick || this.shutdownCalled) return;
     this.stopped = false;
     this.tick = setInterval(() => {
-      this.claimTask = this.pump();
+      if (!this.claiming) this.claimTask = this.pump();
       void this.pumpOperation();
     }, timerJitter(TICK_INTERVAL_MS));
   }
@@ -783,6 +799,25 @@ export class LifecycleService
     return this.reaperInFlight;
   }
 
+  private async runExecutorRecovery(): Promise<void> {
+    if (this.stopped || this.reaperInFlight) return;
+    const task = (async () => {
+      const request = this.reaperSlotRequests().find((slot) => slot.name === 'reaper.recovery');
+      if (!request) return;
+      const { claimed } = await claimWorkerPeriodicSlots(this.handle, [request]);
+      const slot = claimed.find((item) => item.name === 'reaper.recovery');
+      if (slot) await this.runClaimedSlot(slot, () => this.runRecoverySlot());
+    })();
+    this.reaperInFlight = task.then(
+      () => ({ leasesExpired: 0, sessionsClosed: 0 }),
+      (error) => {
+        this.logger.error(error instanceof Error ? error.message : error, '运行回收失败');
+        return { leasesExpired: 0, sessionsClosed: 0 };
+      },
+    ).finally(() => { this.reaperInFlight = undefined; });
+    await this.reaperInFlight;
+  }
+
   private async reapAll(): Promise<{
     leasesExpired: number;
     sessionsClosed: number;
@@ -860,6 +895,9 @@ export class LifecycleService
     const drained = [
       await drainWhileFull(remaining(), REAPER_DEADLINE_BATCH, () =>
         expireRunDeadlines(this.handle),
+      ),
+      await drainWhileFull(remaining(), 100, () =>
+        expireMapJobClaimWindows(this.handle, 100),
       ),
       await drainWhileFull(remaining(), REAPER_STALE_LEASE_BATCH, async () => {
         const result = await expireStaleRunLeases(this.handle, {
@@ -1215,14 +1253,17 @@ export class LifecycleService
 
   private refreshBrowserProcessCount(): void {
     if (this.browserCounting) return;
-    this.browserCounting = countManagedBrowserProcesses(
-      config.CAIRN_BROWSER_PROFILE_DIR,
-    )
-      .then((count) => {
-        this.browserProcessCount = count;
+    this.browserCounting = scanManagedBrowserProcesses({
+      profileDir: config.CAIRN_BROWSER_PROFILE_DIR,
+      workerId: config.CAIRN_WORKER_ID,
+    })
+      .then((stats) => {
+        this.browserProcessCount = stats ? stats.count : null;
+        this.browserProcessRssBytes = stats ? stats.rssBytes : null;
       })
       .catch(() => {
         this.browserProcessCount = null;
+        this.browserProcessRssBytes = null;
       })
       .finally(() => {
         this.browserCounting = undefined;
@@ -1274,6 +1315,7 @@ export class LifecycleService
       const worker = await collectWorkerSamples(
         this.handle,
         config.CAIRN_WORKER_ID,
+        { refillDelayMs: this.lastRefillDelayMs },
       );
       if (this.roles().maintenance) {
         const { claimed, skipped } = await claimWorkerPeriodicSlots(
@@ -1299,13 +1341,29 @@ export class LifecycleService
                 this.handle,
                 config.CAIRN_MONITOR_SAMPLE_RETENTION_DAYS,
               );
+              await purgeScenarioAiCalls(
+                this.handle,
+                config.CAIRN_MONITOR_AI_CALL_RETENTION_DAYS,
+              );
             }
           });
         }
       }
+      const pool = (this.sessions as any)?.hostPool;
+      const hostCount = pool ? pool.getHostCount() : 0;
+      const contextCount = pool ? pool.getContextCount() : 0;
+      const hostLostCount = pool ? pool.getHostLostCount() : 0;
+      const browserRssBytes = this.browserProcessRssBytes ?? 0;
+
+      const extraWrites: MonitorSampleWrite[] = [
+        { key: "worker.browserHostCount", scope: "worker", scopeId: config.CAIRN_WORKER_ID, value: hostCount },
+        { key: "worker.browserContextCount", scope: "worker", scopeId: config.CAIRN_WORKER_ID, value: contextCount },
+        { key: "worker.browserHostLostCount", scope: "worker", scopeId: config.CAIRN_WORKER_ID, value: hostLostCount },
+        { key: "worker.browserProcessRssBytes", scope: "worker", scopeId: config.CAIRN_WORKER_ID, value: browserRssBytes },
+      ];
       await insertMonitorSamples(
         this.handle,
-        worker,
+        [...worker, ...extraWrites],
         config.CAIRN_MONITOR_SAMPLE_INTERVAL_MS,
       );
     } catch (error) {
@@ -1435,7 +1493,12 @@ export class LifecycleService
       status: loopAlive && !this.shutdownCalled ? "ok" : "degraded",
       service: "cairn-worker",
       uptimeSeconds: this.uptimeSeconds(),
-      checks: { database: await this.pingDatabase(), changeHint: "unused" },
+      checks: {
+        database: await this.pingDatabase(),
+        changeHint: this.engine.controlHints?.enabled
+          ? this.engine.controlHints.ready ? "up" : "down"
+          : "unused",
+      },
       node: {
         workerId: config.CAIRN_WORKER_ID,
         instanceId: this.instanceId,
@@ -1478,42 +1541,68 @@ export class LifecycleService
     if (this.stopped || this.claiming) return;
     if (this.inFlight.size >= config.CAIRN_WORKER_CAPACITY) return;
     this.claiming = true;
+    if (this.refillPendingAt !== null) {
+      this.lastRefillDelayMs = Date.now() - this.refillPendingAt;
+      this.refillPendingAt = null;
+    }
     const controller = new AbortController();
     this.pendingClaim = controller;
     try {
       await cleanupRunFileWorkspaces().catch(() => undefined);
-      const grant = await claimRun(this.handle, {
-        workerId: config.CAIRN_WORKER_ID,
-        instanceId: this.instanceId,
-        leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
-        excludeRunIds: placementYieldExcludes(),
-      });
-      if (!grant) return;
-      if (this.stopped || this.shutdownCalled) {
-        await yieldUnfinishedRun(this.handle, grant).catch(() => undefined);
-        return;
-      }
-      if (this.inFlight.has(grant.leaseId)) return;
-      this.logger.log(
-        { runId: grant.runId, leaseId: grant.leaseId },
-        "领取到运行",
-      );
-      const done = this.engine
-        .execute(grant.runId, { grant, signal: controller.signal })
-        .catch((error) => {
-          this.logger.error(
-            {
-              runId: grant.runId,
-              leaseId: grant.leaseId,
-              err: error instanceof Error ? error.message : error,
-            },
-            "执行失败",
-          );
-        })
-        .finally(() => {
-          this.inFlight.delete(grant.leaseId);
+      let claimed = 0;
+      while (
+        !this.stopped &&
+        !this.shutdownCalled &&
+        this.inFlight.size < config.CAIRN_WORKER_CAPACITY &&
+        claimed < CLAIM_FILL_BUDGET
+      ) {
+        const claim = await claimRunWithCursor(this.handle, {
+          workerId: config.CAIRN_WORKER_ID,
+          instanceId: this.instanceId,
+          leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+          excludeRunIds: placementYieldExcludes(),
+          cursor: this.claimCursor,
         });
-      this.inFlight.set(grant.leaseId, { grant, controller, done });
+        this.claimCursor = claim.cursor;
+        const grant = claim.grant;
+        if (!grant) {
+          if (claim.reason === 'budget_exhausted') this.refillRequested = true;
+          if (claim.reason !== 'idle') this.logger.debug({ reason: claim.reason }, '运行领取暂未成功');
+          break;
+        }
+        if (this.stopped || this.shutdownCalled) {
+          await yieldUnfinishedRun(this.handle, grant).catch(() => undefined);
+          break;
+        }
+        if (this.inFlight.has(grant.leaseId)) break;
+        claimed += 1;
+        this.logger.log(
+          { runId: grant.runId, leaseId: grant.leaseId },
+          "领取到运行",
+        );
+        const runController = new AbortController();
+        const done = this.engine
+          .execute(grant.runId, { grant, signal: runController.signal })
+          .catch((error) => {
+            this.logger.error(
+              {
+                runId: grant.runId,
+                leaseId: grant.leaseId,
+                err: error instanceof Error ? error.message : error,
+              },
+              "执行失败",
+            );
+          })
+          .finally(() => {
+            this.inFlight.delete(grant.leaseId);
+            if (this.refillPendingAt === null) this.refillPendingAt = Date.now();
+            this.requestRefill();
+          });
+        this.inFlight.set(grant.leaseId, { grant, controller: runController, done });
+      }
+      if (claimed >= CLAIM_FILL_BUDGET && this.inFlight.size < config.CAIRN_WORKER_CAPACITY) {
+        this.refillRequested = true;
+      }
     } catch (error) {
       this.logger.error(
         error instanceof Error ? error.message : error,
@@ -1522,7 +1611,27 @@ export class LifecycleService
     } finally {
       if (this.pendingClaim === controller) this.pendingClaim = undefined;
       this.claiming = false;
+      if (this.refillRequested && !this.stopped && !this.shutdownCalled) {
+        this.refillRequested = false;
+        this.requestRefill();
+      }
     }
+  }
+
+  private requestRefill(): void {
+    if (this.stopped || this.shutdownCalled || this.inFlight.size >= config.CAIRN_WORKER_CAPACITY) return;
+    if (this.claiming) {
+      this.refillRequested = true;
+      return;
+    }
+    if (this.refillScheduled) return;
+    this.refillScheduled = true;
+    setImmediate(() => {
+      this.refillScheduled = false;
+      if (this.stopped || this.shutdownCalled) return;
+      if (this.claiming) this.refillRequested = true;
+      else this.claimTask = this.pump();
+    });
   }
 
   private async pumpOperation(): Promise<void> {

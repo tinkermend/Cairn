@@ -11,6 +11,7 @@ import {
   markRunCancelled,
   reconcileOrphanAttempts,
   resolveMapRunSourceType,
+  skipStepRuns,
   startAttempt,
   stopRunDebug,
   updateRunDebugOverlay,
@@ -24,15 +25,18 @@ import {
   resolveEvidencePolicy,
   resolveStepPolicy,
   runSnapshotSchema,
+  stepRunFor,
   stepUsesBrowser,
   type DebugAction,
   type DebugMode,
   type RunGrant,
   type RunSnapshot,
   type SessionGrant,
+  type Step,
 } from '@cairn/shared'
 import type { LocalSecretProvider } from '@cairn/secret'
 import { DB_HANDLE } from '../db/db.module'
+import { RunControlHintService } from '../observe/run-control-hint.service.js'
 import { SECRET_PROVIDER } from '../tokens.js'
 import { systemClock } from './clock.js'
 import { BROWSER_PORT, MAP_OBSERVATION_PORT, type BrowserPort, type PassiveMapObservationPort } from './ports.js'
@@ -67,12 +71,13 @@ import { settleRun } from './engine-settle.js'
 import { evidencePayloadForStep, isLastOpenStep, isRunnableStepRun, resolveStepInput, sessionLeaseFor } from './engine-step-plan.js'
 import { cleanupRunFileWorkspace } from './run-file-workspace.js'
 import {
-  DEFAULT_CANCEL_POLL_MS,
   type AttemptLogState,
   type AttemptOutcome,
   type ExecuteOptions,
   type ExecutorOutcome,
 } from './engine-types.js'
+import { runStepAt } from './engine-step-at.js'
+import { findLoopBlock, isLoopBodyStep, runLoop } from './engine-loop.js'
 
 export type { ExecuteOptions } from './engine-types.js'
 
@@ -93,6 +98,7 @@ export class ExecutionEngine {
     @Optional() holds?: DebugHoldRegistry,
     @Optional() @Inject(MAP_OBSERVATION_PORT) mapObservation?: PassiveMapObservationPort,
     @Optional() readonly objects?: ObjectService,
+    @Optional() readonly controlHints?: RunControlHintService,
   ) {
     this.mapObservation = mapObservation
     this.registry =
@@ -184,11 +190,11 @@ export class ExecutionEngine {
     const evidencePolicy = resolveEvidencePolicy(snapshot.evidencePolicy)
     const mapSourceType = await resolveMapRunSourceType(db, snapshot.scenarioVersionId)
     const mapBudget: CapturePhaseBudget = { usedMs: 0 }
-    const needsBrowser = snapshot.steps.some((step) => stepUsesBrowser(step.type))
+    const needsBrowser = snapshot.steps.some((step) => !step.disabled && stepUsesBrowser(step.type))
     let sessionMustClose = false
 
-    // 取消没有通知机制可依赖（NOTIFY 属 P7），在途取消只能轮询 cancel_requested_at。
-    const stop = this.watchCancellation(runId, external, clock, options.cancelPollMs ?? DEFAULT_CANCEL_POLL_MS)
+    // P7 变化提示负责及时唤醒；数据库核验、低频补查和截止时间仍由 Engine 负责。
+    const stop = this.watchCancellation(runId, external, clock, options.cancelPollMs, row.deadlineAt)
     /**
      * 停机／失联中止不是取消。
      *
@@ -209,6 +215,12 @@ export class ExecutionEngine {
 
     let sessionGrant: SessionGrant | undefined
     try {
+      await stop.ready
+      if (stop.signal.aborted) {
+        if (!yielding()) await markRunCancelled(db, runId, { grant })
+        exit = yielding() ? 'yielded' : 'cancelled'
+        return
+      }
       if (needsBrowser) {
         const acquired = await this.acquireSession(snapshot, grant, stop.signal)
         if (acquired.kind !== 'held') {
@@ -247,8 +259,55 @@ export class ExecutionEngine {
         return
       }
 
+      const consumedPauseBeforeStepIds = new Set<string>()
+
       for (let index = 0; index < snapshot.steps.length; ) {
         const step = snapshot.steps[index]!
+
+        // 循环体步骤不在根循环直接执行，跳过
+        if (isLoopBodyStep(snapshot, step.id)) {
+          index += 1
+          continue
+        }
+
+        // 循环头委托给 runLoop
+        if (step.type === 'loop') {
+          const loopBlock = findLoopBlock(snapshot, step)
+          if (!loopBlock) {
+            this.logger.error({ stepId: step.id }, '循环头步骤未找到对应的控制流块定义')
+            exit = 'failed'
+            return
+          }
+          const loopResult = await this.runLoop({
+            runId,
+            headerStep: step,
+            block: loopBlock,
+            snapshot,
+            grant,
+            secrets,
+            evidencePolicy,
+            mapSourceType,
+            mapBudget,
+            sessionGrant,
+            authGate,
+            consumedPauseBeforeStepIds,
+            clock,
+            stop,
+            yielding,
+          })
+          if (loopResult.sessionMustClose) sessionMustClose = true
+          if (loopResult.exit !== 'next' && loopResult.exit !== 'completed') {
+            exit = loopResult.exit
+            return
+          }
+          if (loopResult.exit === 'completed') {
+            exit = 'completed'
+            return
+          }
+          index = loopResult.lastIndex + 1
+          continue
+        }
+
         const current = await loadRunLoopState(db, runId)
         if (!current) {
           exit = 'stopped'
@@ -269,168 +328,35 @@ export class ExecutionEngine {
           return
         }
 
-        const debugMode = (current.debugMode ?? 'runThrough') as DebugMode
-        const stepRuns = await loadRunStepStates(db, runId)
-        const stepRun = stepRuns.find((item) => item.stepId === step.id)
-        // PENDING：尚未执行。RUNNING 且无在途 Attempt：接管后孤儿已收，或失败重试间隙——必须续跑，不得跳过。
-        if (!stepRun || !isRunnableStepRun(stepRun)) {
-          index += 1
-          continue
-        }
-
-        if (this.holds.consumePause(runId) && debugMode !== 'runThrough') {
-          const previous = [...stepRuns].reverse().find((item) => item.status === 'SUCCEEDED')
-          const heldStep = previous ?? stepRun
-          const entered = await this.holdRun({
-            runId,
-            grant,
-            debugMode,
-            reason: 'author_pause',
-            stepId: heldStep.stepId,
-            stepOrdinal: heldStep.ordinal,
-            contextKeys: Object.keys(current.context),
-            sessionGrant,
-            overlay: current.debugOverlay,
-          })
-          if (!entered) {
-            exit = 'stopped'
-            return
-          }
-          this.emitProcess('log', PROCESS_LOG_EVENTS.runHolding, {
-            runId,
-            reason: 'author_pause',
-            stepId: heldStep.stepId,
-          })
-          const afterHold = await this.awaitHold({
-            runId,
-            grant,
-            stop: stop.signal,
-            yielding,
-            sessionGrant,
-          })
-          if (afterHold === 'retry') continue
-          if (afterHold === 'continue') {
-            index = await this.indexAfterContinue(runId, index, snapshot)
-            continue
-          }
-          exit = await this.exitAfterHold(db, runId, yielding)
-          return
-        }
-
-        const overlayTarget = current.debugOverlay?.stepOverrides[step.id]?.target
-        const resolved = resolveStepInput(step, current.context, overlayTarget, runId)
-        const started = await startAttempt(db, {
+        const stepResult = await this.runStepAt({
           runId,
-          stepRunId: stepRun.id,
-          inputPayload: evidencePayloadForStep(step, resolved.input, Boolean(overlayTarget)),
-          grant,
-          secrets,
-        })
-        if (!started) {
-          await this.finishAfterZeroRow(runId, grant, stop.signal, yielding)
-          exit = stop.signal.aborted && !yielding() ? 'cancelled' : yielding() ? 'yielded' : 'stopped'
-          return
-        }
-        this.rememberAttempt(started.attemptId, {
-          startedAt: clock.now(),
-          clock,
-          stepId: step.id,
-          stepType: step.type,
-          attemptNo: started.attemptNo,
-          runId,
-          stepRunId: stepRun.id,
-          workerId: grant.holderWorkerId,
-          leaseId: grant.leaseId,
-        })
-
-        if (!resolved.ok) {
-          await this.close({
-            runId,
-            attemptId: started.attemptId,
-            attemptStatus: 'FAILED',
-            error: resolved.error,
-            stepRunStatus: 'FAILED',
-            runStatus: debugMode === 'runThrough' ? 'FAILED' : 'HOLDING',
-            skipRemaining: debugMode === 'runThrough',
-            checkpoint:
-              debugMode === 'runThrough'
-                ? undefined
-                : await this.buildCheckpoint({
-                    runId,
-                    debugMode,
-                    reason: 'step_failed',
-                    stepId: step.id,
-                    stepOrdinal: stepRun.ordinal,
-                    contextKeys: Object.keys(current.context),
-                    sessionGrant,
-                    grant,
-                    overlay: current.debugOverlay,
-                  }),
-            grant,
-            sessionLease: sessionLeaseFor({ step, sessionGrant, grant }),
-            secrets,
-          })
-          if (debugMode === 'runThrough') {
-            exit = 'failed'
-            return
-          }
-          this.emitProcess('log', PROCESS_LOG_EVENTS.runHolding, {
-            runId,
-            reason: 'step_failed',
-            stepId: step.id,
-          })
-          const afterHold = await this.awaitHold({
-            runId,
-            grant,
-            stop: stop.signal,
-            yielding,
-            sessionGrant,
-          })
-          if (afterHold === 'retry') continue
-          if (afterHold === 'continue') {
-            index = await this.indexAfterContinue(runId, index, snapshot)
-            continue
-          }
-          exit = await this.exitAfterHold(db, runId, yielding)
-          return
-        }
-
-        const policy = resolveStepPolicy(snapshot.policy, step.policy, step.type)
-        const last = isLastOpenStep({ stepRuns }, step.id)
-        const taint = { hung: false }
-        const finished = await this.completeAttempt({
-          runId,
-          grant,
           step,
-          stepRunId: stepRun.id,
-          stepOrdinal: stepRun.ordinal,
-          attemptId: started.attemptId,
-          attemptNo: started.attemptNo,
-          input: resolved.input,
-          policy,
-          last,
-          context: { ...current.context },
-          sessionGrant,
-          targetId: snapshot.targetId,
+          stepIndex: index,
+          scopePath: '',
+          contextView: { ...current.context },
           snapshot,
-          stop: stop.signal,
-          yielding,
-          clock,
+          grant,
           secrets,
           evidencePolicy,
-          taint,
-          debugMode,
-          overlay: current.debugOverlay,
           mapSourceType,
           mapBudget,
+          sessionGrant,
           authGate,
+          consumedPauseBeforeStepIds,
+          clock,
+          stop,
+          yielding,
         })
-        sessionMustClose = sessionMustClose || taint.hung
-        if (finished === 'next') {
+        if (stepResult.sessionMustClose) sessionMustClose = true
+        if (stepResult.action === 'skipped' || stepResult.action === 'next') {
           index += 1
           continue
         }
-        if (finished === 'await_hold') {
+        if (stepResult.action === 'retry') {
+          continue
+        }
+        if (stepResult.action === 'await_hold') {
+          const debugMode = (current.debugMode ?? 'runThrough') as DebugMode
           this.emitProcess('log', PROCESS_LOG_EVENTS.runHolding, {
             runId,
             reason: debugMode === 'holdAfterEach' ? 'step_succeeded' : 'step_failed',
@@ -451,7 +377,7 @@ export class ExecutionEngine {
           exit = await this.exitAfterHold(db, runId, yielding)
           return
         }
-        exit = finished
+        exit = stepResult.action
         return
       }
 
@@ -516,9 +442,10 @@ export class ExecutionEngine {
     runId: string,
     external: AbortSignal,
     clock: Parameters<typeof watchCancellation>[2],
-    pollMs: number,
+    pollMs: number | undefined,
+    deadlineAt: Date | null,
   ) {
-    return watchCancellation.call(this, runId, external, clock, pollMs)
+    return watchCancellation.call(this, runId, external, clock, pollMs, deadlineAt)
   }
 
   async collectAfterFacts(input: Parameters<typeof collectAfterFacts>[0]) {
@@ -603,5 +530,13 @@ export class ExecutionEngine {
 
   async resolveRedactionSecrets(snapshot: RunSnapshot) {
     return resolveRedactionSecrets.call(this, snapshot)
+  }
+
+  async runStepAt(params: Parameters<typeof runStepAt>[0]): ReturnType<typeof runStepAt> {
+    return runStepAt.call(this, params)
+  }
+
+  async runLoop(params: Parameters<typeof runLoop>[0]): ReturnType<typeof runLoop> {
+    return runLoop.call(this, params)
   }
 }

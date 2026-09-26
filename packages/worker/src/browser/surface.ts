@@ -23,6 +23,7 @@ import {
   pageClosed,
   pressKeys,
   readLocator,
+  readLocatorMany,
   resolveFramePath,
   scopeForAnchor,
   screenshotPage,
@@ -181,6 +182,137 @@ export async function executeOnPage(
       }
     }
 
+    if (command.type === 'probe') {
+      const probeFailed = (error: unknown): BrowserCommandResult => {
+        if (isAbortError(error)) throw error
+        if (error instanceof SurfaceLostError || isClosedMessage(error)) {
+          return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
+        }
+        return {
+          ok: false,
+          error: {
+            code: 'PROBE_FAILED',
+            category: 'INFRASTRUCTURE',
+            retryable: true,
+            safeMessage: '页面检查时页面不可用',
+          },
+        }
+      }
+
+      if (command.probeKind === 'url') {
+        const waitMs = command.waitMs ?? 1000
+        const pattern = command.urlPattern ?? ''
+        const matches = (u: string) => {
+          if (!pattern) return false
+          try {
+            return new RegExp(pattern).test(u)
+          } catch {
+            return false
+          }
+        }
+        try {
+          let currentUrl = page.url()
+          if (matches(currentUrl)) {
+            return { ok: true, output: { matched: true, url: currentUrl } }
+          }
+          const start = Date.now()
+          while (Date.now() - start < waitMs) {
+            signal?.throwIfAborted()
+            await page.waitForTimeout(Math.min(100, Math.max(1, waitMs - (Date.now() - start))))
+            currentUrl = page.url()
+            if (matches(currentUrl)) {
+              return { ok: true, output: { matched: true, url: currentUrl } }
+            }
+          }
+          return { ok: true, output: { matched: false, url: currentUrl } }
+        } catch (error) {
+          return probeFailed(error)
+        }
+      }
+
+      if (command.probeKind === 'text') {
+        const waitMs = command.waitMs ?? 1000
+        const text = command.text ?? ''
+        const start = Date.now()
+        while (true) {
+          signal?.throwIfAborted()
+          try {
+            let loc: Locator | undefined
+            if (command.target) {
+              const located = await locate(page, command.target, 200, signal, true)
+              if (located.kind === 'miss') {
+                if (located.outcome !== 'NOT_FOUND') {
+                  return failOutcome(located.outcome, located.diagnostics)
+                }
+              } else {
+                loc = located.locator.getByText(text)
+              }
+            } else {
+              loc = page.getByText(text)
+            }
+            if (loc) {
+              const count = await loc.count()
+              if (count > 0) return { ok: true, output: { matched: true, count } }
+            }
+          } catch (error) {
+            return probeFailed(error)
+          }
+          if (Date.now() - start >= waitMs) break
+          await page.waitForTimeout(Math.min(100, Math.max(1, waitMs - (Date.now() - start))))
+        }
+        return { ok: true, output: { matched: false, count: 0 } }
+      }
+
+      if (command.probeKind === 'element') {
+        const waitMs = command.waitMs ?? 1000
+        const state = command.state ?? 'visible'
+        if (!command.target) {
+          return {
+            ok: false,
+            error: {
+              code: 'PROBE_FAILED',
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: '元素检查缺少定位目标',
+            },
+          }
+        }
+        const start = Date.now()
+        while (true) {
+          signal?.throwIfAborted()
+          try {
+            const located = await locate(page, command.target, Math.min(waitMs, 500), signal, true)
+            if (located.kind === 'miss') {
+              if (located.outcome !== 'NOT_FOUND') {
+                return failOutcome(located.outcome, located.diagnostics)
+              }
+            } else {
+              const count = await located.locator.count()
+              if (count > 0) {
+                if (state === 'present') {
+                  return { ok: true, output: { matched: true, count } }
+                }
+                let visibleCount = 0
+                for (let i = 0; i < count; i++) {
+                  if (await located.locator.nth(i).isVisible()) visibleCount++
+                }
+                if (visibleCount > 0) {
+                  return { ok: true, output: { matched: true, count: visibleCount } }
+                }
+              }
+            }
+          } catch (error) {
+            return probeFailed(error)
+          }
+          if (Date.now() - start >= waitMs) break
+          await page.waitForTimeout(Math.min(100, Math.max(1, waitMs - (Date.now() - start))))
+        }
+        return { ok: true, output: { matched: false, count: 0 } }
+      }
+
+      return { ok: true, output: { matched: false } }
+    }
+
     const target = 'target' in command ? command.target : undefined
     let locatedLocator: Locator
 
@@ -199,7 +331,9 @@ export async function executeOnPage(
         }
       }
     } else {
-      const located = await locate(page, target, command.type === 'locate' ? command.timeoutMs : undefined, signal)
+      const allowMultiple = command.type === 'extract' && Boolean(command.many)
+      const timeoutMs = (command.type === 'locate' || command.type === 'extract') ? command.timeoutMs : undefined
+      const located = await locate(page, target, timeoutMs, signal, allowMultiple)
       signal?.throwIfAborted()
       if (located.kind !== 'found') {
         return failOutcome(located.outcome, located.diagnostics)
@@ -240,6 +374,37 @@ export async function executeOnPage(
     }
 
     if (command.type === 'extract') {
+      if (command.many) {
+        const count = await locatedLocator.count()
+        if (count > command.many.maxItems) {
+          return {
+            ok: false,
+            error: {
+              code: 'EXTRACT_TOO_MANY',
+              category: 'EXECUTOR',
+              retryable: false,
+              safeMessage: `提取匹配项超过上限 ${command.many.maxItems}（实际匹配 ${count} 项）`,
+            },
+            output: {},
+            diagnostics,
+          }
+        }
+        if (command.many.minItems !== undefined && count < command.many.minItems) {
+          return {
+            ok: false,
+            error: {
+              code: 'EXTRACT_TOO_FEW',
+              category: 'EXECUTOR',
+              retryable: false,
+              safeMessage: `提取匹配项少于下限 ${command.many.minItems}（实际匹配 ${count} 项）`,
+            },
+            output: {},
+            diagnostics,
+          }
+        }
+        const value = await readLocatorMany(locatedLocator, command.as, command.attribute)
+        return { ok: true, output: { value, count: value.length }, diagnostics }
+      }
       const value = await readLocator(locatedLocator, command.as, command.attribute)
       return { ok: true, output: { value }, diagnostics }
     }
@@ -452,7 +617,13 @@ type LocateFail = {
   diagnostics: ResolverDiagnostics
 }
 
-export async function locate(page: Page, target: TargetDescriptor, timeoutMs?: number, signal?: AbortSignal): Promise<LocateOk | LocateFail> {
+export async function locate(
+  page: Page,
+  target: TargetDescriptor,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+  allowMultiple?: boolean,
+): Promise<LocateOk | LocateFail> {
   const deadline = Date.now() + (timeoutMs ?? DEFAULT_LOCATE_MS)
   // Baseline keeps its existing per-locator wait; map probes share one bounded budget.
   const remaining = () => timeoutMs === undefined ? DEFAULT_LOCATE_MS : Math.max(1, deadline - Date.now())
@@ -478,15 +649,18 @@ export async function locate(page: Page, target: TargetDescriptor, timeoutMs?: n
       return next
     }
     let matches = await countNow()
-    let picked = pickResolvedCandidate(matches)
+    let picked = pickResolvedCandidate(matches, allowMultiple)
     if (picked.kind === 'miss' && picked.outcome === 'NOT_FOUND') {
       while (Date.now() <= deadline) {
         signal?.throwIfAborted()
         await new Promise((resolve) => setTimeout(resolve, 50))
         matches = await countNow()
-        picked = pickResolvedCandidate(matches)
+        picked = pickResolvedCandidate(matches, allowMultiple)
         if (picked.kind === 'found' || picked.outcome === 'AMBIGUOUS') break
       }
+    }
+    if (picked.kind === 'miss' && picked.outcome === 'NOT_FOUND' && allowMultiple && target.candidates.length > 0) {
+      picked = { kind: 'found', index: 0 }
     }
     const tried = candidateTries(target.candidates, matches)
     if (picked.kind === 'found') {
@@ -618,4 +792,8 @@ function failOutcome(
 function isClosedMessage(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /has been closed|Target closed|Frame was detached|Execution context was destroyed/i.test(message)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
 }

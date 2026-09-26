@@ -9,6 +9,8 @@ import {
   createScenarioWithVersion,
   createTrialRunFromDraft,
   saveScenarioDraft,
+  loadIterationDetail,
+  loadRunIterations,
   eq,
   getRun,
   markRunWaitingForAuth,
@@ -42,6 +44,7 @@ import {
   type BrowserCommandResult,
   type SessionErrorCode,
   type SessionGrant,
+  type ScenarioAuthoringDocumentV2,
   type Step,
 } from '@cairn/shared'
 import { readFileSync } from 'node:fs'
@@ -1094,6 +1097,49 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     expect(after.stepRuns.every((item) => item.status === 'SUCCEEDED')).toBe(true)
   })
 
+  it('末尾步骤停用时，逐步挂起后 continue 仍能收尾为 SUCCEEDED', async () => {
+    const steps = [clickStep(newId(), 'READ_ONLY'), { ...clickStep(newId(), 'READ_ONLY'), disabled: true }]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `hold-each-disabled-tail-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, inputs: [], steps },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+      debugMode: 'holdAfterEach',
+    })
+    expect(created.detail.stepRuns.map((item) => item.status)).toEqual(['PENDING', 'SKIPPED'])
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({ ok: true, output: {} }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const grant = await claimThis(created.detail.id)
+    const done = engine.execute(created.detail.id, { grant })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'continue', fencingToken: held.checkpoint?.fencingToken },
+      actorId,
+    )
+    await done
+    const after = await getRun(handle.db, created.detail.id)
+    // 挂起后继续走补写终态：跳过的停用步骤不能再把 Run 卡在 RUNNING。
+    expect(after.status).toBe('SUCCEEDED')
+    expect(after.stepRuns.map((item) => item.status)).toEqual(['SUCCEEDED', 'SKIPPED'])
+  })
+
   it('检查点页变后未确认不能再试', async () => {
     const pageRef = {
       sessionId: '00000000-0000-4000-8000-0000000000aa',
@@ -1384,5 +1430,143 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     expect(detail.stepRuns[0]?.attempts[0]?.error?.cause?.code).toBe('not_dispatched')
     expect(detail.status).toBe('SUCCEEDED')
     expect(detail.authCheckpoint?.status).toBe('recovered')
+  })
+
+  describe('循环体内的调试与可选步骤（复查修复）', () => {
+    const popupTarget = { framePath: [], candidates: [{ by: 'css' as const, value: '#popup-close' }] }
+    const absent = {
+      ok: false as const,
+      error: { code: 'TARGET_NOT_FOUND', category: 'VALIDATION' as const, retryable: false, safeMessage: '未找到' },
+    }
+
+    function loopDoc(blockId: string, body: Step[], after?: Step): ScenarioAuthoringDocumentV2 {
+      return {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [],
+        nodes: [
+          {
+            kind: 'step',
+            step: { id: newId(), name: '列表', type: 'echo', effectType: 'READ_ONLY', outputKey: 'rawList', input: { value: ['a', 'b'] } },
+          },
+          {
+            kind: 'block',
+            blockId,
+            name: '逐项',
+            control: { type: 'for_each', over: { from: 'rawList' }, as: 'curr', maxItems: 10 },
+            body: body.map((step) => ({ kind: 'step' as const, step })),
+          },
+          ...(after ? [{ kind: 'step' as const, step: after }] : []),
+        ],
+      }
+    }
+
+    async function trialOf(name: string, doc: ScenarioAuthoringDocumentV2, extra: { pauseBeforeStepId?: string } = {}) {
+      const scenario = await createScenarioWithVersion(handle.db, {
+        targetId,
+        name: `${name}-${newId()}`,
+        steps: [clickStep(newId(), 'READ_ONLY')],
+        actor: { id: actorId },
+      })
+      await saveScenarioDraft(handle.db, scenario.id, { revision: 1, actor: { id: actorId }, document: doc })
+      return createTrialRunFromDraft(handle.db, scenario.id, {
+        revision: 2,
+        targetAccountId: accountId,
+        actor: { id: actorId },
+        debugMode: 'holdOnFailure',
+        ...extra,
+      })
+    }
+
+    it('循环体末尾的可选步骤没出现时，每一项照常收尾，Run 不提前成功', async () => {
+      const blockId = newId()
+      const afterId = newId()
+      const optional: Step = { ...clickStep(newId(), 'SIDE_EFFECT'), name: '关闭弹窗', optional: true, input: { target: popupTarget } }
+      const created = await trialOf(
+        'loop-optional-tail',
+        loopDoc(blockId, [clickStep(newId(), 'READ_ONLY'), optional], {
+          id: afterId, name: '循环后', type: 'echo', effectType: 'READ_ONLY', input: { value: 'done' },
+        }),
+      )
+      const port = fakePort({
+        acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+        execute: async (_grant, command) => (JSON.stringify(command).includes('#popup-close') ? absent : { ok: true, output: {} }),
+      })
+      const engine = new ExecutionEngine(handle, port)
+      await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+      const after = await getRun(handle.db, created.detail.id)
+      const { iterations } = await loadRunIterations(handle.db, created.detail.id, { blockId })
+      expect(iterations.map((it) => it.status)).toEqual(['SUCCEEDED', 'SUCCEEDED'])
+      const detail = await loadIterationDetail(handle.db, created.detail.id, iterations[0]!.id)
+      expect(detail?.stepRuns.find((s) => s.stepId === optional.id)?.skipReason).toBe('optional_absent')
+      expect(after.stepRuns.find((s) => s.stepId === afterId)?.status).toBe('SUCCEEDED')
+      expect(after.status).toBe('SUCCEEDED')
+    })
+
+    it('断点落在循环体步骤上：挂起后继续会执行该步骤，而不是跳过', async () => {
+      const blockId = newId()
+      const body = clickStep(newId(), 'READ_ONLY')
+      const created = await trialOf('loop-pause-before', loopDoc(blockId, [body]), { pauseBeforeStepId: body.id })
+      const port = fakePort({
+        acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+        execute: async () => ({ ok: true, output: {} }),
+      })
+      const engine = new ExecutionEngine(handle, port)
+      const done = engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+      await vi.waitFor(async () => {
+        expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+      })
+      await vi.waitFor(() => expect(engine.holds.has(created.detail.id)).toBe(true))
+      const held = await getRun(handle.db, created.detail.id)
+      expect(held.checkpoint?.scopePath).toMatch(/^L\d+#0$/)
+      await engine.resumeDebug(created.detail.id, { action: 'continue', fencingToken: held.checkpoint?.fencingToken }, actorId)
+      await done
+      const after = await getRun(handle.db, created.detail.id)
+      expect(after.status).toBe('SUCCEEDED')
+      expect(port.calls.filter((call) => call === 'execute')).toHaveLength(2)
+      const { iterations } = await loadRunIterations(handle.db, created.detail.id, { blockId })
+      for (const it of iterations) {
+        const detail = await loadIterationDetail(handle.db, created.detail.id, it.id)
+        expect(detail?.stepRuns[0]?.status).toBe('SUCCEEDED')
+      }
+    })
+
+    it('循环体步骤失败挂起时，本项与循环头保持运行中；单步重试后循环继续完成', async () => {
+      const blockId = newId()
+      const created = await trialOf('loop-hold-retry', loopDoc(blockId, [clickStep(newId(), 'READ_ONLY')]))
+      let calls = 0
+      const port = fakePort({
+        acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+        execute: async () => (++calls === 1 ? absent : { ok: true, output: {} }),
+      })
+      const engine = new ExecutionEngine(handle, port)
+      const done = engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+      await vi.waitFor(async () => {
+        expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+      })
+      await vi.waitFor(() => expect(engine.holds.has(created.detail.id)).toBe(true))
+      const held = await getRun(handle.db, created.detail.id)
+      expect(held.checkpoint?.scopePath).toMatch(/^L\d+#0$/)
+      expect(held.stepRuns.find((s) => s.type === 'loop')?.status).toBe('RUNNING')
+      const { iterations: heldIterations } = await loadRunIterations(handle.db, created.detail.id, { blockId })
+      expect(heldIterations[0]?.status).toBe('RUNNING')
+      await engine.resumeDebug(created.detail.id, { action: 'retry_current', fencingToken: held.checkpoint?.fencingToken }, actorId)
+      // 等重试真正执行；若按阶段一约定在重试成功后再次挂起，继续后跑完剩余项
+      await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(2))
+      await vi.waitFor(async () => {
+        const again = await getRun(handle.db, created.detail.id)
+        expect(engine.holds.has(created.detail.id) || again.status === 'SUCCEEDED').toBe(true)
+      })
+      const again = await getRun(handle.db, created.detail.id)
+      if (again.status === 'HOLDING') {
+        await engine.resumeDebug(created.detail.id, { action: 'continue', fencingToken: again.checkpoint?.fencingToken }, actorId)
+      }
+      await done
+      const after = await getRun(handle.db, created.detail.id)
+      expect(after.status).toBe('SUCCEEDED')
+      const { iterations } = await loadRunIterations(handle.db, created.detail.id, { blockId })
+      expect(iterations.map((it) => it.status)).toEqual(['SUCCEEDED', 'SUCCEEDED'])
+      expect(after.stepRuns.find((s) => s.type === 'loop')?.status).toBe('SUCCEEDED')
+    })
   })
 })

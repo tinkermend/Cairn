@@ -6,7 +6,7 @@ import {
   type DbHandle,
 } from '@cairn/db'
 import { cluesFromScenarioStep, proposeMapReferenceCandidates } from '@cairn/map'
-import { isAuthoringDocumentV2, normalizeAuthoringDocument, parseScenarioDocument } from '@cairn/shared'
+import { authoringSteps, isAuthoringDocumentV2, normalizeAuthoringDocument, parseScenarioDocument } from '@cairn/shared'
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { DB_HANDLE } from '../db/db.module'
 
@@ -55,9 +55,11 @@ export async function advanceMapReferenceScans(
       limit: 9,
     })
     const batch = remaining.slice(0, 8).map((scenario) => {
-      const documentSteps = isAuthoringDocumentV2(scenario.document)
-        ? normalizeAuthoringDocument(scenario.document).nodes.flatMap(node => node.kind === 'step' ? [node.step] : [])
-        : parseScenarioDocument(scenario.document).steps
+      const documentSteps = authoringSteps(
+        isAuthoringDocumentV2(scenario.document)
+          ? normalizeAuthoringDocument(scenario.document)
+          : parseScenarioDocument(scenario.document),
+      )
       const steps = documentSteps.map(cluesFromScenarioStep)
       return {
         scenarioId: scenario.scenarioId,

@@ -21,6 +21,8 @@ import type {
   SessionErrorCode,
   SessionGrant,
   ErrorSurfaceNode,
+  JsonValue,
+  Step,
 } from '@cairn/shared'
 
 /**
@@ -101,6 +103,10 @@ export type AiPort = {
       maxCalls: number
       model?: string
       config: AiExecutionConfig
+      runInput?: Record<string, unknown> | JsonValue
+      contextBindings?: Record<string, JsonValue>
+      step?: Step
+      snapshot?: RunSnapshot
     },
   ): Promise<
     AiResult & {

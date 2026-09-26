@@ -21,6 +21,8 @@ import {
   loadTargetForExecution,
   appendRunEvents,
   recordCaptchaLoginAttempt,
+  readSessionStateSnapshotContent,
+  resolveAccountAuthMaterials,
   type SessionRecord
 } from '@cairn/db'
 import { randomUUID } from 'node:crypto'
@@ -47,6 +49,8 @@ import {
 import { ensureProfileDir } from './profiles'
 import { verifyAuthProfile } from './session-auth'
 import { pageStrategyForReuse, shouldRecreateSession } from './reuse'
+import { computeTargetSpreadKeys } from './host-pool.js'
+import { captureSessionSnapshot } from './session-maintenance-runtime.js'
 import {
   BrowserRuntimeError,
   OccupancyRequiredError,
@@ -61,6 +65,7 @@ import {
   runWithOccupancy,
   submitLoginCredentials,
   stopSession,
+  type BrowserHandle,
   type TargetAuthInfo
 } from './runtime'
 import { hasTargetScope, installTargetScope } from './target-scope'
@@ -565,14 +570,87 @@ export async function launchAndOpen(this: SessionManagerContext,
     | { ok: false; code: SessionErrorCode; message: string }
   > {
     const db = this.dbHandle
-    const { profileDir } = ensureProfileDir(this.options.profileRoot, key, created.accountSlot ?? 1)
-    const launch = this.launchOverride ?? launchSession
+    const isShared = created.isolation === 'SHARED'
+    const targetInfo = await loadTargetForExecution(db, key.targetId).catch(() => null)
+
+    // 登录态快照查询与比较 (§4.4)
+    let candidateState: unknown = undefined
+    let candidateSource: 'snapshot' | 'uploaded' | 'stale_snapshot' | null = null
+
+    const snapshotContent = await readSessionStateSnapshotContent(db, {
+      targetId: key.targetId,
+      targetAccountId: key.targetAccountId,
+      accountSlot: created.accountSlot ?? 1,
+    }).catch(() => null)
+
+    const credential = await this.resolveAccountCredential(key.targetAccountId).catch(() => null)
+    const uploadedState = credential?.storageState
+
+    if (snapshotContent && !snapshotContent.stale) {
+      const materials = await resolveAccountAuthMaterials(db, key.targetAccountId).catch(() => null)
+      if (
+        uploadedState &&
+        materials?.storageStateUpdatedAt &&
+        snapshotContent.capturedAt &&
+        new Date(materials.storageStateUpdatedAt).getTime() > new Date(snapshotContent.capturedAt).getTime()
+      ) {
+        candidateState = uploadedState
+        candidateSource = 'uploaded'
+      } else {
+        candidateState = snapshotContent.state
+        candidateSource = 'snapshot'
+      }
+    } else if (uploadedState) {
+      candidateState = uploadedState
+      candidateSource = 'uploaded'
+    } else if (snapshotContent) {
+      candidateState = snapshotContent.state
+      candidateSource = 'stale_snapshot'
+    }
+
     try {
-      const handle = await launch(profileDir, {
-        headless: this.options.headless,
-        executablePath: this.options.executablePath,
-      })
-      this.lives.set(created.id, emptyLive(handle, created.id, created.generation))
+      let handle: BrowserHandle
+      let hostId: string | null = null
+
+      if (isShared) {
+        const spreadKeys = computeTargetSpreadKeys(key.targetId, targetInfo?.entryUrl)
+        const opts = {
+          headless: this.options.headless,
+          executablePath: this.options.executablePath,
+          storageState: candidateState,
+        }
+        const acquired = await this.hostPool.acquireContext(
+          created.id,
+          spreadKeys,
+          opts,
+          this.liveHandleCount(),
+          this.options.maxSessions,
+        )
+        handle = acquired.handle
+        hostId = acquired.hostId
+
+        await appendSessionEvent(db, {
+          key,
+          type: 'session.host_assigned',
+          sessionId: created.id,
+          generation: created.generation,
+          payload: {
+            hostId,
+            colocated: acquired.colocated,
+            contextsCount: this.hostPool.getHost(hostId)?.contexts.size ?? 1,
+          },
+        }).catch(() => undefined)
+      } else {
+        const { profileDir } = ensureProfileDir(this.options.profileRoot, key, created.accountSlot ?? 1)
+        const launch = this.launchOverride ?? launchSession
+        handle = await launch(profileDir, {
+          headless: this.options.headless,
+          executablePath: this.options.executablePath,
+          storageState: candidateState,
+        })
+      }
+
+      this.lives.set(created.id, emptyLive(handle, created.id, created.generation, hostId))
       await this.attachSessionAuthObserver(created.id)
       const health = await probeHealth(handle)
       await setSessionProbe(db, {
@@ -580,20 +658,68 @@ export async function launchAndOpen(this: SessionManagerContext,
         ...this.ownerScope(),
         health,
       })
+
+      // 若成功注入了快照，进行探活并记录 session.state_restored 事件 (§4.4)
+      if (candidateState && targetInfo) {
+        try {
+          await handle.basePage.goto(targetInfo.entryUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+          const probedAuth = await probeAuth(handle, targetInfo)
+          if (probedAuth === 'AUTHENTICATED') {
+            await setSessionProbe(db, {
+              sessionId: created.id,
+              ...this.ownerScope(),
+              authState: 'AUTHENTICATED',
+            })
+            await appendSessionEvent(db, {
+              key,
+              type: 'session.state_restored',
+              sessionId: created.id,
+              generation: created.generation,
+              payload: { source: candidateSource, result: 'authenticated' },
+            }).catch(() => undefined)
+          } else {
+            await appendSessionEvent(db, {
+              key,
+              type: 'session.state_restored',
+              sessionId: created.id,
+              generation: created.generation,
+              payload: { source: candidateSource, result: 'fell_back_to_login' },
+            }).catch(() => undefined)
+          }
+        } catch {
+          await appendSessionEvent(db, {
+            key,
+            type: 'session.state_restored',
+            sessionId: created.id,
+            generation: created.generation,
+            payload: { source: candidateSource, result: 'fell_back_to_login' },
+          }).catch(() => undefined)
+        }
+      }
+
       const opened = await setSessionStatus(db, {
         sessionId: created.id,
         expectedVersion: created.version,
         status: 'OPEN',
+        hostId,
+        isolation: isShared ? 'SHARED' : 'DEDICATED',
         ...this.ownerScope(),
       })
       if (!opened) {
-        await stopSession(handle)
+        if (isShared) {
+          await this.hostPool.releaseContext(created.id).catch(() => {})
+        } else {
+          await stopSession(handle)
+        }
         this.lives.delete(created.id)
         return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: '无法将会话置为 OPEN' }
       }
       const session = (await getSessionById(db, created.id))!
       return { ok: true, session }
     } catch (error) {
+      if (isShared) {
+        await this.hostPool.releaseContext(created.id).catch(() => {})
+      }
       if (error instanceof OccupancyRequiredError) {
         await setSessionStatus(db, {
           sessionId: created.id,
@@ -809,7 +935,13 @@ export async function ensureProfileAuth(this: SessionManagerContext,
           trigger: 'after_login',
           runId: run.runId,
         })
-        return { ok: true, session: (await getSessionById(db, session.id))! }
+        const latest = (await getSessionById(db, session.id))!
+        await captureSessionSnapshot(this, latest, {
+          kind: 'lease',
+          leaseId: occupancy.leaseId,
+          workerId: this.options.workerId,
+        }).catch(() => undefined)
+        return { ok: true, session: latest }
       }
       plan = planAuthEnsure({
         capability: verification.capability,
@@ -1052,7 +1184,13 @@ export async function ensureAuth(this: SessionManagerContext,
       trigger: 'after_login',
       runId: run.runId,
     })
-    return { ok: true, session: (await getSessionById(db, session.id))! }
+    const latest = (await getSessionById(db, session.id))!
+    await captureSessionSnapshot(this, latest, {
+      kind: 'lease',
+      leaseId: occupancy.leaseId,
+      workerId: this.options.workerId,
+    }).catch(() => undefined)
+    return { ok: true, session: latest }
   }
 
 function pageUrlOf(page: { url?: () => string; isClosed?: () => boolean } | undefined): string | undefined {
