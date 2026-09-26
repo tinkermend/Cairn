@@ -1,4 +1,4 @@
-import { appendRunEvents, recordInlineLogEvidence, setSessionProbe } from '@cairn/db'
+import { appendRunEvents, conflict, recordInlineLogEvidence, setSessionProbe } from '@cairn/db'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -22,7 +22,8 @@ import {
   OccupancyRequiredError,
   closePage,
   waitForPopupsFrom,
-  screenshotPage
+  screenshotPage,
+  pageHasSensitiveContent,
 } from './runtime'
 import { assertPageTargetScope, TargetScopeError } from './target-scope'
 import { executeOnPage } from './surface'
@@ -68,6 +69,7 @@ export async function withManagedPage<T>(this: SessionManagerContext,
         omittedBefore?: 'initial_blank_page'
         faceRole?: ScreenshotRole
         tracePath?: string
+        screenshotSensitive?: boolean
       }
     | {
         ok: false
@@ -80,6 +82,7 @@ export async function withManagedPage<T>(this: SessionManagerContext,
         omittedBefore?: 'initial_blank_page'
         faceRole?: ScreenshotRole
         tracePath?: string
+        screenshotSensitive?: boolean
       }
   > {
     try {
@@ -122,6 +125,7 @@ export async function runManagedPage<T>(this: SessionManagerContext,
         faceRole?: ScreenshotRole
         pageRef?: PageRef
         tracePath?: string
+        screenshotSensitive?: boolean
       }
     | {
         ok: false
@@ -135,6 +139,7 @@ export async function runManagedPage<T>(this: SessionManagerContext,
         faceRole?: ScreenshotRole
         pageRef?: PageRef
         tracePath?: string
+        screenshotSensitive?: boolean
       }
   > {
     const live = this.lives.get(this.leaseToSession.get(grant.leaseId) ?? grant.sessionId)
@@ -274,6 +279,9 @@ export async function runManagedPage<T>(this: SessionManagerContext,
           }
         }
       }
+      const screenshotSensitive = screenshotBytes
+        ? await pageHasSensitiveContent(current, evidence?.sensitiveSelectors ?? [])
+        : undefined
       return {
         ok: true,
         value,
@@ -286,6 +294,7 @@ export async function runManagedPage<T>(this: SessionManagerContext,
         screenshotDiagnosis,
         screenshotSeq,
         omittedBefore,
+        screenshotSensitive,
       }
     } catch (error) {
       if (error instanceof TargetScopeError) return { ok: false, error: { code: error.code, category: 'VALIDATION', retryable: false, safeMessage: error.message } }
@@ -306,6 +315,9 @@ export async function runManagedPage<T>(this: SessionManagerContext,
       const screenshotBytes = evidence
         ? await screenshotPage(current, shotOpts).catch(() => undefined)
         : undefined
+      const screenshotSensitive = screenshotBytes
+        ? await pageHasSensitiveContent(current, evidence?.sensitiveSelectors ?? [])
+        : undefined
       if (error instanceof GuardError) {
         return {
           ok: false,
@@ -321,6 +333,7 @@ export async function runManagedPage<T>(this: SessionManagerContext,
           pageRef:
             live && errorEntry ? pageRefFor(live.sessionId, live.generation, errorEntry) : undefined,
           tracePath,
+          screenshotSensitive,
         }
       }
       throw error
@@ -347,6 +360,7 @@ export async function execute(this: SessionManagerContext,
       screenshotSeq?: number
       omittedBefore?: 'initial_blank_page'
       tracePath?: string
+      screenshotSensitive?: boolean
     }
   > {
     if (this.authGateClosed.has(grant.leaseId)) {
@@ -373,6 +387,7 @@ export async function execute(this: SessionManagerContext,
         screenshotSeq: scoped.screenshotSeq,
         omittedBefore: scoped.omittedBefore,
         tracePath: scoped.tracePath,
+        screenshotSensitive: scoped.screenshotSensitive,
       }
     }
     if (!scoped.ok) {
@@ -388,6 +403,7 @@ export async function execute(this: SessionManagerContext,
         screenshotSeq: scoped.screenshotSeq,
         omittedBefore: scoped.omittedBefore,
         tracePath: scoped.tracePath,
+        screenshotSensitive: scoped.screenshotSensitive,
       }
     }
     return {
@@ -401,6 +417,7 @@ export async function execute(this: SessionManagerContext,
       screenshotSeq: scoped.screenshotSeq,
       omittedBefore: scoped.omittedBefore,
       tracePath: scoped.tracePath,
+      screenshotSensitive: scoped.screenshotSensitive,
     }
   }
 
@@ -609,4 +626,51 @@ export async function closeRunPage(this: SessionManagerContext, leaseId: string)
     if (page !== live.handle.basePage && !page.isClosed()) await closePage(page)
     if (live.lastPage === page) live.lastPage = undefined
   }
+
+export async function closeManagedPage(
+  this: SessionManagerContext,
+  input: { ownerId: string; pageId: string },
+): Promise<{ closed: boolean; pageId: string; activePageId: string }> {
+  const { session, live, run } = await this.lookupRunSession(input.ownerId)
+  if (!live || !session || !this.sessionOwnedHere(session)) {
+    throw conflict('SESSION_NOT_LIVE', '受管会话未在当前节点运行')
+  }
+
+  const entry = live.pages.get(input.pageId)
+  const current = this.ensureRunPage(live, input.ownerId)
+  if (!entry) {
+    return { closed: true, pageId: input.pageId, activePageId: current.pageId }
+  }
+
+  // 1. 底页保护
+  if (entry.page === live.handle.basePage) {
+    throw conflict('CANNOT_CLOSE_BASE_PAGE', '会话底页用于维持登录状态，不可单独关闭')
+  }
+
+  // 2. 运行态保护
+  const isCurrentActive = entry.pageId === current.pageId
+  if (isCurrentActive && run.status === 'RUNNING') {
+    throw conflict('CANNOT_CLOSE_ACTIVE_PAGE', '任务正在当前页面上执行，不可关闭')
+  }
+
+  // 3. 执行关闭与映射清理
+  dropPageEntries(live, entry.page)
+  if (!entry.page.isClosed()) {
+    await closePage(entry.page)
+  }
+
+  // 4. 清理引用与回退
+  if (live.lastPage === entry.page) {
+    live.lastPage = undefined
+  }
+
+  if (isCurrentActive) {
+    live.currentPageIdByRun.delete(input.ownerId)
+    const baseEntry = this.ensureRunPage(live, input.ownerId)
+    return { closed: true, pageId: input.pageId, activePageId: baseEntry.pageId }
+  }
+
+  return { closed: true, pageId: input.pageId, activePageId: current.pageId }
+}
+
 

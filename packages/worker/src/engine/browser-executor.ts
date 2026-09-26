@@ -101,7 +101,8 @@ export class BrowserStepExecutor implements StepExecutor {
 
     if (step.type === 'wait' && step.input.kind === 'semantic') {
       const persisted = await persistResolutionDecision(this.handle, ctx, {
-        effectivePolicy: ctx.snapshot.resolution?.steps[step.id] ?? 'deterministic_only',
+        effectivePolicy: ctx.snapshot.resolution?.protocol === 'snapshot.resolution@1'
+          ? (ctx.snapshot.resolution.steps[step.id] ?? 'deterministic_only') : 'deterministic_only',
         rungs: [],
         decision: 'failed',
         reasonCode: 'WAIT_KIND_UNAVAILABLE',

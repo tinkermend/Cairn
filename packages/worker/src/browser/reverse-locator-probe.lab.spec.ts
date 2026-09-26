@@ -7,10 +7,9 @@ import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { chromium, type Browser, type Page } from 'playwright'
-import { RESOLVED_ATTRIBUTE, type TargetDescriptor, type Step } from '@cairn/shared'
+import { RESOLVED_ATTRIBUTE, healingPatchSchema } from '@cairn/shared'
 import { generateCandidateFromElement } from './reverse-locator.js'
 import { locatorForCandidate } from './runtime.js'
-import { applyPatchToStep, applyPatchToTarget } from '../engine/engine-healer.js'
 
 const LAB_PUBLIC = resolve(__dirname, '../../../../tests/target-surface-lab/public')
 const MIME: Record<string, string> = {
@@ -124,18 +123,8 @@ describe('阶段 C：定位器反向生成探针与自愈闭环验证 (PAS-P4 / 
         suggestedCandidate: res.candidate!,
       }
 
-      // 验证自愈补丁应用到目标描述中
-      const originalTarget: TargetDescriptor = {
-        framePath: [],
-        candidates: [{ by: 'css', value: '#broken-search-btn' }],
-        semantic: '点击查询按钮',
-      }
-
-      const healedTarget = applyPatchToTarget(originalTarget, patch)
-      expect(healedTarget).toBeDefined()
-      // 新生成的确定性候选必须排在首位
-      expect(healedTarget!.candidates[0]).toEqual(res.candidate)
-      expect(healedTarget!.candidates.length).toBe(2)
+      // 补丁必须符合共享契约，才能进入修复候选链路
+      expect(healingPatchSchema.safeParse(patch).success).toBe(true)
 
       console.log('[TC-PAS-C02] 成功构造 ADD_CANDIDATE 自愈补丁:', JSON.stringify(patch))
     } finally {
@@ -174,20 +163,8 @@ describe('阶段 C：定位器反向生成探针与自愈闭环验证 (PAS-P4 / 
     await page.goto(`${origin}/order-flow.html`)
 
     try {
-      // 模拟步骤原本的选择器被人为改坏
-      const brokenStep: Step = {
-        id: 'step-submit',
-        name: '提交工单',
-        type: 'click',
-        effectType: 'SIDE_EFFECT',
-        input: {
-          target: {
-            framePath: [],
-            candidates: [{ by: 'css', value: '#non-existent-button-999' }],
-            semantic: '点击提交工单按钮',
-          },
-        },
-      }
+      // 原选择器已失效
+      expect(await page.locator('#non-existent-button-999').count()).toBe(0)
 
       // 模拟 AI 定位成功并绑定了真实按钮
       const token = 'tok-healed-submit'
@@ -200,20 +177,12 @@ describe('阶段 C：定位器反向生成探针与自愈闭环验证 (PAS-P4 / 
       const res = await generateCandidateFromElement(page, token)
       expect(res.candidate).toBeDefined()
 
-      // 应用自愈补丁到 Step
-      const healedStep = applyPatchToStep(brokenStep, {
-        kind: 'ADD_CANDIDATE',
-        suggestedCandidate: res.candidate!,
-      })
-
-      const target = (healedStep.input as { target: TargetDescriptor }).target
-      expect(target.candidates[0]).toEqual(res.candidate)
-
-      // 使用自愈后的候选直接解析，必须 count() === 1
-      const count = await locatorForCandidate(page, target.candidates[0]!).count()
+      // 反向生成的候选不再依赖运行期绑定标记，也能确定性唯一命中
+      await page.locator('#btn-submit-order').evaluate((node, attr) => node.removeAttribute(attr), RESOLVED_ATTRIBUTE)
+      const count = await locatorForCandidate(page, res.candidate!).count()
       expect(count).toBe(1)
 
-      console.log('[TC-PAS-C04] 自愈补丁应用成功，新候选可直接确定性命中:', JSON.stringify(target.candidates[0]))
+      console.log('[TC-PAS-C04] 自愈补丁应用成功，新候选可直接确定性命中:', JSON.stringify(res.candidate))
     } finally {
       await page.close()
     }

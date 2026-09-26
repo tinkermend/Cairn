@@ -555,24 +555,31 @@ export async function buildMeta(this: SessionManagerContext, runId: string, acto
     const capabilities: ManagedBrowserCapabilities = { ...DEFAULT_MANAGED_BROWSER_CAPABILITIES }
     const framesAvailable = liveOk && (!waiting || heldByViewer) && capabilities.screencast !== 'closed'
     const current = live && liveOk ? this.ensureRunPage(live, runId) : undefined
+    const isRunning = run.status === 'RUNNING'
     const pages: ManagedPageSummary[] =
       live && liveOk && session
         ? [...live.pages.values()]
             .filter((entry) => entry.runId === runId && !entry.page.isClosed())
             .slice(0, 16)
-            .map((entry) => ({
-              pageRef: pageRefFor(session.id, session.generation, entry),
-              kind: entry.kind,
-              viewing: viewPageId ? entry.pageId === viewPageId : entry.pageId === current?.pageId,
-              currentExecution: entry.pageId === current?.pageId,
-              url: sanitizeManagedPageUrl((() => {
-                try {
-                  return typeof entry.page.url === 'function' ? entry.page.url() : null
-                } catch {
-                  return null
-                }
-              })()),
-            }))
+            .map((entry) => {
+              const isCurrent = entry.pageId === current?.pageId
+              const isBase = entry.page === live.handle.basePage
+              const canClose = !isBase && !(isCurrent && isRunning)
+              return {
+                pageRef: pageRefFor(session.id, session.generation, entry),
+                kind: entry.kind,
+                viewing: viewPageId ? entry.pageId === viewPageId : isCurrent,
+                currentExecution: isCurrent,
+                url: sanitizeManagedPageUrl((() => {
+                  try {
+                    return typeof entry.page.url === 'function' ? entry.page.url() : null
+                  } catch {
+                    return null
+                  }
+                })()),
+                canClose,
+              }
+            })
         : []
     return {
       runId,

@@ -66,7 +66,7 @@ import { attachSessionAuthObserver } from './session-idle-observer.js'
 import { attachMaintenanceOperation, attachValidationOperation, completeOccupiedAuth, finishMaintenance, markMaintenanceOutcomeUnknown, markSessionLost, persistProfileObservation, resolveAccountCredential, runMaintenanceAuth, verifyOccupiedOwner } from './session-maintenance-runtime.js'
 import { settleOccupiedLanding, type SettleOccupiedLandingInput } from './landing-settle.js'
 import { acquireRunAuthControl, applyRecoveryRule, executeAuthInput, expiredAuthObservation, failInRunAuthRecovery, heartbeatRunAuthControl, inputRunAuthControl, observeInRunAuth, observeInRunAuthHeld, releaseRunAuthControl, restoreAuthGateFromCheckpoint, resumeRunAuth, verifyInRunAuth } from './session-auth-control.js'
-import { adoptPage, assertCommand, closeRunPage, ensureRunPage, execute, invalidate, pageForGrant, runManagedPage, runSurfaceCommand, startTracingForLease, stopTracingForLease, withManagedPage } from './session-command.js'
+import { adoptPage, assertCommand, closeManagedPage, closeRunPage, ensureRunPage, execute, invalidate, pageForGrant, runManagedPage, runSurfaceCommand, startTracingForLease, stopTracingForLease, withManagedPage } from './session-command.js'
 import {
   discardSealedVideo,
   finalizeSealedVideo,
@@ -83,6 +83,9 @@ import { close, dropDisposedHandles, dropLocalHandle, ownerScope, platformDefaul
 
 export const BROWSER_SESSION_OPTIONS = Symbol('BROWSER_SESSION_OPTIONS')
 import { SECRET_PROVIDER } from '../tokens.js'
+import { collectSurfaceExploration, type SurfaceExplorationResult } from './explore-candidate-collector.js'
+import { installExploreGuard, type ExploreGuardController, type ExploreGuardOptions } from './explore-network-guard.js'
+import type { TargetStateRule } from '@cairn/shared'
 export { SECRET_PROVIDER }
 export { SessionLeaseError, type BrowserSessionManagerOptions, type SessionAcquireResult } from './session-live.js'
 
@@ -326,6 +329,51 @@ export class BrowserSessionManager {
     return probeErrorSurface.call(this, grant, _signal)
   }
 
+  async collectExploration(
+    grant: SessionGrant,
+    options: {
+      targetId: string
+      allowedOrigins: string[]
+      allowlist: string[]
+      stateRule?: TargetStateRule
+      maxCandidates?: number
+    },
+    _signal?: AbortSignal,
+  ): Promise<SurfaceExplorationResult> {
+    return this.withHeldOccupancy(grant.leaseId, grant, async () => {
+      this.guard.assertHeld(grant.leaseId, grant)
+      if (grant.purpose && grant.purpose !== 'EXECUTION') {
+        throw new Error(`EXPLORATION_DENIED: 非执行租约用途 ${grant.purpose}`)
+      }
+      const page = this.pageForGrant(grant)
+      if (!page) {
+        throw new Error('EXPLORATION_PAGE_MISSING')
+      }
+      return collectSurfaceExploration({
+        page,
+        targetId: options.targetId,
+        allowedOrigins: options.allowedOrigins,
+        allowlist: options.allowlist,
+        stateRule: options.stateRule,
+        maxCandidates: options.maxCandidates,
+      })
+    })
+  }
+
+  async installExploreGuard(
+    grant: SessionGrant,
+    options: ExploreGuardOptions,
+  ): Promise<ExploreGuardController> {
+    return this.withHeldOccupancy(grant.leaseId, grant, async () => {
+      this.guard.assertHeld(grant.leaseId, grant)
+      const live = this.lives.get(grant.sessionId)
+      if (!live || !live.handle?.context) {
+        throw new Error('EXPLORATION_CONTEXT_MISSING')
+      }
+      return installExploreGuard(live.handle.context, options)
+    })
+  }
+
   async recoverAuth(
     grant: SessionGrant,
     input: {
@@ -540,6 +588,7 @@ export class BrowserSessionManager {
         faceRole?: import('@cairn/shared').ScreenshotRole
         pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
+        screenshotSensitive?: boolean
       }
     | {
         ok: false
@@ -560,6 +609,7 @@ export class BrowserSessionManager {
         faceRole?: import('@cairn/shared').ScreenshotRole
         pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
+        screenshotSensitive?: boolean
       }
   > {
     return (withManagedPage as typeof withManagedPage<T>).call(this, grant, evidence, fn, failed, signal)
@@ -642,6 +692,7 @@ export class BrowserSessionManager {
       screenshotSeq?: number
       omittedBefore?: 'initial_blank_page'
       tracePath?: string
+      screenshotSensitive?: boolean
     }
   > {
     return execute.call(this, grant, command, signal, evidence)
@@ -1005,6 +1056,10 @@ export class BrowserSessionManager {
 
   async closeRunPage(leaseId: string): Promise<void> {
     return closeRunPage.call(this, leaseId)
+  }
+
+  async closeManagedPage(input: { ownerId: string; pageId: string }): Promise<{ closed: boolean; pageId: string; activePageId: string }> {
+    return closeManagedPage.call(this, input)
   }
 }
 

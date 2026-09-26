@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import sharp from 'sharp'
 import { attachArtifactBytes, claimExportJobs, commitReportMaterial, completeExportJob, finishReportMaterials, getCachedReportArtifacts, getExportMaterials, getReportBundleFiles, loadReportRevisionDocument, renewExportJob, reserveExportArtifact, updateExportProgress, type DbHandle } from '@cairn/db'
-import { REPORT_LIMITS, REPORT_RENDER_VERSION, sanitizeReportFileName, type ReportDocument } from '@cairn/shared'
+import { REPORT_LIMITS, REPORT_RENDER_VERSION, sanitizeReportFileName, type ReportDocument, type ReportFormat } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
-import { crc32, zipEnd, zipHeaders } from './report-layout'
-export { renderReportDocx, renderReportPdf } from './report-layout'
+import { crc32, zipEnd, zipHeaders } from './report-layout.js'
+export { renderReportHtml } from './report-html.js'
 
 type Grant = { jobId: string; workerId: string; instanceId: string; claimEpoch: number }
 type ImageInput = { id: string; path: string; width: number; height: number; kind: 'logo' | 'screenshot'; caption: string }
@@ -34,7 +34,7 @@ export async function copyBoundedObject(store: ObjectStore, key: string, path: s
   } finally { await file.close() }
 }
 
-export async function renderReportInThread(document: ReportDocument, images: ImageInput[], format: 'docx' | 'pdf', path: string, signal: AbortSignal) {
+export async function renderReportInThread(document: ReportDocument, images: ImageInput[], format: ReportFormat, path: string, signal: AbortSignal) {
   signal.throwIfAborted()
   return new Promise<void>((resolve, reject) => {
     const thread = new Worker(join(__dirname, 'report-render-thread.js'), { workerData: { document, images, format, path }, resourceLimits: { maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 64 } })
@@ -46,13 +46,23 @@ export async function renderReportInThread(document: ReportDocument, images: Ima
     }
     const abort = () => finish(new Error('导出已取消、超时或执行权失效'))
     signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort()
-    thread.once('message', (result) => finish(result.ok ? undefined : new Error(result.error)))
-    thread.once('error', finish)
-    thread.once('exit', (code) => { if (!settled) finish(new Error(`渲染进程异常结束（${code}），可重试文件任务`)) })
+    thread.on('message', (result) => {
+      if (!result || typeof result !== 'object' || !('ok' in result)) return
+      const payload = result as { ok: boolean; error?: string }
+      finish(payload.ok ? undefined : new Error(payload.error || 'Worker thread failed without message'))
+    })
+    thread.once('error', (err) => {
+      console.error('[THREAD ONCE ERROR]', err)
+      finish(err instanceof Error ? err : new Error(String(err)))
+    })
+    thread.once('exit', (code) => {
+      console.log('[THREAD ONCE EXIT]', code)
+      if (!settled) finish(new Error(`渲染进程异常结束（${code}），可重试文件任务`))
+    })
   })
 }
 
-async function uploadFile(handle: DbHandle, store: ObjectStore, grant: Grant, path: string, input: { kind: 'report_material' | 'report_docx' | 'report_pdf' | 'report_bundle'; fileName: string; contentType: string }, signal: AbortSignal) {
+async function uploadFile(handle: DbHandle, store: ObjectStore, grant: Grant, path: string, input: { kind: 'report_material' | 'report_html' | 'report_bundle'; fileName: string; contentType: string }, signal: AbortSignal) {
   const maxBytes = input.kind === 'report_bundle' ? REPORT_LIMITS.bundleBytes : input.kind === 'report_material' ? REPORT_LIMITS.imageBytes : REPORT_LIMITS.fileBytes
   const reserved = await reserveExportArtifact(handle, grant, input)
   signal.throwIfAborted()
@@ -176,10 +186,10 @@ export async function dispatchExportJobs(handle: DbHandle, store: ObjectStore, i
       if (job.kind === 'report_materialize') await materialize(handle, store, grant, directory, controller.signal)
       else if (job.kind === 'report_bundle') await bundle(handle, store, grant, directory, controller.signal)
       else {
-        const loaded = await loadReportRevisionDocument(handle, job.reportRevisionId!, job.createdByConsoleAccountId), document = loaded.revision.document
+        const loaded = await loadReportRevisionDocument(handle, job.reportRevisionId!, job.createdByConsoleAccountId ?? undefined), document = loaded.revision.document
         if (!document || !loaded.revision.sealedAt) throw new Error('报告材料尚未封存')
-        const formats = job.sourceManifest.formats as Array<'docx' | 'pdf'>
-        const cached = await getCachedReportArtifacts(handle, loaded.revision.id, formats, job.createdByConsoleAccountId)
+        const formats = job.sourceManifest.formats as Array<ReportFormat>
+        const cached = await getCachedReportArtifacts(handle, loaded.revision.id, formats, job.createdByConsoleAccountId ?? undefined)
         const artifactIds = cached.map((entry) => entry.artifact.id), failures: string[] = []
         const images: ImageInput[] = []
         let preparationError: Error | undefined
@@ -202,9 +212,13 @@ export async function dispatchExportJobs(handle: DbHandle, store: ObjectStore, i
             await updateExportProgress(handle, grant, `生成 ${format.toUpperCase()}`)
             const path = join(directory, `report.${format}`)
             await renderReportInThread(document, images, format, path, controller.signal)
-            const artifact = await uploadFile(handle, store, grant, path, { kind: format === 'pdf' ? 'report_pdf' : 'report_docx', fileName: `${sanitizeReportFileName(document.title)}.${format}`, contentType: format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, controller.signal)
+            const artifact = await uploadFile(handle, store, grant, path, { kind: 'report_html', fileName: `${sanitizeReportFileName(document.title)}.${format}`, contentType: 'text/html; charset=utf-8' }, controller.signal)
             artifactIds.push(artifact.id)
-          } catch (error) { controller.signal.throwIfAborted(); failures.push(`${format.toUpperCase()}：${error instanceof Error ? error.message : '生成失败'}`) }
+          } catch (error) {
+            console.error('[REPORT RENDER ERROR]', error)
+            controller.signal.throwIfAborted();
+            failures.push(`${format.toUpperCase()}：${error instanceof Error ? (error.message || error.name || String(error)) : '生成失败'}`)
+          }
         }
         await completeExportJob(handle, { ...grant, artifactIds, status: !artifactIds.length ? 'failed' : failures.length ? 'partial' : 'complete', error: failures.length ? failures.join('；') : undefined })
       }

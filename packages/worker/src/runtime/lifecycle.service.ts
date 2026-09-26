@@ -47,7 +47,7 @@ import {
   expireClosedScheduleWindows,
   expireScheduledMapJobs,
   advanceDueSuiteRuns,
-  generateDueSuiteReports,
+  generateDueReports,
   backfillModuleInvocationResults,
   backfillOutcomeResults,
   reapServiceRequestLogs,
@@ -499,7 +499,7 @@ export class LifecycleService
       await expireClosedScheduleWindows(this.handle);
       await expireScheduledMapJobs(this.handle);
       await advanceDueSuiteRuns(this.handle);
-      await generateDueSuiteReports(this.handle);
+      await generateDueReports(this.handle);
       const materialized = await materializeDueSchedules(this.handle);
       const recovered = await listPendingScheduleAdmits(this.handle);
       const seen = new Set<string>();
@@ -981,6 +981,7 @@ export class LifecycleService
       instanceId: this.instanceId,
       signal: this.notificationAbort.signal,
       blockedHosts: webhookControlPlaneHosts(),
+      store: this.objects.objectStore(),
     });
     await dispatchExportJobs(
       this.handle,

@@ -62,6 +62,14 @@ export type BrowserPort = {
     grant: SessionGrant,
     input: { kind: 'auto' | 'manual'; runGrant: RunGrant; snapshot: RunSnapshot; resuming?: boolean; signal?: AbortSignal },
   ): Promise<AuthRecoveryOutcome>
+  captureFinalScreenshot?(
+    grant: SessionGrant,
+    evidence: {
+      runId: string
+      sensitiveSelectors?: string[] | null
+      screenshotViewport?: 'viewport' | 'full_page'
+    },
+  ): Promise<void>
   probeErrorSurface?(grant: SessionGrant, signal?: AbortSignal): Promise<ErrorSurfaceNode[]>
   bindResolvedFromPoint?(
     grant: SessionGrant,
@@ -71,7 +79,30 @@ export type BrowserPort = {
     | { ok: true; texts: string[]; tagName: string; suggestedCandidate?: import('@cairn/shared').LocatorCandidate }
     | { ok: false; reason: 'AI_NOT_FOUND' | 'FRAME_UNSUPPORTED' | 'AI_AMBIGUOUS_POINT' | 'SURFACE_LOST'; message: string }
   >
+  bindResolvedFromCandidate?(
+    grant: SessionGrant,
+    input: { candidate: import('@cairn/shared').LocatorCandidate; token: string },
+    signal?: AbortSignal,
+  ): Promise<
+    | { ok: true; texts: string[]; tagName: string; suggestedCandidate?: import('@cairn/shared').LocatorCandidate }
+    | { ok: false; reason: 'AI_NOT_FOUND' | 'AI_AMBIGUOUS_POINT' | 'FRAME_UNSUPPORTED' | 'SURFACE_LOST'; message: string }
+  >
   clearResolved?(grant: SessionGrant, token: string): Promise<void>
+  collectExploration?(
+    grant: SessionGrant,
+    options: {
+      targetId: string
+      allowedOrigins: string[]
+      allowlist: string[]
+      stateRule?: import('@cairn/shared').TargetStateRule
+      maxCandidates?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<import('../browser/explore-candidate-collector.js').SurfaceExplorationResult>
+  installExploreGuard?(
+    grant: SessionGrant,
+    options: import('../browser/explore-network-guard.js').ExploreGuardOptions,
+  ): Promise<import('../browser/explore-network-guard.js').ExploreGuardController>
 }
 
 export type AiLocateInput = {
@@ -81,10 +112,14 @@ export type AiLocateInput = {
   loginOrigin?: string
   loginPath?: string
   allowVision?: boolean
+  route?: 'text' | 'vision' | 'legacy'
 }
 
 export type AiLocateResult = {
   ok: boolean
+  route?: 'text' | 'vision'
+  outcomeClass?: 'miss' | 'ambiguous' | 'hung' | 'budget' | 'cancelled' | 'lease_lost' | 'error'
+  candidate?: import('@cairn/shared').LocatorCandidate
   center?: [number, number]
   dpr?: number
   callNs?: number[]

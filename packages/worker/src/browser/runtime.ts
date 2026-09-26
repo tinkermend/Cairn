@@ -1265,6 +1265,31 @@ export async function screenshotPage(page: Page, options?: ScreenshotPageOptions
   })
 }
 
+export async function pageHasSensitiveContent(
+  page: Page,
+  selectors: readonly string[] = [],
+): Promise<boolean> {
+  try {
+    if (pageClosed(page)) return false
+    const pwLoc = page.locator('input[type="password"]')
+    const pwCount = await pwLoc.count().catch(() => 0)
+    for (let i = 0; i < pwCount; i++) {
+      if (await pwLoc.nth(i).isVisible().catch(() => false)) return true
+    }
+    for (const selector of selectors) {
+      if (!selector) continue
+      const loc = page.locator(selector)
+      const count = await loc.count().catch(() => 0)
+      for (let i = 0; i < count; i++) {
+        if (await loc.nth(i).isVisible().catch(() => false)) return true
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false
+}
+
 export function pageClosed(page: Page): boolean {
   return page.isClosed()
 }

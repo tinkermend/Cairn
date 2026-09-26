@@ -7,6 +7,8 @@ import {
   beginNotificationSubmission,
   claimNotificationDeliveries,
   finishNotificationDelivery,
+  getLatestHtmlReportArtifact,
+  isReportGenerationPending,
   loadSecretCiphertext,
   prepareNotificationEvents,
   repairNotificationIntents,
@@ -17,6 +19,7 @@ import {
   type NotificationJob,
 } from '@cairn/db'
 import type { LocalSecretProvider } from '@cairn/secret'
+import type { ObjectStore } from '@cairn/storage'
 import {
   LOCAL_SECRET_PROVIDER,
   NOTIFICATION_PROTOCOL,
@@ -124,7 +127,10 @@ export function notificationWebhookBody(job: NotificationJob): string {
 }
 
 /** Pure formatting. No template expression evaluation and no untrusted HTML. */
-export function notificationEmailText(job: NotificationJob): string {
+export function notificationEmailText(
+  job: NotificationJob,
+  options?: { hasAttachment?: boolean },
+): string {
   const p = job.event.payload!
   return [
     p.title,
@@ -148,6 +154,9 @@ export function notificationEmailText(job: NotificationJob): string {
     job.event.runId && `运行编号：${job.event.runId}`,
     job.event.consoleUrl,
     `通知编号：${job.deliveryId}`,
+    options?.hasAttachment
+      ? '附件：已包含运行报告 HTML，可直接下载或在浏览器中打开查看。'
+      : null,
   ]
     .filter(Boolean)
     .join('\n')
@@ -238,14 +247,23 @@ export async function sendNotificationWebhook(input: {
   })
 }
 
+export type NotificationEmailAttachment = {
+  filename: string
+  content: Buffer | string
+  contentType?: string
+}
+
 export async function sendNotificationEmail(input: {
   smtp: ReturnType<typeof notificationSmtpSecretSchema.parse>
   recipient: string
   job: NotificationJob
   signal: AbortSignal
+  attachments?: NotificationEmailAttachment[]
 }): Promise<Result> {
   const s = input.smtp
-  const text = notificationEmailText(input.job)
+  const text = notificationEmailText(input.job, {
+    hasAttachment: Boolean(input.attachments?.length),
+  })
   const html = `<div style="white-space:pre-wrap">${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)}</div>`
   if (Buffer.byteLength(text) + Buffer.byteLength(html) > 128 * 1024)
     return { outcome: 'failed', errorCode: 'notification_payload_too_large' }
@@ -284,7 +302,7 @@ export async function sendNotificationEmail(input: {
   try {
     if (input.signal.aborted)
       return { outcome: 'retryable', errorCode: 'send_aborted_before_submission' }
-    const result = await transport.sendMail({
+    const result = (await transport.sendMail({
       from: s.from,
       to: input.recipient,
       subject: input.job.event.payload!.title.replace(/[\r\n]/g, ' '),
@@ -293,9 +311,14 @@ export async function sendNotificationEmail(input: {
       messageId: `<${input.job.deliveryId}@cairn.notification>`,
       date: input.job.event.occurredAt,
       headers: { 'X-Cairn-Delivery-Id': input.job.deliveryId },
+      attachments: (input.attachments ?? []).map((att) => ({
+        filename: att.filename,
+        content: att.content instanceof Buffer ? att.content : Buffer.from(att.content),
+        contentType: att.contentType ?? 'text/html; charset=utf-8',
+      })),
       disableFileAccess: true,
       disableUrlAccess: true,
-    })
+    })) as { accepted: unknown[] }
     return result.accepted.length === 1
       ? { outcome: 'accepted' }
       : { outcome: 'failed', errorCode: 'smtp_recipient_rejected' }
@@ -326,6 +349,7 @@ export type NotificationDeliveryDeps = {
   signal?: AbortSignal
   blockedHosts?: string[]
   smtpDestinations?: string[]
+  store?: ObjectStore
   /** Transport fixture injection; runtime assembly always uses the pinned public resolver. */
   resolveDestination?: typeof resolveNotificationDestination
 }
@@ -386,7 +410,63 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
           if (!recipient) throw fail('recipient_missing')
           if (signal.aborted) throw fail('send_aborted')
           if (!(await beginNotificationSubmission(input.db, job))) return
-          result = await sendNotificationEmail({ smtp, recipient: recipient.email, job, signal })
+
+          let attachments: NotificationEmailAttachment[] | undefined
+          const runId = job.event.runId
+          const suiteRunId = (job.event.payload as Record<string, any> | undefined)?.suiteRunId
+          if (input.store && (runId || suiteRunId)) {
+            try {
+              let htmlArtifact = await getLatestHtmlReportArtifact(input.db, {
+                runId: runId ?? undefined,
+                suiteRunId: suiteRunId ?? undefined,
+              })
+              if (!htmlArtifact) {
+                const isPending = await isReportGenerationPending(input.db, {
+                  runId: runId ?? undefined,
+                  suiteRunId: suiteRunId ?? undefined,
+                })
+                if (isPending) {
+                  const waitStart = Date.now()
+                  while (Date.now() - waitStart < 6000 && !signal.aborted) {
+                    await new Promise((r) => setTimeout(r, 500))
+                    htmlArtifact = await getLatestHtmlReportArtifact(input.db, {
+                      runId: runId ?? undefined,
+                      suiteRunId: suiteRunId ?? undefined,
+                    })
+                    if (htmlArtifact) break
+                  }
+                }
+              }
+              if (htmlArtifact) {
+                const MAX_NOTIFICATION_ATTACHMENT_BYTES = 20 * 1024 * 1024
+                if (
+                  !htmlArtifact.byteSize ||
+                  htmlArtifact.byteSize <= MAX_NOTIFICATION_ATTACHMENT_BYTES
+                ) {
+                  const got = await input.store.get(htmlArtifact.objectKey)
+                  attachments = [
+                    {
+                      filename:
+                        htmlArtifact.fileName ||
+                        `${job.event.payload?.scenarioName || '运行'}报告.html`,
+                      content: Buffer.from(got.body),
+                      contentType: htmlArtifact.contentType || 'text/html; charset=utf-8',
+                    },
+                  ]
+                }
+              }
+            } catch {
+              // 附件提取容错：若对象存储或报告产物加载异常，不阻塞邮件主体通知发送
+            }
+          }
+
+          result = await sendNotificationEmail({
+            smtp,
+            recipient: recipient.email,
+            job,
+            signal,
+            attachments,
+          })
         }
       } catch (error) {
         // Never store exception messages: providers and parsers can embed secrets or recipients.

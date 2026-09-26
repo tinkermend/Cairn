@@ -62,7 +62,7 @@ const aiLogger = new Logger('AiPort')
 export function createAiPort(input: {
   manager: BrowserSessionManager
   handle: DbHandle
-  resolveApiKey: (config: AiExecutionConfig) => Promise<string>
+  resolveApiKey: (config: Pick<AiExecutionConfig, 'secretRef'>) => Promise<string>
   objects?: ObjectService
 }): AiPort {
   return {
@@ -77,9 +77,6 @@ export function createAiPort(input: {
         async (page) => {
           assertPageScope(page.url(), command, installedCompiledScope(page.context()))
           const pagesBefore = new Set(page.context().pages())
-          const apiKey = await input.resolveApiKey(evidence.config)
-          await validateBrowserAiModelFamily(evidence.config.modelFamily)
-
           // 阶段 B 语义树优先分支（PAS-3）：全部准入条件满足时优先尝试无图文本分析
           const admission = isAriaBranchAdmitted({
             command,
@@ -87,13 +84,14 @@ export function createAiPort(input: {
             hasSensitiveSelectors: (evidence.sensitiveSelectors?.length ?? 0) > 0,
           })
 
-          if (admission.admitted) {
+          if (admission.admitted && evidence.config.platformAi?.baseUrl && evidence.config.platformAi.model) {
             const textConfig = evidence.config.platformAi
-            const textBaseUrl = textConfig?.baseUrl ?? evidence.config.modelBaseUrl
-            const textModel = textConfig?.model ?? evidence.config.modelName
-            const textApiKey = textConfig?.secretRef
-              ? await input.resolveApiKey({ secretRef: textConfig.secretRef } as any).catch(() => '') || apiKey
-              : apiKey
+            if (!textConfig.secretRef) {
+              throw Object.assign(new Error('平台 AI 文本模型未绑定密钥，请到平台 AI 配置'), { code: 'AI_CONFIG_INVALID' })
+            }
+            const textBaseUrl = textConfig.baseUrl
+            const textModel = textConfig.model
+            const textApiKey = await input.resolveApiKey({ secretRef: textConfig.secretRef })
 
             const budgetClient = createBudgetClient({
               handle: input.handle,
@@ -169,6 +167,8 @@ export function createAiPort(input: {
                 })
               : undefined
 
+          const apiKey = await input.resolveApiKey(evidence.config)
+          await validateBrowserAiModelFamily(evidence.config.modelFamily)
           const agent = await createFormalMidsceneAgent({
             page,
             gate,
@@ -350,13 +350,30 @@ export function createAiPort(input: {
       const scoped = await input.manager.withManagedPage(grant, evidence, async (page) => {
         assertPageScope(page.url(), command, installedCompiledScope(page.context()))
 
-        // 阶段 1：优先尝试基于 Playwright AI (Aria 树文本模型，走平台 AI 通道) 查找目标元素，避免调用昂贵视觉模型
+        const requestedRoute = locateInput.route ?? 'legacy'
+        // v1 保持文本优先；v2 按冻结路线逐档调用。
         const textConfig = evidence.config.platformAi
-        if (textConfig?.baseUrl && textConfig.model) {
-          const textApiKey = textConfig.secretRef
-            ? await input.resolveApiKey({ secretRef: textConfig.secretRef } as any).catch(() => '')
-            : await input.resolveApiKey(evidence.config).catch(() => '')
-          if (textApiKey) {
+        if (requestedRoute !== 'vision') {
+          if (requestedRoute === 'text' && (!textConfig?.baseUrl || !textConfig.model)) {
+            return locateResultFromFailure({
+              error: { code: 'AI_CONFIG_INVALID', category: 'VALIDATION', retryable: false, safeMessage: '平台 AI 文本模型未就绪，请检查地址与模型名' },
+              callNs,
+            })
+          }
+          if (textConfig?.baseUrl && textConfig.model) {
+            if (!textConfig.secretRef) return locateResultFromFailure({
+              error: { code: 'AI_CONFIG_INVALID', category: 'VALIDATION', retryable: false, safeMessage: '平台 AI 文本模型未绑定密钥，请到平台 AI 配置' },
+              callNs,
+            })
+            let textApiKey: string
+            try {
+              textApiKey = await input.resolveApiKey({ secretRef: textConfig.secretRef })
+            } catch {
+              return locateResultFromFailure({
+                error: { code: 'AI_CONFIG_INVALID', category: 'VALIDATION', retryable: false, safeMessage: '平台 AI 文本模型密钥不可用，请重新绑定' },
+                callNs,
+              })
+            }
             const budgetClient = createBudgetClient({
               handle: input.handle,
               grant: evidence.grant,
@@ -387,23 +404,37 @@ export function createAiPort(input: {
               signal,
             })
 
-            if (textLocateRes.handled && textLocateRes.center) {
+            if (textLocateRes.handled && textLocateRes.center && textLocateRes.candidate) {
               return {
                 ok: true as const,
+                route: 'text' as const,
+                candidate: textLocateRes.candidate,
                 center: textLocateRes.center,
                 dpr: textLocateRes.dpr ?? 1,
                 callNs,
               }
             }
-
-            aiLogger.log(
-              `[AriaLocateBranch] 文本定位未命中，回退到 Midscene 视觉路径: ${redactErrorSurfaceText(textLocateRes.fallbackReason ?? '未知')} (runId=${evidence.runId})`,
-            )
+            const cls = textLocateRes.outcomeClass ?? 'miss'
+            if (cls !== 'miss' && cls !== 'ambiguous') {
+              const error: ExecutionError = cls === 'budget'
+                ? { code: 'AI_BUDGET_EXCEEDED', category: 'VALIDATION', retryable: false, safeMessage: '文本模型调用预算已耗尽' }
+                : cls === 'hung'
+                  ? { code: 'AI_HUNG', category: 'UNKNOWN', retryable: false, safeMessage: '文本模型调用超时或未落定，会话不可复用' }
+                  : cls === 'cancelled'
+                    ? { code: 'CANCELLED', category: 'CANCELLED', retryable: false, safeMessage: '文本模型定位已取消' }
+                    : { code: 'AI_CALL_FAILED', category: 'EXECUTOR', retryable: false, safeMessage: '文本模型调用失败，请检查平台 AI 配置与服务状态' }
+              if (cls === 'hung') gate.markLeaseLost()
+              return { ok: false as const, route: 'text' as const, outcomeClass: cls, callNs, hung: cls === 'hung', error, summary: error.safeMessage }
+            }
+            aiLogger.log(`[AriaLocateBranch] 文本定位${cls === 'ambiguous' ? '不唯一' : '未命中'}: ${redactErrorSurfaceText(textLocateRes.fallbackReason ?? '未知')} (runId=${evidence.runId})`)
+            if (requestedRoute === 'text') return {
+              ok: false as const, route: 'text' as const, outcomeClass: cls, callNs,
+              error: { code: 'AI_NOT_FOUND', category: 'EXECUTOR' as const, retryable: false, safeMessage: cls === 'ambiguous' ? '文本模型定位不唯一或目标被遮挡' : '文本模型未找到目标' },
+            }
           }
         }
 
-        // 若当前策略或能力上限禁止视觉模型，在此截断拦截，严防调用高成本 MidScene 视觉模型
-        if (locateInput.allowVision === false) {
+        if (requestedRoute === 'text' || locateInput.allowVision === false || evidence.config.visionEnabled === false) {
           return locateResultFromFailure({
             error: {
               code: 'AI_NOT_FOUND',
@@ -461,7 +492,7 @@ export function createAiPort(input: {
           if (gate.leaseLost) {
             return locateResultFromFailure({ error: leaseLostError(gate), callNs })
           }
-          return { ok: true as const, center: settled.value.center, dpr: settled.value.dpr, callNs }
+          return { ok: true as const, route: 'vision' as const, center: settled.value.center, dpr: settled.value.dpr, callNs }
         } finally {
           await agent.destroy().catch(() => undefined)
         }
@@ -542,9 +573,13 @@ export function locateResultFromFailure(input: {
   const summary =
     input.summary ??
     (raw instanceof Error ? raw.message : typeof raw === 'string' ? raw : 'AI 定位失败')
-  if (code === 'AI_NOT_FOUND') {
+  // Midscene 在明确看不到目标时抛普通 Error。它是定位未命中，允许冻结计划进入下一档；
+  // 网络、鉴权和解析异常仍作为调用故障停止，不能靠宽泛的错误文字猜测。
+  const visualMiss = raw instanceof Error && /^failed to locate element:/i.test(raw.message.trim())
+  if (code === 'AI_NOT_FOUND' || visualMiss) {
     return {
       ok: false,
+      outcomeClass: 'miss',
       callNs,
       summary,
       error: {
@@ -554,6 +589,10 @@ export function locateResultFromFailure(input: {
         safeMessage: summary.slice(0, 512),
       },
     }
+  }
+  if (raw && typeof raw === 'object' && 'safeMessage' in raw && 'category' in raw && 'retryable' in raw) {
+    const error = raw as ExecutionError
+    return { ok: false, callNs, summary: error.safeMessage, error }
   }
   return {
     ok: false,

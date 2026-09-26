@@ -925,6 +925,55 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     expect(port.calls.filter((item) => item === 'acquire')).toEqual(['acquire'])
   })
 
+  it('挂起后重试采用当前草稿步骤覆盖，不再重复旧快照目标', async () => {
+    const step = clickStep(newId(), 'READ_ONLY')
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `retry-edited-${newId()}`,
+      steps: [step],
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, inputs: [], steps: [step] },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+    })
+    const seen: BrowserCommand[] = []
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async (_grant, command) => {
+        seen.push(command)
+        return seen.length === 1
+          ? { ok: false, error: { code: 'TARGET_NOT_FOUND', category: 'VALIDATION', retryable: false, safeMessage: '未找到' } }
+          : { ok: true, output: {} }
+      },
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const done = engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    const edited: Step = {
+      ...step,
+      input: { target: { framePath: [], semantic: '列表里的新查询按钮', candidates: [{ by: 'text', value: '新查询' }] } },
+    }
+    await engine.resumeDebug(created.detail.id, {
+      action: 'retry_current',
+      fencingToken: held.checkpoint?.fencingToken,
+      stepOverride: edited,
+    }, actorId)
+    await done
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('SUCCEEDED')
+    expect(seen.map((command) => command.type === 'click' ? command.target.candidates[0]?.value : null)).toEqual(['查询', '新查询'])
+    expect(step.input.target.candidates[0]?.value).toBe('查询')
+  })
+
   it('暂停在未跑步上后 continue 不会跳过当前步', async () => {
     const steps: Step[] = [
       {

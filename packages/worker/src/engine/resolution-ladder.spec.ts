@@ -89,6 +89,16 @@ function ctx(step: Step, policy: 'deterministic_only' | 'prefer_deterministic' |
   } as StepExecutionContext
 }
 
+function ctxV2(step: Step, order: Array<'rule' | 'text_ai' | 'vision_ai'>): StepExecutionContext {
+  const context = ctx(step, 'deterministic_only')
+  context.snapshot.resolution = {
+    protocol: 'snapshot.resolution@2',
+    allowed: ['rule', 'text_ai', 'vision_ai'],
+    steps: { [step.id]: { requested: order, actual: order, skipped: [], source: 'step' } },
+  }
+  return context
+}
+
 function found(): BrowserCommandResult {
   return { ok: true, output: {}, diagnostics: { outcome: 'FOUND', candidatesTried: [] } }
 }
@@ -112,6 +122,105 @@ describe('解析阶梯', () => {
     expect(commandHasResolvableTarget(commandFor(clickStep()))).toBe(true)
     expect(outcomeFromBrowser(found())).toBe('FOUND')
     expect(resolutionError('CROSS_CHECK_FAILED', '不匹配').retryable).toBe(false)
+  })
+
+  it('v2 仅文本按候选直接绑定，且不请求视觉', async () => {
+    const step = clickStep({ policy: { locatorPlan: { v: 2, order: ['text_ai'] } } })
+    const execute = vi.fn(async () => found())
+    const locate = vi.fn(async () => ({ ok: true, route: 'text' as const, candidate: { by: 'text' as const, value: '查询' }, center: [10, 20] as [number, number], callNs: [1] }))
+    const bindResolvedFromCandidate = vi.fn(async () => ({ ok: true, texts: ['查询'], tagName: 'BUTTON' }))
+    const bindResolvedFromPoint = vi.fn()
+    const outcome = await runResolutionLadder({
+      handle: {} as never, ctx: ctxV2(step, ['text_ai']), step, command: commandFor(step),
+      browser: { bindResolvedFromCandidate, bindResolvedFromPoint, clearResolved: vi.fn(async () => undefined) } as unknown as BrowserPort,
+      ai: { locate } as unknown as AiPort,
+      consumption: { afterBaseline: async () => ({ kind: 'unchanged' as const }) } as unknown as MapConsumptionService,
+      execute,
+    })
+    expect(outcome.kind).toBe('success')
+    expect(locate.mock.calls[0]?.[1]).toMatchObject({ route: 'text' })
+    expect(bindResolvedFromCandidate).toHaveBeenCalledTimes(1)
+    expect(bindResolvedFromPoint).not.toHaveBeenCalled()
+  })
+
+  it('v2 文本服务报错立即停止，不进入视觉路线', async () => {
+    const step = clickStep()
+    const locate = vi.fn(async () => ({ ok: false, route: 'text' as const, outcomeClass: 'error' as const, callNs: [1], error: { code: 'AI_CALL_FAILED', category: 'EXECUTOR' as const, retryable: false, safeMessage: 'HTTP 500' } }))
+    const execute = vi.fn(async () => missing())
+    const outcome = await runResolutionLadder({
+      handle: {} as never, ctx: ctxV2(step, ['rule', 'text_ai', 'vision_ai']), step, command: commandFor(step),
+      browser: {} as BrowserPort, ai: { locate } as unknown as AiPort,
+      consumption: { afterBaseline: async () => ({ kind: 'unchanged' as const }) } as unknown as MapConsumptionService,
+      execute,
+    })
+    expect(outcome.kind).toBe('failed')
+    expect(locate).toHaveBeenCalledTimes(1)
+    expect(appendResolutionDecision.mock.calls.at(-1)?.[1].decision).toMatchObject({ reasonCode: 'AI_CALL_FAILED', plan: { order: ['rule', 'text_ai', 'vision_ai'] } })
+  })
+
+  it('v2 视觉优先未命中后仅回退规则及地图', async () => {
+    const step = clickStep()
+    const locate = vi.fn(async () => ({ ok: false, route: 'vision' as const, outcomeClass: 'miss' as const, callNs: [1], error: { code: 'AI_NOT_FOUND', category: 'EXECUTOR' as const, retryable: false, safeMessage: '未找到' } }))
+    const execute = vi.fn(async () => missing())
+    const afterBaseline = vi.fn(async () => ({ kind: 'unchanged' as const }))
+    const outcome = await runResolutionLadder({
+      handle: {} as never, ctx: ctxV2(step, ['vision_ai', 'rule']), step, command: commandFor(step),
+      browser: {} as BrowserPort, ai: { locate } as unknown as AiPort,
+      consumption: { afterBaseline } as unknown as MapConsumptionService, execute,
+    })
+    expect(outcome.kind).toBe('failed')
+    expect(locate).toHaveBeenCalledTimes(1)
+    expect(locate.mock.calls[0]?.[1]).toMatchObject({ route: 'vision' })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(afterBaseline).toHaveBeenCalledTimes(1)
+  })
+
+  it('v2 文本明确未找到后才回退规则，且不调用视觉', async () => {
+    const step = clickStep()
+    const locate = vi.fn(async () => ({
+      ok: false, route: 'text' as const, outcomeClass: 'miss' as const, callNs: [1],
+      error: { code: 'AI_NOT_FOUND', category: 'EXECUTOR' as const, retryable: false, safeMessage: '未找到' },
+    }))
+    const execute = vi.fn(async () => found())
+    const outcome = await runResolutionLadder({
+      handle: {} as never, ctx: ctxV2(step, ['text_ai', 'rule']), step, command: commandFor(step),
+      browser: {} as BrowserPort, ai: { locate } as unknown as AiPort,
+      consumption: { afterBaseline: async () => ({ kind: 'unchanged' as const }) } as unknown as MapConsumptionService,
+      execute,
+    })
+    expect(outcome.kind).toBe('success')
+    expect(locate).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(appendResolutionDecision.mock.calls.at(-1)?.[1].decision).toMatchObject({
+      decision: 'deterministic', plan: { order: ['text_ai', 'rule'] },
+      rungs: [{ aiRoute: 'text', outcomeClass: 'miss' }, { rung: 'D', outcome: 'FOUND' }],
+    })
+  })
+
+  it('v2 规则和文本均未找到时进入视觉并核对业务身份', async () => {
+    const step = clickStep()
+    const locate = vi.fn(async (_grant: unknown, request: { route?: 'text' | 'vision' }) =>
+      request.route === 'text'
+        ? { ok: false, route: 'text' as const, outcomeClass: 'miss' as const, callNs: [1],
+            error: { code: 'AI_NOT_FOUND', category: 'EXECUTOR' as const, retryable: false, safeMessage: '未找到' } }
+        : { ok: true, route: 'vision' as const, center: [10, 20] as [number, number], dpr: 1, callNs: [2] },
+    )
+    const execute = vi.fn().mockResolvedValueOnce(missing()).mockResolvedValueOnce(found())
+    const bindResolvedFromPoint = vi.fn(async () => ({ ok: true, texts: ['查询'], tagName: 'BUTTON' }))
+    const outcome = await runResolutionLadder({
+      handle: {} as never, ctx: ctxV2(step, ['rule', 'text_ai', 'vision_ai']), step, command: commandFor(step),
+      browser: { bindResolvedFromPoint, clearResolved: vi.fn(async () => undefined) } as unknown as BrowserPort,
+      ai: { locate } as unknown as AiPort,
+      consumption: { afterBaseline: async () => ({ kind: 'unchanged' as const }) } as unknown as MapConsumptionService,
+      execute,
+    })
+    expect(outcome.kind).toBe('success')
+    expect(locate.mock.calls.map(([, request]) => request.route)).toEqual(['text', 'vision'])
+    expect(bindResolvedFromPoint).toHaveBeenCalledTimes(1)
+    expect(appendResolutionDecision.mock.calls.at(-1)?.[1].decision).toMatchObject({
+      decision: 'ai', plan: { order: ['rule', 'text_ai', 'vision_ai'] },
+      rungs: [{ rung: 'D' }, { rung: 'M' }, { aiRoute: 'text', outcomeClass: 'miss' }, { aiRoute: 'vision', outcome: 'FOUND', crossCheck: 'passed' }],
+    })
   })
 
   it('确定性命中后写入决策，不调 AI', async () => {
@@ -157,6 +266,47 @@ describe('解析阶梯', () => {
     expect(outcome.kind === 'failed' && outcome.error.code).toBe('PERSISTENCE_FAILED')
     expect(execute).toHaveBeenCalledTimes(1)
     expect(clearResolved).toHaveBeenCalled()
+  })
+
+  it('AI 档救活后把反向候选与 ADD_CANDIDATE 补丁带进成功结果', async () => {
+    const step = clickStep()
+    const suggestedCandidate = { by: 'testId' as const, value: 'search-btn' }
+    const execute = vi.fn(async (command: BrowserCommand) =>
+      commandHasResolvableTarget(command) && command.target.candidates[0]?.by === 'css' ? found() : missing(),
+    )
+    const locate = vi.fn(async () => ({ ok: true, center: [10, 20] as [number, number], dpr: 1, callNs: [1] }))
+    const bindResolvedFromPoint = vi.fn(async () => ({ ok: true, texts: ['查询'], tagName: 'BUTTON', suggestedCandidate }))
+    const clearResolved = vi.fn(async () => undefined)
+    const outcome = await runResolutionLadder({
+      handle: {} as never,
+      ctx: ctx(step, 'prefer_deterministic'),
+      step,
+      command: commandFor(step),
+      browser: { bindResolvedFromPoint, clearResolved } as unknown as BrowserPort,
+      ai: { locate } as unknown as AiPort,
+      consumption: { afterBaseline: async () => ({ kind: 'unchanged' as const }) } as unknown as MapConsumptionService,
+      execute,
+    })
+    expect(outcome.kind).toBe('success')
+    expect(outcome.kind === 'success' && outcome.diagnostics).toMatchObject({
+      resolvedVia: 'ai',
+      suggestedCandidate,
+      suggestedPatch: { kind: 'ADD_CANDIDATE', suggestedCandidate },
+    })
+  })
+
+  it('确定性命中的成功结果不附带诊断', async () => {
+    const step = clickStep()
+    const outcome = await runResolutionLadder({
+      handle: {} as never,
+      ctx: ctx(step, 'prefer_deterministic'),
+      step,
+      command: commandFor(step),
+      browser: {} as BrowserPort,
+      consumption: { afterBaseline: async () => ({ kind: 'unchanged' as const }) } as unknown as MapConsumptionService,
+      execute: async () => found(),
+    })
+    expect(outcome.kind === 'success' && outcome.diagnostics).toBeUndefined()
   })
 
   it('写步骤交叉确认失败时零动作并记 CROSS_CHECK_FAILED', async () => {

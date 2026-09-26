@@ -31,9 +31,7 @@ import { persistBeforeObservation, buildAfterMapFacts, type CapturePhaseBudget }
 import { planCandidateFailure, planCandidateHalt, planCandidateSuccess } from './engine-candidate-plan.js'
 import { planBranchSuccess } from './engine-branch-plan.js'
 import { chargedAttemptCount, contextValue, evidencePayloadForStep, sessionLeaseFor } from './engine-step-plan.js'
-import { isTrialOrDebugRun, shouldNeedsReview, shouldRetry, shouldAttemptSelfHeal } from './engine-decisions.js'
-import { applyPatchToStep, verifyPageContext } from './engine-healer.js'
-import type { HealerPolicy } from '@cairn/shared'
+import { shouldNeedsReview, shouldRetry } from './engine-decisions.js'
 import { collectAttemptOutcomeResults } from './outcome-collector.js'
 import {
   collectErrorSurfaceResults,
@@ -100,7 +98,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
   let attemptId = input.attemptId
   let attemptNo = input.attemptNo
   let context = input.context
-  let currentStep = input.step
+  const currentStep = input.step
   let currentInput = input.input
 
   while (true) {
@@ -367,6 +365,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         attemptId,
         attemptStatus: 'SUCCEEDED',
         output: stepOutput,
+        diagnostics: outcome.diagnostics,
         context: input.scopePath ? rootContextToPersist : context,
         scopePath: input.scopePath,
         iterationUpdate,
@@ -499,39 +498,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       currentAttemptCount,
       input.policy.retryLimit,
     )
-    const isTrialOrDebug = isTrialOrDebugRun({
-      debugMode: input.debugMode,
-      mapSourceType: input.mapSourceType,
-    })
-    const suggestedPatch =
-      outcome.diagnostics &&
-      typeof outcome.diagnostics === 'object' &&
-      'suggestedPatch' in outcome.diagnostics &&
-      (outcome.diagnostics as Record<string, unknown>).suggestedPatch
-        ? ((outcome.diagnostics as Record<string, unknown>).suggestedPatch as import('@cairn/shared').HealingPatch)
-        : undefined
-
-    const selfHeal =
-      !retry &&
-      Boolean(suggestedPatch) &&
-      shouldAttemptSelfHeal({
-        policy: ((input.snapshot as Record<string, unknown>).healerPolicy as HealerPolicy) ?? 'authoring_only',
-        isTrialOrDebug,
-        step: input.step,
-        error,
-        attemptNo: currentAttemptCount,
-        maxHealAttempts: 1,
-        hasModelBudget: Boolean(input.snapshot.aiExecution),
-        hasSuggestedPatch: Boolean(suggestedPatch),
-        pageContextMatch: verifyPageContext({
-          currentUrl:
-            outcome.output && typeof outcome.output === 'object' && 'url' in outcome.output
-              ? String((outcome.output as Record<string, unknown>).url)
-              : undefined,
-        }),
-      })
-
-    const shouldKeepRunning = retry || selfHeal
+    const shouldKeepRunning = retry
 
     const isOptionalAbsent =
       Boolean(input.step.optional) &&
@@ -648,10 +615,6 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
     if (hold) return 'await_hold'
     if (failPlan?.keepRunOpen) return 'next'
     if (!shouldKeepRunning) return 'failed'
-
-    if (selfHeal && suggestedPatch) {
-      currentStep = applyPatchToStep(currentStep, suggestedPatch)
-    }
 
     const next = await startAttempt(db, {
       runId: input.runId,

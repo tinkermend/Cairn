@@ -473,9 +473,11 @@ export async function tryAriaExtractBranch(input: {
 
 export interface AriaLocateBranchResult {
   handled: boolean
+  outcomeClass?: 'miss' | 'ambiguous' | 'hung' | 'budget' | 'cancelled' | 'error'
   fallbackReason?: string
   center?: [number, number]
   dpr?: number
+  candidate?: { by: 'role' | 'text' | 'label'; value: string; name?: string }
 }
 
 export function buildAriaLocatePrompt(instruction: string, snapshotText: string): {
@@ -544,7 +546,7 @@ export async function tryAriaLocateBranch(input: {
   })
 
   if (snapshotRes.truncated || !snapshotRes.text.trim()) {
-    return { handled: false, fallbackReason: 'snapshot_truncated_or_empty' }
+    return { handled: false, outcomeClass: 'miss', fallbackReason: 'snapshot_truncated_or_empty' }
   }
 
   const prompt = buildAriaLocatePrompt(input.prompt, snapshotRes.text)
@@ -570,15 +572,20 @@ export async function tryAriaLocateBranch(input: {
       { signal: input.signal ?? AbortSignal.timeout(input.timeoutMs) },
     )
   } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+    const name = error instanceof Error ? error.name : ''
     return {
       handled: false,
+      outcomeClass: input.signal?.aborted ? 'cancelled'
+        : code === 'AI_BUDGET_EXCEEDED' || code === 'BUDGET_EXHAUSTED' ? 'budget'
+        : name === 'TimeoutError' ? 'hung' : 'error',
       fallbackReason: `model_call_error: ${error instanceof Error ? error.message : String(error)}`,
     }
   }
 
   const content = extractCompletionContent(completion)
   if (!content) {
-    return { handled: false, fallbackReason: 'empty_model_response' }
+    return { handled: false, outcomeClass: 'error', fallbackReason: 'empty_model_response' }
   }
 
   const parsed = parseJsonSafe<{
@@ -587,9 +594,11 @@ export async function tryAriaLocateBranch(input: {
     reason?: string
   }>(content)
   const cand = parsed?.candidate
-  if (!parsed || parsed.verdict !== 'found' || !cand || typeof cand.value !== 'string' || !cand.value) {
+  if (!parsed) return { handled: false, outcomeClass: 'error', fallbackReason: 'invalid_model_response' }
+  if (parsed.verdict !== 'found' || !cand || typeof cand.value !== 'string' || !cand.value) {
     return {
       handled: false,
+      outcomeClass: 'miss',
       fallbackReason: `aria_locate_not_found: ${parsed?.reason ?? '未找到匹配元素'}`,
     }
   }
@@ -608,21 +617,35 @@ export async function tryAriaLocateBranch(input: {
     if (count !== 1) {
       return {
         handled: false,
+        outcomeClass: count === 0 ? 'miss' : 'ambiguous',
         fallbackReason: `candidate_match_count_${count}`,
       }
     }
+    if (!await loc.isVisible()) return { handled: false, outcomeClass: 'miss', fallbackReason: 'element_not_visible' }
     const box = await loc.boundingBox()
     if (!box || box.width <= 0 || box.height <= 0) {
-      return { handled: false, fallbackReason: 'element_has_no_box' }
+      return { handled: false, outcomeClass: 'miss', fallbackReason: 'element_has_no_box' }
     }
+    const unobscured = await loc.evaluate((element: any) => {
+      const doc = (globalThis as unknown as { document: any }).document
+      const rect = element.getBoundingClientRect()
+      const x = rect.left + rect.width / 2
+      const y = rect.top + rect.height / 2
+      if (x < 0 || y < 0 || x >= doc.documentElement.clientWidth || y >= doc.documentElement.clientHeight) return false
+      const hit = doc.elementFromPoint(x, y)
+      return hit === element || element.contains(hit)
+    })
+    if (!unobscured) return { handled: false, outcomeClass: 'ambiguous', fallbackReason: 'element_obscured_or_outside_viewport' }
     return {
       handled: true,
       center: [box.x + box.width / 2, box.y + box.height / 2],
       dpr: 1,
+      candidate,
     }
   } catch (err) {
     return {
       handled: false,
+      outcomeClass: 'error',
       fallbackReason: `locator_error: ${err instanceof Error ? err.message : String(err)}`,
     }
   }

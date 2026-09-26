@@ -197,6 +197,14 @@ async function handleRequest(
     writeJson(res, 200, await ctx.sessions.completeOccupiedAuth(runId, { actorId, ...authControlTokenBodySchema.parse(JSON.parse(raw || '{}')) }))
     return
   }
+  const pageClosePrefix = workerInternalPath('/pages/')
+  if (req.method === 'POST' && url.pathname.startsWith(pageClosePrefix) && url.pathname.endsWith('/close')) {
+    const targetPageId = url.pathname.slice(pageClosePrefix.length, -'/close'.length)
+    if (targetPageId) {
+      writeJson(res, 200, await ctx.sessions.closeManagedPage({ ownerId: runId, pageId: targetPageId }))
+      return
+    }
+  }
   if (req.method === 'POST' && url.pathname === workerInternalPath('/observe')) {
     const body = observeOperationSchema.parse(raw ? JSON.parse(raw) : {})
     writeJson(

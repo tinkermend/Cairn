@@ -52,6 +52,44 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
     async probeErrorSurface(grant, signal) {
       return manager.probeErrorSurface(grant, signal)
     },
+    async collectExploration(grant, options, signal) {
+      return manager.collectExploration(grant, options, signal)
+    },
+    async installExploreGuard(grant, options) {
+      return manager.installExploreGuard(grant, options)
+    },
+    async captureFinalScreenshot(grant, evidence) {
+      if (!objects) return
+      const page = manager.pageForGrant(grant)
+      if (!page) return
+      const sensitiveSelectors = evidence.sensitiveSelectors ?? []
+      const viewport = evidence.screenshotViewport ?? 'full_page'
+      const { pageHasSensitiveContent, screenshotPage } = await import('./runtime.js')
+      const sensitive = await pageHasSensitiveContent(page, sensitiveSelectors)
+      const bytes = await screenshotPage(page, {
+        fullPage: viewport === 'full_page',
+        selectors: sensitiveSelectors,
+      }).catch(() => undefined)
+      if (!bytes || bytes.byteLength === 0) return
+
+      await attachObjectEvidence({
+        type: 'screenshot',
+        bytes,
+        contentType: 'image/png',
+        objects,
+        evidence: {
+          runId: evidence.runId,
+        } as any,
+        artifactKey: writeEvidenceArtifactKey({
+          type: 'screenshot',
+          role: 'final',
+        }),
+        payload: screenshotPayload('final', viewport, new Date().toISOString(), undefined, {
+          sensitive,
+        }),
+        emptyReason: OBJECT_MISSING_REASONS.captureFailed,
+      })
+    },
     async execute(
       grant: SessionGrant,
       command: BrowserCommand,
@@ -59,7 +97,7 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
       evidence?: BrowserCommandEvidence,
     ) {
       const raw = await manager.execute(grant, command, signal, evidence)
-      const { screenshotBytes, extraShots, faceRole, pageRef, screenshotCapturedAt, screenshotDiagnosis, screenshotSeq, omittedBefore, tracePath, ...result } = raw
+      const { screenshotBytes, extraShots, faceRole, pageRef, screenshotCapturedAt, screenshotDiagnosis, screenshotSeq, omittedBefore, tracePath, screenshotSensitive, ...result } = raw
       const failed = !result.ok
       const shotMode = evidence?.screenshot ?? 'on_failure'
       const traceMode = evidence?.trace ?? 'off'
@@ -114,6 +152,7 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
             seq: screenshotSeq,
             diagnosis: screenshotDiagnosis,
             omittedBefore,
+            sensitive: screenshotSensitive,
           }),
         })
       }
@@ -230,6 +269,71 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
         suggestedCandidate: scoped.value.suggestedCandidate,
       }
     },
+    async bindResolvedFromCandidate(grant, input, signal) {
+      const { collectCrossCheckTexts, inspectPointElement, RESOLVED_ATTRIBUTE, resolvedSelector } =
+        await import('./resolved-handle.js')
+      const { locatorForCandidate } = await import('./runtime.js')
+      const scoped = await manager.withManagedPage(grant, undefined, async (page) => {
+        signal?.throwIfAborted()
+        const locator = locatorForCandidate(page, input.candidate)
+        const count = await locator.count()
+        if (count !== 1) return { ok: false as const, reason: count === 0 ? 'AI_NOT_FOUND' as const : 'AI_AMBIGUOUS_POINT' as const }
+        if (!await locator.isVisible()) return { ok: false as const, reason: 'AI_NOT_FOUND' as const }
+        const inspected = await locator.evaluate((element: any, args) => {
+          const doc = (globalThis as unknown as { document: any }).document
+          const rect = element.getBoundingClientRect()
+          const x = rect.left + rect.width / 2
+          const y = rect.top + rect.height / 2
+          if (x < 0 || y < 0 || x >= doc.documentElement.clientWidth || y >= doc.documentElement.clientHeight) return null
+          const hit = doc.elementFromPoint(x, y)
+          if (hit !== element && !element.contains(hit)) return null
+          let ownText = ''
+          for (const node of element.childNodes) if (node.nodeType === 3) ownText += node.textContent ?? ''
+          const labelledBy = element.getAttribute('aria-labelledby')
+          const accessibleName = labelledBy
+            ? labelledBy.split(/\s+/).map((id: string) => doc.getElementById(id)?.textContent?.trim()).filter(Boolean).join(' ')
+            : ''
+          element.setAttribute(args.attr, args.token)
+          return {
+            tagName: element.tagName,
+            accessibleName,
+            ariaLabel: element.getAttribute('aria-label'),
+            title: element.getAttribute('title'),
+            placeholder: element.getAttribute('placeholder'),
+            ownText,
+            innerText: element.innerText ?? '',
+          }
+        }, { attr: RESOLVED_ATTRIBUTE, token: input.token })
+        if (!inspected) return { ok: false as const, reason: 'AI_AMBIGUOUS_POINT' as const }
+        const checked = inspectPointElement({ element: { tagName: inspected.tagName } })
+        if (!checked.ok) return { ok: false as const, reason: checked.reason }
+        const texts = collectCrossCheckTexts({
+          accessibleName: inspected.accessibleName,
+          ariaLabel: inspected.ariaLabel,
+          title: inspected.title,
+          placeholder: inspected.placeholder,
+          ownText: inspected.ownText,
+          innerText: inspected.innerText,
+          container: checked.container,
+        })
+        if (await page.locator(resolvedSelector(input.token)).count() !== 1) {
+          await locator.evaluate((element: any, attr) => element.removeAttribute(attr), RESOLVED_ATTRIBUTE).catch(() => undefined)
+          return { ok: false as const, reason: 'AI_AMBIGUOUS_POINT' as const }
+        }
+        const { generateCandidateFromElement } = await import('./reverse-locator.js')
+        const reverse = await generateCandidateFromElement(page, input.token).catch(() => undefined)
+        return { ok: true as const, texts, tagName: checked.tagName, suggestedCandidate: reverse?.candidate }
+      })
+      if (!scoped.ok) return { ok: false, reason: 'SURFACE_LOST', message: scoped.error.safeMessage }
+      if (!scoped.value.ok) return {
+        ok: false,
+        reason: scoped.value.reason,
+        message: scoped.value.reason === 'AI_NOT_FOUND'
+          ? '文本模型给出的元素已不存在或不可见'
+          : '文本模型给出的元素不唯一、被遮挡或不适合操作',
+      }
+      return scoped.value
+    },
     async clearResolved(grant, token) {
       const { RESOLVED_ATTRIBUTE } = await import('./resolved-handle.js')
       await manager.withManagedPage(grant, undefined, async (page) => {
@@ -256,6 +360,7 @@ function screenshotPayload(
     seq?: number
     diagnosis?: import('@cairn/shared').ScreenshotDiagnosis
     omittedBefore?: 'initial_blank_page'
+    sensitive?: boolean
   },
 ): JsonValue {
   return {
@@ -266,6 +371,7 @@ function screenshotPayload(
     ...(extra?.seq ? { seq: extra.seq } : {}),
     ...(extra?.diagnosis ? { diagnosis: extra.diagnosis } : {}),
     ...(extra?.omittedBefore ? { omittedBefore: extra.omittedBefore } : {}),
+    ...(extra?.sensitive !== undefined ? { sensitive: extra.sensitive } : {}),
   }
 }
 

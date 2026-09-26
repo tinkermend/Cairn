@@ -70,6 +70,7 @@ import { acquireSession, resolveRedactionSecrets, watchCancellation } from './en
 import { settleRun } from './engine-settle.js'
 import { evidencePayloadForStep, isLastOpenStep, isRunnableStepRun, resolveStepInput, sessionLeaseFor } from './engine-step-plan.js'
 import { cleanupRunFileWorkspace } from './run-file-workspace.js'
+import { snapshotForDebugStep } from './debug-step-plan.js'
 import {
   type AttemptLogState,
   type AttemptOutcome,
@@ -106,7 +107,7 @@ export class ExecutionEngine {
       new StepExecutorRegistry([
         new FixtureStepExecutor(),
         new BrowserStepExecutor(this.handle, this.browser, undefined, undefined, objects),
-        new MapExploreExecutor(this.browser),
+        new MapExploreExecutor(this.browser, this.handle),
       ])
     this.holds = holds ?? new DebugHoldRegistry()
   }
@@ -385,6 +386,26 @@ export class ExecutionEngine {
       // 正常的最后一步已在同一事务里写过 SUCCEEDED，这里只是兜底。
       await finishRunIfDrained(db, grant)
       exit = 'completed'
+
+      if (
+        sessionGrant &&
+        this.browser?.captureFinalScreenshot &&
+        snapshot.serviceDelivery?.finalScreenshot &&
+        snapshot.evidencePolicy?.screenshot !== 'off'
+      ) {
+        await this.browser
+          .captureFinalScreenshot(sessionGrant, {
+            runId,
+            sensitiveSelectors: snapshot.targetAuth?.sensitiveSelectors ?? [],
+            screenshotViewport: snapshot.evidencePolicy?.screenshotViewport,
+          })
+          .catch((error: unknown) => {
+            this.logger.warn(
+              { runId, message: error instanceof Error ? error.message : String(error) },
+              '捕获终态截图失败',
+            )
+          })
+      }
     } finally {
       const latest = await loadRunRow(db, runId).catch(() => undefined)
       this.emitProcess('log', PROCESS_LOG_EVENTS.runFinished, {
@@ -487,15 +508,31 @@ export class ExecutionEngine {
       throw conflict('RUN_NOT_HOLDING', '没有等待中的调试挂起')
     }
     await this.assertCanResume(runId, action)
-    if (action.action === 'retry_current' && action.targetOverride) {
+    if (action.action === 'retry_current' && (action.targetOverride || action.stepOverride)) {
       const detail = await loadRunDetail(this.handle, runId)
       const stepId = detail?.checkpoint?.stepId
       if (stepId) {
+        const frozenStep = detail.snapshot.steps.find((step) => step.id === stepId)
+        if (action.stepOverride && (!frozenStep || action.stepOverride.id !== stepId || action.stepOverride.type !== frozenStep.type || action.stepOverride.effectType !== frozenStep.effectType)) {
+          throw conflict('DEBUG_STEP_OVERRIDE_MISMATCH', '重试修改的步骤与当前挂起步骤不一致，请重新选择当前步骤')
+        }
+        if (action.stepOverride) {
+          try {
+            snapshotForDebugStep(detail.snapshot, stepId, action.stepOverride)
+          } catch (error) {
+            throw conflict('DEBUG_LOCATOR_ROUTE_UNAVAILABLE', error instanceof Error ? error.message : '定位顺序不可用')
+          }
+        }
+        const previous = detail.debugOverlay?.stepOverrides[stepId]
         await updateRunDebugOverlay(this.handle, runId, {
           revision: (detail.debugOverlay?.revision ?? 0) + 1,
           stepOverrides: {
             ...(detail.debugOverlay?.stepOverrides ?? {}),
-            [stepId]: { target: action.targetOverride },
+            [stepId]: {
+              ...previous,
+              ...(action.stepOverride ? { step: action.stepOverride } : {}),
+              ...(action.targetOverride ? { target: action.targetOverride } : {}),
+            },
           },
         })
       }

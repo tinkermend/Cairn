@@ -13,8 +13,11 @@ import {
   type ExecutionError,
   type ResolutionDecision,
   type ResolutionPolicy,
+  type LocatorPlan,
+  type LocatorRoute,
   type ResolutionReasonCode,
   type ResolutionRungRecord,
+  type ResolverDiagnostics,
   type Step,
   type TargetDescriptor,
 } from '@cairn/shared'
@@ -139,6 +142,9 @@ export async function runResolutionLadder(input: {
     const followUp = await consumption.afterBaseline(ctx, step, result, command)
     return finalizeBrowser(followUp, result)
   }
+  if (frozen.protocol === 'snapshot.resolution@2') {
+    return runLocatorPlan({ ...input, command }, frozen.steps[step.id]?.actual ?? ['rule'])
+  }
 
   const effective: ResolutionPolicy = frozen.steps[step.id] ?? 'deterministic_only'
   const target = command.target
@@ -231,6 +237,90 @@ export async function runResolutionLadder(input: {
   return failed(deterministic.error, deterministic)
 }
 
+function policyForRoutes(routes: readonly LocatorRoute[]): ResolutionPolicy {
+  if (!routes.some((route) => route !== 'rule')) return 'deterministic_only'
+  if (!routes.includes('rule')) return 'ai_only'
+  if (routes[0] === 'text_ai') return 'prefer_text_ai'
+  if (routes[0] === 'vision_ai') return 'prefer_ai'
+  return routes.includes('vision_ai') ? 'prefer_deterministic' : 'prefer_deterministic_text'
+}
+
+async function runLocatorPlan(input: {
+  handle: DbHandle
+  ctx: StepExecutionContext
+  step: Step
+  command: BrowserCommand & { target: TargetDescriptor }
+  browser: BrowserPort
+  ai?: AiPort
+  consumption: MapConsumptionService
+  execute: (command: BrowserCommand) => Promise<BrowserCommandResult>
+}, routes: LocatorRoute[]): Promise<StepExecutionOutcome> {
+  const { handle, ctx, step, command, browser, ai, consumption, execute } = input
+  const rungs: ResolutionRungRecord[] = []
+  const effective = policyForRoutes(routes)
+  const plan: LocatorPlan = { v: 2, order: routes }
+  const semantic = command.target.semantic?.trim() || describeLocatorCandidates(command.target.candidates)
+  const record = async (decision: ResolutionDecision['decision'], reasonCode?: ResolutionReasonCode) =>
+    persistResolutionDecision(handle, ctx, {
+      effectivePolicy: effective,
+      plan,
+      rungs,
+      decision,
+      reasonCode,
+      semanticDigest: semantic ? syncSha256(semantic) : undefined,
+      evidenceRefs: [],
+    })
+  let lastError: ExecutionError = resolutionError('TARGET_NOT_FOUND', '未找到页面目标')
+  for (const route of routes) {
+    if (route === 'rule') {
+      const startedD = Date.now()
+      const result = await execute(command)
+      rungs.push({ rung: 'D', outcome: outcomeFromBrowser(result), spentMs: clampSpentMs(startedD), candidatesTried: result.diagnostics?.candidatesTried })
+      if (result.ok) {
+        const followUp = await consumption.afterBaseline(ctx, step, result, command)
+        const persisted = await record('deterministic')
+        if (!persisted.ok) return failed(persisted.error)
+        if (followUp.kind === 'blocked') return failed(followUp.error)
+        return finalizeBrowser(followUp, result)
+      }
+      if (!isDeterministicMiss(result)) {
+        const persisted = await record('failed', reasonFromBrowser(result))
+        return failed(persisted.ok ? result.error : preferExistingError(result.error, persisted.error), result)
+      }
+      lastError = result.error
+      const startedM = Date.now()
+      const followUp = await consumption.afterBaseline(ctx, step, result, command)
+      if (followUp.kind === 'replaced') {
+        rungs.push({ rung: 'M', outcome: outcomeFromBrowser(followUp.result), spentMs: clampSpentMs(startedM), mapDecisionId: followUp.mapDecisionId })
+        if (followUp.result.ok) {
+          const persisted = await record('map')
+          return persisted.ok ? finalizeBrowser(followUp, followUp.result) : failed(persisted.error)
+        }
+        if (!isDeterministicMiss(followUp.result)) {
+          const persisted = await record('failed', reasonFromBrowser(followUp.result))
+          return failed(persisted.ok ? followUp.result.error : preferExistingError(followUp.result.error, persisted.error), followUp.result)
+        }
+        lastError = followUp.result.error
+      } else if (followUp.kind === 'blocked') {
+        rungs.push({ rung: 'M', outcome: followUp.error.code, spentMs: clampSpentMs(startedM) })
+        const persisted = await record('failed', 'PERSISTENCE_FAILED')
+        return failed(persisted.ok ? followUp.error : preferExistingError(followUp.error, persisted.error))
+      } else {
+        rungs.push({ rung: 'M', outcome: 'SKIPPED', spentMs: clampSpentMs(startedM) })
+      }
+      continue
+    }
+    const aiOutcome = await tryAiRung({
+      handle, ctx, step, command, target: command.target, effective, semantic,
+      ai, browser, execute, rungs, plan, route: route === 'text_ai' ? 'text' : 'vision',
+    })
+    if (aiOutcome.kind === 'success' || aiOutcome.kind === 'failed') return aiOutcome.outcome
+    if (aiOutcome.error) lastError = aiOutcome.error
+  }
+  const persisted = await record('failed', lastError.code === 'AI_NOT_FOUND' ? 'AI_NOT_FOUND' : 'TARGET_NOT_FOUND')
+  return failed(persisted.ok ? lastError : preferExistingError(lastError, persisted.error))
+}
+
 async function tryAiRung(input: {
   handle: DbHandle
   ctx: StepExecutionContext
@@ -238,6 +328,8 @@ async function tryAiRung(input: {
   command: BrowserCommand
   target: TargetDescriptor
   effective: ResolutionPolicy
+  route?: 'text' | 'vision'
+  plan?: LocatorPlan
   semantic: string
   ai?: AiPort
   browser: BrowserPort
@@ -258,6 +350,7 @@ async function tryAiRung(input: {
   ) => {
     const persisted = await persistResolutionDecision(input.handle, ctx, {
       effectivePolicy: effective,
+      ...(input.plan ? { plan: input.plan } : {}),
       rungs,
       decision: 'failed',
       reasonCode: reason,
@@ -303,11 +396,7 @@ async function tryAiRung(input: {
   const remainingMs = ctx.deadlineAtMs == null ? Number.POSITIVE_INFINITY : ctx.deadlineAtMs - ctx.clock.now()
   if (Number.isFinite(requestTimeoutMs) && remainingMs < requestTimeoutMs) {
     rungs.push({ rung: 'A', outcome: 'BUDGET_EXHAUSTED', spentMs: spent() })
-    return {
-      kind: 'skip',
-      reason: 'BUDGET_EXHAUSTED',
-      error: resolutionError('BUDGET_EXHAUSTED', '剩余尝试期限不够一次 AI 定位请求'),
-    }
+    return persistFailed('BUDGET_EXHAUSTED', resolutionError('BUDGET_EXHAUSTED', '剩余尝试期限不够一次 AI 定位请求'))
   }
   const located = await ai.locate(
     ctx.sessionGrant,
@@ -318,6 +407,7 @@ async function tryAiRung(input: {
       loginOrigin: ctx.snapshot.loginOrigin,
       loginPath: ctx.snapshot.loginPath,
       allowVision: policyAllowsVisionAi(effective),
+      ...(input.route ? { route: input.route } : {}),
     },
     ctx.signal,
     {
@@ -331,33 +421,37 @@ async function tryAiRung(input: {
     },
   )
   if (located.hung || located.error?.code === 'AI_HUNG') {
-    rungs.push({ rung: 'A', outcome: 'AI_HUNG', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
+    rungs.push({ rung: 'A', aiRoute: located.route ?? input.route, outcomeClass: 'hung', outcome: 'AI_HUNG', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
     return persistFailed('AI_HUNG', located.error ?? hungError(located.summary), { hung: true })
   }
   if (located.error?.code === 'SESSION_LEASE_LOST' || located.error?.code === 'LEASE_LOST') {
-    rungs.push({ rung: 'A', outcome: 'LEASE_LOST', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
+    rungs.push({ rung: 'A', aiRoute: located.route ?? input.route, outcomeClass: 'lease_lost', outcome: 'LEASE_LOST', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
     return persistFailed('LEASE_LOST', located.error)
   }
   if (located.error?.code === 'AI_BUDGET_EXCEEDED' || located.error?.code === 'BUDGET_EXHAUSTED') {
-    rungs.push({ rung: 'A', outcome: 'BUDGET_EXHAUSTED', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
+    rungs.push({ rung: 'A', aiRoute: located.route ?? input.route, outcomeClass: 'budget', outcome: 'BUDGET_EXHAUSTED', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
     return persistFailed('BUDGET_EXHAUSTED', resolutionError('BUDGET_EXHAUSTED', '已超过本步骤模型调用预算'))
   }
   if (located.error?.code === 'CANCELLED' || ctx.signal.aborted) {
-    rungs.push({ rung: 'A', outcome: 'CANCELLED', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
+    rungs.push({ rung: 'A', aiRoute: located.route ?? input.route, outcomeClass: 'cancelled', outcome: 'CANCELLED', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
     return persistFailed('CANCELLED', located.error ?? resolutionError('CANCELLED', '步骤已取消'))
   }
-  if (located.error && located.error.retryable && located.error.code !== 'AI_NOT_FOUND') {
+  if (located.error && located.error.code !== 'AI_NOT_FOUND') {
     rungs.push({
       rung: 'A',
+      aiRoute: located.route ?? input.route,
+      outcomeClass: 'error',
       outcome: located.error.code,
       spentMs: spent(),
       aiCallNs: clampCallNs(located.callNs),
     })
-    return persistFailed('AI_NOT_FOUND', located.error)
+    return persistFailed('AI_CALL_FAILED', located.error)
   }
   if (!located.ok || !located.center) {
     rungs.push({
       rung: 'A',
+      aiRoute: located.route ?? input.route,
+      outcomeClass: located.outcomeClass ?? 'miss',
       outcome: located.error?.code ?? 'AI_NOT_FOUND',
       spentMs: spent(),
       aiCallNs: clampCallNs(located.callNs),
@@ -368,19 +462,27 @@ async function tryAiRung(input: {
       error: located.error ?? resolutionError('AI_NOT_FOUND', located.summary ?? 'AI 未定位到目标'),
     }
   }
-  if (!browser.bindResolvedFromPoint || !browser.clearResolved) {
+  if (located.route === 'text' && !located.candidate) {
+    rungs.push({ rung: 'A', aiRoute: 'text', outcomeClass: 'error', outcome: 'AI_CALL_FAILED', spentMs: spent(), aiCallNs: clampCallNs(located.callNs) })
+    return persistFailed('AI_CALL_FAILED', resolutionError('AI_CALL_FAILED', '文本模型未返回可直接绑定的定位候选'))
+  }
+  if ((located.route === 'text' ? !browser.bindResolvedFromCandidate : !browser.bindResolvedFromPoint) || !browser.clearResolved) {
     rungs.push({ rung: 'A', outcome: 'CAPABILITY_MISSING', spentMs: spent(), center: located.center })
-    return { kind: 'skip', reason: 'CAPABILITY_MISSING', error: resolutionError('CAPABILITY_MISSING', '浏览器端口未提供点到元素映射') }
+    return { kind: 'skip', reason: 'CAPABILITY_MISSING', error: resolutionError('CAPABILITY_MISSING', '浏览器端口未提供模型目标绑定能力') }
   }
   const token = `${ctx.attemptId.slice(0, 8)}-${newId().slice(0, 8)}`
-  const bound = await browser.bindResolvedFromPoint(ctx.sessionGrant, {
-    center: located.center,
-    dpr: located.dpr ?? 1,
-    token,
-  }, ctx.signal)
+  const bound = located.route === 'text' && located.candidate
+    ? await browser.bindResolvedFromCandidate!(ctx.sessionGrant, { candidate: located.candidate, token }, ctx.signal)
+    : await browser.bindResolvedFromPoint!(ctx.sessionGrant, {
+        center: located.center,
+        dpr: located.dpr ?? 1,
+        token,
+      }, ctx.signal)
   if (!bound.ok) {
     rungs.push({
       rung: 'A',
+      aiRoute: located.route ?? input.route,
+      outcomeClass: bound.reason === 'AI_AMBIGUOUS_POINT' ? 'ambiguous' : 'miss',
       outcome: bound.reason,
       spentMs: spent(),
       aiCallNs: clampCallNs(located.callNs),
@@ -391,11 +493,17 @@ async function tryAiRung(input: {
   }
   const writeStep = WRITE_EFFECTS.has(step.effectType)
   let crossCheck: ResolutionRungRecord['crossCheck'] = 'skipped'
-  if (writeStep && effective === 'prefer_deterministic') {
-    if (target.candidates.length === 0) {
+  if (writeStep) {
+    const hasBusinessIdentity = target.candidates.some((candidate) =>
+      candidate.by === 'role' ? Boolean(candidate.name?.trim())
+        : candidate.by === 'label' || candidate.by === 'text' || candidate.by === 'title' ? Boolean(candidate.value.trim()) : false,
+    )
+    const explicitPureModel = step.policy?.resolution === 'ai_only' || Boolean(step.policy?.locatorPlan && step.policy.locatorPlan.order.every((route) => route !== 'rule'))
+    if (!hasBusinessIdentity && !explicitPureModel) {
       crossCheck = 'not_applicable'
       rungs.push({
         rung: 'A',
+        aiRoute: located.route ?? input.route,
         outcome: 'CROSS_CHECK_NOT_APPLICABLE',
         spentMs: spent(),
         aiCallNs: clampCallNs(located.callNs),
@@ -404,16 +512,13 @@ async function tryAiRung(input: {
         crossCheck,
       })
       await browser.clearResolved(ctx.sessionGrant, token).catch(() => undefined)
-      return {
-        kind: 'miss',
-        reason: 'CROSS_CHECK_NOT_APPLICABLE',
-        error: resolutionError('CROSS_CHECK_NOT_APPLICABLE', '写步骤只有语义描述，prefer_deterministic 下拒绝 AI 定位'),
-      }
+      return persistFailed('CROSS_CHECK_NOT_APPLICABLE', resolutionError('CROSS_CHECK_NOT_APPLICABLE', '写步骤缺少可交叉核对的角色名称或可见文字，请补充规则候选'))
     }
-    if (isCrossCheckContainerTag(bound.tagName) || !crossCheckMatches(bound.texts, target.candidates)) {
+    if (isCrossCheckContainerTag(bound.tagName) || (hasBusinessIdentity && !crossCheckMatches(bound.texts, target.candidates))) {
       crossCheck = 'failed'
       rungs.push({
         rung: 'A',
+        aiRoute: located.route ?? input.route,
         outcome: 'CROSS_CHECK_FAILED',
         spentMs: spent(),
         aiCallNs: clampCallNs(located.callNs),
@@ -424,10 +529,11 @@ async function tryAiRung(input: {
       await browser.clearResolved(ctx.sessionGrant, token).catch(() => undefined)
       return persistFailed('CROSS_CHECK_FAILED', resolutionError('CROSS_CHECK_FAILED', 'AI 定位到的元素与确定性候选不匹配'))
     }
-    crossCheck = 'passed'
+    crossCheck = hasBusinessIdentity ? 'passed' : 'not_applicable'
   }
   rungs.push({
     rung: 'A',
+    aiRoute: located.route ?? input.route,
     outcome: 'FOUND',
     spentMs: spent(),
     aiCallNs: located.callNs,
@@ -437,6 +543,7 @@ async function tryAiRung(input: {
   })
   const persisted = await persistResolutionDecision(input.handle, ctx, {
     effectivePolicy: effective,
+    ...(input.plan ? { plan: input.plan } : {}),
     rungs,
     decision: 'ai',
     semanticDigest: syncSha256(semantic),
@@ -458,21 +565,19 @@ async function tryAiRung(input: {
     if (result.ok) {
       return {
         kind: 'success',
-        outcome: success({
-          ...result,
-          diagnostics: {
-            ...(result.diagnostics ?? { outcome: 'FOUND', candidatesTried: [] }),
-            resolvedVia: 'ai',
-            suggestedCandidate: bound.suggestedCandidate,
-            ...(bound.suggestedCandidate
-              ? {
-                  suggestedPatch: {
-                    kind: 'ADD_CANDIDATE' as const,
-                    suggestedCandidate: bound.suggestedCandidate,
-                  },
-                }
-              : {}),
-          },
+        // AI 档救活的步骤要把反向生成的候选带进 Attempt 证据，供维护链路沉淀为确定性定位。
+        outcome: success(result, {
+          ...(result.diagnostics ?? { outcome: 'FOUND', candidatesTried: [] }),
+          resolvedVia: 'ai',
+          ...(bound.suggestedCandidate
+            ? {
+                suggestedCandidate: bound.suggestedCandidate,
+                suggestedPatch: {
+                  kind: 'ADD_CANDIDATE' as const,
+                  suggestedCandidate: bound.suggestedCandidate,
+                },
+              }
+            : {}),
         }),
       }
     }
@@ -482,10 +587,14 @@ async function tryAiRung(input: {
   }
 }
 
-function success(result: Extract<BrowserCommandResult, { ok: true }>): StepExecutionOutcome {
+function success(
+  result: Extract<BrowserCommandResult, { ok: true }>,
+  diagnostics?: ResolverDiagnostics,
+): StepExecutionOutcome {
   return {
     kind: 'success',
     output: result.output,
+    ...(diagnostics ? { diagnostics } : {}),
     screenshot: result.screenshot,
     trace: result.trace,
   }

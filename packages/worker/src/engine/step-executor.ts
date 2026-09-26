@@ -33,6 +33,8 @@ export type StepExecutionOutcome =
   | {
       kind: 'success'
       output: JsonValue
+      /** 只在需要沉淀的成功上带出，例如 AI 档救活时的定位候选与补丁提案。 */
+      diagnostics?: ResolverDiagnostics
       screenshot?: ScreenshotPointer
       trace?: ScreenshotPointer
       hung?: boolean

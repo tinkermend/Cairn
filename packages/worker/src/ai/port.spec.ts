@@ -81,6 +81,16 @@ describe('AI 端口边界', () => {
       ok: false,
       error: { code: 'AI_NOT_FOUND', retryable: true },
     })
+    expect(locateResultFromFailure({ error: new Error('failed to locate element: 当前画面没有目标'), callNs: [2] })).toMatchObject({
+      ok: false,
+      outcomeClass: 'miss',
+      callNs: [2],
+      error: { code: 'AI_NOT_FOUND' },
+    })
+    expect(locateResultFromFailure({ error: new Error('HTTP 500: failed to locate element: upstream error') })).toMatchObject({
+      ok: false,
+      error: { code: 'AI_EXECUTION_FAILED' },
+    })
   })
 
   it('取消后有界等待，未落定则标 hung', async () => {
@@ -357,6 +367,8 @@ describe('AI 端口边界', () => {
       getByRole: (role: string, opts?: { name?: string }) => ({
         count: async () => (role === 'button' && opts?.name === '立即支付' ? 1 : 0),
         boundingBox: async () => ({ x: 100, y: 150, width: 80, height: 30 }),
+        isVisible: async () => true,
+        evaluate: async () => true,
       }),
       getByText: () => ({ count: async () => 0, boundingBox: async () => null }),
       getByLabel: () => ({ count: async () => 0, boundingBox: async () => null }),
@@ -410,6 +422,7 @@ describe('AI 端口边界', () => {
             baseUrl: 'https://platform-text.example.com/v1',
             model: 'deepseek-chat',
             provider: 'deepseek',
+            secretRef: { provider: 'local', secretId: 'text-model-key' },
           },
         },
       }
@@ -491,6 +504,7 @@ describe('AI 端口边界', () => {
             baseUrl: 'https://platform-text.example.com/v1',
             model: 'deepseek-chat',
             provider: 'deepseek',
+            secretRef: { provider: 'local', secretId: 'text-model-key' },
           },
         },
       }

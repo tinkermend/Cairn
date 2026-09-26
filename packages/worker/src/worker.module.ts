@@ -74,7 +74,7 @@ import { createAiPort } from './ai/port'
         const executors = [
           new FixtureStepExecutor(),
           new BrowserStepExecutor(handle, browser, ai, undefined, objects),
-          new MapExploreExecutor(browser),
+          new MapExploreExecutor(browser, handle),
         ]
         if (ai) executors.push(new AiStepExecutor(ai))
         return new StepExecutorRegistry(executors)

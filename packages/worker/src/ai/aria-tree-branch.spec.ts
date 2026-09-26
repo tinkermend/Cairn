@@ -283,6 +283,8 @@ describe('AriaTreeBranch Unit Tests', () => {
       getByRole: (role: string, opts?: { name?: string }) => ({
         count: async () => (role === 'button' && opts?.name === '保存配置' ? 1 : 0),
         boundingBox: async () => ({ x: 100, y: 200, width: 80, height: 40 }),
+        isVisible: async () => true,
+        evaluate: async () => true,
       }),
       getByText: () => ({ count: async () => 0, boundingBox: async () => null }),
       getByLabel: () => ({ count: async () => 0, boundingBox: async () => null }),
@@ -344,4 +346,3 @@ describe('AriaTreeBranch Unit Tests', () => {
     })
   })
 })
-

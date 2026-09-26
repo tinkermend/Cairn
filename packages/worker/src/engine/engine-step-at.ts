@@ -26,6 +26,7 @@ import type { CompleteAttemptInput } from './engine-attempt.js'
 import { evidencePayloadForStep, isLastOpenStep, isRunnableStepRun, resolveStepInput, sessionLeaseFor } from './engine-step-plan.js'
 import type { CapturePhaseBudget } from '../map/passive-capture.js'
 import type { EngineClock } from './clock.js'
+import { snapshotForDebugStep } from './debug-step-plan.js'
 
 export type RunStepAtParams = {
   runId: string
@@ -67,7 +68,7 @@ export async function runStepAt(
   const db = this.handle
   const {
     runId,
-    step,
+    step: snapshotStep,
     scopePath = '',
     contextView,
     snapshot,
@@ -106,6 +107,8 @@ export async function runStepAt(
   if (current.status !== 'RUNNING' && current.status !== 'HOLDING') {
     return { action: 'stopped' }
   }
+
+  const step = current.debugOverlay?.stepOverrides[snapshotStep.id]?.step ?? snapshotStep
 
   const debugMode = (current.debugMode ?? 'runThrough') as DebugMode
   const stepRuns = await loadRunStepStates(db, runId, scopePath)
@@ -243,6 +246,11 @@ export async function runStepAt(
     return { action: exit }
   }
 
+  const attemptSnapshot = snapshotForDebugStep(
+    snapshot,
+    step.id,
+    current.debugOverlay?.stepOverrides[step.id]?.step,
+  )
   const policy = resolveStepPolicy(snapshot.policy, step.policy, step.type)
   // 循环作用域内只看本项的记录，不能据此判断整个 Run 是否收尾；收尾交给循环驱动。
   const last = isLast !== undefined ? isLast : scopePath ? false : isLastOpenStep({ stepRuns }, step.id)
@@ -262,7 +270,7 @@ export async function runStepAt(
     context: contextView,
     sessionGrant,
     targetId: snapshot.targetId,
-    snapshot,
+    snapshot: attemptSnapshot,
     stop: stop.signal,
     yielding,
     clock,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { adoptPage, closeRunPage } from './session-command'
+import { adoptPage, closeManagedPage, closeRunPage, ensureRunPage } from './session-command'
 import { emptyLive } from './session-live'
 
 function stubPage(url: string) {
@@ -87,3 +87,74 @@ describe('closeRunPage 保留 last page', () => {
     expect(live.lastPage).toBeUndefined()
   })
 })
+
+describe('closeManagedPage', () => {
+  it('关闭底页应被拒绝 (CANNOT_CLOSE_BASE_PAGE)', async () => {
+    const base = stubPage('about:blank')
+    const live = emptyLive({ basePage: base } as never, 'sess-1')
+    const ctx = {
+      lookupRunSession: vi.fn(async () => ({
+        session: { id: 'sess-1' },
+        live,
+        run: { id: 'sess-1', status: 'OPEN' },
+      })),
+      sessionOwnedHere: () => true,
+      ensureRunPage,
+      adoptPage,
+    }
+    const baseEntry = ensureRunPage.call(ctx, live, 'sess-1')
+    await expect(
+      closeManagedPage.call(ctx, { ownerId: 'sess-1', pageId: baseEntry.pageId }),
+    ).rejects.toThrow('会话底页用于维持登录状态，不可单独关闭')
+    expect(base.closed).toBe(false)
+  })
+
+  it('正在 RUNNING 状态下关闭当前执行页应被拒绝 (CANNOT_CLOSE_ACTIVE_PAGE)', async () => {
+    const base = stubPage('about:blank')
+    const runPage = stubPage('https://app.example/active')
+    const live = emptyLive({ basePage: base } as never, 'sess-1')
+    const ctx = {
+      lookupRunSession: vi.fn(async () => ({
+        session: { id: 'sess-1' },
+        live,
+        run: { id: 'run-1', status: 'RUNNING' },
+      })),
+      sessionOwnedHere: () => true,
+      ensureRunPage,
+      adoptPage,
+    }
+    const runEntry = adoptPage.call(ctx, live, 'run-1', runPage as never, 'run')
+    await expect(
+      closeManagedPage.call(ctx, { ownerId: 'run-1', pageId: runEntry.pageId }),
+    ).rejects.toThrow('任务正在当前页面上执行，不可关闭')
+    expect(runPage.closed).toBe(false)
+  })
+
+  it('空闲状态下成功关闭非底页并清理 lastPage 与映射', async () => {
+    const base = stubPage('about:blank')
+    const last = stubPage('https://app.example/popup')
+    const live = emptyLive({ basePage: base } as never, 'sess-1')
+    live.lastPage = last as never
+    const ctx = {
+      lookupRunSession: vi.fn(async () => ({
+        session: { id: 'sess-1' },
+        live,
+        run: { id: 'sess-1', status: 'OPEN' },
+      })),
+      sessionOwnedHere: () => true,
+      ensureRunPage,
+      adoptPage,
+    }
+    // adopt base 和 last
+    const baseEntry = adoptPage.call(ctx, live, 'sess-1', base as never, 'base')
+    const lastEntry = adoptPage.call(ctx, live, 'sess-1', last as never, 'run')
+
+    const result = await closeManagedPage.call(ctx, { ownerId: 'sess-1', pageId: lastEntry.pageId })
+    expect(result.closed).toBe(true)
+    expect(last.closed).toBe(true)
+    expect(live.pages.has(lastEntry.pageId)).toBe(false)
+    expect(live.lastPage).toBeUndefined()
+    expect(base.closed).toBe(false)
+  })
+})
+
