@@ -32,6 +32,8 @@ const targets: TargetListResponse = {
       authMethod: 'password',
       captchaMode: 'none',
       status: 'active',
+      iconKey: 'globe',
+      accentKey: 'pine',
       loginFields: null,
       accountCount: 1,
       createdAt: '2026-09-01T00:00:00.000Z',

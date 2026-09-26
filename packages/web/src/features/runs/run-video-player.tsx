@@ -361,15 +361,15 @@ export function RunVideoPlayer({
       ref={containerRef}
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      className='group/player space-y-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary/40'
+      className='run-video-player group/player space-y-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary/40'
     >
       {/* 画面区域 */}
-      <div className='relative mx-auto max-w-xl overflow-hidden rounded-sm border border-border-card bg-black'>
+      <div className='run-video-frame relative mx-auto w-full max-w-5xl overflow-hidden rounded-sm border border-border-card bg-black'>
         <video
           ref={videoRef}
           src={url}
           playsInline
-          className='max-h-32 w-full object-contain'
+          className='block h-auto w-full'
           onTimeUpdate={handleTimeUpdate}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
@@ -502,7 +502,7 @@ export function RunVideoPlayer({
           />
 
           {/* 悬停 Tooltip */}
-          {hoverState && progressBarRef.current ? (
+          {hoverState ? (
             <div
               className='pointer-events-none absolute -top-12 z-30 flex -translate-x-1/2 flex-col items-center rounded-md border border-border-card bg-popover px-2.5 py-1 text-label text-popover-foreground shadow-popover'
               style={{ left: `${hoverState.clientX}px` }}
@@ -595,6 +595,29 @@ export function RunVideoPlayer({
                   }`}
                 >
                   {chap.ordinal + 1}. {chap.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {/* 循环头章节：按项跳转 */}
+          {currentChapter?.iterations?.length ? (
+            <div className='flex max-w-full flex-wrap items-center gap-1' aria-label='按项跳转'>
+              {currentChapter.iterations.map((segment) => (
+                <button
+                  key={segment.index}
+                  type='button'
+                  title={`第 ${segment.index + 1} 项`}
+                  onClick={() => handleSeekTo(segment.fromMs, 'chapter')}
+                  className={`min-w-6 rounded-sm px-1 py-0.5 text-small tabular-nums ${
+                    segment.status === 'FAILED'
+                      ? 'bg-status-error-background text-status-error-foreground'
+                      : currentMs >= segment.fromMs && currentMs < segment.toMs
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  {segment.index + 1}
                 </button>
               ))}
             </div>

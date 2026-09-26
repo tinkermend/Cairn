@@ -1,10 +1,16 @@
 import {
   hasAiSteps,
+  insertNodeAfter,
+  moveNodeWithin,
   outputShapeForStep,
+  removeNode,
+  replaceNode,
   scenarioAuthoringDocumentV2Schema,
   isAuthoringDocumentV2,
   toAuthoringDocumentV2,
   stepUsesBrowser,
+  walkAuthoringNodes,
+  type AuthoringBlockNode,
   type ModuleInputBinding,
   type OutputShape,
   type ScenarioDocument,
@@ -20,9 +26,11 @@ import {
   usedContextKeys,
   type BindingOption,
 } from '@/features/authoring/document'
+import { createBlankStep } from '@/features/authoring/step-registry'
 
 export { isAuthoringDocumentV2, toAuthoringDocumentV2 }
 export type {
+  AuthoringBlockNode,
   ScenarioAuthoringDocumentV2,
   ScenarioAuthoringNode,
   ScenarioStepNode,
@@ -85,7 +93,36 @@ export function moveStep(
 }
 
 export function nodeId(node: ScenarioAuthoringNode): string {
-  return node.kind === 'step' ? node.step.id : node.invocationId
+  if (node.kind === 'step') return node.step.id
+  if (node.kind === 'block') return node.blockId
+  return node.invocationId
+}
+
+export function createBlankBlockNode(name?: string): AuthoringBlockNode {
+  const genId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `blk_${Math.random().toString(36).slice(2, 10)}`
+  return {
+    kind: 'block',
+    blockId: genId,
+    name: name ?? '条件分支',
+    control: {
+      type: 'if',
+      condition: {
+        kind: 'compare',
+        op: 'eq',
+        left: { kind: 'literal', value: true },
+        right: { kind: 'literal', value: true },
+      },
+    },
+    then: [
+      {
+        kind: 'step',
+        step: createBlankStep('wait'),
+      },
+    ],
+  }
 }
 
 export function consecutiveExtractStepIds(
@@ -94,8 +131,10 @@ export function consecutiveExtractStepIds(
 ): string[] {
   const wanted = new Set(selectedIds)
   if (wanted.size === 0) return []
+  const items = walkAuthoringNodes(document)
   const indexes: number[] = []
-  for (const [index, node] of document.nodes.entries()) {
+  for (const [index, item] of items.entries()) {
+    const node = item.node
     if (node.kind === 'module' && wanted.has(node.invocationId)) return []
     if (node.kind === 'step' && wanted.has(node.step.id)) indexes.push(index)
   }
@@ -104,17 +143,19 @@ export function consecutiveExtractStepIds(
   const end = indexes[indexes.length - 1]!
   if (end - start + 1 !== indexes.length) return []
   for (let index = start; index <= end; index++) {
-    if (document.nodes[index]?.kind !== 'step') return []
+    if (items[index]?.node.kind !== 'step') return []
   }
-  return document.nodes
+  return items
     .slice(start, end + 1)
-    .flatMap((node) => (node.kind === 'step' ? [node.step.id] : []))
+    .flatMap((item) => (item.node.kind === 'step' ? [item.node.step.id] : []))
 }
 
 export function authoringNodes(
   document: ScenarioDocument | ScenarioAuthoringDocumentV2
 ): ScenarioAuthoringNode[] {
-  if (isAuthoringDocumentV2(document)) return document.nodes
+  if (isAuthoringDocumentV2(document)) {
+    return walkAuthoringNodes(document).map((item) => item.node)
+  }
   return document.steps.map((step) => ({ kind: 'step' as const, step }))
 }
 
@@ -155,7 +196,8 @@ export function documentContextKeysAny(
   if (isAuthoringDocumentV2(document)) {
     return usedContextKeys([
       ...document.inputs.map((input) => input.key),
-      ...document.nodes.flatMap((node) => {
+      ...walkAuthoringNodes(document).flatMap((item) => {
+        const node = item.node
         if (node.kind === 'step' && node.step.outputKey)
           return [node.step.outputKey]
         if (node.kind === 'module')
@@ -171,10 +213,7 @@ export function removeAuthoringNode(
   document: ScenarioAuthoringDocumentV2,
   id: string
 ): ScenarioAuthoringDocumentV2 {
-  return {
-    ...document,
-    nodes: document.nodes.filter((node) => nodeId(node) !== id),
-  }
+  return removeNode(document, id)
 }
 
 export function findInsertedModuleInvocationId(
@@ -182,16 +221,16 @@ export function findInsertedModuleInvocationId(
   next: ScenarioAuthoringDocumentV2
 ): string | undefined {
   const before = new Set(
-    (previous?.nodes ?? [])
+    (previous ? walkAuthoringNodes(previous) : [])
       .filter(
-        (node): node is ScenarioModuleInvocationNode => node.kind === 'module'
+        (item): item is typeof item & { node: ScenarioModuleInvocationNode } => item.node.kind === 'module'
       )
-      .map((node) => node.invocationId)
+      .map((item) => item.node.invocationId)
   )
-  return next.nodes.find(
-    (node): node is ScenarioModuleInvocationNode =>
-      node.kind === 'module' && !before.has(node.invocationId)
-  )?.invocationId
+  return walkAuthoringNodes(next).find(
+    (item): item is typeof item & { node: ScenarioModuleInvocationNode } =>
+      item.node.kind === 'module' && !before.has(item.node.invocationId)
+  )?.node.invocationId
 }
 
 export function insertNode(
@@ -199,10 +238,12 @@ export function insertNode(
   node: ScenarioAuthoringNode,
   afterIndex: number
 ): ScenarioAuthoringDocumentV2 {
-  const nodes = [...document.nodes]
-  const index = afterIndex < 0 ? nodes.length : afterIndex + 1
-  nodes.splice(index, 0, node)
-  return { ...document, nodes }
+  const items = walkAuthoringNodes(document)
+  if (afterIndex < 0 || afterIndex >= items.length) {
+    const lastId = items.length > 0 ? items[items.length - 1]!.id : null
+    return insertNodeAfter(document, lastId, node)
+  }
+  return insertNodeAfter(document, items[afterIndex]!.id, node)
 }
 
 export function moveNode(
@@ -210,13 +251,11 @@ export function moveNode(
   index: number,
   delta: number
 ): ScenarioAuthoringDocumentV2 | null {
-  const nextIndex = index + delta
-  if (nextIndex < 0 || nextIndex >= document.nodes.length) return null
-  const nodes = [...document.nodes]
-  const [item] = nodes.splice(index, 1)
+  const items = walkAuthoringNodes(document)
+  const item = items[index]
   if (!item) return null
-  nodes.splice(nextIndex, 0, item)
-  return { ...document, nodes }
+  const nextDoc = moveNodeWithin(document, item.id, delta)
+  return nextDoc === document ? null : nextDoc
 }
 
 export function tryReplaceNode(
@@ -224,10 +263,7 @@ export function tryReplaceNode(
   next: ScenarioAuthoringNode
 ): { ok: true; document: ScenarioAuthoringDocumentV2 } | { ok: false } {
   const targetId = nodeId(next)
-  const candidate = {
-    ...document,
-    nodes: document.nodes.map((n) => (nodeId(n) === targetId ? next : n)),
-  }
+  const candidate = replaceNode(document, targetId, next)
   const parsed = scenarioAuthoringDocumentV2Schema.safeParse(candidate)
   return parsed.success ? { ok: true, document: parsed.data } : { ok: false }
 }
@@ -239,7 +275,9 @@ export function priorOutputShapesAny(
   if (!isAuthoringDocumentV2(document))
     return priorOutputShapes(document, nodeIndex)
   const shapes = new Map<string, OutputShape>()
-  for (const node of document.nodes.slice(0, Math.max(0, nodeIndex))) {
+  const items = walkAuthoringNodes(document)
+  for (let i = 0; i < Math.min(items.length, Math.max(0, nodeIndex)); i++) {
+    const node = items[i]!.node
     if (node.kind === 'step' && node.step.outputKey) {
       shapes.set(node.step.outputKey, outputShapeForStep(node.step))
     }
@@ -248,7 +286,9 @@ export function priorOutputShapesAny(
 }
 
 export function authoringNodeLabel(node: ScenarioAuthoringNode): string {
-  return node.kind === 'module' ? node.name || '动作模块' : node.step.name
+  if (node.kind === 'module') return node.name || '动作模块'
+  if (node.kind === 'block') return node.name || (node.control.type === 'if' ? '条件分支' : '流程控制')
+  return node.step.name
 }
 
 export function bindingUiKind(
@@ -263,7 +303,8 @@ export function priorBindingsV2(
   document: ScenarioAuthoringDocumentV2,
   nodeIndex: number
 ): BindingOption[] {
-  const prior = document.nodes.slice(0, Math.max(0, nodeIndex))
+  const items = walkAuthoringNodes(document)
+  const prior = items.slice(0, Math.max(0, nodeIndex)).map((item) => item.node)
   const options: BindingOption[] = document.inputs.map((input) => ({
     key: input.key,
     label: `输入 · ${input.label}`,
@@ -277,15 +318,41 @@ export function priorBindingsV2(
         })
       }
     } else if (node.kind === 'module') {
-      for (const exposedKey of Object.values(node.outputBindings)) {
-        if (exposedKey) {
-          options.push({
-            key: exposedKey,
-            label: `模块 · ${node.name || node.moduleId} · ${exposedKey}`,
-          })
+      if (node.outputBindings) {
+        for (const exposedKey of Object.values(node.outputBindings)) {
+          if (exposedKey) {
+            options.push({
+              key: exposedKey,
+              label: `模块 · ${node.name || node.moduleId} · ${exposedKey}`,
+            })
+          }
         }
       }
     }
   }
   return options
+}
+
+export function outputConsumersAny(
+  document: ScenarioDocument | ScenarioAuthoringDocumentV2 | null | undefined,
+  outputKey: string | undefined
+): { id: string; name: string }[] {
+  if (!document || !outputKey) return []
+  const nodes = authoringNodes(document)
+  const consumers: { id: string; name: string }[] = []
+  for (const node of nodes) {
+    if (node.kind === 'step') {
+      const s = node.step
+      if ((s.type === 'echo' || s.type === 'fill' || s.type === 'select') && s.input.from === outputKey) {
+        consumers.push({ id: s.id, name: s.name })
+      } else if (s.fieldRefs && Object.values(s.fieldRefs).some((ref: any) => ref?.from === outputKey)) {
+        consumers.push({ id: s.id, name: s.name })
+      }
+    } else if (node.kind === 'module') {
+      if (node.inputBindings && Object.values(node.inputBindings).some((b: any) => b?.kind === 'from' && b?.key === outputKey)) {
+        consumers.push({ id: node.invocationId, name: node.name || '动作模块' })
+      }
+    }
+  }
+  return consumers
 }

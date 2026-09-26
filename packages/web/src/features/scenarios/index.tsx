@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import type { ScenarioDto } from '@cairn/shared'
 import {
   ArrowUpRight,
@@ -46,6 +46,8 @@ import { StatusBadge } from '@/components/status-badge'
 import { ScenarioCreateDialog } from './create-dialog'
 import { SCENARIO_STATUS_LABELS } from './labels'
 
+const route = getRouteApi('/_authenticated/scenarios/')
+
 export function ScenariosPage() {
   const page = useCursorPage()
   const queryClient = useQueryClient()
@@ -56,11 +58,12 @@ export function ScenariosPage() {
     enabled: canReadTargets,
   })
   const navigate = useNavigate()
+  const routeSearch = route.useSearch()
   const [createOpen, setCreateOpen] = useState(false)
   const [removing, setRemoving] = useState<ScenarioDto | null>(null)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<'all' | 'active' | 'disabled'>('all')
-  const [targetId, setTargetId] = useState<string>('all')
+  const targetId = routeSearch.targetId ?? 'all'
   const [hasDraft, setHasDraft] = useState<'all' | 'true'>('all')
 
   const filters = useMemo(
@@ -92,7 +95,7 @@ export function ScenariosPage() {
   }
 
   const handleTargetChange = (val: string) => {
-    setTargetId(val)
+    void navigate({ to: '/scenarios', search: (prev) => ({ ...prev, targetId: val === 'all' ? undefined : val }) })
     page.reset()
   }
 
@@ -258,7 +261,7 @@ export function ScenariosPage() {
                       onClick={() => {
                         setSearch('')
                         setStatus('all')
-                        setTargetId('all')
+                        handleTargetChange('all')
                         setHasDraft('all')
                         page.reset()
                       }}

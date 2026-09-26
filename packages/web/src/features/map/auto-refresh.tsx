@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type {
@@ -11,20 +11,19 @@ import { ApiRequestError } from '@/lib/api-client'
 import { fetchMapJobPolicy, fetchMapSafeEntries } from '@/lib/map-api'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import {
-  createSchedule,
   fetchSchedules,
-  previewSchedule,
   setScheduleEnabled,
-  updateSchedule,
 } from '@/lib/schedules-api'
-import { fetchTargetAccounts } from '@/lib/targets-api'
+import { fetchTarget, fetchTargetAccounts } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { SelectField, SelectFieldOption } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { StatusBadge } from '@/components/status-badge'
+import { Clock, ExternalLink } from 'lucide-react'
 import { SKIP_LABELS } from '../schedules/labels'
+import { ScheduleEditorDialog } from '../schedules/editor'
 import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 
 const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
@@ -36,41 +35,18 @@ const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 6, label: '周六' },
   { value: 7, label: '周日' },
 ]
-const DEFAULT_WEEKDAYS: ScheduleWeekday[] = [1, 2, 3, 4, 5]
 
-type RefreshDraft = {
-  timezone: string
-  weekdays: ScheduleWeekday[]
-  windowStart: string
-  windowEnd: string
-  accountId: string
-  entryId: string
-}
-
-function defaultDefinition(targetId: string): ScheduleDefinition {
-  return {
-    timezone: 'Asia/Shanghai',
-    weekdays: DEFAULT_WEEKDAYS,
-    windowStart: '02:00',
-    windowEnd: '03:00',
-    misfire: 'skip',
-    timeRule: {
-      kind: 'calendar',
-      timezone: 'Asia/Shanghai',
-      weekdays: DEFAULT_WEEKDAYS,
-      windows: [
-        { ruleId: 'default', windowStart: '02:00', windowEnd: '03:00' },
-      ],
-      misfire: 'skip',
-    },
-    consumer: {
-      type: 'map_refresh',
-      targetId,
-      targetAccountId: '',
-      entryId: '',
-      selectedAssetRefs: [],
-    },
+function formatTimeRule(def: ScheduleDefinition) {
+  if (def.timeRule.kind === 'interval') {
+    return `每 ${Math.round(def.timeRule.intervalMs / 60000)} 分钟`
   }
+  const days = def.timeRule.weekdays
+    .map((d) => WEEKDAYS.find((w) => w.value === d)?.label ?? `周${d}`)
+    .join('、')
+  const windows = def.timeRule.windows
+    .map((w) => `${w.windowStart}–${w.windowEnd}`)
+    .join(', ')
+  return `${def.timezone} · ${days} · ${windows}`
 }
 
 function formatInstant(value: string | null, timeZone: string) {
@@ -91,10 +67,7 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
   const canMapMaintain = useCan('map:maintain')
   const canWrite = canScheduleWrite && canMapMaintain
   const queryClient = useQueryClient()
-  const [draft, setDraft] = useState<{
-    targetId: string
-    fields: Partial<RefreshDraft>
-  } | null>(null)
+  const [editorOpen, setEditorOpen] = useState(false)
 
   const schedulesQuery = useQuery({
     queryKey: ['schedules', targetId, 'map_refresh'],
@@ -121,127 +94,22 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
     queryKey: ['target', targetId, 'accounts', 'schedule'],
     queryFn: () =>
       fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
-    enabled: canWrite,
+    enabled: canRead,
+  })
+  const targetQuery = useQuery({
+    queryKey: ['target', targetId],
+    queryFn: () => fetchTarget(targetId),
+    enabled: canRead,
   })
 
   const schedule = schedulesQuery.data?.items.find(
     (item) => item.consumerKey === 'map_refresh'
   )
-  const edits = draft?.targetId === targetId ? draft.fields : null
   const scheduleConsumer =
     schedule?.definition.consumer.type === 'map_refresh'
       ? schedule.definition.consumer
       : null
-  const timezone =
-    edits?.timezone ?? schedule?.definition.timezone ?? 'Asia/Shanghai'
-  const weekdays =
-    edits?.weekdays ?? schedule?.definition.weekdays ?? DEFAULT_WEEKDAYS
-  const windowStart =
-    edits?.windowStart ?? schedule?.definition.windowStart ?? '02:00'
-  const windowEnd =
-    edits?.windowEnd ?? schedule?.definition.windowEnd ?? '03:00'
-  const accountId = edits?.accountId ?? scheduleConsumer?.targetAccountId ?? ''
-  const entryId = edits?.entryId ?? scheduleConsumer?.entryId ?? ''
-  const updateDraft = <K extends keyof RefreshDraft>(
-    key: K,
-    value: RefreshDraft[K]
-  ) => {
-    setDraft((current) => ({
-      targetId,
-      fields: {
-        ...(current?.targetId === targetId ? current.fields : {}),
-        [key]: value,
-      },
-    }))
-  }
-  const existingTimeRule = schedule?.definition.timeRule
-  const requiresFullEditor = Boolean(
-    existingTimeRule &&
-    (existingTimeRule.kind !== 'calendar' ||
-      existingTimeRule.windows.length !== 1)
-  )
 
-  const definition = useMemo<ScheduleDefinition>(() => {
-    const initial = defaultDefinition(targetId)
-    const existing = schedule?.definition
-    const calendarRule =
-      existing?.timeRule?.kind === 'calendar' ? existing.timeRule : null
-    const resolvedTimezone = timezone.trim() || 'Asia/Shanghai'
-    const resolvedWeekdays: ScheduleWeekday[] = weekdays.length ? weekdays : [1]
-    return {
-      ...initial,
-      ...existing,
-      timezone: resolvedTimezone,
-      weekdays: resolvedWeekdays,
-      windowStart,
-      windowEnd,
-      misfire: 'skip',
-      timeRule: {
-        kind: 'calendar',
-        timezone: resolvedTimezone,
-        weekdays: resolvedWeekdays,
-        windows: [
-          {
-            ruleId: calendarRule?.windows[0]?.ruleId ?? 'default',
-            windowStart,
-            windowEnd,
-          },
-        ],
-        misfire: 'skip',
-      },
-      consumer: {
-        type: 'map_refresh',
-        targetId,
-        targetAccountId: accountId,
-        entryId,
-        selectedAssetRefs:
-          existing?.consumer.type === 'map_refresh'
-            ? existing.consumer.selectedAssetRefs
-            : [],
-      },
-    }
-  }, [
-    accountId,
-    entryId,
-    schedule,
-    targetId,
-    timezone,
-    weekdays,
-    windowEnd,
-    windowStart,
-  ])
-
-  const previewMutation = useMutation({
-    mutationFn: () => previewSchedule({ definition }),
-    onError: (error) => {
-      toast.error(
-        error instanceof ApiRequestError ? error.message : '预览窗口失败'
-      )
-    },
-  })
-  const saveMutation = useMutation({
-    mutationFn: () => {
-      const body = {
-        expectedRevision: schedule?.revision ?? 0,
-        idempotencyKey: `refresh-${Date.now()}`,
-        definition,
-      }
-      return schedule
-        ? updateSchedule(schedule.scheduleId, body)
-        : createSchedule(body)
-    },
-    onSuccess: (result) => {
-      toast.success(
-        result.created ? '已保存知识地图采集计划' : '已更新知识地图采集计划'
-      )
-      void queryClient.invalidateQueries({ queryKey: ['schedules', targetId] })
-    },
-    onError: (error) => {
-      toast.error(
-        error instanceof ApiRequestError ? error.message : '保存计划失败'
-      )
-    },
-  })
   const enabledMutation = useMutation({
     mutationFn: (enabled: boolean) =>
       setScheduleEnabled(schedule!.scheduleId, {
@@ -252,7 +120,7 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
       }),
     onSuccess: (result) => {
       toast.success(result.enabled ? '已启用新窗口触发' : '已停止未来触发')
-      void queryClient.invalidateQueries({ queryKey: ['schedules', targetId] })
+      void queryClient.invalidateQueries({ queryKey: ['schedules'] })
     },
     onError: (error) => {
       toast.error(
@@ -269,16 +137,88 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
   const entries = entriesQuery.data?.items ?? []
   const accounts = mapCapableAccounts(accountsQuery.data?.items ?? [])
   const last = schedule?.lastOccurrence
-  const readyToSave = Boolean(
-    accountId && entryId && weekdays.length && timezone.trim()
+
+  const boundAccount = accountsQuery.data?.items.find(
+    (a) => a.id === scheduleConsumer?.targetAccountId
+  )
+  const boundEntry = entries.find(
+    (e) => e.entryId === scheduleConsumer?.entryId
   )
 
   return (
-    <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
-      <h2 className='text-section font-semibold'>知识地图采集</h2>
-      <p className='text-label text-muted-foreground'>
-        定时访问已知资产，采集最新观察并核验变化。错过时间窗口不会补跑。
-      </p>
+    <section className='space-y-4 rounded-xl border border-border-card bg-surface p-4 shadow-card'>
+      {/* 头部：标题、状态与动作 */}
+      <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-card pb-3'>
+        <div className='space-y-0.5'>
+          <div className='flex items-center gap-2'>
+            <Clock className='size-5 text-link shrink-0' />
+            <h2 className='text-section font-semibold text-text-primary'>
+              知识地图采集
+            </h2>
+            <StatusBadge
+              tone={schedule ? (schedule.enabled ? 'success' : 'neutral') : 'neutral'}
+            >
+              {schedule
+                ? schedule.enabled
+                  ? '计划已启用'
+                  : '计划已停用'
+                : '未配置计划'}
+            </StatusBadge>
+          </div>
+          <p className='text-caption text-text-muted'>
+            定时访问已知资产，采集最新观察并核验变化。错过时间窗口不会补跑。
+          </p>
+        </div>
+
+        <div className='flex flex-wrap items-center gap-3 shrink-0'>
+          {canWrite && schedule ? (
+            <div className='flex items-center gap-2'>
+              <Label
+                htmlFor='auto-refresh-switch'
+                className='text-caption font-medium text-text-primary cursor-pointer'
+              >
+                {schedule.enabled ? '计划已开启' : '开启计划'}
+              </Label>
+              <Switch
+                id='auto-refresh-switch'
+                aria-label='开启计划'
+                checked={schedule.enabled}
+                disabled={enabledMutation.isPending}
+                onCheckedChange={(val) => enabledMutation.mutate(val)}
+              />
+            </div>
+          ) : null}
+
+          {canWrite ? (
+            schedule ? (
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => setEditorOpen(true)}
+              >
+                编辑计划
+              </Button>
+            ) : (
+              <Button
+                size='sm'
+                onClick={() => setEditorOpen(true)}
+              >
+                配置定时采集
+              </Button>
+            )
+          ) : null}
+
+          <Link
+            to='/schedules'
+            search={{ consumerKey: 'map_refresh' }}
+            className='inline-flex items-center gap-1 text-caption text-link hover:underline'
+          >
+            <ExternalLink className='size-3.5' />
+            在定时任务中查看
+          </Link>
+        </div>
+      </div>
+
       {schedulesQuery.isPending || configQuery.isPending ? (
         <p className='text-label text-muted-foreground'>采集计划加载中…</p>
       ) : schedulesQuery.isError ? (
@@ -306,190 +246,92 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
               还没有安全进入路径，不能设置定时采集。
             </p>
           ) : null}
+          {accounts.length === 0 ? (
+            <p className='text-label text-muted-foreground'>
+              {MAP_ACCOUNT_REQUIRED}
+            </p>
+          ) : null}
+
           {!schedule ? (
             <p className='text-body'>当前没有知识地图采集计划，默认关闭。</p>
           ) : (
-            <div className='space-y-1 text-body'>
-              <p>当前：{schedule.enabled ? '计划已启用' : '计划已停用'}</p>
-              <p className='text-label text-muted-foreground'>
-                下次窗口{' '}
-                {formatInstant(
-                  schedule.nextDueAt,
-                  schedule.definition.timezone
-                )}
-              </p>
-              <p className='text-label text-muted-foreground'>
-                最近一次{' '}
-                {last
-                  ? `${admissionLabel(last.admissionStatus, last.reason)}${
-                      last.firstRunId
-                        ? ` · 运行 ${last.firstRunId.slice(0, 8)}`
-                        : ''
-                    }`
-                  : '还没有窗口'}
-              </p>
+            <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3 rounded-lg border border-border-divider bg-surface-subtle p-3.5 text-body'>
+              <div className='space-y-1'>
+                <span className='text-caption text-muted-foreground font-medium'>
+                  采集规则
+                </span>
+                <p className='font-medium text-text-primary'>
+                  {formatTimeRule(schedule.definition)}
+                </p>
+              </div>
+
+              <div className='space-y-1'>
+                <span className='text-caption text-muted-foreground font-medium'>
+                  地图用途账号
+                </span>
+                <p className='font-medium text-text-primary'>
+                  {boundAccount
+                    ? `${boundAccount.displayName} (${boundAccount.username})`
+                    : scheduleConsumer?.targetAccountId || '—'}
+                </p>
+              </div>
+
+              <div className='space-y-1'>
+                <span className='text-caption text-muted-foreground font-medium'>
+                  安全进入路径
+                </span>
+                <p className='font-medium text-text-primary'>
+                  {boundEntry ? boundEntry.name : scheduleConsumer?.entryId || '—'}
+                </p>
+              </div>
+
+              <div className='space-y-1'>
+                <span className='text-caption text-muted-foreground font-medium'>
+                  下次窗口
+                </span>
+                <p className='text-text-primary'>
+                  {formatInstant(schedule.nextDueAt, schedule.definition.timezone)}
+                </p>
+              </div>
+
+              <div className='space-y-1 sm:col-span-2'>
+                <span className='text-caption text-muted-foreground font-medium'>
+                  最近一次执行
+                </span>
+                <p className='text-text-primary'>
+                  {last
+                    ? `${admissionLabel(last.admissionStatus, last.reason)}${
+                        last.firstRunId
+                          ? ` · 运行 ${last.firstRunId.slice(0, 8)}`
+                          : ''
+                      }`
+                    : '还没有窗口'}
+                </p>
+              </div>
             </div>
           )}
-          {canWrite && requiresFullEditor ? (
-            <Alert>
-              <AlertDescription>
-                此计划使用间隔或多个时间窗口，请到{' '}
-                <Link to='/schedules' className='text-primary hover:underline'>
-                  定时任务
-                </Link>{' '}
-                编辑。这里仅支持单个日历窗口，以免覆盖现有规则。
-              </AlertDescription>
-            </Alert>
-          ) : canWrite ? (
-            <div className='space-y-3'>
-              <div className='space-y-2'>
-                <Label htmlFor='refresh-timezone'>IANA 时区</Label>
-                <Input
-                  id='refresh-timezone'
-                  value={timezone}
-                  onChange={(event) =>
-                    updateDraft('timezone', event.target.value)
-                  }
-                  placeholder='Asia/Shanghai'
-                />
-              </div>
-              <fieldset className='space-y-2'>
-                <legend className='text-label'>星期</legend>
-                <div className='flex flex-wrap gap-2'>
-                  {WEEKDAYS.map((day) => (
-                    <label
-                      key={day.value}
-                      className='flex items-center gap-1 text-body'
-                    >
-                      <input
-                        type='checkbox'
-                        checked={weekdays.includes(day.value)}
-                        onChange={() =>
-                          updateDraft(
-                            'weekdays',
-                            weekdays.includes(day.value)
-                              ? weekdays.filter((item) => item !== day.value)
-                              : [...weekdays, day.value].sort(
-                                  (left, right) => left - right
-                                )
-                          )
-                        }
-                      />
-                      {day.label}
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-              <div className='grid gap-3 sm:grid-cols-2'>
-                <div className='space-y-2'>
-                  <Label htmlFor='refresh-start'>开始（本地）</Label>
-                  <Input
-                    id='refresh-start'
-                    value={windowStart}
-                    onChange={(event) =>
-                      updateDraft('windowStart', event.target.value)
-                    }
-                    placeholder='02:00'
-                  />
-                </div>
-                <div className='space-y-2'>
-                  <Label htmlFor='refresh-end'>结束（本地）</Label>
-                  <Input
-                    id='refresh-end'
-                    value={windowEnd}
-                    onChange={(event) =>
-                      updateDraft('windowEnd', event.target.value)
-                    }
-                    placeholder='03:00'
-                  />
-                </div>
-              </div>
-              <div className='space-y-2'>
-                <Label htmlFor='refresh-account'>目标账号</Label>
-                <SelectField
-                  id='refresh-account'
-                  className='w-full'
-                  value={accountId}
-                  onValueChange={(value) => updateDraft('accountId', value)}
-                >
-                  <SelectFieldOption value=''>选择账号</SelectFieldOption>
-                  {accounts.map((account) => (
-                    <SelectFieldOption key={account.id} value={account.id}>
-                      {account.displayName}
-                    </SelectFieldOption>
-                  ))}
-                </SelectField>
-                {accounts.length === 0 ? (
-                  <p className='text-label text-muted-foreground'>
-                    {MAP_ACCOUNT_REQUIRED}
-                  </p>
-                ) : null}
-              </div>
-              <div className='space-y-2'>
-                <Label htmlFor='refresh-entry'>进入路径</Label>
-                <SelectField
-                  id='refresh-entry'
-                  className='w-full'
-                  value={entryId}
-                  onValueChange={(value) => updateDraft('entryId', value)}
-                >
-                  <SelectFieldOption value=''>选择路径</SelectFieldOption>
-                  {entries.map((entry) => (
-                    <SelectFieldOption
-                      key={entry.entryId}
-                      value={entry.entryId}
-                    >
-                      {entry.name}
-                    </SelectFieldOption>
-                  ))}
-                </SelectField>
-              </div>
-              <div className='flex flex-wrap gap-2'>
-                <Button
-                  variant='outline'
-                  disabled={previewMutation.isPending || !readyToSave}
-                  onClick={() => previewMutation.mutate()}
-                >
-                  预览窗口
-                </Button>
-                <Button
-                  disabled={saveMutation.isPending || !readyToSave}
-                  onClick={() => saveMutation.mutate()}
-                >
-                  保存计划
-                </Button>
-                {schedule ? (
-                  <Button
-                    variant='outline'
-                    disabled={enabledMutation.isPending}
-                    onClick={() => enabledMutation.mutate(!schedule.enabled)}
-                  >
-                    {schedule.enabled ? '停止未来触发' : '启用新窗口'}
-                  </Button>
-                ) : null}
-              </div>
-              {previewMutation.data ? (
-                <ul className='space-y-1 text-label text-muted-foreground'>
-                  {previewMutation.data.gaps.map((gap) => (
-                    <li key={gap.code}>{gap.message}</li>
-                  ))}
-                  {previewMutation.data.windows.map((window) => (
-                    <li key={window.localSlotKey}>
-                      {window.kind === 'ok'
-                        ? `${window.localStartDate} ${formatInstant(window.windowStartUtc, definition.timezone)}`
-                        : `${window.localStartDate} 跳过 · ${SKIP_LABELS[window.reason]}`}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ) : (
+
+          {!canWrite && !schedule ? (
             <p className='text-label text-muted-foreground'>
               需要调度写入和地图维护权限才能设置知识地图采集。
             </p>
-          )}
+          ) : null}
         </>
       )}
+
+      {editorOpen ? (
+        <ScheduleEditorDialog
+          open={editorOpen}
+          onOpenChange={setEditorOpen}
+          existing={schedule ?? null}
+          context={{
+            type: 'map_refresh',
+            targetId,
+            targetName: targetQuery.data?.name,
+            name: '知识地图采集',
+          }}
+        />
+      ) : null}
     </section>
   )
 }

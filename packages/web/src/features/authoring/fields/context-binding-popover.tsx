@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Braces, CornerDownRight, Database, Layers } from 'lucide-react'
-import { type RunDetailDto } from '@cairn/shared'
+import { stepRunFor, type RunDetailDto } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import {
   Popover,
@@ -64,7 +64,7 @@ export function ContextBindingPopover({
                 <span>运行时的实际产出</span>
               </div>
               {steps.map((step, index) => {
-                const stepRun = run.stepRuns.find((item) => item.stepId === step.id)
+                const stepRun = stepRunFor(run.stepRuns, step.id)
                 const latestAttempt = stepRun?.attempts.slice(-1)[0]
                 const output = latestAttempt?.output
                 const outputKey = step.outputKey || `step_${index + 1}_output`

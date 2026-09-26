@@ -472,28 +472,17 @@ export function AccountFormDialog({
                 )}
               />
               {isEdit && current ? (
-                <div className='rounded-lg border p-3 space-y-2 bg-muted/20'>
+                <div className='rounded-lg border p-3 space-y-3 bg-muted/20'>
                   <div className='flex items-center justify-between'>
                     <div className='space-y-0.5'>
                       <div className='text-sm font-medium'>免登凭据 (Playwright StorageState)</div>
                       <p className='text-label text-muted-foreground'>
                         {current.hasStorageState
                           ? `已导入免登上下文${current.storageStateUpdatedAt ? `（更新于 ${new Date(current.storageStateUpdatedAt).toLocaleString()}）` : ''}`
-                          : '未配置免登上下文，运行依赖账号密码常规登录'}
+                          : '未配置手工免登上下文，运行依赖账号密码常规登录'}
                       </p>
                     </div>
                     <div className='flex items-center gap-2'>
-                      {current.hasStorageState ? (
-                        <Button
-                          type='button'
-                          variant='outline'
-                          size='sm'
-                          disabled={saving}
-                          onClick={() => setClearStorageStateOpen(true)}
-                        >
-                          清除
-                        </Button>
-                      ) : null}
                       <Button
                         type='button'
                         variant='outline'
@@ -507,6 +496,73 @@ export function AccountFormDialog({
                         {current.hasStorageState ? '更新导入' : '导入 JSON'}
                       </Button>
                     </div>
+                  </div>
+
+                  <div className='border-t pt-3 flex items-start justify-between gap-3'>
+                    <div className='space-y-1 min-w-0 flex-1'>
+                      <div className='flex items-center gap-2'>
+                        <span className='text-sm font-medium'>登录态快照 (Session Snapshot)</span>
+                        {current.snapshotSummary?.hasSnapshot ? (
+                          <span
+                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium ${
+                              current.snapshotSummary.stale
+                                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30'
+                                : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                            }`}
+                          >
+                            {current.snapshotSummary.stale ? '待刷新 (Stale)' : '有效 (Fresh)'}
+                          </span>
+                        ) : (
+                          <span className='inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground'>
+                            暂无快照
+                          </span>
+                        )}
+                      </div>
+                      {current.snapshotSummary?.hasSnapshot ? (
+                        <div className='grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground pt-1'>
+                          <div>
+                            有效 Cookie 数：<span className='text-foreground font-mono'>{current.snapshotSummary.cookieCount ?? 0}</span>
+                          </div>
+                          <div>
+                            作用域源数：<span className='text-foreground font-mono'>{current.snapshotSummary.originCount ?? 0}</span>
+                          </div>
+                          <div>
+                            快照体积：<span className='text-foreground font-mono'>{Math.round((current.snapshotSummary.byteSize ?? 0) / 1024)} KB</span>
+                          </div>
+                          <div>
+                            捕获时间：<span className='text-foreground'>{current.snapshotSummary.capturedAt ? new Date(current.snapshotSummary.capturedAt).toLocaleTimeString() : '—'}</span>
+                          </div>
+                          {current.snapshotSummary.earliestCookieExpiry ? (
+                            <div className='col-span-2'>
+                              最早过期：<span className='text-foreground'>{new Date(current.snapshotSummary.earliestCookieExpiry).toLocaleString()}</span>
+                            </div>
+                          ) : null}
+                          {current.snapshotSummary.identity ? (
+                            <div className='col-span-2 truncate'>
+                              身份标识：<span className='text-foreground'>{current.snapshotSummary.identity}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className='text-label text-muted-foreground'>
+                          {current.snapshotSummary?.clearedAt
+                            ? `快照已于 ${new Date(current.snapshotSummary.clearedAt).toLocaleString()} 清除。下次运行成功后将自动捕获。`
+                            : '会话运行或登录成功后将自动捕获轻量快照，供后续共享 Context 秒级恢复。'}
+                        </p>
+                      )}
+                    </div>
+                    {(current.hasStorageState || current.snapshotSummary?.hasSnapshot) ? (
+                      <Button
+                        type='button'
+                        variant='destructive'
+                        size='sm'
+                        disabled={saving}
+                        onClick={() => setClearStorageStateOpen(true)}
+                        className='shrink-0'
+                      >
+                        清除登录态
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -665,9 +721,9 @@ export function AccountFormDialog({
       <ConfirmDialog
         open={clearStorageStateOpen}
         onOpenChange={setClearStorageStateOpen}
-        title='清除免登凭据 StorageState'
-        desc='将清除本账号导入的 Cookies 与 LocalStorage 上下文。后续将使用账号密码重新登录。'
-        confirmText='清除免登凭据'
+        title='清除登录态（免登与快照）'
+        desc='将清除本账号已保存的免登凭据与运行时登录态快照，并向当前属于该账号的活会话发出关闭请求。后续执行将按账号密码重新登录。'
+        confirmText='确认清除登录态'
         destructive
         isLoading={saving}
         handleConfirm={() => void handleClearStorageState()}

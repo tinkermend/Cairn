@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { isAiStepType, type DebugAction, type RunDetailDto, type Step } from '@cairn/shared'
+import { isAiStepType, stepRunFor, type DebugAction, type RunDetailDto, type Step } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { debugRun } from '@/lib/runs-api'
@@ -19,7 +19,7 @@ import {
 function currentStep(run: RunDetailDto): { step?: Step; status?: string } {
   const stepId = run.checkpoint?.stepId
   const step = run.snapshot.steps.find((item) => item.id === stepId) ?? run.snapshot.steps[0]
-  const status = step ? run.stepRuns.find((item) => item.stepId === step.id)?.status : undefined
+  const status = step ? stepRunFor(run.stepRuns, step.id)?.status : undefined
   return { step, status }
 }
 
@@ -71,7 +71,7 @@ export function DebugHoldBar({
   const [confirmRetry, setConfirmRetry] = useState(false)
   const [confirmPageChange, setConfirmPageChange] = useState(false)
   const latestAttempt = step
-    ? run.stepRuns.find((item) => item.stepId === step.id)?.attempts.slice(-1)[0]
+    ? stepRunFor(run.stepRuns, step.id)?.attempts.slice(-1)[0]
     : undefined
   const expectActual = expectActualFrom(latestAttempt?.output)
 

@@ -13,6 +13,13 @@ const mapSearchSchema = z.object({
 
 export const Route = createFileRoute('/_authenticated/targets/$targetId/map/')({
   validateSearch: mapSearchSchema,
+  staticData: {
+    assistant: {
+      routeKey: 'targets.$targetId.map',
+      pageKind: 'target',
+      primaryObject: { kind: 'target', idParam: 'targetId' },
+    },
+  },
   beforeLoad: () => {
     const user = useAuthStore.getState().auth.user
     if (!user || !hasAllPermissions(user.permissions, ['target:read', 'map:read'])) {

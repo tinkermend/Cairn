@@ -1,12 +1,14 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  authoringSteps,
   canonicalJson,
   diffKnowledgeDocuments,
   isAuthoringDocumentV2,
   scenarioDocumentDigest,
   scenarioDocumentSchema,
   terminologyEntrySchema,
+  walkAuthoringNodes,
   type AnalysisCandidateDto,
   type KnowledgeDiff,
   type ReviewAnalysisCandidateBody,
@@ -292,16 +294,17 @@ function ScenarioCandidate({
   const flat =
     draft &&
     (isAuthoringDocumentV2(draft.document)
-      ? draft.document.nodes.some(
-          (node) => node.kind === 'module' || (node.outcomes?.length ?? 0) > 0
+      ? walkAuthoringNodes(draft.document).some(
+          ({ node }) =>
+            node.kind === 'module' ||
+            node.kind === 'block' ||
+            (node.kind === 'step' && (node.outcomes?.length ?? 0) > 0),
         )
         ? null
         : scenarioDocumentSchema.parse({
             schemaVersion: 1,
             inputs: draft.document.inputs,
-            steps: draft.document.nodes.flatMap((node) =>
-              node.kind === 'step' ? [node.step] : []
-            ),
+            steps: authoringSteps(draft.document),
           })
       : scenarioDocumentSchema.parse(draft.document))
   return (

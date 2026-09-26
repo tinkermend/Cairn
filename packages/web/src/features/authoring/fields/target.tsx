@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import {
   deriveStepResolutionBadge,
   describeLocatorCandidates,
@@ -112,7 +113,7 @@ export function TargetFields({
           </Label>
         </div>
         {(target.semantic || target.candidates.some((c) => c.value.trim())) ? (
-          <div className='flex items-center justify-between gap-2 rounded-md border border-border-default bg-muted/20 p-2.5'>
+          <div className='flex items-center justify-between gap-2 rounded-md border border-border-default bg-card shadow-xs p-2.5'>
             <div className='min-w-0 flex-1 space-y-0.5'>
               <div className='flex items-center gap-1.5'>
                 <span className='truncate text-small font-medium text-foreground'>
@@ -260,8 +261,28 @@ export function TargetFields({
       ) : null}
       <Collapsible open={advanced} onOpenChange={setAdvanced}>
         <CollapsibleTrigger asChild>
-          <Button type='button' variant='ghost' size='sm'>
-            {advanced ? '收起高级定位' : '高级：候选、锚点与解析档位'}
+          <Button type='button' variant='ghost' size='sm' className='gap-1.5 text-muted-foreground hover:text-foreground'>
+            <span>{advanced ? '收起高级定位' : '高级：候选、锚点与解析档位'}</span>
+            {!advanced && (frames.length > 0 || Boolean(target.anchor) || candidates.filter(c => c.value.trim()).length > 1) && (
+              <div className='flex items-center gap-1 ml-1' data-testid='target-active-pills'>
+                {frames.length > 0 && (
+                  <span className='rounded bg-muted px-1.5 py-0.2 text-3xs font-mono text-muted-foreground'>
+                    {frames.length}层 Frame
+                  </span>
+                )}
+                {Boolean(target.anchor) && (
+                  <span className='rounded bg-primary/10 px-1.5 py-0.2 text-3xs text-primary'>
+                    相对锚点
+                  </span>
+                )}
+                {candidates.filter(c => c.value.trim()).length > 1 && (
+                  <span className='rounded bg-muted px-1.5 py-0.2 text-3xs text-muted-foreground'>
+                    {candidates.filter(c => c.value.trim()).length}个候选
+                  </span>
+                )}
+              </div>
+            )}
+            <ChevronDown className={`size-3.5 transition-transform duration-200 ${advanced ? 'rotate-180' : ''}`} />
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className='space-y-3 pt-2'>

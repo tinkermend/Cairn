@@ -1,0 +1,49 @@
+.target-overview-page {
+  container: target-page / inline-size;
+}
+
+.target-overview-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(350px, 365px);
+}
+
+.target-overview-table .target-col-system { width: 29%; }
+.target-overview-table .target-col-readiness { width: 22%; }
+.target-overview-table .target-col-accounts { width: 17%; }
+.target-overview-table .target-col-scenarios { width: 14%; }
+.target-overview-table .target-col-activity { width: 18%; }
+
+.target-row-preview { display: none; }
+
+@container target-page (max-width: 1450px) {
+  .target-overview-table .target-col-activity { display: none; }
+  .target-overview-table .target-col-system { width: 43%; }
+  .target-overview-table .target-col-readiness { width: 22%; }
+  .target-overview-table .target-col-accounts { width: 20%; }
+  .target-overview-table .target-col-scenarios { width: 15%; }
+}
+
+@container target-page (max-width: 1120px) {
+  .target-overview-layout { grid-template-columns: minmax(0, 1fr); }
+  .target-overview-aside { display: none; }
+  .target-overview-table .target-col-activity { display: none; }
+  .target-overview-table .target-col-system { width: 42%; }
+  .target-overview-table .target-col-readiness { width: 20%; }
+  .target-overview-table .target-col-accounts { width: 20%; }
+  .target-overview-table .target-col-scenarios { width: 18%; }
+}
+
+@container target-page (max-width: 790px) {
+  .target-row-preview { display: inline-flex; }
+  .target-overview-table .target-col-accounts,
+  .target-overview-table .target-col-scenarios,
+  .target-overview-table .target-col-activity { display: none; }
+  .target-overview-table .target-col-system { width: 68%; }
+  .target-overview-table .target-col-readiness { width: 32%; }
+}
+
+@container target-page (max-width: 480px) {
+  .target-overview-table .target-system-label { align-items: flex-start; flex-direction: column; gap: 0.25rem; }
+  .target-overview-table .target-system-label > button { width: 100%; }
+}
+
+.target-overview-sheet [data-slot='sheet-header'] { flex: none; }

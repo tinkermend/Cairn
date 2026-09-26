@@ -34,6 +34,33 @@ describe('AiAttemptSummary', () => {
     await expect.element(screen.getByText(/模型调用 #1 · mock-model · 120 ms · tokens 10\/4/)).toBeInTheDocument()
   })
 
+  it('展示区分文本 ARIA 与视觉 Midscene 的路线标签', async () => {
+    const ariaCall: EvidenceMetadata = {
+      ...call,
+      id: '11111111-1111-4111-8111-111111111111',
+      payload: {
+        ...(call.payload as any),
+        route: 'aria_text',
+        model: 'deepseek-chat',
+      },
+    }
+    const visionCall: EvidenceMetadata = {
+      ...call,
+      id: '22222222-2222-4222-8222-222222222222',
+      payload: {
+        ...(call.payload as any),
+        n: 2,
+        route: 'vision',
+        model: 'qwen-vl-max',
+      },
+    }
+    const screen = await render(
+      <AiAttemptSummary output={null} evidence={[ariaCall, visionCall]} />,
+    )
+    await expect.element(screen.getByText(/模型调用 #1 · \[文本 · ARIA\] · deepseek-chat/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/模型调用 #2 · \[视觉 · Midscene\] · qwen-vl-max/)).toBeInTheDocument()
+  })
+
   it('展示语义树引用行与回退说明', async () => {
     const screen = await render(
       <AiAttemptSummary

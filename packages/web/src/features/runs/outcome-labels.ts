@@ -29,7 +29,7 @@ export const RUN_EXECUTION_AXIS_LABELS: Record<RunStatus, string> = {
   NEEDS_REVIEW: '执行待核查',
 }
 
-export function runOutcomeStatusTone(status: OutcomeStatus): StatusTone {
+export function runOutcomeStatusTone(status: OutcomeStatus | 'NOT_APPLICABLE'): StatusTone {
   if (status === 'PASS') return 'success'
   if (status === 'FAIL') return 'error'
   if (status === 'WARN' || status === 'UNKNOWN') return 'warning'

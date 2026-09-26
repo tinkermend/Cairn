@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ScenarioDocument, Step } from '@cairn/shared'
+import { walkAuthoringNodes, type ScenarioDocument, type Step } from '@cairn/shared'
 import {
   authoringNodeLabel,
   bindingUiKind,
@@ -129,17 +129,17 @@ describe('studio-document', () => {
     }
     expect(documentNodeCount(v2)).toBe(2)
     expect(documentUsesBrowser(v2)).toBe(true)
-    expect(authoringNodeLabel(v2.nodes[1]!)).toBe('查询订单')
+    expect(authoringNodeLabel(walkAuthoringNodes(v2)[1]!.node)).toBe('查询订单')
     expect(priorBindingsV2(v2, 1).map((item) => item.key)).toEqual(['orderId', 'extracted'])
     expect(priorOutputShapesAny(v2, 1).get('extracted')?.kind).toBe('scalar')
     const inserted = insertNode(v2, { kind: 'step', step: echo }, 0)
-    expect(inserted.nodes.map((node) => (node.kind === 'step' ? node.step.type : node.kind))).toEqual([
+    expect(walkAuthoringNodes(inserted).map(({ node }) => (node.kind === 'step' ? node.step.type : node.kind))).toEqual([
       'extract',
       'echo',
       'module',
     ])
-    expect(moveNode(v2, 0, 1)?.nodes[0]?.kind).toBe('module')
-    expect(removeAuthoringNode(v2, '55555555-5555-4555-8555-555555555555').nodes).toHaveLength(1)
+    expect(walkAuthoringNodes(moveNode(v2, 0, 1)!)[0]?.node.kind).toBe('module')
+    expect(walkAuthoringNodes(removeAuthoringNode(v2, '55555555-5555-4555-8555-555555555555'))).toHaveLength(1)
     expect(tryReplaceInputs(v2, [{ key: 'shop', label: '店铺' }]).ok).toBe(true)
     expect(bindingUiKind({ kind: 'literal', value: 'A' }, ['orderId'])).toBe('literal')
     expect(bindingUiKind({ kind: 'from', key: 'orderId' }, ['orderId'])).toBe('input')
@@ -188,7 +188,7 @@ describe('studio-document', () => {
         },
       ],
     }
-    const original = v2.nodes[0]!
+    const original = walkAuthoringNodes(v2)[0]!.node
     if (original.kind !== 'step') throw new Error('fixture must contain a step')
     const replaced = tryReplaceNode(v2, {
       ...original,
@@ -196,7 +196,7 @@ describe('studio-document', () => {
     })
     expect(replaced.ok).toBe(true)
     if (!replaced.ok) return
-    const node = replaced.document.nodes[0]
+    const node = walkAuthoringNodes(replaced.document)[0]?.node
     expect(node?.kind).toBe('step')
     if (node?.kind !== 'step') return
     expect(node.step.name).toBe('打开首页')

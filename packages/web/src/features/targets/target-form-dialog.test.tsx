@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
+import { useAuthStore } from '@/stores/auth-store'
 import { TargetFormDialog } from './target-form-dialog'
+
+const apiMocks = vi.hoisted(() => ({ createTarget: vi.fn(), updateTarget: vi.fn() }))
+vi.mock('@/lib/targets-api', () => apiMocks)
 
 function renderDialog() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -13,6 +17,35 @@ function renderDialog() {
 }
 
 describe('TargetFormDialog', () => {
+  beforeEach(() => {
+    useAuthStore.getState().auth.setUser(null)
+    apiMocks.createTarget.mockReset()
+    apiMocks.updateTarget.mockReset()
+    apiMocks.createTarget.mockResolvedValue({ id: 'new-target' })
+  })
+
+  it('提交时把所选图标和身份色写入新目标', async () => {
+    const { getByRole, getByLabelText } = await renderDialog()
+    await getByLabelText(/名称/).fill('业务系统')
+    await getByLabelText(/编码/).fill('business-system')
+    await getByLabelText('入口 URL').fill('https://example.com')
+    await getByRole('button', { name: '工厂图标' }).click()
+    await getByRole('button', { name: '青绿身份色' }).click()
+    await getByRole('button', { name: '保存' }).click()
+    await expect.poll(() => apiMocks.createTarget.mock.calls[0]?.[0]).toMatchObject({ iconKey: 'factory', accentKey: 'teal' })
+  })
+  it('可用键盘可达按钮选择图标和身份色，并恢复默认外观', async () => {
+    const { getByRole } = await renderDialog()
+    const factory = getByRole('button', { name: '工厂图标' })
+    const teal = getByRole('button', { name: '青绿身份色' })
+    await factory.click()
+    await teal.click()
+    await expect.element(factory).toHaveAttribute('aria-pressed', 'true')
+    await expect.element(teal).toHaveAttribute('aria-pressed', 'true')
+    await getByRole('button', { name: '恢复默认外观' }).click()
+    await expect.element(getByRole('button', { name: '地球图标' })).toHaveAttribute('aria-pressed', 'true')
+    await expect.element(getByRole('button', { name: '主蓝身份色' })).toHaveAttribute('aria-pressed', 'true')
+  })
   it('新建可填首个账号与可选定位，不出现探测或录制', async () => {
     const { getByRole, getByLabelText, getByText } = await renderDialog()
     await expect.element(getByRole('heading', { name: '新建目标系统' })).toBeInTheDocument()
@@ -29,6 +62,26 @@ describe('TargetFormDialog', () => {
     await expect.element(getByText(/知道输入框的 id 或 name 就填/)).toBeInTheDocument()
 
     expect(document.body.textContent).not.toMatch(/探测登录|打开录制|启发式管理|会话|插件/)
+  })
+
+  it('仅有目标全范围管理权时允许登记账号，但隐藏首个账号的密码输入', async () => {
+    const targetId = '11111111-1111-4111-8111-111111111111'
+    useAuthStore.getState().auth.setUser({
+      id: 'scoped', displayName: '受限管理员', email: null, roles: [],
+      permissions: ['target:read', 'target:write', 'credential:read', 'credential:write'],
+      targetScopes: [
+        { roleId: 'target-manager', mode: 'all', targetIds: [] },
+        { roleId: 'credential-manager', mode: 'selected', targetIds: [targetId] },
+      ],
+      targetScopePermissions: [
+        { roleId: 'target-manager', permissions: ['target:read', 'target:write'] },
+        { roleId: 'credential-manager', permissions: ['credential:read', 'credential:write'] },
+      ],
+    })
+    const screen = await renderDialog()
+    await expect.element(screen.getByLabelText('登录名')).toBeInTheDocument()
+    await expect.element(screen.getByText('可先登记账号。密码由具备全范围凭据权限的成员补齐。')).toBeInTheDocument()
+    expect(screen.getByLabelText('密码').query()).toBeNull()
   })
 
   it('选择图形验证码后展示图片与输入框定位，并说明自动识别', async () => {
@@ -74,5 +127,3 @@ describe('TargetFormDialog', () => {
     await expect.element(getByText('可选', { exact: true })).toBeInTheDocument()
   })
 })
-
-

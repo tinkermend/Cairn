@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ModuleInputBinding, UpgradeDiff } from '@cairn/shared'
-import { upgradeWarningKey } from '@cairn/shared'
+import { upgradeWarningKey, walkAuthoringNodes } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -43,10 +43,11 @@ export function ModuleUpgradeDialog({
     enabled: open && Boolean(scenarioId && invocationId && toVersionId),
   })
   const moduleId = useMemo(() => {
-    const node = preview.data?.document.nodes.find(
-      (item) => item.kind === 'module' && item.invocationId === invocationId,
+    if (!preview.data?.document) return ''
+    const item = walkAuthoringNodes(preview.data.document).find(
+      (w) => w.node.kind === 'module' && w.node.invocationId === invocationId,
     )
-    return node && node.kind === 'module' ? node.moduleId : ''
+    return item && item.node.kind === 'module' ? item.node.moduleId : ''
   }, [invocationId, preview.data])
   const version = useQuery({
     queryKey: ['action-module-version-upgrade', moduleId, toVersionId],

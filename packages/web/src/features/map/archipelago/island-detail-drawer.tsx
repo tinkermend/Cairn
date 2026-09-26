@@ -64,11 +64,11 @@ export function IslandDetailDrawer({
 
   return (
     <aside
-      className='archipelago-drawer flex h-full w-full flex-col border-l border-border-card bg-surface-subtle shadow-md lg:w-[420px]'
+      className='archipelago-drawer h-full border-l border-border-card bg-surface-subtle shadow-xl max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-20 max-lg:w-full max-lg:max-w-md lg:w-[420px] lg:shrink-0'
       aria-label={`${pageItem.displayName} 岛屿知识详情`}
     >
       {/* 抽屉顶部标头 */}
-      <div className='flex items-center justify-between border-b border-border-card px-4 py-3 bg-surface'>
+      <div className='flex items-center justify-between border-b border-border-card px-4 py-3 bg-surface shrink-0'>
         <div className='flex min-w-0 flex-1 items-center gap-2'>
           {selectedObjectId ? (
             <Button
@@ -103,7 +103,7 @@ export function IslandDetailDrawer({
         </Button>
       </div>
 
-      <ScrollArea className='flex-1 p-4'>
+      <ScrollArea className='flex-1 min-h-0 p-4'>
         {selectedObjectId ? (
           /* ── 单个对象详情视图 ── */
           <div className='space-y-4'>

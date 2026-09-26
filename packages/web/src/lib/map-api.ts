@@ -25,6 +25,8 @@ import {
   mapJobPolicyDtoSchema,
   mapJobPolicyUpdateBodySchema,
   mapSafeEntryCreateBodySchema,
+  mapSafeEntryUpdateBodySchema,
+  mapSafeEntryArchiveBodySchema,
   mapSafeEntryDtoSchema,
   mapSafeEntryListResponseSchema,
   mapJobPreviewRequestSchema,
@@ -73,6 +75,8 @@ import {
   type MapJobPolicyDto,
   type MapJobPolicyUpdateBody,
   type MapSafeEntryCreateBody,
+  type MapSafeEntryUpdateBody,
+  type MapSafeEntryArchiveBody,
   type MapSafeEntryDto,
   type MapJobPreviewRequest,
   type MapJobPreviewResponse,
@@ -280,6 +284,30 @@ export function createMapSafeEntry(targetId: string, body: MapSafeEntryCreateBod
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(mapSafeEntryCreateBodySchema.parse(body)),
+  })
+}
+
+export function updateMapSafeEntry(
+  targetId: string,
+  entryId: string,
+  body: MapSafeEntryUpdateBody,
+): Promise<MapSafeEntryDto> {
+  return apiFetch(`/api/targets/${targetId}/map/safe-entries/${entryId}/update`, mapSafeEntryDtoSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapSafeEntryUpdateBodySchema.parse(body)),
+  })
+}
+
+export function archiveMapSafeEntry(
+  targetId: string,
+  entryId: string,
+  body: MapSafeEntryArchiveBody,
+): Promise<MapSafeEntryDto> {
+  return apiFetch(`/api/targets/${targetId}/map/safe-entries/${entryId}/archive`, mapSafeEntryDtoSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapSafeEntryArchiveBodySchema.parse(body)),
   })
 }
 

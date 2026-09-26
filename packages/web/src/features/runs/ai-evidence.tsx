@@ -49,9 +49,16 @@ export function AiAttemptSummary({
       {calls.map((item) => {
         const payload = item.payload
         if (!payload || !isAiCallEvidence(payload)) return null
+        const routeLabel =
+          payload.route === 'aria_text' || payload.summary === 'aria_text'
+            ? '文本 · ARIA'
+            : payload.route === 'vision'
+              ? '视觉 · Midscene'
+              : null
         return (
           <p key={item.id} className='text-muted-foreground'>
             模型调用 #{payload.n}
+            {routeLabel ? ` · [${routeLabel}]` : ''}
             {payload.model ? ` · ${payload.model}` : ''}
             {payload.durationMs != null ? ` · ${payload.durationMs} ms` : ''}
             {payload.inputTokens == null && payload.outputTokens == null

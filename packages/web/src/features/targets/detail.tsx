@@ -30,7 +30,8 @@ import {
 } from '@/lib/targets-api'
 import { fetchSessionOverview } from '@/lib/sessions-api'
 import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
-import { useCan } from '@/hooks/use-permissions'
+import { canOnTarget } from '@/lib/rbac'
+import { useAuthStore } from '@/stores/auth-store'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { CursorPagination } from '@/components/data-table'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
@@ -52,10 +53,10 @@ import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
-import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
 import { AccessPolicyCard } from './access-policy-card'
 import { ResolutionPolicyCard } from './resolution-policy-card'
+import { AiActionTraceCard } from './ai-action-trace-card'
 import { AuthProfileCard } from './auth-profile-card'
 import { SessionPolicyCard } from './session-policy-card'
 import { AccountFormDialog } from './account-form-dialog'
@@ -81,21 +82,40 @@ const route = getRouteApi('/_authenticated/targets/$targetId/')
 
 export function TargetDetailPage() {
   const { targetId } = route.useParams()
+  const user = useAuthStore((state) => state.auth.user)
+  const canTargetWrite = canOnTarget(user, 'target:write', targetId)
+  const canTargetDelete = canOnTarget(user, 'target:delete', targetId)
+  const canDeleteTarget = canTargetDelete && canOnTarget(user, 'run:delete', targetId)
+  const canReadMap = canOnTarget(user, 'map:read', targetId)
+  const canReadSession = canOnTarget(user, 'session:read', targetId)
+  const canWriteCredential = canOnTarget(user, 'credential:read', targetId) && canOnTarget(user, 'credential:write', targetId)
   const search = route.useSearch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const page = useCursorPage()
-  const [activeTab, setActiveTab] = useState('accounts')
+  const [activeTab, setActiveTabState] = useState(search.tab ?? 'accounts')
+  useEffect(() => setActiveTabState(search.tab ?? 'accounts'), [search.tab])
+  const setActiveTab = (tab: string) => {
+    if (tab !== 'accounts' && tab !== 'scenarios' && tab !== 'auth-profile' && tab !== 'access-policy' && tab !== 'ai-sources') return
+    setActiveTabState(tab)
+    void navigate({
+      to: '/targets/$targetId',
+      params: { targetId },
+      search: { tab: tab === 'accounts' ? undefined : tab },
+    })
+  }
   const [accountSearch, setAccountSearch] = useState('')
   const [accountStatus, setAccountStatus] = useState<'all' | 'active' | 'disabled'>('all')
   const [prefillUsername, setPrefillUsername] = useState<string | undefined>(search?.prefill_username)
 
   useEffect(() => {
-    if (search?.action === 'create-account') {
-      setActiveTab('accounts')
-      setAddAccountOpen(true)
-      if (search.prefill_username) {
-        setPrefillUsername(search.prefill_username)
+    if (search?.action === 'create-account' && user) {
+      if (canTargetWrite) {
+        setActiveTabState('accounts')
+        setAddAccountOpen(true)
+        if (search.prefill_username) {
+          setPrefillUsername(search.prefill_username)
+        }
       }
       void navigate({
         to: '/targets/$targetId',
@@ -104,7 +124,7 @@ export function TargetDetailPage() {
         replace: true,
       })
     }
-  }, [search?.action, search?.prefill_username, targetId, navigate])
+  }, [search?.action, search?.prefill_username, targetId, navigate, user, canTargetWrite])
 
   const accountFilters = useMemo(
     () => ({
@@ -121,7 +141,6 @@ export function TargetDetailPage() {
     queryFn: () => fetchTarget(targetId),
   })
 
-  const canDeleteTarget = useCan('target:delete')
   const cleanupQuery = useQuery({
     queryKey: ['targets', targetId, 'cleanup'],
     queryFn: () => fetchTargetCleanup(targetId),
@@ -247,20 +266,20 @@ export function TargetDetailPage() {
                   <SlidersHorizontal className='size-4' />
                   系统资料
                 </Button>
-                <Can permission='map:read'>
+                {canReadMap ? (
                   <Button variant='outline' asChild>
                     <Link to='/targets/$targetId/map' params={{ targetId }}>
                       <Compass />
                       知识
                     </Link>
                   </Button>
-                </Can>
-                <Can permission='target:write'>
+                ) : null}
+                {canTargetWrite ? (
                   <Button variant='outline' onClick={() => setEditOpen(true)}>
                     编辑系统
                   </Button>
-                </Can>
-                <Can allOf={['target:delete', 'run:delete']}>
+                ) : null}
+                {canDeleteTarget ? (
                   <Button
                     variant='ghost'
                     className='text-destructive'
@@ -268,7 +287,7 @@ export function TargetDetailPage() {
                   >
                     删除
                   </Button>
-                </Can>
+                ) : null}
               </div>
             ) : null
           }
@@ -375,12 +394,12 @@ export function TargetDetailPage() {
                           className='pl-9'
                         />
                       </div>
-                      <Can permission='target:write'>
+                      {canTargetWrite ? (
                         <Button onClick={() => setAddAccountOpen(true)}>
                           <Plus />
                           添加目标账号
                         </Button>
-                      </Can>
+                      ) : null}
                     </div>
                   </div>
 
@@ -549,7 +568,7 @@ export function TargetDetailPage() {
                               </TableCell>
                               <TableCell className='text-right'>
                                 <div className='flex items-center justify-end gap-1'>
-                                  <Can permission='session:read'>
+                                  {canReadSession ? (
                                     <Button variant='ghost' size='sm' asChild>
                                       <Link
                                         to='/sessions/$targetId/$accountId'
@@ -561,8 +580,8 @@ export function TargetDetailPage() {
                                         管理会话
                                       </Link>
                                     </Button>
-                                  </Can>
-                                  <Can permission='credential:write'>
+                                  ) : null}
+                                  {canWriteCredential ? (
                                     <Button
                                       variant='ghost'
                                       size='sm'
@@ -571,8 +590,8 @@ export function TargetDetailPage() {
                                       <KeyRound className='mr-1 size-3.5' />
                                       换密
                                     </Button>
-                                  </Can>
-                                  <Can permission='target:write'>
+                                  ) : null}
+                                  {canTargetWrite ? (
                                     <Button
                                       variant='ghost'
                                       size='sm'
@@ -580,8 +599,8 @@ export function TargetDetailPage() {
                                     >
                                       编辑
                                     </Button>
-                                  </Can>
-                                  <Can permission='target:delete'>
+                                  ) : null}
+                                  {canTargetDelete ? (
                                     <Button
                                       variant='ghost'
                                       size='sm'
@@ -590,7 +609,7 @@ export function TargetDetailPage() {
                                     >
                                       删除
                                     </Button>
-                                  </Can>
+                                  ) : null}
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -633,6 +652,7 @@ export function TargetDetailPage() {
               {/* Tab 4: 目标安全授权 */}
               <TabsContent value='access-policy' className='space-y-5'>
                 <ResolutionPolicyCard target={target} />
+                <AiActionTraceCard target={target} />
                 <AccessPolicyCard targetId={targetId} />
               </TabsContent>
 

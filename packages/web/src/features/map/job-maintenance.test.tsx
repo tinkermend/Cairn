@@ -97,26 +97,12 @@ describe('知识页地图维护', () => {
       .toBeDisabled()
   })
 
-  it('可开放政策并登记进入路径', async () => {
+  it('可切换手工作业开关开放政策', async () => {
     const screen = await renderCard()
-    await screen.getByLabelText('政策理由').fill('受控环境可探查')
-    await screen.getByRole('button', { name: '开放手工作业' }).click()
+    await screen.getByRole('switch', { name: '开放手工作业' }).click()
     expect(mocks.updateMapJobPolicy).toHaveBeenCalledWith(
       TARGET_ID,
       expect.objectContaining({ manualJobsEnabled: true, expectedRevision: 0 })
-    )
-    await screen.getByLabelText('路径名称').fill('订单入口')
-    await screen.getByLabelText('进入 URL').fill('https://shop.example/orders')
-    await screen.getByLabelText('到达断言').fill('订单标题')
-    await screen.getByLabelText('安全依据').fill('只读复查已确认')
-    await screen.getByRole('button', { name: '登记进入路径' }).click()
-    expect(mocks.createMapSafeEntry).toHaveBeenCalledWith(
-      TARGET_ID,
-      expect.objectContaining({
-        name: '订单入口',
-        url: 'https://shop.example/orders',
-        arrivalTarget: arrivalTargetForName('订单标题'),
-      })
     )
   })
 
@@ -193,9 +179,8 @@ describe('知识页地图维护', () => {
   it('没有地图用途账号时不能开放手工作业', async () => {
     targetMocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
     const screen = await renderCard()
-    await screen.getByLabelText('政策理由').fill('想打开')
     await expect
-      .element(screen.getByRole('button', { name: '开放手工作业' }))
+      .element(screen.getByRole('switch', { name: '开放手工作业' }))
       .toBeDisabled()
     expect(mocks.updateMapJobPolicy).not.toHaveBeenCalled()
   })

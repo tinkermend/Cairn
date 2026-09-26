@@ -2,6 +2,7 @@ import {
   candidateGroupsOf,
   expectKindLabel,
   joinOutcomeEvaluations,
+  loopBodyHeadersOf,
   joinRuntimeInvariantEvaluations,
   STEP_SKIP_REASON_LABELS,
   type JoinedOutcomeEvaluation,
@@ -95,7 +96,7 @@ export function OutcomeAxisSummary({
 }
 
 export function OutcomeConditionList({
-  runId,
+  runId: _runId,
   run,
   evidenceItems,
   onEdit,
@@ -114,6 +115,7 @@ export function OutcomeConditionList({
     run.outcomeResults,
     run.stepRuns,
     candidateGroupsOf(run.snapshot),
+    loopBodyHeadersOf(run.snapshot.controlFlow),
   )
   const invariantRows = joinRuntimeInvariantEvaluations(
     run.snapshot.runtimeInvariantManifest,

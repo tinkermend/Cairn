@@ -23,6 +23,74 @@ import {
   observationPreviewText,
   targetFromPickedLabel,
 } from './pick-apply'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Label } from '@/components/ui/label'
+
+export type ScreenAlignmentStatus =
+  | 'aligned'
+  | 'ahead'
+  | 'behind'
+  | 'session_initial'
+  | 'offline_snapshot'
+  | 'disconnected'
+
+export function computeScreenAlignment(input: {
+  sessionOpen: boolean
+  liveRun?: {
+    status: string
+    checkpoint?: {
+      stepId: string
+      reason: string
+    } | null
+    stepRuns: Array<{ stepId: string; status: string }>
+  } | null
+  selectedStepId?: string | null
+  stepOrder: string[]
+  hasOfflineScreenshot?: boolean
+}): ScreenAlignmentStatus {
+  const { sessionOpen, liveRun, selectedStepId, stepOrder, hasOfflineScreenshot } = input
+  if (!selectedStepId) return 'disconnected'
+
+  const selIdx = stepOrder.indexOf(selectedStepId)
+  if (selIdx < 0) return 'disconnected'
+
+  if (!liveRun) {
+    if (sessionOpen) {
+      return selIdx === 0 ? 'aligned' : 'session_initial'
+    }
+    return hasOfflineScreenshot ? 'offline_snapshot' : 'disconnected'
+  }
+
+  const checkpoint = liveRun.checkpoint
+  if (liveRun.status === 'HOLDING' && checkpoint) {
+    const chkIdx = stepOrder.indexOf(checkpoint.stepId)
+    if (chkIdx < 0) return 'disconnected'
+
+    if (checkpoint.reason === 'author_pause') {
+      if (selIdx === chkIdx) return 'aligned'
+      return chkIdx < selIdx ? 'behind' : 'ahead'
+    }
+
+    if (checkpoint.reason === 'step_succeeded') {
+      if (selIdx === chkIdx + 1) return 'aligned'
+      return chkIdx + 1 < selIdx ? 'behind' : 'ahead'
+    }
+
+    if (selIdx === chkIdx) return 'aligned'
+    return chkIdx < selIdx ? 'behind' : 'ahead'
+  }
+
+  return 'disconnected'
+}
 
 type AuthoringObserveValue = {
   runId?: string
@@ -132,6 +200,48 @@ export function AuthoringObserveProvider({
   const canHighlight = authoring?.highlight !== 'closed'
   const canDebugHold = authoring?.debugHold !== 'closed'
 
+  const [disambiguationModal, setDisambiguationModal] = useState<{
+    visibleText: string
+    accessibleName: string
+    observation: TargetObservation
+  } | null>(null)
+  const [disambiguationChoice, setDisambiguationChoice] = useState<'visible_text' | 'accessible_name'>('visible_text')
+
+  const confirmDisambiguation = (choice: 'visible_text' | 'accessible_name') => {
+    if (!disambiguationModal) return
+    const { visibleText, accessibleName, observation } = disambiguationModal
+    let target = observation.target!
+    let previewText = visibleText
+
+    if (choice === 'visible_text') {
+      const rest = target.candidates.filter(
+        (c) => !(c.by === 'text' && c.value === visibleText),
+      )
+      target = {
+        ...target,
+        candidates: [{ by: 'text' as const, value: visibleText }, ...rest].slice(0, 5),
+      }
+      previewText = visibleText
+    } else {
+      previewText = observationPreviewText(observation) || accessibleName
+    }
+
+    setLastPicked(target)
+    setPickModeState(false)
+    setDisambiguationModal(null)
+
+    if (!holding) {
+      onApplyTarget(target, { previewText })
+      toast.success(`已用「${previewText}」写入当前步骤`)
+    } else {
+      toast.success('已点到元素，可写入本次验证或写回草稿')
+    }
+
+    if (canHighlight) {
+      void observePage({ op: 'highlight', target }).then(setHighlight).catch(() => undefined)
+    }
+  }
+
   const observePage = (body: Parameters<typeof observeRun>[1]) => {
     if (holding && runId) return observeRun(runId, body)
     if (sessionId) return observeSession(sessionId, body)
@@ -215,6 +325,15 @@ export function AuthoringObserveProvider({
               return
             }
             if (observation.target && observation.outcome === 'FOUND') {
+              if (observation.disambiguation) {
+                setDisambiguationModal({
+                  visibleText: observation.disambiguation.visibleText,
+                  accessibleName: observation.disambiguation.accessibleName,
+                  observation,
+                })
+                setDisambiguationChoice('visible_text')
+                return
+              }
               setLastPicked(observation.target)
               setPickModeState(false)
               const previewText = observationPreviewText(observation)
@@ -379,6 +498,48 @@ export function AuthoringObserveProvider({
   return (
     <AuthoringObserveContext.Provider value={value}>
       {children}
+      {disambiguationModal ? (
+        <Dialog open onOpenChange={(open) => !open && setDisambiguationModal(null)}>
+          <DialogContent className='sm:max-w-md'>
+            <DialogHeader>
+              <DialogTitle className='flex items-center gap-1.5'>
+                <span>🎯</span>
+                <span>请确认目标语义</span>
+              </DialogTitle>
+              <DialogDescription>
+                检测到该元素页面上显示的文本与底层无障碍名称存在差异，请确认采用哪一个作为定位描述：
+              </DialogDescription>
+            </DialogHeader>
+            <RadioGroup
+              value={disambiguationChoice}
+              onValueChange={(val) => setDisambiguationChoice(val as 'visible_text' | 'accessible_name')}
+              className='space-y-2 py-2'
+            >
+              <div className='flex items-center space-x-2 rounded-md border border-border-card p-3 bg-muted/20'>
+                <RadioGroupItem value='visible_text' id='r-vis' />
+                <Label htmlFor='r-vis' className='flex-1 cursor-pointer text-small'>
+                  <span className='font-semibold text-foreground'>页面可见字：「{disambiguationModal.visibleText}」</span>
+                  <span className='ml-2 text-status-success-foreground font-medium'>(推荐)</span>
+                </Label>
+              </div>
+              <div className='flex items-center space-x-2 rounded-md border border-border-card p-3 bg-muted/20'>
+                <RadioGroupItem value='accessible_name' id='r-aria' />
+                <Label htmlFor='r-aria' className='flex-1 cursor-pointer text-small'>
+                  <span className='font-semibold text-foreground'>无障碍名称：「{disambiguationModal.accessibleName}」</span>
+                </Label>
+              </div>
+            </RadioGroup>
+            <DialogFooter className='gap-2 sm:gap-0'>
+              <Button variant='outline' onClick={() => setDisambiguationModal(null)}>
+                取消
+              </Button>
+              <Button onClick={() => confirmDisambiguation(disambiguationChoice)}>
+                确认采用
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </AuthoringObserveContext.Provider>
   )
 }

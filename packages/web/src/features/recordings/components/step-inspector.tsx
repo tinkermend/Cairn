@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import type { RecordingEvent, RecordingItem } from '@cairn/shared'
+import type { DemonstrationDetail, RecordingEvent, RecordingItem } from '@cairn/shared'
 import {
   AlertCircle,
+  Camera,
   Check,
   ChevronDown,
   ChevronUp,
@@ -12,6 +13,7 @@ import { toast } from 'sonner'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Observation, actionLabels } from '../demonstration-facts'
 
 type Props = {
   item: RecordingItem | undefined
@@ -21,6 +23,7 @@ type Props = {
   onNext: () => void
   hasPrev: boolean
   hasNext: boolean
+  demonstrationDetail?: DemonstrationDetail
 }
 
 export function RecordingStepInspector({
@@ -31,6 +34,7 @@ export function RecordingStepInspector({
   onNext,
   hasPrev,
   hasNext,
+  demonstrationDetail,
 }: Props) {
   const [viewMode, setViewMode] = useState<'structured' | 'json'>('structured')
   const [copiedSelector, setCopiedSelector] = useState(false)
@@ -48,6 +52,14 @@ export function RecordingStepInspector({
   const relatedEvents = item.sourceIndexes
     .map((idx) => (idx >= 0 && idx < events.length ? events[idx] : null))
     .filter((e): e is RecordingEvent => e !== null)
+
+  // 提取示教关联事实与快照
+  const relatedFact = demonstrationDetail?.source.facts.find(
+    (f) => item.sourceIndexes.includes(f.sequence) || f.sequence === item.index,
+  )
+  const hasSnapshots = Boolean(
+    relatedFact && (relatedFact.before?.screenshotAssetId || relatedFact.after?.screenshotAssetId),
+  )
 
   const inputObj = item.input && typeof item.input === 'object' ? (item.input as Record<string, unknown>) : null
   const selector = typeof inputObj?.selector === 'string' ? inputObj.selector : null
@@ -139,16 +151,51 @@ export function RecordingStepInspector({
         </div>
       ) : null}
 
-      {/* 选项卡：步骤预览 / 定位与上下文 / 原始事件溯源 */}
+      {/* 选项卡：步骤预览 / 定位与上下文 / 原始事件溯源 / 动作快照 */}
       <Tabs defaultValue='preview' className='w-full'>
-        <TabsList className='grid w-full grid-cols-3 h-8'>
+        <TabsList className={hasSnapshots ? 'grid w-full grid-cols-4 h-8' : 'grid w-full grid-cols-3 h-8'}>
           <TabsTrigger value='preview' className='text-label'>候选步骤</TabsTrigger>
+          {hasSnapshots ? (
+            <TabsTrigger value='snapshots' className='text-label inline-flex items-center gap-1'>
+              <Camera className='size-3.5' />
+              快照证据
+            </TabsTrigger>
+          ) : null}
           <TabsTrigger value='locator' className='text-label'>定位与环境</TabsTrigger>
-          <TabsTrigger value='events' className='text-label'>原始事件 ({relatedEvents.length})</TabsTrigger>
+          <TabsTrigger value='events' className='text-label'>
+            {relatedEvents.length > 0 ? `原始事件 (${relatedEvents.length})` : '溯源数据'}
+          </TabsTrigger>
         </TabsList>
 
         {/* Tab 1: 候选步骤预览 */}
         <TabsContent value='preview' className='mt-3 space-y-3'>
+          {relatedFact ? (
+            <div className='rounded-md border border-border-card bg-surface-subtle p-2.5 space-y-1.5 text-label'>
+              <div className='flex items-center justify-between text-muted-foreground'>
+                <span className='font-medium'>示教语义</span>
+                <span className='font-mono font-medium text-primary'>
+                  {actionLabels[relatedFact.action] || relatedFact.action}
+                </span>
+              </div>
+              <p className='font-medium text-foreground break-words'>
+                {relatedFact.data.targetDescription ||
+                  relatedFact.data.instruction ||
+                  relatedFact.data.url ||
+                  item.name}
+              </p>
+              {relatedFact.data.value ? (
+                <p className='text-muted-foreground break-words'>
+                  输入值:{' '}
+                  <span className='text-foreground font-mono'>
+                    {relatedFact.data.value.state === 'literal'
+                      ? relatedFact.data.value.text || '（空）'
+                      : relatedFact.data.value.reason}
+                  </span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className='flex items-center justify-between'>
             <div className='flex items-center gap-2'>
               <span className='text-label text-muted-foreground'>目标 DSL 类型:</span>
@@ -250,6 +297,25 @@ export function RecordingStepInspector({
           )}
         </TabsContent>
 
+        {/* Tab: 动作快照证据 */}
+        {hasSnapshots && relatedFact ? (
+          <TabsContent value='snapshots' className='mt-3 space-y-3'>
+            <p className='text-label text-muted-foreground'>
+              录制操作执行前后的页面截图证据：
+            </p>
+            <div className='grid gap-3 sm:grid-cols-2'>
+              {(['before', 'after'] as const).map((phase) => (
+                <Observation
+                  key={`${relatedFact.id}-${phase}`}
+                  title={phase === 'before' ? '动作前' : '动作后'}
+                  observation={relatedFact[phase]}
+                  detail={demonstrationDetail}
+                />
+              ))}
+            </div>
+          </TabsContent>
+        ) : null}
+
         {/* Tab 2: 定位与环境上下文 */}
         <TabsContent value='locator' className='mt-3 space-y-3'>
           <div className='rounded-md border border-border-card bg-card p-3 space-y-2 text-label'>
@@ -259,6 +325,15 @@ export function RecordingStepInspector({
                 {item.pageAlias || 'page0 (主页面)'}
               </span>
             </div>
+
+            {relatedFact?.data.targetDescription ? (
+              <div>
+                <span className='text-muted-foreground'>目标元素描述:</span>
+                <span className='ms-2 font-medium text-foreground'>
+                  {relatedFact.data.targetDescription}
+                </span>
+              </div>
+            ) : null}
 
             <div>
               <span className='text-muted-foreground'>嵌套 Frame 路径:</span>
@@ -304,9 +379,11 @@ export function RecordingStepInspector({
         {/* Tab 3: 原始事件溯源 */}
         <TabsContent value='events' className='mt-3 space-y-2'>
           <p className='text-label text-muted-foreground'>
-            本步骤由插件捕获的 {relatedEvents.length} 个浏览器底层事件聚合规整而成：
+            {relatedEvents.length > 0
+              ? `本步骤由插件捕获的 ${relatedEvents.length} 个浏览器底层事件聚合规整而成：`
+              : '底层录制事实详情：'}
           </p>
-          {relatedEvents.length === 0 ? (
+          {relatedEvents.length === 0 && !relatedFact ? (
             <div className='rounded-md border border-dashed border-border-card p-4 text-center text-label text-muted-foreground'>
               无对应原始事件记录
             </div>
@@ -339,6 +416,16 @@ export function RecordingStepInspector({
                   ) : null}
                 </div>
               ))}
+              {relatedFact ? (
+                <details className='text-label'>
+                  <summary className='cursor-pointer py-1 font-medium text-muted-foreground hover:text-foreground'>
+                    查看关联示教事实 (Fact #{relatedFact.sequence}) JSON
+                  </summary>
+                  <pre className='mt-1 max-h-52 overflow-auto rounded bg-surface-subtle p-2.5 font-mono text-label text-foreground'>
+                    {JSON.stringify(relatedFact, null, 2)}
+                  </pre>
+                </details>
+              ) : null}
             </div>
           )}
         </TabsContent>

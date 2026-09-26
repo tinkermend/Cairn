@@ -40,6 +40,7 @@ type TrialDialogProps = {
   revision: number
   inputs: ScenarioInputDecl[]
   needsAccount?: boolean
+  pauseBeforeStepId?: string
   onCreated: (run: RunDetailDto) => void
   onConflict: () => void
 }
@@ -57,6 +58,7 @@ export function TrialDialog({
   revision,
   inputs,
   needsAccount = false,
+  pauseBeforeStepId,
   onCreated,
   onConflict,
 }: TrialDialogProps) {
@@ -79,7 +81,7 @@ export function TrialDialog({
   const emptyAccountReason = accounts.isPending ? undefined : unusableAccountReason(accountItems)
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
-  const fingerprint = JSON.stringify({ revision, targetAccountId, values })
+  const fingerprint = JSON.stringify({ revision, targetAccountId, values, pauseBeforeStepId })
   const keyRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
@@ -94,9 +96,11 @@ export function TrialDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='sm:max-w-lg'>
         <DialogHeader>
-          <DialogTitle>试跑当前草稿</DialogTitle>
+          <DialogTitle>{pauseBeforeStepId ? '运行到此步前置' : '试跑当前草稿'}</DialogTitle>
           <DialogDescription>
-            从第一步执行已保存的草稿。结果留在本页并自动跟随进度。本次试跑不会改草稿。
+            {pauseBeforeStepId
+              ? '从第一步执行已保存的草稿，并在指定步骤前暂停。结果留在本页并自动跟随进度。'
+              : '从第一步执行已保存的草稿。结果留在本页并自动跟随进度。本次试跑不会改草稿。'}
           </DialogDescription>
         </DialogHeader>
         <div className='space-y-4'>
@@ -160,6 +164,7 @@ export function TrialDialog({
                 revision,
                 targetAccountId: targetAccountId || undefined,
                 input: parsed.data,
+                pauseBeforeStepId,
                 idempotencyKey: keyRef.current,
               })
                 .then((detail) => {
@@ -177,7 +182,7 @@ export function TrialDialog({
                 .finally(() => setSaving(false))
             }}
           >
-            开始试跑
+            {pauseBeforeStepId ? '开始断点试跑' : '开始试跑'}
           </Button>
         </DialogFooter>
       </DialogContent>

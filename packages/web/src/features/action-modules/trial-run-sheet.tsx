@@ -128,14 +128,14 @@ export function TrialRunSheet({
             {connection && ` · ${connectionLabel(connection)}`}
           </SheetDescription>
           {moduleRevisionInfo && (
-            <div className='mt-2 flex flex-wrap items-center gap-2 text-xs'>
+            <div className='mt-2 flex flex-wrap items-center gap-2 text-label'>
               <Badge variant='outline' className='font-mono'>
                 {moduleRevisionInfo.versionNo
                   ? `本次执行已发布 v${moduleRevisionInfo.versionNo}`
                   : `本次执行已保存草稿 r${moduleRevisionInfo.draftRevision ?? 0}`}
               </Badge>
               {moduleRevisionInfo.isDirty && (
-                <span className='flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400'>
+                <span className='flex items-center gap-1 rounded bg-status-warning-background px-1.5 py-0.5 text-status-warning-foreground'>
                   <AlertTriangle className='size-3' />
                   编辑器有未保存修改，当前执行基于已保存版本
                 </span>

@@ -91,6 +91,18 @@ export function AiFields({
                 />
               )}
             />
+            <FormField
+              name='aiPathLearning.actionTrace'
+              render={({ field }) => (
+                <SwitchRow
+                  label='记录 AI 动作事实'
+                  help='开启后，新运行中的 AI 步骤会在动作发出前记录目标候选与值来源，用于评估把 AI 路径固化为确定性步骤。目标系统可在其设置里单独关闭。'
+                  checked={Boolean(field.value)}
+                  disabled={!canWrite}
+                  onCheckedChange={field.onChange}
+                />
+              )}
+            />
           </SwitchGrid>
           <FieldGrid>
             <FormField

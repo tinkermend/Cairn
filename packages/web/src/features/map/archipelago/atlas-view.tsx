@@ -162,11 +162,11 @@ export function AtlasView({
 
         {/* 视口与抽屉 */}
         {atlasQuery.isLoading ? (
-          <div className='p-12'>
+          <div className='flex-1 min-h-0 flex items-center justify-center p-12'>
             <PageSkeleton />
           </div>
         ) : atlasQuery.isError ? (
-          <div className='p-6'>
+          <div className='flex-1 min-h-0 flex items-center justify-center p-6'>
             <QueryErrorState
               description={atlasQuery.error?.message}
               onRetry={() => void atlasQuery.refetch()}

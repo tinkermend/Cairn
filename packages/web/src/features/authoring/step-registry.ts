@@ -20,6 +20,8 @@ export const DETERMINISTIC_STUDIO_TYPES = [
   'wait',
   'download',
   'upload',
+  'probe',
+  'compute',
   'echo',
   'delay',
   'fail',
@@ -42,6 +44,9 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   wait: '等待条件',
   download: '下载文件',
   upload: '文件上传',
+  probe: '页面检查',
+  compute: '计算值',
+  decide: '条件判定',
   ai_action: 'AI 操作',
   ai_extract: 'AI 提取',
   ai_assert: 'AI 判断',
@@ -50,9 +55,11 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   map_guarded_action: '探索守卫',
   map_verify: '探索核验',
   verify_context: '核验上下文',
+  loop: '循环头',
 }
 
 export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
+  loop: '系统步骤：控制流循环执行',
   navigate: '打开页面',
   click: '点击元素',
   fill: '填写输入',
@@ -63,6 +70,9 @@ export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
   wait: '等待条件满足',
   download: '等待或触发下载并保留为轻量句柄',
   upload: '向页面上传 Target 夹具或上下文文件',
+  probe: '检查页面元素、文本或 URL 是否匹配',
+  compute: '基于上下文计算表达式值',
+  decide: '按条件判定分支走向',
   echo: '回显上下文',
   delay: '等待一段时间',
   fail: '主动失败',
@@ -82,6 +92,8 @@ export const DEFAULT_EFFECT: Record<DeterministicStudioType, EffectType> = {
   echo: 'READ_ONLY',
   delay: 'READ_ONLY',
   wait: 'READ_ONLY',
+  probe: 'READ_ONLY',
+  compute: 'READ_ONLY',
   navigate: 'SIDE_EFFECT',
   click: 'SIDE_EFFECT',
   fill: 'SIDE_EFFECT',
@@ -194,7 +206,10 @@ export function createBlankStep(
   if (type === 'verify_context') {
     throw new Error('系统步骤不进入 Studio 步骤库')
   }
-  const effectType = DEFAULT_EFFECT[type]
+  if (type === 'decide') {
+    throw new Error('判定步骤由流程控制块自动生成，不进入 Studio 步骤库')
+  }
+  const effectType = DEFAULT_EFFECT[type as keyof typeof DEFAULT_EFFECT] ?? 'READ_ONLY'
   switch (type) {
     case 'navigate':
       return {
@@ -288,5 +303,35 @@ export function createBlankStep(
           ],
         },
       }
+    case 'probe':
+      return {
+        id,
+        name: '页面检查',
+        type: 'probe',
+        effectType: 'READ_ONLY',
+        outputKey: uniqueOutputKey('probe', taken),
+        input: {
+          kind: 'element',
+          target: defaultTarget('目标元素'),
+          state: 'visible',
+          waitMs: 2000,
+        },
+      }
+    case 'compute':
+      return {
+        id,
+        name: '计算值',
+        type: 'compute',
+        effectType: 'READ_ONLY',
+        outputKey: uniqueOutputKey('computed', taken),
+        input: {
+          expression: {
+            kind: 'literal',
+            value: '',
+          },
+        },
+      }
+    default:
+      throw new Error(`不支持的步骤类型: ${type}`)
   }
 }

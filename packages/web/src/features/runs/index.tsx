@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   RUN_EXECUTE_ALL_OF,
@@ -69,10 +69,13 @@ import {
   runOutcomeStatusTone,
 } from './outcome-labels'
 
+const route = getRouteApi('/_authenticated/runs/')
+
 export function RunsPage() {
   const page = useCursorPage()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const routeSearch = route.useSearch()
   const canReadTargets = useCan('target:read')
   const canReadScenarios = useCan('workflow:read')
   const canDelete = useCan('run:delete')
@@ -101,7 +104,7 @@ export function RunsPage() {
   const [removing, setRemoving] = useState<RunSummaryDto | null>(null)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<string>('all')
-  const [targetId, setTargetId] = useState<string>('all')
+  const targetId = routeSearch.targetId ?? 'all'
   const [scenarioId, setScenarioId] = useState<string>('all')
   const [isTrial, setIsTrial] = useState<'all' | 'true'>('all')
   const [isMapJob, setIsMapJob] = useState<'all' | 'true'>('all')
@@ -166,7 +169,14 @@ export function RunsPage() {
   }
 
   const handleTargetChange = (val: string) => {
-    setTargetId(val)
+    void navigate({
+      to: '/runs',
+      search: {
+        targetId: val === 'all' ? undefined : val,
+        search: routeSearch.search,
+        status: routeSearch.status,
+      },
+    })
     page.reset()
   }
 
@@ -430,7 +440,7 @@ export function RunsPage() {
                       onClick={() => {
                         setSearch('')
                         setStatus('all')
-                        setTargetId('all')
+                        handleTargetChange('all')
                         setScenarioId('all')
                         setIsTrial('all')
                         setIsMapJob('all')

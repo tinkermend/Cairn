@@ -11,6 +11,7 @@ import {
 import { fieldElementId, type BindingOption } from '../document'
 import { useAuthoringObserve } from '../observe'
 import { ContextBindingPopover } from './context-binding-popover'
+import { ContextMentionInput } from '@/features/scenarios/components/context-mention-input'
 
 export function BindingFields({
   id,
@@ -101,12 +102,16 @@ export function BindingFields({
               <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
             )}
           </Label>
-          <Input
+          <ContextMentionInput
             id={`step-value-${id}`}
             aria-label='内容'
             value={from ? '' : value}
             disabled={disabled || Boolean(from)}
-            onChange={(event) => onBinding('', event.target.value)}
+            bindings={bindings}
+            mode='binding_picker'
+            onSelectBinding={(b) => onBinding(b.key, '')}
+            onChange={(val) => onBinding('', val)}
+            placeholder={from ? '从引用填充' : '输入内容，或输入 @ 快速选择上下文变量'}
           />
         </div>
       </div>

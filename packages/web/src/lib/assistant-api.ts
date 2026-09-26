@@ -7,10 +7,12 @@ import {
   cancelResultSchema,
   createAssistantConversationBodySchema,
   createAssistantTurnBodySchema,
+  deleteAssistantConversationResultSchema,
   submitAcceptedSchema,
   type AssistantCapabilitiesResponse,
   type AssistantConversation,
   type AssistantConversationList,
+  type DeleteAssistantConversationResult,
   type AssistantStage,
   type AssistantTurn,
   type AssistantTurnList,
@@ -50,6 +52,16 @@ export function fetchAssistantConversations(query?: {
   return apiFetch(
     `/api/assistant/conversations${toQueryString(query)}`,
     assistantConversationListSchema,
+  )
+}
+
+export function deleteAssistantConversation(
+  conversationId: string,
+): Promise<DeleteAssistantConversationResult> {
+  return apiFetch(
+    `/api/assistant/conversations/${conversationId}/delete`,
+    deleteAssistantConversationResultSchema,
+    post({}),
   )
 }
 

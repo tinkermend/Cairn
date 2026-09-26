@@ -26,7 +26,13 @@ const mocks = vi.hoisted(() => ({
   fetchPlatformConfig: vi.fn(),
   fetchMapJobPolicy: vi.fn(),
   fetchMapSafeEntries: vi.fn(),
+  fetchTarget: vi.fn(),
+  fetchTargets: vi.fn(),
   fetchTargetAccounts: vi.fn(),
+  fetchScenarios: vi.fn(),
+  fetchScenario: vi.fn(),
+  fetchSuites: vi.fn(),
+  fetchSuite: vi.fn(),
 }))
 
 vi.mock('@/lib/schedules-api', () => ({
@@ -44,7 +50,17 @@ vi.mock('@/lib/map-api', () => ({
   fetchMapSafeEntries: mocks.fetchMapSafeEntries,
 }))
 vi.mock('@/lib/targets-api', () => ({
+  fetchTarget: mocks.fetchTarget,
+  fetchTargets: mocks.fetchTargets,
   fetchTargetAccounts: mocks.fetchTargetAccounts,
+}))
+vi.mock('@/lib/scenarios-api', () => ({
+  fetchScenarios: mocks.fetchScenarios,
+  fetchScenario: mocks.fetchScenario,
+}))
+vi.mock('@/lib/suites-api', () => ({
+  fetchSuites: mocks.fetchSuites,
+  fetchSuite: mocks.fetchSuite,
 }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ to, ...props }: { to: string } & ComponentProps<'a'>) => (
@@ -146,6 +162,13 @@ describe('知识地图采集计划', () => {
         },
       ],
     })
+    mocks.fetchTarget.mockResolvedValue({
+      id: TARGET_ID,
+      name: '电商系统',
+    })
+    mocks.fetchTargets.mockResolvedValue({
+      items: [{ id: TARGET_ID, name: '电商系统' }],
+    })
     mocks.fetchTargetAccounts.mockResolvedValue({
       items: [
         {
@@ -158,6 +181,8 @@ describe('知识地图采集计划', () => {
         },
       ],
     })
+    mocks.fetchScenarios.mockResolvedValue({ items: [] })
+    mocks.fetchSuites.mockResolvedValue({ items: [] })
   })
 
   it('默认关闭，工厂关闭时说明不会触发', async () => {
@@ -170,48 +195,33 @@ describe('知识地图采集计划', () => {
       .toBeVisible()
     await expect.element(page.getByText(/出厂关闭/)).toBeVisible()
     await expect
-      .element(screen.getByRole('button', { name: '保存计划' }))
-      .toBeDisabled()
+      .element(screen.getByRole('button', { name: '配置定时采集' }))
+      .toBeVisible()
   })
 
-  it('新建计划选择账号和进入路径后，提交所选时间规则', async () => {
+  it('新建计划点击配置定时采集，打开统一调度对话框并提交', async () => {
     mocks.createSchedule.mockResolvedValue({
       created: true,
       schedule: { scheduleId: SCHEDULE_ID, revision: 1 },
     })
     const screen = await renderCard()
+    await screen.getByRole('button', { name: '配置定时采集' }).click()
+
     await expect
-      .element(screen.getByRole('button', { name: '保存计划' }))
-      .toBeDisabled()
+      .element(page.getByRole('heading', { name: '新建调度' }))
+      .toBeVisible()
 
-    await screen.getByLabelText('目标账号').click()
+    await page.getByLabelText('地图用途账号').click()
     await page.getByRole('option', { name: '值班账号' }).click()
-    await screen.getByLabelText('进入路径').click()
+    await page.getByLabelText('安全进入').click()
     await page.getByRole('option', { name: '订单入口' }).click()
-    await screen.getByLabelText('IANA 时区').fill('Asia/Tokyo')
-    await screen.getByLabelText('周一').click()
-    await screen.getByLabelText('周日').click()
-    await screen.getByLabelText('开始（本地）').fill('08:20')
-    await screen.getByLabelText('结束（本地）').fill('09:50')
 
-    await screen.getByRole('button', { name: '保存计划' }).click()
+    await page.getByRole('button', { name: '仅保存' }).click()
+
     await expect.poll(() => mocks.createSchedule.mock.calls.length).toBe(1)
     expect(mocks.createSchedule.mock.calls[0][0]).toMatchObject({
       expectedRevision: 0,
       definition: {
-        timezone: 'Asia/Tokyo',
-        weekdays: [2, 3, 4, 5, 7],
-        windowStart: '08:20',
-        windowEnd: '09:50',
-        timeRule: {
-          kind: 'calendar',
-          timezone: 'Asia/Tokyo',
-          weekdays: [2, 3, 4, 5, 7],
-          windows: [
-            { ruleId: 'default', windowStart: '08:20', windowEnd: '09:50' },
-          ],
-          misfire: 'skip',
-        },
         consumer: {
           type: 'map_refresh',
           targetId: TARGET_ID,
@@ -220,10 +230,9 @@ describe('知识地图采集计划', () => {
         },
       },
     })
-    expect(mocks.updateSchedule).not.toHaveBeenCalled()
   })
 
-  it('可预览并保存计划，已准入不显示为成功', async () => {
+  it('已有计划展示排期状态与执行概况，快捷开关启停', async () => {
     mocks.fetchSchedules.mockResolvedValue({
       items: [
         {
@@ -235,11 +244,21 @@ describe('知识地图采集计划', () => {
           revision: 1,
           currentVersionId: '55555555-5555-4555-8555-555555555555',
           definition: {
+            name: '知识地图采集',
             timezone: 'Asia/Shanghai',
             weekdays: [1, 2, 3, 4, 5],
             windowStart: '02:00',
             windowEnd: '03:00',
             misfire: 'skip',
+            timeRule: {
+              kind: 'calendar',
+              timezone: 'Asia/Shanghai',
+              weekdays: [1, 2, 3, 4, 5],
+              windows: [
+                { ruleId: 'default', windowStart: '02:00', windowEnd: '03:00' },
+              ],
+              misfire: 'skip',
+            },
             consumer: {
               type: 'map_refresh',
               targetId: TARGET_ID,
@@ -272,29 +291,33 @@ describe('知识地图采集计划', () => {
         },
       ],
     })
-    mocks.previewSchedule.mockResolvedValue({
-      asOf: '2026-09-16T00:00:00.000Z',
-      windows: [],
-      gaps: [{ code: 'FACTORY_DISABLED', message: '平台尚未开放自动复查' }],
+    mocks.setScheduleEnabled.mockResolvedValue({
+      enabled: true,
+      revision: 2,
     })
-    mocks.updateSchedule.mockResolvedValue({
-      created: false,
-      schedule: { scheduleId: SCHEDULE_ID, revision: 2 },
-    })
+
     const screen = await renderCard()
+    await expect
+      .element(page.getByText('计划已停用'))
+      .toBeVisible()
     await expect
       .element(page.getByText(/已准入（已创建作业，不等于采集完成）/))
       .toBeVisible()
-    await screen.getByRole('button', { name: '预览窗口' }).click()
-    expect(mocks.previewSchedule).toHaveBeenCalled()
-    await screen.getByRole('button', { name: '保存计划' }).click()
-    expect(mocks.updateSchedule).toHaveBeenCalledWith(
+    await expect
+      .element(page.getByText('值班账号 (ops)'))
+      .toBeVisible()
+    await expect
+      .element(page.getByText('订单入口'))
+      .toBeVisible()
+
+    await screen.getByRole('switch', { name: '开启计划' }).click()
+    expect(mocks.setScheduleEnabled).toHaveBeenCalledWith(
       SCHEDULE_ID,
-      expect.objectContaining({ expectedRevision: 1 })
+      expect.objectContaining({ enabled: true })
     )
   })
 
-  it('编辑时区、星期和窗口后，预览与保存提交界面所示的时间规则', async () => {
+  it('已有计划点击编辑计划，打开统一调度对话框并更新', async () => {
     mocks.fetchSchedules.mockResolvedValue({
       items: [
         existingSchedule({
@@ -308,101 +331,24 @@ describe('知识地图采集计划', () => {
         }),
       ],
     })
-    mocks.previewSchedule.mockResolvedValue({
-      asOf: '2026-09-16T00:00:00.000Z',
-      windows: [],
-      gaps: [],
-    })
     mocks.updateSchedule.mockResolvedValue({
       created: false,
       schedule: { scheduleId: SCHEDULE_ID, revision: 4 },
     })
 
     const screen = await renderCard()
+    await screen.getByRole('button', { name: '编辑计划' }).click()
+
     await expect
-      .element(screen.getByLabelText('IANA 时区'))
-      .toHaveValue('Asia/Shanghai')
-    await screen.getByLabelText('IANA 时区').fill('Asia/Tokyo')
-    await screen.getByLabelText('周一').click()
-    await screen.getByLabelText('周六').click()
-    await screen.getByLabelText('开始（本地）').fill('09:15')
-    await screen.getByLabelText('结束（本地）').fill('10:45')
+      .element(page.getByRole('heading', { name: '编辑调度' }))
+      .toBeVisible()
 
-    const expectedRule = {
-      kind: 'calendar',
-      timezone: 'Asia/Tokyo',
-      weekdays: [2, 3, 4, 5, 6],
-      windows: [
-        { ruleId: 'default', windowStart: '09:15', windowEnd: '10:45' },
-      ],
-      misfire: 'skip',
-    }
-    const expectedFields = {
-      timezone: 'Asia/Tokyo',
-      weekdays: [2, 3, 4, 5, 6],
-      windowStart: '09:15',
-      windowEnd: '10:45',
-      timeRule: expectedRule,
-    }
-
-    await screen.getByRole('button', { name: '预览窗口' }).click()
-    await expect.poll(() => mocks.previewSchedule.mock.calls.length).toBe(1)
-    expect(mocks.previewSchedule.mock.calls[0][0].definition).toMatchObject(
-      expectedFields
-    )
-
-    await screen.getByRole('button', { name: '保存计划' }).click()
+    await page.getByRole('button', { name: '仅保存' }).click()
     await expect.poll(() => mocks.updateSchedule.mock.calls.length).toBe(1)
-    expect(mocks.updateSchedule.mock.calls[0][1].definition).toMatchObject(
-      expectedFields
-    )
+    expect(mocks.updateSchedule.mock.calls[0][0]).toBe(SCHEDULE_ID)
   })
 
-  it('已有自定义单窗口计划再次保存保留时间规则和计划字段', async () => {
-    const timeRule: Extract<
-      ScheduleDefinition['timeRule'],
-      { kind: 'calendar' }
-    > = {
-      kind: 'calendar',
-      timezone: 'Asia/Tokyo',
-      weekdays: [2, 4],
-      windows: [
-        { ruleId: 'night-shift', windowStart: '09:30', windowEnd: '10:45' },
-      ],
-      misfire: 'skip',
-    }
-    const schedule = existingSchedule(timeRule)
-    mocks.fetchSchedules.mockResolvedValue({ items: [schedule] })
-    mocks.updateSchedule.mockResolvedValue({
-      created: false,
-      schedule: { scheduleId: SCHEDULE_ID, revision: 4 },
-    })
-
-    const screen = await renderCard()
-    await expect
-      .element(screen.getByLabelText('IANA 时区'))
-      .toHaveValue('Asia/Tokyo')
-    await expect
-      .element(screen.getByLabelText('开始（本地）'))
-      .toHaveValue('09:30')
-    await expect
-      .element(screen.getByLabelText('结束（本地）'))
-      .toHaveValue('10:45')
-    await screen.getByRole('button', { name: '保存计划' }).click()
-
-    await expect.poll(() => mocks.updateSchedule.mock.calls.length).toBe(1)
-    expect(mocks.updateSchedule.mock.calls[0][1].definition).toMatchObject({
-      name: '自定义复查计划',
-      effectiveAt: '2026-09-16T00:00:00.000Z',
-      timezone: 'Asia/Tokyo',
-      weekdays: [2, 4],
-      windowStart: '09:30',
-      windowEnd: '10:45',
-      timeRule,
-    })
-  })
-
-  it('多窗口计划提示到定时任务编辑，快捷卡片不可预览或保存', async () => {
+  it('多窗口计划正常展示排期概览，不弹离开提示，可直接点击编辑', async () => {
     mocks.fetchSchedules.mockResolvedValue({
       items: [
         existingSchedule({
@@ -419,17 +365,14 @@ describe('知识地图采集计划', () => {
     })
     const screen = await renderCard()
     await expect
-      .element(screen.getByText(/此计划使用间隔或多个时间窗口/))
+      .element(screen.getByText(/02:00–03:00, 18:00–19:00/))
       .toBeVisible()
     await expect
-      .element(screen.getByRole('link', { name: '定时任务' }))
-      .toHaveAttribute('href', '/schedules')
-    await expect
-      .element(screen.getByRole('button', { name: '预览窗口' }))
+      .element(screen.getByText(/此计划使用间隔或多个时间窗口/))
       .not.toBeInTheDocument()
     await expect
-      .element(screen.getByRole('button', { name: '保存计划' }))
-      .not.toBeInTheDocument()
+      .element(screen.getByRole('button', { name: '编辑计划' }))
+      .toBeVisible()
   })
 
   it('无写入权限只读', async () => {
@@ -439,7 +382,7 @@ describe('知识地图采集计划', () => {
       .element(page.getByText(/需要调度写入和地图维护权限才能设置知识地图采集/))
       .toBeVisible()
     await expect
-      .element(page.getByRole('button', { name: '保存计划' }))
+      .element(page.getByRole('button', { name: '配置定时采集' }))
       .not.toBeInTheDocument()
   })
 })

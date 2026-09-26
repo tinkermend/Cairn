@@ -59,4 +59,29 @@ describe('TrialDialog', () => {
     await vi.waitFor(() => expect(mocks.trialScenario).toHaveBeenCalledTimes(1))
     expect(mocks.trialScenario.mock.calls[0]![1]).not.toHaveProperty('evidencePolicy')
   })
+
+  it('支持 pauseBeforeStepId 断点试跑模式', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <TrialDialog
+          open
+          onOpenChange={vi.fn()}
+          scenarioId={SCENARIO_ID}
+          targetId={TARGET_ID}
+          revision={1}
+          inputs={[]}
+          pauseBeforeStepId='step-123'
+          onCreated={vi.fn()}
+          onConflict={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByText('运行到此步前置')).toBeInTheDocument()
+    await screen.getByRole('button', { name: '开始断点试跑' }).click()
+    await vi.waitFor(() => expect(mocks.trialScenario).toHaveBeenCalledTimes(1))
+    expect(mocks.trialScenario.mock.calls[0]![1]).toMatchObject({
+      pauseBeforeStepId: 'step-123',
+    })
+  })
 })

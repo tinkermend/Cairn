@@ -426,6 +426,13 @@ export function BrowserView({
         ) {
           setToken(null)
         }
+        if (error instanceof ApiRequestError && error.payload.code === 'PAGE_STALE') {
+          void fetchManagedBrowser(runId, viewPageId)
+            .then((next) => {
+              if (next) setMeta(next)
+            })
+            .catch(() => undefined)
+        }
         toast.error(
           error instanceof ApiRequestError ? error.message : '输入被拒绝'
         )
@@ -519,6 +526,13 @@ export function BrowserView({
           error.payload.code.startsWith('AUTH_'))
       )
         setToken(null)
+      if (error instanceof ApiRequestError && error.payload.code === 'PAGE_STALE') {
+        void fetchManagedBrowser(runId, viewPageId)
+          .then((next) => {
+            if (next) setMeta(next)
+          })
+          .catch(() => undefined)
+      }
       toast.error(
         error instanceof ApiRequestError ? error.message : '输入被拒绝'
       )

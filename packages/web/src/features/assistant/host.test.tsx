@@ -31,6 +31,7 @@ vi.mock('@/lib/assistant-api', () => ({
     items: [],
     nextCursor: null,
   })),
+  deleteAssistantConversation: vi.fn(async () => ({ id: 'mock', deleted: true })),
   fetchAssistantTurns: vi.fn(),
   fetchAssistantTurn: vi.fn(),
   cancelAssistantTurn: vi.fn(async () => ({ canceled: true })),

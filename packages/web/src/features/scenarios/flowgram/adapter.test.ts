@@ -1,5 +1,5 @@
 import { compileScenarioDocument } from '@cairn/authoring'
-import { type ScenarioDocument } from '@cairn/shared'
+import { walkAuthoringNodes, type ScenarioDocument } from '@cairn/shared'
 import { describe, expect, it } from 'vitest'
 import { applyFlowgramOrder, toFlowgram } from './adapter'
 
@@ -126,11 +126,11 @@ describe('FlowGram 与 Structured Step 边界', () => {
     expect(roundtrip).toEqual(v2)
     graph.nodes = [graph.nodes[2]!, graph.nodes[1]!, graph.nodes[0]!]
     const reordered = applyFlowgramOrder(v2, graph)
-    expect(reordered.nodes.map((node) => (node.kind === 'step' ? node.step.id : node.invocationId))).toEqual([
+    expect(walkAuthoringNodes(reordered).map((item) => item.id)).toEqual([
       document.steps[2]!.id,
       '44444444-4444-4444-8444-444444444444',
       document.steps[0]!.id,
     ])
-    expect(reordered.nodes[1]).toEqual(v2.nodes[1])
+    expect(walkAuthoringNodes(reordered)[1]?.node).toEqual(walkAuthoringNodes(v2)[1]?.node)
   })
 })

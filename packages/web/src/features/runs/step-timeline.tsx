@@ -4,15 +4,17 @@ import {
   isAiStepType,
   isSelectionDecision,
   skipReasonForStep,
+  stepRunFor,
   STEP_SKIP_REASON_LABELS,
   type ExecutableStepType,
+  type ControlFlowIfBlock,
   type ModuleManifestEntry,
   type RunDetailDto,
   type RunEvidenceListResponse,
   type StepRunDto,
   type StepRunStatus,
 } from '@cairn/shared'
-import { ChevronDown, ChevronRight, Layers, MessageSquare } from 'lucide-react'
+import { ChevronDown, ChevronRight, GitBranch, Layers, MessageSquare } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Can } from '@/components/rbac/can'
@@ -24,6 +26,7 @@ import { MODULE_EXECUTION_MODE_LABELS } from '@/features/action-modules/labels'
 import { AiAttemptSummary } from './ai-evidence'
 import { AttemptEvidenceList } from './evidence-viewer'
 import { StepFaceScreenshot, stepFaceScreenshot } from './run-video'
+import { LoopIterationsPanel } from './loop-iterations'
 import {
   ATTEMPT_STATUS_LABELS,
   formatDuration,
@@ -48,6 +51,7 @@ type StepTimelineProps = {
 type TimelineGroup =
   | { kind: 'module'; entry: ModuleManifestEntry; stepRuns: StepRunDto[] }
   | { kind: 'step'; stepRun: StepRunDto }
+  | { kind: 'if'; block: ControlFlowIfBlock; stepRuns: StepRunDto[] }
 
 function computeGroupStatus(stepRuns: StepRunDto[]): StepRunStatus {
   if (stepRuns.some((s) => s.status === 'FAILED') && !stepRuns.some((s) => s.status === 'SUCCEEDED')) return 'FAILED'
@@ -80,8 +84,16 @@ export function StepTimeline({
   const manifest = run.snapshot?.moduleManifest
   const entries = manifest?.entries ?? []
 
+  const ifBlocks = useMemo(() => topLevelIfBlocks(run), [run.snapshot])
+
   const groups = useMemo<TimelineGroup[]>(() => {
-    if (entries.length === 0) {
+    // 顶层条件块：判定步骤与两段分支在快照里连续，归成一组；块外步骤仍按模块或单步分组。
+    const blockOfStep = new Map<string, ControlFlowIfBlock>()
+    for (const block of ifBlocks) {
+      blockOfStep.set(block.decideStepId, block)
+      for (const branch of block.branches) for (const stepId of branch.stepIds) blockOfStep.set(stepId, block)
+    }
+    if (entries.length === 0 && blockOfStep.size === 0) {
       return run.stepRuns.map((stepRun) => ({ kind: 'step', stepRun }))
     }
 
@@ -96,6 +108,17 @@ export function StepTimeline({
     let currentModuleGroup: { entry: ModuleManifestEntry; stepRuns: StepRunDto[] } | null = null
 
     for (const stepRun of run.stepRuns) {
+      const block = blockOfStep.get(stepRun.stepId)
+      if (block) {
+        if (currentModuleGroup) {
+          result.push({ kind: 'module', ...currentModuleGroup })
+          currentModuleGroup = null
+        }
+        const last = result[result.length - 1]
+        if (last?.kind === 'if' && last.block.blockId === block.blockId) last.stepRuns.push(stepRun)
+        else result.push({ kind: 'if', block, stepRuns: [stepRun] })
+        continue
+      }
       const entry = stepIdToEntry.get(stepRun.stepId)
       if (entry) {
         if (currentModuleGroup && currentModuleGroup.entry.invocationId === entry.invocationId) {
@@ -118,7 +141,7 @@ export function StepTimeline({
       result.push({ kind: 'module', ...currentModuleGroup })
     }
     return result
-  }, [entries, run.stepRuns])
+  }, [entries, ifBlocks, run.stepRuns])
 
   const initialExpanded = useMemo(() => {
     const state: Record<string, boolean> = {}
@@ -189,8 +212,24 @@ export function StepTimeline({
 
       <ol className='space-y-3'>
         {groups.map((group, groupIndex) => {
-          if (group.kind === 'step') {
+          if (group.kind === 'if') {
             return (
+              <IfBlockGroup
+                key={group.block.blockId}
+                block={group.block}
+                stepRuns={group.stepRuns}
+                runId={run.id}
+                evidenceItems={evidenceItems}
+                focusStepRunId={focusStepRunId}
+                focusAttemptId={focusAttemptId}
+                focusEvidenceId={focusEvidenceId}
+                currentStepRunId={currentStepRunId}
+                onSelectStep={onSelectStep}
+              />
+            )
+          }
+          if (group.kind === 'step') {
+            const item = (
               <StepRunItem
                 key={group.stepRun.id}
                 step={group.stepRun}
@@ -203,6 +242,22 @@ export function StepTimeline({
                 onSelectStep={onSelectStep}
               />
             )
+            if (group.stepRun.type !== 'loop') return item
+            // 循环体的步骤记录按项存放，不在运行详情里；在循环头下面按需展开。
+            return [
+              item,
+              <LoopIterationsPanel
+                key={`${group.stepRun.id}-iterations`}
+                run={run}
+                headerStepRun={group.stepRun}
+                evidenceItems={evidenceItems}
+                focusStepRunId={focusStepRunId}
+                focusAttemptId={focusAttemptId}
+                focusEvidenceId={focusEvidenceId}
+                currentStepRunId={currentStepRunId}
+                onSelectStep={onSelectStep}
+              />,
+            ]
           }
 
           const entry = group.entry
@@ -351,7 +406,7 @@ function renderModuleSteps({
   })
 }
 
-function StepRunItem({
+export function StepRunItem({
   step,
   runId,
   evidenceItems,
@@ -395,7 +450,7 @@ function StepRunItem({
             {STEP_RUN_STATUS_LABELS[step.status]}
           </StatusBadge>
           {step.skipReason === 'optional_absent' ? (
-            <Badge variant='outline' className='border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300'>
+            <Badge variant='outline' className='border-transparent bg-status-info-background text-status-info-foreground'>
               未出现，已跳过
             </Badge>
           ) : step.skipReason === 'condition_not_met' ? (
@@ -417,11 +472,15 @@ function StepRunItem({
                   className={cn(
                     'text-3xs font-medium',
                     lastOutput.branch === 'then'
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                      : 'border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                      ? 'border-transparent bg-status-success-background text-status-success-foreground'
+                      : 'border-transparent bg-status-warning-background text-status-warning-foreground'
                   )}
                 >
-                  {lastOutput.branch === 'then' ? '判定成立 → 执行满足分支' : '判定不成立 → 执行否则分支'}
+                  {lastOutput.branch === 'then'
+                    ? '判定成立 → 执行满足分支'
+                    : lastOutput.branch === 'else'
+                      ? '判定不成立 → 执行否则分支'
+                      : '判定不成立 → 跳过满足分支'}
                 </Badge>
               )
             }
@@ -432,7 +491,7 @@ function StepRunItem({
                   className={cn(
                     'text-3xs font-medium',
                     lastOutput.matched
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                      ? 'border-transparent bg-status-success-background text-status-success-foreground'
                       : 'border-border bg-muted text-muted-foreground'
                   )}
                 >
@@ -440,13 +499,15 @@ function StepRunItem({
                 </Badge>
               )
             }
-            if (step.type === 'compute' && lastOutput && 'value' in lastOutput) {
+            // 计算值步骤的输出就是结果本身（数字、文本、列表……），不是 { value } 包装。
+            if (step.type === 'compute' && lastAttempt?.status === 'SUCCEEDED' && lastOutput !== undefined) {
+              const shown = typeof lastOutput === 'object' && lastOutput !== null ? JSON.stringify(lastOutput) : String(lastOutput)
               return (
                 <Badge
                   variant='outline'
-                  className='text-3xs font-medium border-purple-300 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
+                  className='text-3xs font-medium border-transparent bg-status-info-background text-status-info-foreground'
                 >
-                  计算值: {typeof lastOutput.value === 'object' ? JSON.stringify(lastOutput.value) : String(lastOutput.value)}
+                  计算值: {shown.length > 80 ? `${shown.slice(0, 77)}...` : shown}
                 </Badge>
               )
             }
@@ -572,6 +633,119 @@ function StepRunItem({
           />
         </div>
       ))}
+    </li>
+  )
+}
+
+function topLevelIfBlocks(run: RunDetailDto): ControlFlowIfBlock[] {
+  return (run.snapshot.controlFlow?.blocks ?? []).filter(
+    (block): block is ControlFlowIfBlock => block.kind === 'if' && !block.parentBlockId,
+  )
+}
+
+type DecideOutput = { branch?: 'then' | 'else' | 'none'; value?: boolean }
+
+function decideOutputOf(stepRun: StepRunDto | undefined): DecideOutput | undefined {
+  const succeeded = stepRun?.attempts.filter((item) => item.status === 'SUCCEEDED') ?? []
+  const output = succeeded[succeeded.length - 1]?.output
+  return output && typeof output === 'object' && !Array.isArray(output) ? (output as DecideOutput) : undefined
+}
+
+/** 条件块分组：判定结果在标题上，未走的分支默认折叠并写明跳过原因。 */
+function IfBlockGroup({
+  block,
+  stepRuns,
+  runId,
+  evidenceItems,
+  focusStepRunId,
+  focusAttemptId,
+  focusEvidenceId,
+  currentStepRunId,
+  onSelectStep,
+}: {
+  block: ControlFlowIfBlock
+  stepRuns: StepRunDto[]
+  runId: string
+  evidenceItems: EvidenceItem[]
+  focusStepRunId?: string
+  focusAttemptId?: string
+  focusEvidenceId?: string
+  currentStepRunId?: string | null
+  onSelectStep?: (stepRunId: string, attemptId?: string) => void
+}) {
+  const decide = stepRunFor(stepRuns, block.decideStepId)
+  const output = decideOutputOf(decide)
+  const takenKey = output?.branch === 'then' || output?.branch === 'else' ? output.branch : undefined
+  const branches = (['then', 'else'] as const).map((key) => {
+    const ids = new Set(block.branches.find((item) => item.key === key)?.stepIds ?? [])
+    return { key, stepRuns: stepRuns.filter((item) => ids.has(item.stepId)) }
+  })
+  const skippedCount = branches
+    .filter((item) => item.key !== takenKey)
+    .reduce((sum, item) => sum + item.stepRuns.length, 0)
+  const [openUntaken, setOpenUntaken] = useState(false)
+  const containsFocus = stepRuns.some((item) => item.id === focusStepRunId)
+
+  const headline = !output
+    ? decide?.status === 'FAILED'
+      ? '条件无法判定'
+      : '等待判定'
+    : takenKey === 'then'
+      ? '条件成立 → 执行'
+      : takenKey === 'else'
+        ? '条件不成立 → 执行否则分支'
+        : `条件不成立 → 跳过 ${skippedCount} 步`
+
+  const renderStep = (step: StepRunDto) => (
+    <StepRunItem
+      key={step.id}
+      step={step}
+      runId={runId}
+      evidenceItems={evidenceItems}
+      focusStepRunId={focusStepRunId}
+      focusAttemptId={focusAttemptId}
+      focusEvidenceId={focusEvidenceId}
+      currentStepRunId={currentStepRunId}
+      onSelectStep={onSelectStep}
+    />
+  )
+
+  return (
+    <li className='rounded-md border border-border-card bg-card/60 p-3 shadow-xs' data-testid='if-block-group'>
+      <div className='flex flex-wrap items-center gap-2'>
+        <GitBranch className='size-4 text-primary' />
+        <span className='font-medium text-body'>{decide?.name ?? '满足条件时执行'}</span>
+        <span className='text-label text-muted-foreground'>{headline}</span>
+      </div>
+      <ol className='mt-3 space-y-2 border-t border-border-card/60 pt-3 ps-2'>
+        {decide ? renderStep(decide) : null}
+        {branches.map((branch) => {
+          if (branch.stepRuns.length === 0) return null
+          const taken = branch.key === takenKey
+          const open = taken || !output || openUntaken || containsFocus
+          const label = branch.key === 'then' ? '满足条件时' : '否则'
+          return (
+            <li key={branch.key} className='space-y-2'>
+              <button
+                type='button'
+                aria-expanded={open}
+                disabled={taken || !output}
+                onClick={() => setOpenUntaken((prev) => !prev)}
+                className='flex items-center gap-1.5 text-label text-muted-foreground disabled:cursor-default'
+              >
+                {open ? <ChevronDown className='size-3.5' /> : <ChevronRight className='size-3.5' />}
+                <span className='font-medium text-foreground'>{label}</span>
+                {!taken && output ? (
+                  <span>
+                    已跳过 {branch.stepRuns.length} 步（{STEP_SKIP_REASON_LABELS.condition_not_met}）
+                  </span>
+                ) : null}
+              </button>
+              {open ? <ol className='space-y-2 ps-4'>{branch.stepRuns.map(renderStep)}</ol> : null}
+            </li>
+          )
+        })}
+      </ol>
     </li>
   )
 }

@@ -1,330 +1,130 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import type { TargetDto } from '@cairn/shared'
-import {
-  ArrowUpRight,
-  Check,
-  Compass,
-  Copy,
-  ExternalLink,
-  Globe2,
-  Layers,
-  Users,
-} from 'lucide-react'
+import { ArrowUpRight, BookOpen, Check, Copy, ExternalLink, History, Layers } from 'lucide-react'
 import { toast } from 'sonner'
-import { fetchSessionOverview } from '@/lib/sessions-api'
-import { fetchScenarios } from '@/lib/scenarios-api'
-import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
-import { Can } from '@/components/rbac/can'
-import {
-  AUTH_METHOD_LABELS,
-  CAPTCHA_MODE_LABELS,
-} from './labels'
-import {
-  ACCOUNT_SESSION_STATUS_LABELS,
-  ACCOUNT_SESSION_STATUS_TONE,
-} from '@/features/sessions/labels'
-import { accountSessionOccupancyText } from '@/features/sessions/occupancy-label'
+import { canOnTarget } from '@/lib/rbac'
+import { useAuthStore } from '@/stores/auth-store'
+import { TargetIdentityIcon } from './target-identity-icon'
+import { AUTH_METHOD_LABELS, CAPTCHA_MODE_LABELS, TARGET_STATUS_LABELS } from './labels'
+import { ACCOUNT_SESSION_STATUS_LABELS, ACCOUNT_SESSION_STATUS_TONE } from '@/features/sessions/labels'
+import { type TargetOverviewItem, formatOverviewTime, readinessLabel, readinessTone } from './target-overview-display'
 
-interface TargetOverviewPanelProps {
-  target: TargetDto
-  onDelete: (target: TargetDto) => void
+const actionLabels = {
+  view_conditions: '查看运行条件',
+  handle_login: '处理登录',
+  view_login: '查看登录状态',
+  check_login: '检查登录状态',
+  view_run: '查看当前运行',
+  manage_sessions: '管理账号与会话',
+  view_sessions: '查看账号与会话',
+  view_target: '查看系统详情',
+} as const
+
+function PrimaryAction({ item, onConditions }: { item: TargetOverviewItem; onConditions: () => void }) {
+  const readiness = item.readiness
+  if (readiness.state === 'forbidden') return <Button asChild className='w-full'><Link to='/targets/$targetId' params={{ targetId: item.target.id }}>查看系统详情</Link></Button>
+  const action = readiness.value.nextAction
+  const label = actionLabels[action.kind]
+  if (action.kind === 'view_conditions') return <Button className='w-full' onClick={onConditions}>{label}</Button>
+  if (action.kind === 'handle_login' || action.kind === 'view_login' || action.kind === 'check_login') {
+    return action.targetAccountId ? <Button asChild className='w-full'><Link to='/sessions/$targetId/$accountId' params={{ targetId: item.target.id, accountId: action.targetAccountId }}>{label}</Link></Button> : null
+  }
+  if (action.kind === 'view_run') return action.runId ? <Button asChild className='w-full'><Link to='/runs/$runId' params={{ runId: action.runId }}>{label}</Link></Button> : null
+  if (action.kind === 'manage_sessions' || action.kind === 'view_sessions') return <Button asChild className='w-full'><Link to='/sessions/$targetId' params={{ targetId: item.target.id }}>{label}</Link></Button>
+  return <Button asChild className='w-full'><Link to='/targets/$targetId' params={{ targetId: item.target.id }}>{label}</Link></Button>
 }
 
-export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelProps) {
+export function TargetOverviewPanel({
+  item, onDelete, compact = false,
+}: {
+  item: TargetOverviewItem
+  onDelete: (item: TargetOverviewItem) => void
+  compact?: boolean
+}) {
+  const { target } = item
+  const user = useAuthStore((state) => state.auth.user)
+  const canAddAccount = canOnTarget(user, 'target:write', target.id)
+  const canDelete = canOnTarget(user, 'target:delete', target.id) && canOnTarget(user, 'run:delete', target.id)
   const [copied, setCopied] = useState(false)
-  const canReadSession = useCan('session:read')
-  const canReadMap = useCan('map:read')
+  const [conditionsOpen, setConditionsOpen] = useState(false)
+  const accounts = item.accounts.state === 'available' ? item.accounts.value : null
+  const activity = item.activities.state === 'available' ? item.activities.value : null
+  const showReadinessReason = item.readiness.state === 'available' && (
+    ['need_login', 'identity_mismatch', 'lost', 'needs_check', 'unknown'].includes(item.readiness.value.state)
+    || (item.readiness.value.state === 'ready' && Boolean(accounts?.needLoginAccounts))
+  )
 
-  const sessionQuery = useQuery({
-    queryKey: ['sessions-overview', { targetId: target.id }],
-    queryFn: () => fetchSessionOverview({ targetId: target.id }),
-    enabled: canReadSession && Boolean(target.id),
-    staleTime: 10_000,
-  })
-
-  const scenarioQuery = useQuery({
-    queryKey: ['scenarios', { targetId: target.id }],
-    queryFn: () => fetchScenarios({ targetId: target.id, limit: 10 }),
-    enabled: Boolean(target.id),
-    staleTime: 30_000,
-  })
-
-  const sessionSummary = sessionQuery.data?.summary
-  const sessionAccounts = sessionQuery.data?.items ?? []
-  const scenarioItems = scenarioQuery.data?.items ?? []
-  const activeScenarios = scenarioItems.filter((s) => s.status === 'active').length
-
-  const handleCopyUrl = async () => {
+  const copyUrl = async () => {
     try {
       await navigator.clipboard.writeText(target.entryUrl)
       setCopied(true)
-      toast.success('已复制系统入口地址')
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      toast.error('复制失败，请手动复制')
-    }
+      toast.success('已复制系统入口')
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch { toast.error('复制失败，请手动复制') }
   }
 
-  return (
-    <aside
-      id='target-overview'
-      aria-label='系统概览'
-      className='min-w-0 rounded-lg border border-border-card bg-card shadow-card'
-    >
-      {/* 头部：系统信息 */}
-      <div className='border-b border-border-divider p-4'>
-        <div className='flex items-center gap-3'>
-          <span
-            aria-hidden='true'
-            className='flex size-10 shrink-0 items-center justify-center rounded-lg bg-selection-background text-primary'
-          >
-            <Globe2 className='size-5' />
-          </span>
-          <div className='min-w-0 flex-1'>
-            <h2 className='text-section font-semibold break-words leading-tight'>
-              {target.name}
-            </h2>
-            <p className='mt-0.5 font-mono text-label break-all text-muted-foreground'>
-              {target.code}
-            </p>
-          </div>
+  return <aside id={compact ? undefined : 'target-overview'} aria-label='系统概览' className={compact ? 'min-w-0 bg-card' : 'min-w-0 overflow-hidden rounded-xl border border-border-card bg-card shadow-card'}>
+    <div className='border-b border-border-divider p-4'>
+      <div className='flex items-start gap-3'>
+        <TargetIdentityIcon iconKey={target.iconKey} accentKey={target.accentKey} size='lg' />
+        <div className='min-w-0 flex-1'>
+          <h2 className='break-words text-section font-semibold leading-tight text-text-primary'>{target.name}</h2>
+          <div className='mt-1'><StatusBadge tone={target.status === 'active' ? 'success' : 'neutral'}>{TARGET_STATUS_LABELS[target.status]}</StatusBadge></div>
         </div>
       </div>
-
-      {/* 入口 URL 与快捷操作 */}
-      <div className='border-b border-border-divider p-4 space-y-1.5'>
-        <span className='text-label font-medium text-text-primary'>系统入口</span>
-        <div className='flex items-center justify-between gap-2 rounded-md border border-border-divider bg-surface-subtle px-2.5 py-1.5'>
-          <span
-            className='truncate font-mono text-small text-text-primary'
-            title={target.entryUrl}
-          >
-            {target.entryUrl}
-          </span>
-          <div className='flex items-center gap-1 shrink-0'>
-            <Button
-              variant='ghost'
-              size='icon'
-              className='size-7 text-muted-foreground hover:text-text-primary'
-              onClick={handleCopyUrl}
-              aria-label='复制系统入口'
-              title='复制系统入口'
-            >
-              {copied ? (
-                <Check className='size-3.5 text-status-success-foreground' />
-              ) : (
-                <Copy className='size-3.5' />
-              )}
-            </Button>
-            <Button
-              variant='ghost'
-              size='icon'
-              className='size-7 text-muted-foreground hover:text-text-primary'
-              asChild
-            >
-              <a
-                href={target.entryUrl}
-                target='_blank'
-                rel='noopener noreferrer'
-                aria-label='在新标签页打开系统入口'
-                title='在新标签页打开系统入口'
-              >
-                <ExternalLink className='size-3.5' />
-              </a>
-            </Button>
-          </div>
-        </div>
+      <div className='mt-3 flex min-w-0 items-center gap-1 rounded-md border border-border-divider bg-surface-subtle px-2 py-1'>
+        <span className='min-w-0 flex-1 truncate font-mono text-label text-text-secondary' title={target.entryUrl}>{target.entryUrl}</span>
+        <Button variant='ghost' size='icon' className='size-7 shrink-0' onClick={() => void copyUrl()} aria-label='复制系统入口' title='复制系统入口'>{copied ? <Check className='size-3.5' /> : <Copy className='size-3.5' />}</Button>
+        <Button variant='ghost' size='icon' className='size-7 shrink-0' asChild><a href={target.entryUrl} target='_blank' rel='noopener noreferrer' aria-label='打开系统入口' title='打开系统入口'><ExternalLink className='size-3.5' /></a></Button>
       </div>
+    </div>
 
-      {/* 目标账号与会话健康度 */}
-      <div className='border-b border-border-divider p-4 space-y-2.5'>
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-1.5'>
-            <Users className='size-4 text-muted-foreground' />
-            <span className='text-label font-medium text-text-primary'>目标账号与会话</span>
-          </div>
-          {canReadSession ? (
-            <Link
-              to='/sessions/$targetId'
-              params={{ targetId: target.id }}
-              className='inline-flex items-center gap-0.5 text-label text-link hover:underline'
-            >
-              维护会话
-              <ArrowUpRight className='size-3' />
-            </Link>
-          ) : null}
-        </div>
-
-        <div className='flex items-center justify-between text-label text-muted-foreground'>
-          <span>
-            {sessionSummary
-              ? `就绪 ${sessionSummary.available} / 共 ${target.accountCount} 个`
-              : `${target.accountCount} 个账号`}
-          </span>
-          <span>{AUTH_METHOD_LABELS[target.authMethod]}</span>
-        </div>
-
-        {target.accountCount === 0 ? (
-          <p className='text-label text-muted-foreground'>
-            未配置目标账号，场景无法执行
-          </p>
-        ) : sessionQuery.isPending ? (
-          <p className='text-label text-muted-foreground'>查询会话状态中…</p>
-        ) : sessionAccounts.length > 0 ? (
-          <div className='space-y-1.5'>
-            {sessionAccounts.slice(0, 3).map((account) => (
-              <div
-                key={account.targetAccountId}
-                className='flex items-center justify-between rounded-md border border-border-divider bg-surface-subtle px-2.5 py-1.5 text-small'
-              >
-                <div className='min-w-0 pr-2'>
-                  <div
-                    className='truncate font-medium text-text-primary text-small'
-                    title={account.accountDisplayName}
-                  >
-                    {account.accountDisplayName}
-                  </div>
-                  <div
-                    className='truncate font-mono text-label text-muted-foreground'
-                    title={account.accountUsername}
-                  >
-                    {account.accountUsername}
-                  </div>
-                </div>
-                <div className='flex shrink-0 items-center gap-1.5'>
-                  <StatusBadge
-                    tone={ACCOUNT_SESSION_STATUS_TONE[account.status]}
-                    className='text-label px-1.5 py-0.5'
-                  >
-                    {ACCOUNT_SESSION_STATUS_LABELS[account.status]}
-                  </StatusBadge>
-                  {accountSessionOccupancyText(account) ? (
-                    <span className='tabular-nums text-label text-muted-foreground'>
-                      {accountSessionOccupancyText(account)}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-            {sessionAccounts.length > 3 ? (
-              <p className='text-center text-label text-muted-foreground pt-0.5'>
-                另有 {sessionAccounts.length - 3} 个账号
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        {target.captchaMode !== 'none' ? (
-          <div className='flex items-center justify-between pt-1 text-label text-muted-foreground'>
-            <span>验证码防护</span>
-            <StatusBadge tone='warning' className='text-label px-1.5 py-0.5'>
-              {CAPTCHA_MODE_LABELS[target.captchaMode]}
-            </StatusBadge>
-          </div>
-        ) : null}
+    {accounts && item.readiness.state === 'available' ? <section className='space-y-3 border-b border-border-divider p-4' aria-label='运行准备'>
+      <div className='flex items-center justify-between gap-2'><h3 className='text-small font-semibold text-text-primary'>运行准备</h3><StatusBadge tone={readinessTone(item)}>{readinessLabel(item)}</StatusBadge></div>
+      <div className='grid grid-cols-2 gap-2'>
+        <div className='rounded-lg border border-border-divider bg-surface-subtle p-2.5'><span className='text-label text-muted-foreground'>业务账号就绪</span><p className='mt-1 font-mono text-stat font-semibold tabular-nums text-text-primary'>{accounts.eligibleBusinessTotal === 0 ? '—' : accounts.readyAccounts + ' / ' + accounts.eligibleBusinessTotal}</p></div>
+        <div className='rounded-lg border border-border-divider bg-surface-subtle p-2.5'><span className='text-label text-muted-foreground'>待关注</span><p className='mt-1 font-mono text-stat font-semibold tabular-nums text-text-primary'>{accounts.attentionAccounts}</p></div>
       </div>
+      {accounts.eligibleBusinessTotal === 0 ? <p className='text-label text-muted-foreground'>暂无浏览器业务账号；此项对非浏览器场景不适用。</p> : null}
+      {showReadinessReason && item.readiness.state === 'available' ? <p className='text-small text-text-secondary'>{item.readiness.value.reason}</p> : null}
+      {(accounts.unpreparedAccounts > 0 || accounts.occupiedAccounts > 0 || (item.runs.state === 'available' && item.runs.value.running > 0)) ? <p className='text-label text-muted-foreground'>{[accounts.unpreparedAccounts > 0 ? accounts.unpreparedAccounts + ' 个待准备' : '', accounts.occupiedAccounts > 0 ? accounts.occupiedAccounts + ' 个使用中' : '', item.runs.state === 'available' && item.runs.value.running > 0 ? item.runs.value.running + ' 个运行中' : ''].filter(Boolean).join(' · ')}</p> : null}
+      <PrimaryAction item={item} onConditions={() => setConditionsOpen((open) => !open)} />
+      {conditionsOpen ? <div className='rounded-lg border border-border-divider bg-surface-subtle p-3 text-small text-text-secondary'>
+        <p>只有浏览器场景需要业务账号与登录会话。运行时仍会按场景与账号策略复核条件。</p>
+        {item.scenarios.state === 'available' ? <p className='mt-1'>当前有 {item.scenarios.value.active} 个已启用场景。</p> : <p className='mt-1'>场景信息无权限查看。</p>}
+        {canAddAccount ? <Link to='/targets/$targetId' params={{ targetId: target.id }} search={{ action: 'create-account' }} className='mt-2 inline-flex text-link hover:underline'>添加业务账号<ArrowUpRight className='size-3.5' /></Link> : null}
+      </div> : null}
+    </section> : <section className='border-b border-border-divider p-4'><p className='text-small text-muted-foreground'>无权限查看会话和目标账号状态。</p></section>}
 
-      {/* 关联业务场景 */}
-      <div className='border-b border-border-divider p-4 space-y-2.5'>
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-1.5'>
-            <Layers className='size-4 text-muted-foreground' />
-            <span className='text-label font-medium text-text-primary'>关联业务场景</span>
-          </div>
-          <span className='text-label text-muted-foreground'>
-            {scenarioItems.length} 个 ({activeScenarios} 启用)
-          </span>
-        </div>
+    {accounts ? <section className='border-b border-border-divider p-4' aria-label='目标账号预览'>
+      <div className='flex items-center justify-between'><h3 className='text-small font-semibold text-text-primary'>目标账号</h3><Link to='/sessions/$targetId' params={{ targetId: target.id }} className='text-label text-link hover:underline'>查看全部</Link></div>
+      {accounts.preview.length === 0 ? <p className='mt-2 text-label text-muted-foreground'>暂无可预览的业务账号。</p> : <div className='mt-2 space-y-1.5'>{accounts.preview.map((account) => <Link key={account.targetAccountId} to='/sessions/$targetId/$accountId' params={{ targetId: target.id, accountId: account.targetAccountId }} className='block rounded-md border border-border-divider px-2.5 py-2 hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-ring'>
+        <div className='flex items-center justify-between gap-2'><span className='min-w-0 truncate text-small font-medium text-text-primary' title={account.displayName}>{account.displayName}</span><StatusBadge tone={ACCOUNT_SESSION_STATUS_TONE[account.status]}>{ACCOUNT_SESSION_STATUS_LABELS[account.status]}</StatusBadge></div>
+        <p className='mt-0.5 truncate text-label text-muted-foreground' title={account.reason}>{account.reason}</p>
+      </Link>)}</div>}
+      {accounts.hiddenAttentionCount > 0 ? <Link to='/sessions/$targetId' params={{ targetId: target.id }} className='mt-2 block text-label text-link hover:underline'>另有 {accounts.hiddenAttentionCount} 个待关注，查看全部</Link> : null}
+    </section> : null}
 
-        {scenarioQuery.isPending ? (
-          <p className='text-label text-muted-foreground'>加载关联场景中…</p>
-        ) : scenarioItems.length === 0 ? (
-          <p className='text-label text-muted-foreground'>暂无关联场景</p>
-        ) : (
-          <div className='space-y-1.5'>
-            {scenarioItems.slice(0, 3).map((scenario) => (
-              <div
-                key={scenario.id}
-                className='flex items-center justify-between rounded-md border border-border-divider bg-surface-subtle px-2.5 py-1.5 text-small'
-              >
-                <Link
-                  to='/scenarios/$scenarioId'
-                  params={{ scenarioId: scenario.id }}
-                  className='min-w-0 pr-2 truncate font-medium text-small text-text-primary hover:text-link hover:underline'
-                  title={scenario.name}
-                >
-                  {scenario.name}
-                </Link>
-                <StatusBadge
-                  tone={scenario.status === 'active' ? 'success' : 'neutral'}
-                  className='shrink-0 text-label px-1.5 py-0.5'
-                >
-                  {scenario.status === 'active' ? '已启用' : '已停用'}
-                </StatusBadge>
-              </div>
-            ))}
-            {scenarioItems.length > 3 ? (
-              <p className='text-center text-label text-muted-foreground pt-0.5'>
-                另有 {scenarioItems.length - 3} 个场景
-              </p>
-            ) : null}
-          </div>
-        )}
+    <section className='space-y-2 border-b border-border-divider p-4' aria-label='关联资产与活动'>
+      <h3 className='text-small font-semibold text-text-primary'>关联资产与活动</h3>
+      <div className='grid grid-cols-3 gap-2'>
+        {item.scenarios.state === 'available' ? <Link to='/scenarios' search={{ targetId: target.id }} className='flex min-h-20 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border border-border-divider bg-surface-subtle px-1 text-label font-medium text-text-primary hover:border-selection-border hover:bg-action-hover focus-visible:outline-2 focus-visible:outline-ring'><Layers className='size-4 text-link' aria-hidden='true' /><span>关联场景</span><span className='text-center text-label font-normal tabular-nums text-text-secondary'>{item.scenarios.value.total} 个 · {item.scenarios.value.active} 启用</span></Link> : null}
+        {item.knowledge.state === 'available' ? <Link to='/targets/$targetId/map' params={{ targetId: target.id }} search={{ view: 'list' }} className='flex min-h-18 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border border-border-divider bg-surface-subtle px-1 text-label font-medium text-text-primary hover:border-selection-border hover:bg-action-hover focus-visible:outline-2 focus-visible:outline-ring'><BookOpen className='size-4 text-link' aria-hidden='true' /><span>知识记录</span></Link> : null}
+        {item.runs.state === 'available' ? <Link to='/runs' search={{ targetId: target.id }} className='flex min-h-18 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border border-border-divider bg-surface-subtle px-1 text-label font-medium text-text-primary hover:border-selection-border hover:bg-action-hover focus-visible:outline-2 focus-visible:outline-ring'><History className='size-4 text-link' aria-hidden='true' /><span>执行记录</span></Link> : null}
       </div>
+      {item.scenarios.state === 'forbidden' ? <p className='text-label text-muted-foreground'>关联场景无权限查看</p> : null}
+      {item.knowledge.state === 'forbidden' ? <p className='text-label text-muted-foreground'>知识记录无权限查看</p> : null}
+      {item.runs.state === 'forbidden' ? <p className='text-label text-muted-foreground'>执行记录无权限查看</p> : null}
+      {activity ? <div className='border-t border-border-divider pt-2'><p className='text-label font-medium text-text-secondary'>最近活动{activity.sources.length < 2 ? ' · 仅显示可见来源' : ''}</p>{activity.items.length === 0 ? <p className='mt-1 text-label text-muted-foreground'>暂无可见活动</p> : <div className='mt-1 space-y-1.5'>{activity.items.map((event, index) => <div key={event.source + event.occurredAt + index} className='flex items-start justify-between gap-2 text-label'><span className='min-w-0 flex-1 truncate text-text-secondary' title={event.title}>{event.title}</span><time className='shrink-0 text-muted-foreground' dateTime={event.occurredAt} title={new Date(event.occurredAt).toLocaleString('zh-CN')}>{formatOverviewTime(event.occurredAt)}</time></div>)}</div>}</div> : <p className='text-label text-muted-foreground'>最近活动无权限查看</p>}
+    </section>
 
-      {/* 知识地图与元数据 */}
-      <div className='space-y-2 p-4 text-label text-muted-foreground'>
-        {canReadMap ? (
-          <div className='flex items-center justify-between'>
-            <span>知识地图</span>
-            <Link
-              to='/targets/$targetId/map'
-              params={{ targetId: target.id }}
-              className='inline-flex items-center gap-1 text-link hover:underline'
-            >
-              <Compass className='size-3.5' />
-              查看拓扑与元素
-              <ArrowUpRight className='size-3' />
-            </Link>
-          </div>
-        ) : null}
-
-        <div className='flex items-center justify-between'>
-          <span>最近更新</span>
-          <span>
-            {new Date(target.updatedAt).toLocaleString('zh-CN', {
-              hour12: false,
-            })}
-          </span>
-        </div>
-      </div>
-
-      {/* 底部操作 */}
-      <div className='flex flex-wrap items-center justify-between gap-2 border-t border-border-divider p-3.5'>
-        <Button variant='outline' size='sm' asChild>
-          <Link
-            to='/targets/$targetId'
-            params={{ targetId: target.id }}
-          >
-            管理系统与账号
-            <ArrowUpRight className='size-3.5' />
-          </Link>
-        </Button>
-        <Can allOf={['target:delete', 'run:delete']}>
-          <Button
-            variant='ghost'
-            size='sm'
-            className='text-destructive'
-            onClick={() => onDelete(target)}
-          >
-            删除
-          </Button>
-        </Can>
-      </div>
-    </aside>
-  )
+    <section className='space-y-1.5 p-4 text-label text-muted-foreground' aria-label='系统资料'>
+      <div className='flex justify-between gap-2'><span>认证方式</span><span>{AUTH_METHOD_LABELS[target.authMethod]}</span></div>
+      <div className='flex justify-between gap-2'><span>验证码</span><span>{CAPTCHA_MODE_LABELS[target.captchaMode]}</span></div>
+      <div className='flex justify-between gap-2'><span>配置更新于</span><time dateTime={target.updatedAt} title={new Date(target.updatedAt).toLocaleString('zh-CN')}>{formatOverviewTime(target.updatedAt)}</time></div>
+    </section>
+    <div className='flex items-center justify-between gap-2 border-t border-border-divider p-3'><Button variant='outline' size='sm' asChild><Link to='/targets/$targetId' params={{ targetId: target.id }}>查看系统详情<ArrowUpRight className='size-3.5' /></Link></Button>{canDelete ? <Button variant='ghost' size='sm' className='text-destructive' onClick={() => onDelete(item)}>删除</Button> : null}</div>
+  </aside>
 }

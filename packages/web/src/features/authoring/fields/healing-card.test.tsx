@@ -136,6 +136,25 @@ describe('HealingCard Component', () => {
     })
   })
 
+  it('点击再试本步时支持先保存草稿并携带 stepOverride', async () => {
+    debugRunMock.mockResolvedValueOnce(mockRun)
+    const onBeforeRetry = vi.fn().mockResolvedValue(true)
+    const currentStep = { ...mockRun.snapshot.steps[0]!, name: '修改后的步骤名称' }
+    const screen = await render(
+      <HealingCard run={mockRun} currentStep={currentStep} onBeforeRetry={onBeforeRetry} />,
+    )
+    const retryBtn = screen.getByRole('button', { name: '再试这一步' })
+    await retryBtn.click()
+    expect(onBeforeRetry).toHaveBeenCalledTimes(1)
+    expect(debugRunMock).toHaveBeenCalledWith('run-1', {
+      action: 'retry_current',
+      targetOverride: undefined,
+      fencingToken: 'fence-1',
+      confirmSideEffect: undefined,
+      stepOverride: currentStep,
+    })
+  })
+
   it('在成功或暂停态时展示继续后续步骤按钮', async () => {
     const succeededRun: RunDetailDto = {
       ...mockRun,

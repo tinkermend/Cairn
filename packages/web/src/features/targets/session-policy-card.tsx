@@ -4,6 +4,7 @@ import {
   activeDetectionReady,
   DEFAULT_SESSION_POLICY,
   type AccountSessionMode,
+  type BrowserIsolation,
   type SessionLostDisposition,
   type SessionPolicy,
   type SessionReclaimMode,
@@ -40,6 +41,11 @@ const LOST_DISPOSITION_LABELS: Record<SessionLostDisposition, string> = {
 const ACCOUNT_SESSION_MODE_LABELS: Record<AccountSessionMode, string> = {
   exclusive: '一账号一台浏览器',
   concurrent: '允许同账号多开',
+}
+
+const BROWSER_ISOLATION_LABELS: Record<BrowserIsolation, string> = {
+  SHARED: '共享宿主池（多 Context 隔离，轻量复用进程）',
+  DEDICATED: '独立 Chromium 进程（强隔离）',
 }
 
 function inheritLabel(overridden: boolean) {
@@ -380,6 +386,47 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
                 size='sm'
                 disabled={!canWrite}
                 onClick={() => saveField('accountSessionMode', null)}
+              >
+                清除本项目标覆盖
+              </Button>
+            ) : null}
+          </div>
+          <div className='space-y-2 sm:col-span-2'>
+            <div className='flex items-center justify-between gap-2'>
+              <Label htmlFor='session-browser-isolation'>浏览器宿主隔离</Label>
+              <span className='text-label text-muted-foreground'>
+                {inheritLabel(override?.browserIsolation != null)}
+              </span>
+            </div>
+            <Select
+              disabled={!canWrite || mutation.isPending}
+              value={draft.browserIsolation ?? 'DEDICATED'}
+              onValueChange={(value) => {
+                const browserIsolation = value as BrowserIsolation
+                setDraft((current) => ({ ...current, browserIsolation }))
+                saveField('browserIsolation', browserIsolation)
+              }}
+            >
+              <SelectTrigger id='session-browser-isolation' className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(BROWSER_ISOLATION_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className='text-label text-muted-foreground'>
+              共享宿主池在同一 Chromium 进程内通过独立 BrowserContext 隔离不同会话，显著降低内存与启动耗时；独立进程则为每个会话分配独占 Chromium 进程。
+            </p>
+            {override?.browserIsolation != null ? (
+              <Button
+                variant='ghost'
+                size='sm'
+                disabled={!canWrite}
+                onClick={() => saveField('browserIsolation', null)}
               >
                 清除本项目标覆盖
               </Button>

@@ -52,6 +52,7 @@ vi.mock('@/lib/sessions-api', () => ({
   fetchSessionOperation: (...args: unknown[]) => sessionMocks.fetchSessionOperation(...args),
   fetchAccountSessionEvents: (...args: unknown[]) => sessionMocks.fetchAccountSessionEvents(...args),
   cancelSessionOperation: (...args: unknown[]) => sessionMocks.cancelSessionOperation(...args),
+  observeSession: vi.fn(),
   sessionBrowserTransport: () => ({}),
   newSessionIdempotencyKey: (kind: string) => `session-${kind}-key`,
 }))
@@ -111,8 +112,11 @@ describe('StudioScreen Component', () => {
     targetAccountId?: string
     onStartTrial?: () => void
     permissions?: string[]
+    selectedStepId?: string
     selectedStepName?: string
     selectedIsFirst?: boolean
+    stepOrder?: string[]
+    onRunToStep?: (targetStepId: string) => void
     trialDisabledReason?: string
   }) {
     useAuthStore.getState().auth.setUser({
@@ -137,8 +141,11 @@ describe('StudioScreen Component', () => {
           targetId={props.targetId}
           targetAccountId={props.targetAccountId}
           onStartTrial={props.onStartTrial ?? vi.fn()}
+          selectedStepId={props.selectedStepId}
           selectedStepName={props.selectedStepName}
           selectedIsFirst={props.selectedIsFirst}
+          stepOrder={props.stepOrder}
+          onRunToStep={props.onRunToStep}
           trialDisabledReason={props.trialDisabledReason}
         />
       </QueryClientProvider>,
@@ -522,5 +529,98 @@ describe('StudioScreen Component', () => {
         force: true,
       }),
     )
+  })
+
+  it('展示对齐指示条并在未对齐时允许点击「运行到此步前置」', async () => {
+    observation.run = finishedRun
+    sessionMocks.fetchAccountSession.mockResolvedValue(openSession)
+    const onRunToStep = vi.fn()
+    const screen = await renderScreen({
+      runId: RUN_ID,
+      targetId: TARGET_ID,
+      targetAccountId: ACCOUNT_ID,
+      selectedStepId: 'step-2',
+      selectedStepName: '填写表单',
+      stepOrder: ['step-1', 'step-2', 'step-3'],
+      onRunToStep,
+    })
+
+    await expect
+      .element(screen.getByText(/当前画面处于【系统初始页】，选中的步骤是【填写表单】/))
+      .toBeInTheDocument()
+    const runBtn = screen.getByRole('button', { name: '运行到此步前置' })
+    await expect.element(runBtn).toBeInTheDocument()
+    await runBtn.click()
+    expect(onRunToStep).toHaveBeenCalledWith('step-2')
+  })
+
+  it('当步骤对齐时展示绿色对齐提示条', async () => {
+    observation.run = {
+      ...finishedRun,
+      status: 'HOLDING',
+      checkpoint: {
+        stepId: 'step-2',
+        reason: 'step_failed',
+        fencingToken: 'f-1',
+      } as any,
+    }
+    sessionMocks.fetchAccountSession.mockResolvedValue(openSession)
+    const screen = await renderScreen({
+      runId: RUN_ID,
+      targetId: TARGET_ID,
+      targetAccountId: ACCOUNT_ID,
+      selectedStepId: 'step-2',
+      selectedStepName: '填写表单',
+      stepOrder: ['step-1', 'step-2', 'step-3'],
+    })
+
+    await expect
+      .element(screen.getByText(/画面已对齐至步骤「填写表单」前置，可在画面上精准指认目标/))
+      .toBeInTheDocument()
+  })
+
+  it('离线且有历史截图时展示历史截图底图', async () => {
+    observation.run = {
+      ...finishedRun,
+      status: 'SUCCEEDED',
+      stepRuns: [
+        {
+          id: 'sr-1',
+          stepId: 'step-1',
+          status: 'SUCCEEDED',
+          attempts: [],
+        } as any,
+      ],
+    }
+    observation.evidence = {
+      items: [
+        {
+          id: 'ev-screenshot-1',
+          type: 'screenshot',
+          status: 'available',
+          stepRunId: 'sr-1',
+        } as any,
+      ],
+    }
+    sessionMocks.fetchAccountSession.mockResolvedValue({
+      session: null,
+      currentOperation: null,
+      lastAuthError: null,
+      occupancy: null,
+    })
+
+    const screen = await renderScreen({
+      runId: RUN_ID,
+      targetId: TARGET_ID,
+      targetAccountId: ACCOUNT_ID,
+      selectedStepId: 'step-1',
+      selectedStepName: '打开主页',
+      stepOrder: ['step-1', 'step-2'],
+    })
+
+    await expect
+      .element(screen.getByText(/正在展示历史试跑留存现场截图（离线参考）/))
+      .toBeInTheDocument()
+    await expect.element(screen.getByAltText('离线步骤历史截图')).toBeInTheDocument()
   })
 })

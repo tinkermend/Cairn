@@ -9,6 +9,7 @@ import {
   summarizeConversationTitle,
 } from '@/stores/assistant-store'
 import { useAuthStore } from '@/stores/auth-store'
+import { deleteAssistantConversation } from '@/lib/assistant-api'
 import { AssistantHost } from './host'
 
 vi.mock('@/features/runs/use-run-observation', () => ({
@@ -48,6 +49,8 @@ const mockConversations: AssistantConversation[] = [
   },
 ]
 
+let serverConversations: AssistantConversation[] = [...mockConversations]
+
 const mockHistoryTurns: AssistantTurn[] = [
   {
     id: 'turn-old-1',
@@ -75,9 +78,13 @@ vi.mock('@/lib/assistant-api', () => ({
     modelEnabled: true,
   })),
   fetchAssistantConversations: vi.fn(async () => ({
-    items: mockConversations,
+    items: serverConversations,
     nextCursor: null,
   })),
+  deleteAssistantConversation: vi.fn(async (id: string) => {
+    serverConversations = serverConversations.filter((c) => c.id !== id)
+    return { id, deleted: true }
+  }),
   fetchAssistantTurns: vi.fn(async (convId: string) => ({
     items: convId === 'conv-today' ? mockHistoryTurns : [],
     nextCursor: null,
@@ -110,6 +117,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 describe('识途助手升级（三）：新建会话、受控历史（3~5天）与分类引导卡片测试', () => {
   beforeEach(() => {
     localStorage.clear()
+    serverConversations = [...mockConversations]
+    vi.clearAllMocks()
     useAuthStore.getState().auth.reset()
     useAuthStore.getState().auth.setUser({
       id: 'usr-tester',
@@ -263,19 +272,20 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       await expect.element(page.getByText('历史诊断记录：超时已恢复')).toBeVisible()
     })
 
-    it('正例：支持在历史列表中点击垃圾桶就地移除单项会话，且当前激活被删时自动重置', async () => {
+    it('正例：支持在历史列表中点击垃圾桶真删除单项会话，调用 API 并在重新拉取历史后不再出现', async () => {
+      serverConversations = [
+        {
+          id: 'conv-today',
+          title: '需要被删除的会话',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]
       useAssistantStore.setState({
         open: true,
         conversationId: 'conv-today',
         historyOpen: true,
-        conversations: [
-          {
-            id: 'conv-today',
-            title: '需要被删除的会话',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ],
+        conversations: [...serverConversations],
       })
 
       render(<AssistantHost />)
@@ -285,9 +295,16 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       const deleteBtn = page.getByTestId('delete-conv-conv-today')
       await deleteBtn.click()
 
-      // 验证会话被移除，且由于被删的是当前激活项，自动重置为新会话
+      // 验证会话被移除，API 被调用，且由于被删的是当前激活项，自动重置为新会话
       expect(useAssistantStore.getState().conversations).toHaveLength(0)
       expect(useAssistantStore.getState().conversationId).toBeNull()
+      expect(deleteAssistantConversation).toHaveBeenCalledWith('conv-today')
+
+      // 模拟重新打开历史抽屉时触发 fetchRecentConversations 从服务端重新拉取
+      await useAssistantStore.getState().fetchRecentConversations()
+
+      // 验证被删除的会话不会死灰复燃
+      expect(useAssistantStore.getState().conversations).toHaveLength(0)
       await expect.element(page.getByText('暂无最近 5 天的会话记录')).toBeVisible()
     })
   })

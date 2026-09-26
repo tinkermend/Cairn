@@ -269,6 +269,12 @@ function OutputSchemaFields({
           disabled={disabled}
           onValueChange={(value) => {
             if (value === 'scalar') onChange({ kind: 'scalar', type: 'string' })
+            else if (value === 'list')
+              onChange({
+                kind: 'list',
+                item: { kind: 'scalar', type: 'string' },
+                maxItems: 50,
+              })
             else
               onChange({
                 kind: 'object',
@@ -282,6 +288,7 @@ function OutputSchemaFields({
           <SelectContent>
             <SelectItem value='object'>对象字段</SelectItem>
             <SelectItem value='scalar'>单个标量</SelectItem>
+            <SelectItem value='list'>列表数组</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -306,6 +313,26 @@ function OutputSchemaFields({
               ))}
             </SelectContent>
           </Select>
+        </div>
+      ) : schema.kind === 'list' ? (
+        <div className='space-y-2'>
+          <Label>列表元素类型</Label>
+          <p className='text-label text-muted-foreground'>
+            {schema.item.kind === 'scalar' ? `标量 (${TYPE_LABELS[schema.item.type as OutputFieldType] ?? schema.item.type})` : '对象'}
+          </p>
+          <Label htmlFor={`ai-list-max-${stepId}`}>上限</Label>
+          <Input
+            id={`ai-list-max-${stepId}`}
+            type='number'
+            min={1}
+            max={200}
+            disabled={disabled}
+            value={schema.maxItems ?? 50}
+            onChange={(event) => {
+              const maxItems = Math.min(200, Math.max(1, Number(event.target.value) || 1))
+              onChange({ ...schema, maxItems })
+            }}
+          />
         </div>
       ) : (
         <div className='space-y-2'>

@@ -7,6 +7,7 @@ import {
 } from '@cairn/shared'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -724,6 +725,43 @@ export function StepFields({
             </div>
           ) : null}
         </div>
+        <div className='flex items-center justify-between gap-3'>
+          <Label htmlFor={`step-many-${step.id}`}>提取全部匹配</Label>
+          <Switch
+            id={`step-many-${step.id}`}
+            checked={Boolean(step.input.many)}
+            disabled={disabled}
+            onCheckedChange={(checked) =>
+              onChange({
+                ...step,
+                input: {
+                  ...step.input,
+                  many: checked ? { maxItems: step.input.many?.maxItems ?? 50 } : undefined,
+                },
+              })
+            }
+          />
+        </div>
+        {step.input.many ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-many-max-${step.id}`}>上限</Label>
+            <Input
+              id={`step-many-max-${step.id}`}
+              type='number'
+              min={1}
+              max={1000}
+              disabled={disabled}
+              value={step.input.many.maxItems}
+              onChange={(event) => {
+                const maxItems = Math.min(1000, Math.max(1, Number(event.target.value) || 1))
+                onChange({
+                  ...step,
+                  input: { ...step.input, many: { ...step.input.many, maxItems } },
+                })
+              }}
+            />
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -934,5 +972,270 @@ export function StepFields({
       </div>
     )
   }
+
+  if (step.type === 'probe') {
+    const probeInput = step.input
+    return (
+      <div className='space-y-4'>
+        <div className='space-y-2'>
+          <Label>检查目标类型</Label>
+          <Select
+            value={probeInput.kind}
+            disabled={disabled}
+            onValueChange={(val: 'element' | 'text' | 'url') => {
+              if (val === 'element') {
+                onChange({
+                  ...step,
+                  input: {
+                    kind: 'element',
+                    target: defaultTarget('目标元素'),
+                    state: 'visible',
+                    waitMs: 2000,
+                  },
+                })
+              } else if (val === 'text') {
+                onChange({
+                  ...step,
+                  input: {
+                    kind: 'text',
+                    text: '',
+                    waitMs: 2000,
+                  },
+                })
+              } else {
+                onChange({
+                  ...step,
+                  input: {
+                    kind: 'url',
+                    urlPattern: '',
+                    waitMs: 2000,
+                  },
+                })
+              }
+            }}
+          >
+            <SelectTrigger className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='element'>页面元素是否存在或可见</SelectItem>
+              <SelectItem value='text'>页面或目标内包含文本</SelectItem>
+              <SelectItem value='url'>当前页面 URL 匹配模式</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {probeInput.kind === 'element' && (
+          <div className='space-y-3'>
+            <TargetFields
+              {...policyHandlers(step, onChange)}
+              target={probeInput.target}
+              disabled={disabled}
+              onChange={(target) =>
+                onChange({ ...step, input: { ...probeInput, target } })
+              }
+            />
+            <div className='space-y-1.5'>
+              <Label>期望状态</Label>
+              <Select
+                value={probeInput.state ?? 'visible'}
+                disabled={disabled}
+                onValueChange={(val: 'visible' | 'present') =>
+                  onChange({ ...step, input: { ...probeInput, state: val } })
+                }
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='visible'>可见 (Visible)</SelectItem>
+                  <SelectItem value='present'>DOM 存在即可 (Present)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+
+        {probeInput.kind === 'text' && (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-probe-text-${step.id}`}>待检查文本</Label>
+            <Input
+              id={`step-probe-text-${step.id}`}
+              placeholder='输入页面中需要检查的文本关键字'
+              value={probeInput.text}
+              disabled={disabled}
+              onChange={(e) =>
+                onChange({ ...step, input: { ...probeInput, text: e.target.value } })
+              }
+            />
+          </div>
+        )}
+
+        {probeInput.kind === 'url' && (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-probe-url-${step.id}`}>URL 匹配规则 / 正则</Label>
+            <Input
+              id={`step-probe-url-${step.id}`}
+              placeholder='如: /dashboard 或 https://example.com/.*'
+              value={probeInput.urlPattern}
+              disabled={disabled}
+              onChange={(e) =>
+                onChange({ ...step, input: { ...probeInput, urlPattern: e.target.value } })
+              }
+            />
+          </div>
+        )}
+
+        <div className='space-y-1.5'>
+          <Label htmlFor={`step-probe-wait-${step.id}`}>最长等待时间 (毫秒，最大 5000ms)</Label>
+          <Input
+            id={`step-probe-wait-${step.id}`}
+            type='number'
+            min={0}
+            max={5000}
+            placeholder='2000'
+            value={probeInput.waitMs ?? 2000}
+            disabled={disabled}
+            onChange={(e) =>
+              onChange({
+                ...step,
+                input: { ...probeInput, waitMs: Math.min(5000, Number(e.target.value)) },
+              })
+            }
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (step.type === 'compute') {
+    const expr = step.input.expression
+    return (
+      <div className='space-y-4'>
+        <div className='space-y-2'>
+          <Label htmlFor={`step-compute-out-${step.id}`}>输出变量名 (outputKey)</Label>
+          <Input
+            id={`step-compute-out-${step.id}`}
+            placeholder='例如: computedResult'
+            value={step.outputKey ?? ''}
+            disabled={disabled}
+            onChange={(e) =>
+              onChange({ ...step, outputKey: e.target.value.trim() })
+            }
+          />
+        </div>
+
+        <div className='space-y-2'>
+          <Label>表达式类型</Label>
+          <Select
+            value={expr.kind}
+            disabled={disabled}
+            onValueChange={(val) => {
+              if (val === 'literal') {
+                onChange({
+                  ...step,
+                  input: { expression: { kind: 'literal', value: '' } },
+                })
+              } else if (val === 'ref') {
+                onChange({
+                  ...step,
+                  input: { expression: { kind: 'ref', key: bindings[0]?.key ?? 'var' } },
+                })
+              } else if (val === 'call') {
+                onChange({
+                  ...step,
+                  input: {
+                    expression: {
+                      kind: 'call',
+                      fn: 'concat',
+                      args: [{ kind: 'literal', value: '' }],
+                    },
+                  },
+                })
+              }
+            }}
+          >
+            <SelectTrigger className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='literal'>字面量常数 (Literal)</SelectItem>
+              <SelectItem value='ref'>上下文变量引用 (Ref)</SelectItem>
+              <SelectItem value='call'>内置函数调用 (Call)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {expr.kind === 'literal' && (
+          <div className='space-y-1.5'>
+            <Label htmlFor={`step-compute-literal-${step.id}`}>常数值</Label>
+            <Input
+              id={`step-compute-literal-${step.id}`}
+              placeholder='输入计算字面量'
+              value={String(expr.value ?? '')}
+              disabled={disabled}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  input: { expression: { kind: 'literal', value: e.target.value } },
+                })
+              }
+            />
+          </div>
+        )}
+
+        {expr.kind === 'ref' && (
+          <div className='space-y-1.5'>
+            <Label htmlFor={`step-compute-ref-${step.id}`}>引用变量键 (key)</Label>
+            <Input
+              id={`step-compute-ref-${step.id}`}
+              placeholder='例如: extractedText'
+              value={expr.key}
+              disabled={disabled}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  input: { expression: { kind: 'ref', key: e.target.value } },
+                })
+              }
+            />
+          </div>
+        )}
+
+        {expr.kind === 'call' && (
+          <div className='space-y-3'>
+            <div className='space-y-1.5'>
+              <Label>函数名 (fn)</Label>
+              <Select
+                value={expr.fn}
+                disabled={disabled}
+                onValueChange={(fnVal: any) =>
+                  onChange({
+                    ...step,
+                    input: { expression: { ...expr, fn: fnVal } },
+                  })
+                }
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='concat'>concat(拼接字符串)</SelectItem>
+                  <SelectItem value='trim'>trim(去除首尾空格)</SelectItem>
+                  <SelectItem value='lower'>lower(转小写)</SelectItem>
+                  <SelectItem value='upper'>upper(转大写)</SelectItem>
+                  <SelectItem value='toNumber'>toNumber(转换为数字)</SelectItem>
+                  <SelectItem value='extractNumber'>extractNumber(提取数字)</SelectItem>
+                  <SelectItem value='round'>round(四舍五入)</SelectItem>
+                  <SelectItem value='abs'>abs(绝对值)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return null
 }

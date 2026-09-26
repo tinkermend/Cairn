@@ -59,6 +59,32 @@ export function canAny(
   return permissions.some((permission) => can(user, permission))
 }
 
+function targetScopeAllows(user: AuthUser, permission: PermissionCode, targetId?: string): boolean {
+  if (!user.targetScopes || !user.targetScopePermissions) return false
+  const relevant = user.targetScopes.filter((scope) => hasPermission(
+    user.targetScopePermissions?.find((entry) => entry.roleId === scope.roleId)?.permissions ?? [],
+    permission,
+  ))
+  return relevant.some((scope) => scope.mode === 'all' || targetId !== undefined && scope.mode === 'selected' && scope.targetIds.includes(targetId))
+}
+
+/** 仅用于界面动作显隐；服务端始终重新核验目标范围。 */
+export function canOnTarget(user: AuthUser | null, permission: PermissionCode, targetId: string): boolean {
+  return Boolean(user && can(user, 'target:read') && can(user, permission) &&
+    targetScopeAllows(user, 'target:read', targetId) && targetScopeAllows(user, permission, targetId))
+}
+
+/** 创建新目标要求读取和写入都覆盖全部目标，与服务端约束一致。 */
+export function canCreateTarget(user: AuthUser | null): boolean {
+  return Boolean(user && can(user, 'target:read') && can(user, 'target:write') &&
+    targetScopeAllows(user, 'target:read') && targetScopeAllows(user, 'target:write'))
+}
+
+export function canCreateTargetWithCredential(user: AuthUser | null): boolean {
+  return Boolean(user && canCreateTarget(user) && can(user, 'credential:read') && can(user, 'credential:write') &&
+    targetScopeAllows(user, 'credential:read') && targetScopeAllows(user, 'credential:write'))
+}
+
 export function visibleByPermission<
   T extends { permission?: PermissionCode; anyOf?: readonly PermissionCode[] },
 >(items: T[], user: AuthUser | null): T[] {

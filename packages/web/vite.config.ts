@@ -88,12 +88,15 @@ export default defineConfig({
   },
   server: {
     host: '127.0.0.1',
+    // /api 的扩展跨域预检交给 API 代理处理；Vite 默认预检会先于代理拦截它。
+    cors: false,
     fs: {
       allow: [path.resolve(import.meta.dirname, '../..')],
     },
     proxy: proxyConfig,
   },
   preview: {
+    cors: false,
     proxy: proxyConfig,
   },
   test: {

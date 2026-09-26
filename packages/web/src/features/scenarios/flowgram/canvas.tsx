@@ -15,6 +15,7 @@ import {
   isAuthoringDocumentV2,
   MAX_AUTHORING_NODES,
   MAX_SCENARIO_STEPS,
+  stepRunFor,
   type CompileDiagnostic,
   type RunDetailDto,
   type ScenarioAuthoringDocumentV2,
@@ -189,9 +190,41 @@ function StepNode() {
       </div>
     )
   }
+  if (current.kind === 'block') {
+    return (
+      <div
+        data-flow-step={id}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+        className={cn(
+          'flowgram-step is-module',
+          model.selectedId === id && 'is-selected',
+          dragging && 'is-dragging',
+        )}
+      >
+        <button
+          type='button'
+          className='flowgram-step-body'
+          aria-label={`分支 ${index + 1} ${label}`}
+          aria-pressed={model.selectedId === id}
+          onClick={() => model.onSelect(id)}
+        >
+          <span className='flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+            <span className='font-mono'>{String(index + 1).padStart(2, '0')}</span>
+            <StatusBadge tone='neutral' hideIcon={model.compact}>
+              分支控制块
+            </StatusBadge>
+          </span>
+          <span className='flowgram-step-name mt-2 block break-words text-body font-semibold' title={label}>
+            {label}
+          </span>
+        </button>
+      </div>
+    )
+  }
   const step = current.step
   const historic = model.trialRun?.snapshot.steps.find((item) => item.id === id)
-  const result = model.trialRun?.stepRuns.find((item) => item.stepId === id)
+  const result = model.trialRun ? stepRunFor(model.trialRun.stepRuns, id) : undefined
   const matchesSnapshot =
     historic && JSON.stringify(historic) === JSON.stringify(step)
   const source =
@@ -273,14 +306,14 @@ function StepNode() {
               ? `读取 ${source}${field}`
               : step.outputKey
                 ? `输出 ${step.outputKey}`
-                : STEP_TYPE_HINTS[step.type]
+                : (STEP_TYPE_HINTS[step.type as keyof typeof STEP_TYPE_HINTS] ?? '')
           }
         >
           {source
             ? `读取 ${source}${field}`
             : step.outputKey
               ? `输出 ${step.outputKey}`
-              : STEP_TYPE_HINTS[step.type]}
+              : (STEP_TYPE_HINTS[step.type as keyof typeof STEP_TYPE_HINTS] ?? '')}
         </span>
       </button>
     </div>

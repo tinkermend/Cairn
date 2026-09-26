@@ -8,6 +8,7 @@ import {
   targetAccountListResponseSchema,
   targetAccountSchema,
   targetListResponseSchema,
+  targetOverviewResponseSchema,
   targetSchema,
   publishTargetAuthProfileBodySchema,
   startAuthProfileValidationBodySchema,
@@ -22,6 +23,8 @@ import {
   updateTargetBodySchema,
   targetSessionPolicyPatchSchema,
   targetResolutionPolicyPatchSchema,
+  targetAiActionTraceBodySchema,
+  type TargetAiActionTraceBody,
   type CleanupStatusResponse,
   type CreateTargetAccountBody,
   type CreateTargetBody,
@@ -34,6 +37,8 @@ import {
   type TargetDto,
   type TargetListQuery,
   type TargetListResponse,
+  type TargetOverviewQuery,
+  type TargetOverviewResponse,
   type AuthValidationOperation,
   type ObserveAuthProfileValidationBody,
   type PublishTargetAuthProfileBody,
@@ -51,6 +56,10 @@ import { apiFetch, toQueryString } from '@/lib/api-client'
 
 export function fetchTargets(query?: TargetListQuery): Promise<TargetListResponse> {
   return apiFetch(`/api/targets${toQueryString(query)}`, targetListResponseSchema)
+}
+
+export function fetchTargetOverview(query?: TargetOverviewQuery): Promise<TargetOverviewResponse> {
+  return apiFetch(`/api/targets/overview${toQueryString(query)}`, targetOverviewResponseSchema)
 }
 
 export function fetchTarget(id: string): Promise<TargetDto> {
@@ -107,6 +116,17 @@ export function updateTargetResolutionPolicy(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(targetResolutionPolicyPatchSchema.parse(body)),
+  })
+}
+
+export function updateTargetAiActionTrace(
+  id: string,
+  body: TargetAiActionTraceBody,
+): Promise<TargetDto> {
+  return apiFetch(`/api/targets/${id}/ai-action-trace`, targetSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(targetAiActionTraceBodySchema.parse(body)),
   })
 }
 

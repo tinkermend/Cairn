@@ -56,6 +56,7 @@ export type StudioToolbarProps = {
   onOpenRun: () => void
   onOpenImport: () => void
   onOpenRename: () => void
+  onRename?: (newName: string) => Promise<boolean | void> | void
   onToggleStatus: () => void
   onOpenRemove: () => void
   onOpenAssistant: (question: string, hint: AssistantCapabilityId) => void
@@ -89,6 +90,7 @@ export function StudioToolbar({
   onOpenRun,
   onOpenImport,
   onOpenRename,
+  onRename,
   onToggleStatus,
   onOpenRemove,
   onOpenAssistant,
@@ -97,6 +99,49 @@ export function StudioToolbar({
   const headerRef = useRef<HTMLElement>(null)
   const isAssistantDocked = useAssistantStore((s) => s.open && s.mode === 'docked')
   const assistantDockWidth = useAssistantStore((s) => s.dockWidth)
+
+  // 内联重命名状态机
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [tempName, setTempName] = useState(scenario?.name ?? '')
+  const [savingName, setSavingName] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!isEditingName && scenario?.name) {
+      setTempName(scenario.name)
+    }
+  }, [scenario?.name, isEditingName])
+
+  useEffect(() => {
+    if (isEditingName) {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+  }, [isEditingName])
+
+  const commitRename = async () => {
+    const trimmed = tempName.trim()
+    if (!trimmed || trimmed === scenario?.name) {
+      setTempName(scenario?.name ?? '')
+      setIsEditingName(false)
+      return
+    }
+    if (onRename) {
+      setSavingName(true)
+      try {
+        await onRename(trimmed)
+        setIsEditingName(false)
+      } catch {
+        setTempName(scenario?.name ?? '')
+        setIsEditingName(false)
+      } finally {
+        setSavingName(false)
+      }
+    } else {
+      setIsEditingName(false)
+      onOpenRename()
+    }
+  }
 
   // 容器可用宽度状态（首帧合理估算，后续由 ResizeObserver 精确测量）
   const [containerWidth, setContainerWidth] = useState<number>(() => {
@@ -156,21 +201,64 @@ export function StudioToolbar({
         </Link>
         <span className='h-4 w-px bg-border-divider shrink-0' />
         <div className='flex min-w-0 shrink items-center gap-1.5 max-w-[180px] sm:max-w-[240px] md:max-w-[320px] xl:max-w-[420px] 2xl:max-w-[560px]'>
-          <h1 className='truncate text-body font-semibold text-foreground' title={scenario?.name ?? '场景'}>
-            {scenario?.name ?? '场景'}
-          </h1>
-          {canWrite ? (
-            <Button
-              size='icon'
-              variant='ghost'
-              className='size-6 shrink-0 text-muted-foreground hover:text-foreground'
-              title='重命名'
-              onClick={onOpenRename}
-            >
-              <Edit2 className='size-3.5' />
-              <span className='sr-only'>重命名</span>
-            </Button>
-          ) : null}
+          {isEditingName ? (
+            <div className='flex items-center gap-1 min-w-0'>
+              <input
+                ref={inputRef}
+                type='text'
+                value={tempName}
+                maxLength={100}
+                disabled={savingName}
+                aria-label='场景名称输入'
+                className='h-7 w-40 sm:w-48 md:w-64 rounded-md border border-control bg-surface-control px-2 text-body font-semibold text-foreground shadow-control-focus outline-none focus:border-primary'
+                onChange={(e) => setTempName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void commitRename()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setTempName(scenario?.name ?? '')
+                    setIsEditingName(false)
+                  }
+                }}
+                onBlur={() => {
+                  void commitRename()
+                }}
+              />
+              {savingName ? <span className='size-3 animate-spin rounded-full border-2 border-primary border-t-transparent' /> : null}
+            </div>
+          ) : (
+            <>
+              <h1
+                className='truncate text-body font-semibold text-foreground cursor-pointer hover:text-primary transition-colors'
+                title={scenario?.name ?? '场景'}
+                onClick={() => {
+                  if (canWrite) {
+                    setTempName(scenario?.name ?? '')
+                    setIsEditingName(true)
+                  }
+                }}
+              >
+                {scenario?.name ?? '场景'}
+              </h1>
+              {canWrite ? (
+                <Button
+                  size='icon'
+                  variant='ghost'
+                  className='size-6 shrink-0 text-muted-foreground hover:text-foreground'
+                  title='重命名'
+                  onClick={() => {
+                    setTempName(scenario?.name ?? '')
+                    setIsEditingName(true)
+                  }}
+                >
+                  <Edit2 className='size-3.5' />
+                  <span className='sr-only'>重命名</span>
+                </Button>
+              ) : null}
+            </>
+          )}
         </div>
 
         {/* 紧凑上下文胶囊：目标系统、版本、草稿、状态 */}
@@ -270,7 +358,8 @@ export function StudioToolbar({
           {canWrite ? (
             <Button
               size='sm'
-              variant={dirty ? 'default' : 'outline'}
+              variant='outline'
+              className={dirty ? 'border-primary text-primary hover:bg-primary/5 font-medium shadow-xs' : ''}
               disabled={!dirty || saving}
               loading={saving}
               onClick={onSave}
@@ -281,7 +370,7 @@ export function StudioToolbar({
           ) : null}
 
           {canTrial ? (
-            <Button size='sm' onClick={onStartTrial}>
+            <Button size='sm' className='action-shadow' onClick={onStartTrial}>
               <Play className='size-3.5 mr-1' />
               试跑
             </Button>
@@ -398,3 +487,4 @@ export function StudioToolbar({
   )
 }
 
+export { StudioToolbar as StudioHeaderBar }

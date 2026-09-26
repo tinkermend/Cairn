@@ -232,69 +232,75 @@ export function ScenarioOutputsEditor({
             {current.metrics.map((metric, idx) => (
               <div
                 key={`metric-${idx}`}
-                className='grid grid-cols-1 sm:grid-cols-12 gap-2 p-3 rounded-md border border-border-card/80 bg-muted/15 items-center'
+                className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
               >
-                <div className='sm:col-span-3'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>指标标识 (Key)</Label>
-                  <Input
-                    value={metric.key}
-                    disabled={disabled}
-                    placeholder='item_count'
-                    onChange={(e) => updateMetric(idx, { key: e.target.value.toLowerCase().trim() })}
-                    className='text-xs font-mono h-8'
-                  />
-                </div>
-                <div className='sm:col-span-3'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>显示名称</Label>
-                  <Input
-                    value={metric.name}
-                    disabled={disabled}
-                    placeholder='在售商品数'
-                    onChange={(e) => updateMetric(idx, { name: e.target.value })}
-                    className='text-xs h-8'
-                  />
-                </div>
-                <div className='sm:col-span-3'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
-                  <Input
-                    value={metric.fromContextKey}
-                    disabled={disabled}
-                    placeholder='report'
-                    onChange={(e) => updateMetric(idx, { fromContextKey: e.target.value })}
-                    className='text-xs font-mono h-8'
-                  />
-                </div>
-                <div className='sm:col-span-2'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>属性 / 单位</Label>
-                  <div className='flex gap-1'>
-                    <Input
-                      value={metric.fromField ?? ''}
-                      disabled={disabled}
-                      placeholder='字段'
-                      onChange={(e) => updateMetric(idx, { fromField: e.target.value || undefined })}
-                      className='text-xs font-mono h-8 w-1/2'
-                      title='若上下文变量为对象，提取此内部属性'
-                    />
-                    <Input
-                      value={metric.unit ?? ''}
-                      disabled={disabled}
-                      placeholder='单位'
-                      onChange={(e) => updateMetric(idx, { unit: e.target.value || undefined })}
-                      className='text-xs h-8 w-1/2'
-                    />
-                  </div>
-                </div>
-                <div className='sm:col-span-1 flex justify-end pt-5'>
+                <div className='flex items-center justify-between'>
+                  <span className='text-xs font-medium text-muted-foreground'>指标 #{idx + 1}</span>
                   <Button
                     type='button'
                     variant='ghost'
                     size='sm'
                     disabled={disabled}
                     onClick={() => removeMetric(idx)}
-                    className='h-8 w-8 p-0 text-muted-foreground hover:text-destructive'
+                    className='h-6 w-6 p-0 text-muted-foreground hover:text-destructive'
+                    title='删除指标'
                   >
                     <Trash2 className='size-3.5' />
                   </Button>
+                </div>
+                <div className='grid grid-cols-2 gap-2'>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>指标标识 (Key)</Label>
+                    <Input
+                      value={metric.key}
+                      disabled={disabled}
+                      placeholder='item_count'
+                      onChange={(e) => updateMetric(idx, { key: e.target.value.toLowerCase().trim() })}
+                      className='text-xs font-mono h-8'
+                    />
+                  </div>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>显示名称</Label>
+                    <Input
+                      value={metric.name}
+                      disabled={disabled}
+                      placeholder='在售商品数'
+                      onChange={(e) => updateMetric(idx, { name: e.target.value })}
+                      className='text-xs h-8'
+                    />
+                  </div>
+                </div>
+                <div className='grid grid-cols-2 gap-2'>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
+                    <Input
+                      value={metric.fromContextKey}
+                      disabled={disabled}
+                      placeholder='report'
+                      onChange={(e) => updateMetric(idx, { fromContextKey: e.target.value })}
+                      className='text-xs font-mono h-8'
+                    />
+                  </div>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>属性 / 单位</Label>
+                    <div className='flex gap-1'>
+                      <Input
+                        value={metric.fromField ?? ''}
+                        disabled={disabled}
+                        placeholder='字段'
+                        onChange={(e) => updateMetric(idx, { fromField: e.target.value || undefined })}
+                        className='text-xs font-mono h-8 w-1/2'
+                        title='若上下文变量为对象，提取此内部属性'
+                      />
+                      <Input
+                        value={metric.unit ?? ''}
+                        disabled={disabled}
+                        placeholder='单位'
+                        onChange={(e) => updateMetric(idx, { unit: e.target.value || undefined })}
+                        className='text-xs h-8 w-1/2'
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -332,59 +338,65 @@ export function ScenarioOutputsEditor({
             {current.dataRowFields.map((field, idx) => (
               <div
                 key={`field-${idx}`}
-                className='grid grid-cols-1 sm:grid-cols-12 gap-2 p-3 rounded-md border border-border-card/80 bg-muted/15 items-center'
+                className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
               >
-                <div className='sm:col-span-3'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>列标识 (Key)</Label>
-                  <Input
-                    value={field.columnKey}
-                    disabled={disabled}
-                    placeholder='sku_id'
-                    onChange={(e) => updateDataRowField(idx, { columnKey: e.target.value.trim() })}
-                    className='text-xs font-mono h-8'
-                  />
-                </div>
-                <div className='sm:col-span-3'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>表头标题</Label>
-                  <Input
-                    value={field.columnHeader}
-                    disabled={disabled}
-                    placeholder='商品编号'
-                    onChange={(e) => updateDataRowField(idx, { columnHeader: e.target.value })}
-                    className='text-xs h-8'
-                  />
-                </div>
-                <div className='sm:col-span-3'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
-                  <Input
-                    value={field.fromContextKey}
-                    disabled={disabled}
-                    placeholder='product'
-                    onChange={(e) => updateDataRowField(idx, { fromContextKey: e.target.value })}
-                    className='text-xs font-mono h-8'
-                  />
-                </div>
-                <div className='sm:col-span-2'>
-                  <Label className='text-xs text-muted-foreground block mb-1'>嵌套字段 (可选)</Label>
-                  <Input
-                    value={field.fromField ?? ''}
-                    disabled={disabled}
-                    placeholder='sku'
-                    onChange={(e) => updateDataRowField(idx, { fromField: e.target.value || undefined })}
-                    className='text-xs font-mono h-8'
-                  />
-                </div>
-                <div className='sm:col-span-1 flex justify-end pt-5'>
+                <div className='flex items-center justify-between'>
+                  <span className='text-xs font-medium text-muted-foreground'>字段 #{idx + 1}</span>
                   <Button
                     type='button'
                     variant='ghost'
                     size='sm'
                     disabled={disabled}
                     onClick={() => removeDataRowField(idx)}
-                    className='h-8 w-8 p-0 text-muted-foreground hover:text-destructive'
+                    className='h-6 w-6 p-0 text-muted-foreground hover:text-destructive'
+                    title='删除字段'
                   >
                     <Trash2 className='size-3.5' />
                   </Button>
+                </div>
+                <div className='grid grid-cols-2 gap-2'>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>列标识 (Key)</Label>
+                    <Input
+                      value={field.columnKey}
+                      disabled={disabled}
+                      placeholder='sku_id'
+                      onChange={(e) => updateDataRowField(idx, { columnKey: e.target.value.trim() })}
+                      className='text-xs font-mono h-8'
+                    />
+                  </div>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>表头标题</Label>
+                    <Input
+                      value={field.columnHeader}
+                      disabled={disabled}
+                      placeholder='商品编号'
+                      onChange={(e) => updateDataRowField(idx, { columnHeader: e.target.value })}
+                      className='text-xs h-8'
+                    />
+                  </div>
+                </div>
+                <div className='grid grid-cols-2 gap-2'>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
+                    <Input
+                      value={field.fromContextKey}
+                      disabled={disabled}
+                      placeholder='product'
+                      onChange={(e) => updateDataRowField(idx, { fromContextKey: e.target.value })}
+                      className='text-xs font-mono h-8'
+                    />
+                  </div>
+                  <div>
+                    <Label className='text-xs text-muted-foreground block mb-1'>嵌套字段 (可选)</Label>
+                    <Input
+                      value={field.fromField ?? ''}
+                      disabled={disabled}
+                      placeholder='sku'
+                      onChange={(e) => updateDataRowField(idx, { fromField: e.target.value || undefined })}
+                      className='text-xs font-mono h-8'
+                    />
+                  </div>
                 </div>
               </div>
             ))}

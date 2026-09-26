@@ -67,8 +67,8 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
   const historyLoading = useAssistantStore((state) => state.historyLoading)
   const switchConversation = useAssistantStore((state) => state.switchConversation)
   const newConversation = useAssistantStore((state) => state.newConversation)
-  const deleteConversationLocally = useAssistantStore(
-    (state) => state.deleteConversationLocally
+  const deleteConversation = useAssistantStore(
+    (state) => state.deleteConversation
   )
 
   const groups = useMemo(() => groupConversationsByDate(conversations), [conversations])
@@ -189,10 +189,10 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
                         type='button'
                         data-testid={`delete-conv-${conv.id}`}
                         aria-label='删除此会话'
-                        title='从本地列表中移除'
+                        title='删除此会话'
                         onClick={(e) => {
                           e.stopPropagation()
-                          deleteConversationLocally(conv.id)
+                          void deleteConversation(conv.id)
                         }}
                         className='opacity-0 group-hover:opacity-100 p-0.5 rounded text-text-muted hover:text-status-error-foreground hover:bg-surface-subtle transition-opacity'
                       >

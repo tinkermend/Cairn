@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
+import { DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import { createScenario, fetchScenarios } from '@/lib/scenarios-api'
 import { Button } from '@/components/ui/button'
@@ -32,6 +33,7 @@ type Props = {
   recordingName: string
   targetId: string
   targetName: string
+  sourceProtocol?: 'recording@1' | 'demonstration@1'
 }
 
 export function RecordingHandoffDialog({
@@ -41,6 +43,7 @@ export function RecordingHandoffDialog({
   recordingName,
   targetId,
   targetName,
+  sourceProtocol,
 }: Props) {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<'existing' | 'new'>('existing')
@@ -87,7 +90,7 @@ export function RecordingHandoffDialog({
       const created = await createScenario({
         targetId,
         name: newScenarioName.trim(),
-        steps: [createBlankStep('navigate')],
+        steps: [{ ...createBlankStep('navigate'), ...(sourceProtocol === 'demonstration@1' ? { name: DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME } : {}) }],
       })
       toast.success(`新场景「${created.name}」已创建`)
       onOpenChange(false)

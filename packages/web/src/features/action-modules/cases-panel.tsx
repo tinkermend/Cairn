@@ -202,8 +202,8 @@ export function ActionModuleCasesPanel({
     <div className='space-y-6'>
       <div className='flex flex-wrap items-center justify-between gap-4'>
         <div>
-          <h3 className='text-base font-semibold'>回归测试用例 (AMR-04 ~ AMR-10)</h3>
-          <p className='text-sm text-muted-foreground'>
+          <h3 className='text-title font-semibold'>回归测试用例 (AMR-04 ~ AMR-10)</h3>
+          <p className='text-small text-muted-foreground'>
             管理动作模块在不同实现与入参下的预期行为，发布前须至少有 1 个正向通过用例作为可信门禁凭据。
           </p>
         </div>
@@ -246,13 +246,13 @@ export function ActionModuleCasesPanel({
       </div>
 
       {isLoading ? (
-        <div className='py-12 text-center text-sm text-muted-foreground'>正在加载用例列表…</div>
+        <div className='py-12 text-center text-small text-muted-foreground'>正在加载用例列表…</div>
       ) : cases.length === 0 ? (
         <Card className='border-dashed'>
           <CardContent className='flex flex-col items-center justify-center py-12 text-center'>
             <ShieldCheck className='size-10 text-muted-foreground/50' />
-            <h4 className='mt-3 text-sm font-medium'>暂无测试用例</h4>
-            <p className='mt-1 max-w-sm text-xs text-muted-foreground'>
+            <h4 className='mt-3 text-small font-medium'>暂无测试用例</h4>
+            <p className='mt-1 max-w-sm text-label text-muted-foreground'>
               发布模块前，请先为每个实现配置并跑通至少一条正向测试用例以满足发布门禁要求。
             </p>
             {canWrite && (
@@ -357,7 +357,7 @@ export function ActionModuleCasesPanel({
               <Textarea
                 id='case-inputs'
                 rows={3}
-                className='font-mono text-xs'
+                className='font-mono text-label'
                 value={inputsJson}
                 onChange={(e) => setInputsJson(e.target.value)}
                 placeholder='{"orderId": "ORD-12345"}'
@@ -369,7 +369,7 @@ export function ActionModuleCasesPanel({
               <Textarea
                 id='case-outputs'
                 rows={3}
-                className='font-mono text-xs'
+                className='font-mono text-label'
                 value={expectedOutputsJson}
                 onChange={(e) => setExpectedOutputsJson(e.target.value)}
                 placeholder='{"orderStatus": "SHIPPED"}'
@@ -382,12 +382,12 @@ export function ActionModuleCasesPanel({
                 checked={releaseGate}
                 onCheckedChange={(c) => setReleaseGate(Boolean(c))}
               />
-              <Label htmlFor='release-gate' className='text-xs font-medium cursor-pointer'>
+              <Label htmlFor='release-gate' className='text-label font-medium cursor-pointer'>
                 纳入发布门禁 (Release Gate) - 正向通过后方允许发布新模块版本
               </Label>
             </div>
 
-            <div className='rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2'>
+            <div className='rounded-lg border border-status-warning-foreground/20 bg-status-warning-background p-3 space-y-2'>
               <div className='flex items-start gap-2'>
                 <Checkbox
                   id='sample-confirm'
@@ -395,7 +395,7 @@ export function ActionModuleCasesPanel({
                   onCheckedChange={(c) => setSampleConfirmed(Boolean(c))}
                   className='mt-0.5'
                 />
-                <Label htmlFor='sample-confirm' className='text-xs text-muted-foreground cursor-pointer leading-relaxed'>
+                <Label htmlFor='sample-confirm' className='text-label text-muted-foreground cursor-pointer leading-relaxed'>
                   <span className='font-semibold text-foreground'>非敏感样本审阅凭据确认：</span>
                   我已核实上述入参与预期输出不包含未脱敏生产密码、凭证等高敏感数据，同意计算 SHA-256 摘要并保存为不可变快照。
                 </Label>
@@ -403,7 +403,7 @@ export function ActionModuleCasesPanel({
             </div>
 
             {jsonError && (
-              <div className='rounded border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive'>
+              <div className='rounded border border-destructive/30 bg-destructive/10 p-2.5 text-label text-destructive'>
                 {jsonError}
               </div>
             )}
@@ -433,22 +433,22 @@ export function ActionModuleCasesPanel({
             </DialogDescription>
           </DialogHeader>
 
-          <div className='space-y-4 py-2 text-sm'>
-            <div className='flex items-center justify-between text-xs text-muted-foreground'>
+          <div className='space-y-4 py-2 text-small'>
+            <div className='flex items-center justify-between text-label text-muted-foreground'>
               <span>
                 已选择用例: <strong>{selectedCaseIds.length > 0 ? selectedCaseIds.length : cases.length}</strong> / 20 条
               </span>
               <Button
                 variant='ghost'
                 size='sm'
-                className='h-6 px-1.5 text-xs'
+                className='h-6 px-1.5 text-label'
                 onClick={selectAllCases}
               >
                 {selectedCaseIds.length === cases.length ? '取消全选' : '全选用例'}
               </Button>
             </div>
 
-            <div className='rounded-lg border border-border bg-muted/40 p-3 space-y-2.5 text-xs text-muted-foreground'>
+            <div className='rounded-lg border border-border bg-muted/40 p-3 space-y-2.5 text-label text-muted-foreground'>
               <p className='font-medium text-foreground'>环境与租约说明：</p>
               <ul className='list-disc pl-4 space-y-1'>
                 <li>批次复用现有 Run 调度执行，同账号遵守会话占用约束与并发限制。</li>
@@ -464,7 +464,7 @@ export function ActionModuleCasesPanel({
                   onCheckedChange={(c) => setConfirmedEnv(Boolean(c))}
                   className='mt-0.5'
                 />
-                <Label htmlFor='confirm-env' className='text-xs font-medium cursor-pointer leading-relaxed'>
+                <Label htmlFor='confirm-env' className='text-label font-medium cursor-pointer leading-relaxed'>
                   我已明确核实并确认当前 Target 的测试环境范围与测试账号，认可本次批量执行。
                 </Label>
               </div>
@@ -528,16 +528,16 @@ function CaseCard({
           <div className='flex items-center gap-2.5 min-w-0'>
             <Checkbox checked={isSelected} onCheckedChange={onToggleSelect} />
             <span className='font-medium truncate'>{testCase.name}</span>
-            <Badge variant='outline' className='font-mono text-xs'>
+            <Badge variant='outline' className='font-mono text-label'>
               {testCase.implementationKey}
             </Badge>
             {testCase.releaseGate && (
-              <Badge variant='secondary' className='text-xs bg-primary/10 text-primary'>
+              <Badge variant='secondary' className='text-label bg-primary/10 text-primary'>
                 发布门禁
               </Badge>
             )}
             {testCase.status === 'INCOMPATIBLE' && (
-              <Badge variant='outline' className='border-amber-500 text-amber-600 bg-amber-500/10 text-xs gap-1'>
+              <Badge variant='outline' className='border-status-warning-foreground/30 bg-status-warning-background text-status-warning-foreground text-label gap-1'>
                 <AlertTriangle className='size-3' />
                 契约不兼容
               </Badge>
@@ -548,7 +548,7 @@ function CaseCard({
             {result ? (
               <ResultBadge status={result.status} />
             ) : (
-              <Badge variant='outline' className='text-xs text-muted-foreground'>
+              <Badge variant='outline' className='text-label text-muted-foreground'>
                 未执行
               </Badge>
             )}
@@ -559,7 +559,7 @@ function CaseCard({
                 size='sm'
                 onClick={onRun}
                 disabled={isRunning}
-                className='h-7 gap-1 text-xs'
+                className='h-7 gap-1 text-label'
               >
                 <Play className={`size-3 ${isRunning ? 'animate-spin' : ''}`} />
                 {isRunning ? '执行中' : '运行'}
@@ -579,7 +579,7 @@ function CaseCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className='p-4 pt-1 text-xs text-muted-foreground space-y-1.5'>
+      <CardContent className='p-4 pt-1 text-label text-muted-foreground space-y-1.5'>
         <div className='flex flex-wrap items-center gap-x-4 gap-y-1'>
           <span>
             预期 Outcome: <code className='text-foreground'>{testCase.expectedModuleOutcome}</code>
@@ -634,7 +634,7 @@ function ResultBadge({ status }: { status: string }) {
       )
     case 'INCONCLUSIVE':
       return (
-        <Badge variant='outline' className='border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium gap-1'>
+        <Badge variant='outline' className='border-status-warning-foreground/30 bg-status-warning-background text-status-warning-foreground font-medium gap-1'>
           <AlertTriangle className='size-3' />
           INCONCLUSIVE
         </Badge>

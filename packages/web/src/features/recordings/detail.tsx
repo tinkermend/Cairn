@@ -9,6 +9,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { deleteRecording, fetchRecording } from '@/lib/recordings-api'
+import { fetchDemonstration } from '@/lib/demonstrations-api'
 import { useAuthStore } from '@/stores/auth-store'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
@@ -37,15 +38,32 @@ export function RecordingDetailPage() {
   })
   const draft = query.data
 
+  const demonstrationQuery = useQuery({
+    queryKey: ['demonstration', recordingId],
+    queryFn: () => fetchDemonstration(recordingId),
+    enabled: Boolean(draft?.sourceProtocol === 'demonstration@1'),
+  })
+
   const [renaming, setRenaming] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [handoffOpen, setHandoffOpen] = useState(false)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  const [viewMode, setViewMode] = useState<'workbench' | 'facts'>('workbench')
 
-  // 步骤交互状态
+  // 步骤交互状态与轻量清洗
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [statusFilter, setStatusFilter] = useState<FilterOption>('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [ignoredIndexes, setIgnoredIndexes] = useState<Set<number>>(new Set())
+
+  const handleToggleIgnore = (index: number) => {
+    setIgnoredIndexes((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) next.delete(index)
+      else next.add(index)
+      return next
+    })
+  }
 
   const canWrite =
     Boolean(draft) &&
@@ -145,17 +163,24 @@ export function RecordingDetailPage() {
               <div className='flex flex-wrap items-center gap-2'>
                 {/* 核心主操作 CTA */}
                 {draft.imported && draft.importedScenarioId ? (
-                  <Button asChild>
-                    <Link
-                      to='/scenarios/$scenarioId'
-                      params={{ scenarioId: draft.importedScenarioId }}
-                      search={{ import: draft.id }}
-                      className='gap-1.5'
-                    >
-                      前往对应 Studio
-                      <ExternalLink className='size-3.5' />
-                    </Link>
-                  </Button>
+                  <>
+                    <Button asChild>
+                      <Link
+                        to='/scenarios/$scenarioId'
+                        params={{ scenarioId: draft.importedScenarioId }}
+                        search={{ import: draft.id }}
+                        className='gap-1.5'
+                      >
+                        前往对应 Studio
+                        <ExternalLink className='size-3.5' />
+                      </Link>
+                    </Button>
+                    {canWrite ? (
+                      <Button variant='outline' onClick={() => setHandoffOpen(true)} className='gap-1.5'>
+                        再次回填到场景...
+                      </Button>
+                    ) : null}
+                  </>
                 ) : canWrite ? (
                   <Button onClick={() => setHandoffOpen(true)} className='gap-1.5'>
                     回填到场景
@@ -189,8 +214,16 @@ export function RecordingDetailPage() {
           <PageSkeleton />
         ) : query.isError || !draft ? (
           <QueryErrorState title='无法加载录制草稿' onRetry={() => void query.refetch()} />
-        ) : draft.sourceProtocol === 'demonstration@1' ? (
-          <SavedDemonstrationFacts id={draft.id} />
+        ) : viewMode === 'facts' ? (
+          <div className='flex flex-col gap-4'>
+            <div className='flex items-center justify-between'>
+              <h2 className='text-body font-semibold text-foreground'>原始示教事实溯源</h2>
+              <Button variant='outline' size='sm' onClick={() => setViewMode('workbench')}>
+                返回步骤流水线工作台
+              </Button>
+            </div>
+            <SavedDemonstrationFacts id={draft.id} />
+          </div>
         ) : (
           <div className='flex flex-col gap-5'>
             {/* 就绪度看板条 */}
@@ -205,12 +238,31 @@ export function RecordingDetailPage() {
               {/* 左栏：步骤流水线 (Master) */}
               <div className='lg:col-span-7 xl:col-span-7'>
                 <div className='flex items-center justify-between pb-2'>
-                  <h2 className='text-body font-semibold text-foreground'>
-                    操作步骤流水线 ({items.length})
-                  </h2>
-                  <span className='text-label text-muted-foreground'>
-                    点击步骤可在右侧审查定位符与原始事件
-                  </span>
+                  <div className='flex items-center gap-2'>
+                    <h2 className='text-body font-semibold text-foreground'>
+                      操作步骤流水线 ({items.length})
+                    </h2>
+                    {ignoredIndexes.size > 0 ? (
+                      <span className='text-label text-muted-foreground'>
+                        (已剔除 {ignoredIndexes.size} 步)
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className='flex items-center gap-2'>
+                    {draft.sourceProtocol === 'demonstration@1' ? (
+                      <Button
+                        variant='ghost'
+                        size='sm'
+                        className='h-7 text-label text-muted-foreground'
+                        onClick={() => setViewMode('facts')}
+                      >
+                        原始示教视图
+                      </Button>
+                    ) : null}
+                    <span className='hidden sm:inline text-label text-muted-foreground'>
+                      点击步骤在右侧审查定位与截图
+                    </span>
+                  </div>
                 </div>
                 <RecordingStepStream
                   items={items}
@@ -220,6 +272,8 @@ export function RecordingDetailPage() {
                   onStatusFilterChange={setStatusFilter}
                   searchQuery={searchQuery}
                   onSearchQueryChange={setSearchQuery}
+                  ignoredIndexes={ignoredIndexes}
+                  onToggleIgnore={handleToggleIgnore}
                 />
               </div>
 
@@ -237,6 +291,7 @@ export function RecordingDetailPage() {
                   onNext={handleNext}
                   hasPrev={currentFilteredIdx > 0}
                   hasNext={currentFilteredIdx >= 0 && currentFilteredIdx < filteredItems.length - 1}
+                  demonstrationDetail={demonstrationQuery.data}
                 />
               </div>
             </div>
@@ -256,6 +311,7 @@ export function RecordingDetailPage() {
                     onNext={handleNext}
                     hasPrev={Boolean(selectedItem && selectedItem.index > 0)}
                     hasNext={Boolean(selectedItem && selectedItem.index < items.length - 1)}
+                    demonstrationDetail={demonstrationQuery.data}
                   />
                 </div>
               </SheetContent>
@@ -299,6 +355,7 @@ export function RecordingDetailPage() {
           recordingName={draft.name}
           targetId={draft.targetId}
           targetName={draft.targetName}
+          sourceProtocol={draft.sourceProtocol}
         />
       ) : null}
     </>

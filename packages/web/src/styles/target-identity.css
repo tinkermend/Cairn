@@ -1,0 +1,40 @@
+.target-identity-icon {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background-color: var(--target-icon-blue-bg);
+  color: var(--target-icon-blue-fg);
+}
+
+.target-identity-icon[data-accent='pine'] {
+  background-color: var(--target-icon-pine-bg);
+  color: var(--target-icon-pine-fg);
+}
+
+.target-identity-icon[data-accent='slate'] {
+  background-color: var(--target-icon-slate-bg);
+  color: var(--target-icon-slate-fg);
+}
+
+.target-identity-icon[data-accent='blue'] {
+  background-color: var(--target-icon-blue-bg);
+  color: var(--target-icon-blue-fg);
+}
+
+.target-identity-icon[data-accent='teal'] {
+  background-color: var(--target-icon-teal-bg);
+  color: var(--target-icon-teal-fg);
+}
+
+.target-identity-icon[data-accent='amber'] {
+  background-color: var(--target-icon-amber-bg);
+  color: var(--target-icon-amber-fg);
+}
+
+.target-identity-icon[data-accent='violet'] {
+  background-color: var(--target-icon-violet-bg);
+  color: var(--target-icon-violet-fg);
+}
+
+.target-identity-icon[data-accent='rose'] {
+  background-color: var(--target-icon-rose-bg);
+  color: var(--target-icon-rose-fg);
+}

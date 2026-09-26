@@ -90,8 +90,8 @@ export function GeneratorConfigEditor({
         </Button>
       </div>
 
-      <div className='grid grid-cols-2 gap-2'>
-        <div>
+      <div className='space-y-2.5'>
+        <div className='space-y-1'>
           <Label className='text-caption text-muted-foreground'>生成规则类型</Label>
           <Select
             value={generator.kind}
@@ -114,7 +114,7 @@ export function GeneratorConfigEditor({
               }
             }}
           >
-            <SelectTrigger className='h-8 text-label'>
+            <SelectTrigger className='w-full min-w-0 h-8 text-label'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -130,14 +130,14 @@ export function GeneratorConfigEditor({
         </div>
 
         {generator.kind === 'mock_preset' && (
-          <div>
+          <div className='space-y-1'>
             <Label className='text-caption text-muted-foreground'>字典预设项</Label>
             <Select
               value={generator.preset}
               disabled={disabled}
               onValueChange={(preset: MockPreset) => onChange({ ...generator, preset })}
             >
-              <SelectTrigger className='h-8 text-label'>
+              <SelectTrigger className='w-full min-w-0 h-8 text-label'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -152,8 +152,8 @@ export function GeneratorConfigEditor({
         )}
 
         {generator.kind === 'random_number' && (
-          <div className='flex gap-1.5'>
-            <div className='flex-1'>
+          <div className='grid grid-cols-3 gap-2'>
+            <div>
               <Label className='text-caption text-muted-foreground'>最小值</Label>
               <Input
                 type='number'
@@ -163,7 +163,7 @@ export function GeneratorConfigEditor({
                 onChange={(e) => onChange({ ...generator, min: Number(e.target.value) })}
               />
             </div>
-            <div className='flex-1'>
+            <div>
               <Label className='text-caption text-muted-foreground'>最大值</Label>
               <Input
                 type='number'
@@ -173,7 +173,7 @@ export function GeneratorConfigEditor({
                 onChange={(e) => onChange({ ...generator, max: Number(e.target.value) })}
               />
             </div>
-            <div className='w-16'>
+            <div>
               <Label className='text-caption text-muted-foreground'>小数位</Label>
               <Input
                 type='number'
@@ -189,8 +189,8 @@ export function GeneratorConfigEditor({
         )}
 
         {generator.kind === 'random_string' && (
-          <div className='flex gap-1.5'>
-            <div className='w-20'>
+          <div className='grid grid-cols-3 gap-2'>
+            <div>
               <Label className='text-caption text-muted-foreground'>长度</Label>
               <Input
                 type='number'
@@ -202,7 +202,7 @@ export function GeneratorConfigEditor({
                 onChange={(e) => onChange({ ...generator, length: Number(e.target.value) })}
               />
             </div>
-            <div className='flex-1'>
+            <div className='col-span-2'>
               <Label className='text-caption text-muted-foreground'>前缀</Label>
               <Input
                 className='h-8 text-label'
@@ -215,11 +215,45 @@ export function GeneratorConfigEditor({
           </div>
         )}
 
+        {generator.kind === 'date_relative' && (
+          <div className='grid grid-cols-3 gap-2'>
+            <div>
+              <Label className='text-caption text-muted-foreground'>最小天数</Label>
+              <Input
+                type='number'
+                className='h-8 text-label'
+                value={generator.offsetDaysMin}
+                disabled={disabled}
+                onChange={(e) => onChange({ ...generator, offsetDaysMin: Number(e.target.value) })}
+              />
+            </div>
+            <div>
+              <Label className='text-caption text-muted-foreground'>最大天数</Label>
+              <Input
+                type='number'
+                className='h-8 text-label'
+                value={generator.offsetDaysMax}
+                disabled={disabled}
+                onChange={(e) => onChange({ ...generator, offsetDaysMax: Number(e.target.value) })}
+              />
+            </div>
+            <div>
+              <Label className='text-caption text-muted-foreground'>格式</Label>
+              <Input
+                className='h-8 text-label font-mono'
+                value={generator.format}
+                disabled={disabled}
+                onChange={(e) => onChange({ ...generator, format: e.target.value })}
+              />
+            </div>
+          </div>
+        )}
+
         {generator.kind === 'template' && (
-          <div>
+          <div className='space-y-1'>
             <Label className='text-caption text-muted-foreground'>模板内容</Label>
             <Input
-              className='h-8 text-label'
+              className='h-8 text-label font-mono'
               placeholder='如 商品_{{random_string}}'
               value={generator.pattern}
               disabled={disabled}
@@ -229,7 +263,7 @@ export function GeneratorConfigEditor({
         )}
 
         {generator.kind === 'fixed' && (
-          <div>
+          <div className='space-y-1'>
             <Label className='text-caption text-muted-foreground'>固定默认值</Label>
             <Input
               className='h-8 text-label'
@@ -241,7 +275,7 @@ export function GeneratorConfigEditor({
         )}
 
         {generator.kind === 'enum_sample' && (
-          <div>
+          <div className='space-y-1'>
             <Label className='text-caption text-muted-foreground'>候选列表 (逗号分隔)</Label>
             <Input
               className='h-8 text-label'

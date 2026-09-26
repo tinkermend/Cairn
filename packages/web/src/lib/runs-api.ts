@@ -1,4 +1,10 @@
 import {
+  stepIterationDetailDtoSchema,
+  stepIterationListDtoSchema,
+  stepIterationListQuerySchema,
+  type StepIterationDetailDto,
+  type StepIterationListDto,
+  type StepIterationListQuery,
   acquireAuthControlBodySchema,
   acquireAuthControlResponseSchema,
   authControlHeartbeatResponseSchema,
@@ -53,7 +59,11 @@ import {
   type CleanupStatusResponse,
   type DeletePreviewResponse,
   type DeleteResourceBody,
-} from '@cairn/shared'
+
+  aiTaskListQuerySchema,
+  aiTaskListResponseSchema,
+  type AiTaskListQuery,
+  type AiTaskListResponse,} from '@cairn/shared'
 import { z } from 'zod'
 import { ApiRequestError, apiFetch, apiFetchBlob, toQueryString } from '@/lib/api-client'
 import { REQUEST_ID_HEADER, apiErrorSchema } from '@cairn/shared'
@@ -90,6 +100,21 @@ export function fetchRun(id: string): Promise<RunDetailDto> {
   return apiFetch(`/api/runs/${id}`, runDetailSchema)
 }
 
+export function fetchAttemptAiTasks(
+  runId: string,
+  attemptId: string,
+  query?: AiTaskListQuery,
+): Promise<AiTaskListResponse> {
+  const parsed = query ? aiTaskListQuerySchema.parse(query) : undefined
+  const qs = parsed
+    ? `?${new URLSearchParams({
+        ...(parsed.cursorOrdinal !== undefined ? { cursorOrdinal: String(parsed.cursorOrdinal) } : {}),
+        limit: String(parsed.limit),
+      }).toString()}`
+    : ''
+  return apiFetch(`/api/runs/${runId}/attempts/${attemptId}/ai-tasks${qs}`, aiTaskListResponseSchema)
+}
+
 export function fetchRunResolutionDecisions(
   runId: string,
   query?: ResolutionDecisionListQuery,
@@ -104,6 +129,18 @@ export function fetchRunMapDecisions(
 ): Promise<MapDecisionListResponse> {
   const parsed = query ? mapDecisionListQuerySchema.parse(query) : undefined
   return apiFetch(`/api/runs/${runId}/map-decisions${toQueryString(parsed)}`, mapDecisionListResponseSchema)
+}
+
+export function fetchRunIterations(
+  runId: string,
+  query: StepIterationListQuery,
+): Promise<StepIterationListDto> {
+  const parsed = stepIterationListQuerySchema.parse(query)
+  return apiFetch(`/api/runs/${runId}/iterations${toQueryString(parsed)}`, stepIterationListDtoSchema)
+}
+
+export function fetchRunIteration(runId: string, iterationId: string): Promise<StepIterationDetailDto> {
+  return apiFetch(`/api/runs/${runId}/iterations/${iterationId}`, stepIterationDetailDtoSchema)
 }
 
 export function fetchRunEvidence(id: string): Promise<RunEvidenceListResponse> {

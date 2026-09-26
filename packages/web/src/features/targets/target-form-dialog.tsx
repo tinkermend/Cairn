@@ -8,6 +8,8 @@ import {
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
+import { canCreateTargetWithCredential } from '@/lib/rbac'
+import { useAuthStore } from '@/stores/auth-store'
 import { createTarget, updateTarget } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
 import {
@@ -69,6 +71,8 @@ function TargetFormFields({
   onCreated,
 }: Omit<TargetFormDialogProps, 'open'>) {
   const isEdit = !!current
+  const user = useAuthStore((state) => state.auth.user)
+  const canWriteInitialCredential = canCreateTargetWithCredential(user)
   const queryClient = useQueryClient()
   const [saving, setSaving] = useState(false)
   const [activeAccordion, setActiveAccordion] = useState<'account' | 'locator' | null>(
@@ -111,6 +115,8 @@ function TargetFormFields({
           authMethod: values.authMethod,
           captchaMode: values.captchaMode,
           status: values.status,
+          iconKey: values.iconKey,
+          accentKey: values.accentKey,
           loginFields,
           captcha,
           sensitiveSelectors: selectorsFromForm(values.sensitiveSelectors),
@@ -133,6 +139,8 @@ function TargetFormFields({
           authMethod: values.authMethod,
           captchaMode: values.captchaMode,
           status: values.status,
+          iconKey: values.iconKey,
+          accentKey: values.accentKey,
           loginFields,
           captcha,
           sensitiveSelectors: selectorsFromForm(values.sensitiveSelectors),
@@ -203,6 +211,7 @@ function TargetFormFields({
                     form={form}
                     open={accountOpen}
                     onOpenChange={handleAccountToggle}
+                    allowCredential={canWriteInitialCredential}
                   />
                 ) : (
                   <div className='rounded-lg border border-border-divider bg-surface-subtle/30 p-3 text-label text-muted-foreground'>

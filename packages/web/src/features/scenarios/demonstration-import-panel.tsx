@@ -80,10 +80,14 @@ export function buildSuggestionGroups(suggestions: DemonstrationSuggestion[]): S
     } else if (item.outcome || item.step?.type === 'assert' || item.action === 'aiWaitFor') {
       targetType = 'read'
       defaultTitle = '成功条件与断言'
-    } else if (item.step?.type === 'fill' || item.action === 'aiInput') {
+    } else if (
+      item.step?.type === 'fill' ||
+      item.action === 'aiInput' ||
+      (item.step?.type === 'ai_action' && 'operation' in item.step.input && item.step.input.operation === 'input')
+    ) {
       targetType = 'idempotent_write'
       defaultTitle = '表单与数据填写'
-    } else if (item.step?.type === 'click' || item.action === 'aiTap') {
+    } else if (item.step?.type === 'click' || item.action === 'aiTap' || item.step?.type === 'ai_action') {
       targetType = 'write'
       defaultTitle = '按钮与触发动作'
     } else if (item.status === 'observation') {
@@ -117,7 +121,9 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
     onOpenChange,
   } = props
   const [placement, setPlacement] = useState<DemonstrationPlacement>(() =>
-    insertAnchor.kind === 'start'
+    props.initialPlaceholderStepId
+      ? { kind: 'replace_initial', nodeId: props.initialPlaceholderStepId }
+      : insertAnchor.kind === 'start'
       ? { kind: 'start' }
       : { kind: 'after', nodeId: insertAnchor.stepId }
   )
@@ -227,7 +233,9 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
       props.onApplied(result.scenario, result.receipt.insertedStepIds)
       onOpenChange(false)
       toast.success(
-        placement.kind === 'replace'
+        placement.kind === 'replace_initial'
+          ? '录制步骤已替换新场景占位步骤'
+          : placement.kind === 'replace'
           ? '已替换所选步骤，原有引用与成功条件已保留'
           : '已回填到当前草稿'
       )
@@ -274,7 +282,9 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
             <Label>回填位置</Label>
             <Select
               value={
-                placement.kind === 'replace'
+                placement.kind === 'replace_initial'
+                  ? `replace-initial:${placement.nodeId}`
+                  : placement.kind === 'replace'
                   ? `replace:${placement.nodeId}`
                   : placement.kind === 'after'
                     ? `after:${placement.nodeId}`
@@ -286,7 +296,7 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                   v === 'start'
                     ? { kind: 'start' }
                     : {
-                        kind: v.startsWith('replace:') ? 'replace' : 'after',
+                        kind: v.startsWith('replace-initial:') ? 'replace_initial' : v.startsWith('replace:') ? 'replace' : 'after',
                         nodeId: v.slice(v.indexOf(':') + 1),
                       }
                 )
@@ -296,6 +306,11 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                {props.initialPlaceholderStepId && (
+                  <SelectItem value={`replace-initial:${props.initialPlaceholderStepId}`}>
+                    用录制步骤替换新场景占位步骤
+                  </SelectItem>
+                )}
                 <SelectItem value='start'>插入到开头</SelectItem>
                 {props.independentSteps?.map((s) => (
                   <SelectItem key={`a-${s.id}`} value={`after:${s.id}`}>
@@ -320,6 +335,11 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
             {placement.kind === 'replace' && (
               <p className='text-label text-muted-foreground'>
                 保留原步骤身份、输出引用与成功条件；本次须恰好保留一个动作。模块内部步骤不在此处替换。
+              </p>
+            )}
+            {placement.kind === 'replace_initial' && (
+              <p className='text-label text-muted-foreground'>
+                录制步骤将直接成为新场景的步骤，占位导航会被移除。
               </p>
             )}
           </div>

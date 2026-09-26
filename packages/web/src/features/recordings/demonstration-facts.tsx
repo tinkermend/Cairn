@@ -21,7 +21,7 @@ const observationLabels = {
   missing: '缺失',
   omitted: '未上传',
 }
-const actionLabels: Record<string, string> = {
+export const actionLabels: Record<string, string> = {
   navigate: '打开页面',
   openPage: '打开页面',
   navigation: '页面导航',
@@ -188,7 +188,7 @@ export function DemonstrationFacts({
   )
 }
 
-function Observation({
+export function Observation({
   title,
   observation,
   detail,

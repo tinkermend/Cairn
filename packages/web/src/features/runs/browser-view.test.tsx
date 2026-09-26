@@ -4,6 +4,7 @@ import { render } from 'vitest-browser-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagedBrowserMeta } from '@cairn/shared'
 import { AuthoringObserveProvider, useAuthoringObserve } from '@/features/authoring'
+import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 import { BrowserView } from './browser-view'
 
@@ -507,6 +508,66 @@ describe('BrowserView', () => {
     expect(mocks.releaseAuthControl).toHaveBeenCalledWith(meta.runId, { token: 't'.repeat(32) })
     await expect.element(screen.getByRole('button', { name: '手动操作' })).toBeInTheDocument()
   })
+
+  it('遇到 PAGE_STALE 时不丢弃控制权，并自动刷新浏览器元数据', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: { sessionId: '55555555-4555-8555-555555555555', sessionGeneration: 1, pageId: 'p-1', documentEpoch: 0 },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+        url: 'https://app.example.com',
+      },
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.acquireAuthControl.mockResolvedValue({
+      token: 't'.repeat(32),
+      epoch: 1,
+      expiresAt: '2026-09-13T00:05:00.000Z',
+      pageRef: { sessionId: '55555555-4555-8555-555555555555', sessionGeneration: 1, pageId: 'p-1', documentEpoch: 0 },
+      meta: live,
+    })
+    mocks.subscribeBrowserFrames.mockImplementation(async (_runId, input) => {
+      input.onFrame({
+        pageRef: { sessionId: '55555555-4555-8555-555555555555', sessionGeneration: 1, pageId: 'p-1', documentEpoch: 0 },
+        frameId: 'f-1',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-13T00:00:00.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    mocks.inputAuthControl.mockRejectedValueOnce(
+      new ApiRequestError(409, { code: 'PAGE_STALE', message: '页面代次已变化，请刷新画面', requestId: 'req-stale' }),
+    )
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus="RUNNING"
+          sessionMode
+          defaultOpen
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    mocks.fetchManagedBrowser.mockClear()
+    await screen.getByRole('img', { name: '受管浏览器当前画面' }).click()
+
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+    expect(mocks.fetchManagedBrowser).toHaveBeenCalledWith(meta.runId, undefined)
+  })
+
 
   it('手动操作支持精准滚轮落点并合批发送 mouse_wheel', async () => {
     const live: ManagedBrowserMeta = {

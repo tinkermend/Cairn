@@ -15,8 +15,11 @@ import {
   Cpu,
   ExternalLink,
   Info,
+  Maximize2,
+  Minimize2,
   ShieldCheck,
 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { toast } from 'sonner'
 import { canCloseAccountSession, describeAuthIssue, describeAuthWaitStage, hasPermission } from '@cairn/shared'
@@ -269,8 +272,21 @@ export function sessionRetentionHint(input: {
 
 const route = getRouteApi('/_authenticated/sessions/$targetId/$accountId/')
 
-export function SessionDetailPage() {
-  const { targetId, accountId } = route.useParams()
+export interface SessionWorkbenchViewProps {
+  targetId: string
+  accountId: string
+  isSheet?: boolean
+  isFullscreen?: boolean
+  onFullscreenToggle?: () => void
+}
+
+export function SessionWorkbenchView({
+  targetId,
+  accountId,
+  isSheet = false,
+  isFullscreen = false,
+  onFullscreenToggle,
+}: SessionWorkbenchViewProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const observation = useSessionObservation(targetId, accountId)
@@ -437,7 +453,7 @@ export function SessionDetailPage() {
           queueDeadlineAt: trackedOperation?.queueDeadlineAt ?? data?.currentOperation?.queueDeadlineAt ?? null,
           queuePosition: trackedOperation?.queuePosition ?? null,
           createdAt: trackedOperation?.createdAt ?? null,
-          latestProgress: operationEvents.filter((event) => event.type === 'operation.progress').at(-1) ?? null,
+          latestProgress: operationEvents.filter((event) => event.type === 'operation.progress').slice(-1)[0] ?? null,
           claimedAt: operationEvents.find((event) => event.type === 'operation.claimed')?.createdAt ?? null,
           ownerWorkerId: trackedOperation?.ownerWorkerId ?? null,
           lastAuthError: data?.lastAuthError ?? null,
@@ -518,9 +534,40 @@ export function SessionDetailPage() {
     })
   }
 
-  return (
-    <>
-      <Main className="flex min-w-0 flex-1 flex-col gap-5">
+  const bodyContent = (
+    <div className={cn('flex min-w-0 flex-1 flex-col gap-5', isSheet ? 'h-full overflow-y-auto p-4 sm:p-5' : '')}>
+      {isSheet ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-divider pb-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <h2 className="text-title-small font-semibold truncate text-foreground">
+              {data ? `${data.targetName} / ${data.accountDisplayName}` : '账号会话'}
+            </h2>
+            {data ? (
+              <code className="text-label bg-muted text-muted-foreground px-1.5 py-0.5 rounded font-mono">
+                {data.accountUsername}
+              </code>
+            ) : null}
+            {data ? (
+              <StatusBadge tone={ACCOUNT_SESSION_STATUS_TONE[data.status]}>
+                {ACCOUNT_SESSION_STATUS_LABELS[data.status]}
+              </StatusBadge>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0 pr-8">
+            {onFullscreenToggle ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-muted-foreground hover:text-foreground"
+                onClick={onFullscreenToggle}
+                title={isFullscreen ? '退出全屏' : '全屏显示'}
+              >
+                {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : (
         <PageHeader
           parent={
             <Link
@@ -541,6 +588,7 @@ export function SessionDetailPage() {
               : '查看该账号当前实例、核验与保留。'
           }
         />
+      )}
 
         {detail.isPending ? (
           <PageSkeleton />
@@ -582,6 +630,11 @@ export function SessionDetailPage() {
                   {accountSessionOccupancyText(data) ? (
                     <StatusBadge tone="neutral">会话 {accountSessionOccupancyText(data)}</StatusBadge>
                   ) : null}
+                  {selected?.isolation ? (
+                    <StatusBadge tone={selected.isolation === 'SHARED' ? 'info' : 'neutral'}>
+                      {selected.isolation === 'SHARED' ? '共享宿主' : '独立进程'}
+                    </StatusBadge>
+                  ) : null}
                   {instances.length > 1 ? (
                     <Select value={selected?.id} onValueChange={setSelectedSessionId}>
                       <SelectTrigger aria-label="选择会话" className="h-8 w-40">
@@ -598,7 +651,16 @@ export function SessionDetailPage() {
                   ) : null}
                   <span className="hidden h-4 w-px bg-border sm:inline-block" />
                   <span className="inline-flex items-center gap-1 text-label text-muted-foreground">
-                    <span>节点: {selected ? `${selected.ownerWorkerId} · 实例 #${selected.generation}` : '—'}</span>
+                    <span>
+                      节点:{' '}
+                      {selected
+                        ? `${selected.ownerWorkerId} · 实例 #${selected.generation}${
+                            selected.isolation === 'SHARED' && selected.hostId
+                              ? ` · 宿主 ${selected.hostId.slice(0, 8)}`
+                              : ''
+                          }`
+                        : '—'}
+                    </span>
                     {selected ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -610,7 +672,7 @@ export function SessionDetailPage() {
                             <Info className="size-3" />
                           </button>
                         </TooltipTrigger>
-                        <TooltipContent className="max-w-xs text-xs">
+                        <TooltipContent className="max-w-xs text-label">
                           实例创建序号。会话每次重启或重建时递增，用于保障操作安全与并发防冲突。
                         </TooltipContent>
                       </Tooltip>
@@ -1308,7 +1370,7 @@ export function SessionDetailPage() {
                               <Info className="size-3.5" />
                             </button>
                           </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-xs">
+                          <TooltipContent className="max-w-xs text-label">
                             实例创建序号。会话每次重启或重建时递增，用于保障操作安全与并发防冲突。
                           </TooltipContent>
                         </Tooltip>
@@ -1347,7 +1409,12 @@ export function SessionDetailPage() {
             ) : null}
           </>
         )}
-      </Main>
+    </div>
+  )
+
+  return (
+    <>
+      {isSheet ? bodyContent : <Main className="flex min-w-0 flex-1 flex-col gap-5">{bodyContent}</Main>}
 
       <ConfirmDialog
         open={Boolean(confirmKind)}
@@ -1370,4 +1437,9 @@ export function SessionDetailPage() {
       />
     </>
   )
+}
+
+export function SessionDetailPage() {
+  const { targetId, accountId } = route.useParams()
+  return <SessionWorkbenchView targetId={targetId} accountId={accountId} isSheet={false} />
 }

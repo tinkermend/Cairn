@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   fetchScenarios: vi.fn().mockResolvedValue({ items: [] }),
   fetchTargets: vi.fn().mockResolvedValue({ items: [] }),
 }))
+let routeSearch: { targetId?: string } = {}
+const navigateMock = vi.fn()
 
 vi.mock('@/lib/runs-api', () => ({
   fetchRuns: mocks.fetchRuns,
@@ -36,7 +38,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    getRouteApi: () => ({ useSearch: () => routeSearch }),
+    useNavigate: () => navigateMock,
     Link: ({ children }: { children: React.ReactNode }) => (
       <a href='#'>{children}</a>
     ),
@@ -107,6 +110,8 @@ async function renderPage() {
 describe('RunsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    routeSearch = {}
+    navigateMock.mockReset()
     mocks.fetchRuns.mockResolvedValue(list)
     mocks.cancelRun.mockResolvedValue({ status: 'CANCELLED' })
     mocks.previewDeleteRun.mockResolvedValue({
@@ -130,6 +135,14 @@ describe('RunsPage', () => {
 
   afterEach(() => {
     useAuthStore.getState().auth.setUser(null)
+  })
+
+  it('从 URL 恢复目标系统筛选并传入运行查询', async () => {
+    routeSearch = { targetId: '11111111-1111-4111-8111-111111111111' }
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
+    expect(mocks.fetchRuns).toHaveBeenCalledWith(expect.objectContaining({ targetId: routeSearch.targetId }))
   })
 
   /** 列表是用来认出"这是哪一条"的，裸 UUID 等于没有信息（D14）。 */

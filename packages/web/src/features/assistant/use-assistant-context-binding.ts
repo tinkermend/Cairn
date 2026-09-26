@@ -35,14 +35,49 @@ function toPageContext(context: AssistantBoundContext): AssistantPageContext {
     typeof context.draftRevision === 'number' && context.draftRevision >= 1
       ? context.draftRevision
       : undefined
+
+  let primaryRef: { kind: 'run' | 'scenario' | 'target' | 'session' | 'schedule' | 'dataset'; id: string } | undefined
+  if (context.page === 'run' && runId) {
+    primaryRef = { kind: 'run', id: runId }
+  } else if ((context.page === 'studio' || context.page === 'scenario') && scenarioId) {
+    primaryRef = { kind: 'scenario', id: scenarioId }
+  } else if (context.page === 'target' && targetId) {
+    primaryRef = { kind: 'target', id: targetId }
+  } else if (context.page === 'session' && context.entityId) {
+    primaryRef = { kind: 'session', id: context.entityId }
+  } else if (context.page === 'schedule' && context.entityId) {
+    primaryRef = { kind: 'schedule', id: context.entityId }
+  } else if (context.page === 'dataset' && context.entityId) {
+    primaryRef = { kind: 'dataset', id: context.entityId }
+  }
+
   return {
+    version: 2,
+    routeKey: context.page,
+    pageKind: context.page,
     page: context.page,
+    ...(primaryRef ? { primaryRef } : {}),
     ...(runId ? { runId } : {}),
     ...(scenarioId ? { scenarioId } : {}),
     ...(targetId ? { targetId } : {}),
     ...(context.selectedStepId ? { stepId: context.selectedStepId } : {}),
     ...(draftRevision ? { draftRevision } : {}),
     ...(context.versionId ? { versionId: context.versionId } : {}),
+    ...(context.isDirty !== undefined || draftRevision !== undefined
+      ? {
+          draft: {
+            isDirty: Boolean(context.isDirty),
+            savedRevision: draftRevision,
+          },
+        }
+      : {}),
+    ...(context.selectedStepId
+      ? {
+          view: {
+            selectedRef: { kind: 'step' as const, id: context.selectedStepId },
+          },
+        }
+      : {}),
   }
 }
 
@@ -50,23 +85,29 @@ export function useAssistantContextBinding(
   context: AssistantBoundContext | null,
 ) {
   const bindPageContext = useAssistantStore((s) => s.bindPageContext)
+  const unbindPageContext = useAssistantStore((s) => s.unbindPageContext)
   const setPageContext = useAssistantStore((s) => s.setPageContext)
   const signature = bindingSignature(context)
   const contextRef = useRef(context)
   contextRef.current = context
+  const ownerTokenRef = useRef(
+    typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `owner-${Math.random().toString(36).slice(2)}`,
+  )
 
   useEffect(() => {
     const current = contextRef.current
-    bindPageContext(current)
+    bindPageContext(current, ownerTokenRef.current)
     setPageContext(current ? toPageContext(current) : null)
   }, [signature, bindPageContext, setPageContext])
 
   useEffect(() => {
+    const token = ownerTokenRef.current
     return () => {
-      bindPageContext(null)
-      setPageContext(null)
+      unbindPageContext(token)
     }
-  }, [bindPageContext, setPageContext])
+  }, [unbindPageContext])
 }
 
 /**

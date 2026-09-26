@@ -59,6 +59,11 @@ const router = vi.hoisted(() => ({
   search: {
     runId: undefined as string | undefined,
     import: undefined as string | undefined,
+    editor: undefined as string | undefined,
+  } as {
+    runId?: string
+    import?: string
+    editor?: string
   },
   navigate: vi.fn(),
 }))
@@ -184,6 +189,8 @@ const target: TargetDto = {
   authMethod: 'password',
   captchaMode: 'none',
   status: 'active',
+  iconKey: 'globe',
+  accentKey: 'pine',
   loginFields: null,
   accountCount: 1,
   createdAt: '2026-09-01T00:00:00.000Z',
@@ -310,7 +317,7 @@ async function renderPage() {
 describe('Scenario Studio', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    router.search = { runId: undefined, import: undefined }
+    router.search = { runId: undefined, import: undefined, editor: undefined }
     signIn()
     mocks.fetchScenario.mockResolvedValue(detail())
     mocks.fetchScenarioCapabilities.mockResolvedValue(defaultCapabilities)
@@ -690,7 +697,7 @@ describe('Scenario Studio', () => {
     const { screen } = await renderPage()
     await screen.getByRole('combobox', { name: '步骤 1 类型' }).click()
     await screen.getByRole('option', { name: '填写' }).click()
-    await expect.element(screen.getByText('更换步骤类型？')).toBeInTheDocument()
+    await expect.element(screen.getByText('将「提取」更换为「填写」？')).toBeInTheDocument()
     await screen.getByRole('button', { name: '取消' }).click()
     await expect.element(screen.getByText(/输出 extracted/)).toBeInTheDocument()
 
@@ -710,6 +717,64 @@ describe('Scenario Studio', () => {
     await expect
       .element(screen.getByRole('button', { name: /提取单号/ }))
       .toBeInTheDocument()
+  })
+
+  it('更换动作类型默认更新名称，明确选择后才保留自定义名称', async () => {
+    const initialDocument = {
+      ...document,
+      steps: [{ ...document.steps[0]!, name: '导航' }],
+    }
+    mocks.fetchScenario.mockResolvedValue(
+      detail({
+        draft: {
+          revision: 1,
+          document: initialDocument,
+          updatedAt: '2026-09-13T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+        steps: initialDocument.steps,
+      })
+    )
+    const { screen } = await renderPage()
+
+    await screen.getByRole('combobox', { name: '步骤 1 类型' }).click()
+    await screen.getByRole('option', { name: '点击' }).click()
+    await expect.element(screen.getByText('将「导航」更换为「点击」？')).toBeInTheDocument()
+    await expect.element(screen.getByText('更换后步骤名称：「点击」')).toBeInTheDocument()
+    await screen
+      .getByRole('alertdialog')
+      .getByRole('button', { name: '更换类型' })
+      .click()
+    await expect.element(screen.getByLabelText('步骤名称')).toHaveValue('点击')
+
+    await screen.getByLabelText('步骤名称').fill('点击提交按钮')
+    await screen.getByRole('combobox', { name: '步骤 1 类型' }).click()
+    await screen.getByRole('option', { name: '填写' }).click()
+    await expect.element(screen.getByText('更换后步骤名称：「填写」')).toBeInTheDocument()
+    await expect.element(screen.getByRole('checkbox', { name: '保留原步骤名称' })).not.toBeChecked()
+    await screen
+      .getByRole('alertdialog')
+      .getByRole('button', { name: '更换类型' })
+      .click()
+    await expect.element(screen.getByLabelText('步骤名称')).toHaveValue('填写')
+
+    await screen.getByLabelText('步骤名称').fill('处理订单')
+    await screen.getByRole('combobox', { name: '步骤 1 类型' }).click()
+    await screen.getByRole('option', { name: '导航' }).click()
+    await screen.getByText(/保留原名称「处理订单」/).click()
+    await expect.element(screen.getByRole('checkbox', { name: '保留原步骤名称' })).toBeChecked()
+    await expect.element(screen.getByText('更换后步骤名称：「处理订单」')).toBeInTheDocument()
+    await screen
+      .getByRole('alertdialog')
+      .getByRole('button', { name: '更换类型' })
+      .click()
+    await expect.element(screen.getByLabelText('步骤名称')).toHaveValue('处理订单')
+    await screen.getByRole('button', { name: '保存草稿' }).click()
+    await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalled())
+    expect(mocks.saveScenarioDraft.mock.calls[0]![1].document.steps[0]).toMatchObject({
+      name: '处理订单',
+      type: 'navigate',
+    })
   })
 
   it('输入框内的 Alt 方向键不会重排', async () => {
@@ -781,9 +846,11 @@ describe('Scenario Studio', () => {
       .not.toBeInTheDocument()
   })
 
-  it('默认步骤库不出现可添加的 AI 类型', async () => {
+  it('步骤库包含可切换的文件操作，并隐藏未开放的 AI 类型', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '添加步骤' }).click()
+    await expect.element(screen.getByRole('menuitem', { name: '下载文件' })).toBeEnabled()
+    await expect.element(screen.getByRole('menuitem', { name: '文件上传' })).toBeEnabled()
     await expect
       .element(screen.getByRole('menuitem', { name: /AI 操作/ }))
       .toBeDisabled()
@@ -796,6 +863,18 @@ describe('Scenario Studio', () => {
     await expect
       .element(screen.getByRole('menuitem', { name: /AI 判断/ }))
       .not.toBeInTheDocument()
+    await screen.getByRole('menuitem', { name: '下载文件' }).click()
+    await expect.element(screen.getByLabelText('步骤名称')).toHaveValue('下载文件')
+    await screen.getByRole('combobox', { name: '步骤 2 类型' }).click()
+    await expect.element(screen.getByRole('option', { name: '文件上传' })).toBeInTheDocument()
+  })
+
+  it('画布模式的添加菜单也能直接创建文件操作', async () => {
+    router.search.editor = 'flowgram'
+    const { screen } = await renderPage()
+    await screen.getByRole('button', { name: '添加步骤' }).click()
+    await expect.element(screen.getByRole('menuitem', { name: '下载文件' })).toBeEnabled()
+    await expect.element(screen.getByRole('menuitem', { name: '文件上传' })).toBeEnabled()
   })
 
   it('缺 ai:execute 时仍可发布，文案与能力未开放不同', async () => {
@@ -884,6 +963,7 @@ describe('Scenario Studio', () => {
     mocks.fetchScenario.mockResolvedValue(detail({ draftDirty: true }))
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '发布' }).click()
+    await screen.getByRole('button', { name: '确认并正式发布' }).click()
     await expect
       .element(screen.getByText(/他人已更新这份草稿/))
       .toBeInTheDocument()
@@ -1672,4 +1752,3 @@ describe('Scenario Studio', () => {
     await expect.element(screen.getByLabelText('页面地址')).toBeInTheDocument()
   })
 })
-

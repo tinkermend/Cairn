@@ -129,6 +129,8 @@ describe('targetFormSchema', () => {
       authMethod: 'password' as const,
       captchaMode: 'none' as const,
       status: 'active' as const,
+      iconKey: 'factory' as const,
+      accentKey: 'teal' as const,
       loginFields: {
         username: { by: 'id' as const, value: 'u-input' },
       },
@@ -141,6 +143,8 @@ describe('targetFormSchema', () => {
     const formVals = valuesFromTarget(targetDto)
     expect(formVals.code).toBe('tower-test')
     expect(formVals.name).toBe('铁塔视联')
+    expect(formVals.iconKey).toBe('factory')
+    expect(formVals.accentKey).toBe('teal')
     expect(formVals.usernameValue).toBe('u-input')
     expect(formVals.sensitiveSelectors).toBe('#id-card')
     expect(formVals.loginLeaveTimeoutSeconds).toBe('')

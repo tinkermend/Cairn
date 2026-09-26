@@ -54,7 +54,7 @@ describe('录制草稿列表', () => {
       id: 'u1',
       displayName: '管理员',
       email: null,
-      roles: [],
+      roles: ['admin'],
       permissions: ['workflow:write'],
     })
     mocks.fetchRecordings.mockResolvedValue(list)
@@ -65,12 +65,37 @@ describe('录制草稿列表', () => {
     useAuthStore.getState().auth.reset()
   })
 
-  it('列出场景名称、目标系统、来源与待处理数', async () => {
+  it('列出草稿名称、目标系统、来源、回填状态与待处理数', async () => {
     const screen = await renderPage()
+    await expect.element(screen.getByText('草稿名称')).toBeVisible()
+    await expect.element(screen.getByText('回填状态')).toBeVisible()
     await expect.element(screen.getByText('录制 shop.example')).toBeVisible()
     await expect.element(screen.getByText('演示商城')).toBeVisible()
     await expect.element(screen.getByText('脚本录制')).toBeVisible()
+    await expect.element(screen.getByRole('cell', { name: '待回填' })).toBeVisible()
     await expect.element(screen.getByText('管理员')).toBeVisible()
     await expect.element(screen.getByRole('cell', { name: '3', exact: true })).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '回填', exact: true })).toBeVisible()
+  })
+
+  it('支持在待回填与已回填之间进行三态筛选', async () => {
+    const screen = await renderPage()
+    const pendingBackfillBtn = screen.getByRole('button', { name: '待回填' })
+    await pendingBackfillBtn.click()
+
+    expect(mocks.fetchRecordings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imported: false,
+      }),
+    )
+
+    const importedBtn = screen.getByRole('button', { name: '已回填' })
+    await importedBtn.click()
+
+    expect(mocks.fetchRecordings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imported: true,
+      }),
+    )
   })
 })

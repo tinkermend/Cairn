@@ -3,6 +3,11 @@
 .archipelago-container {
   position: relative;
   width: 100%;
+  height: calc(100vh - 230px);
+  min-height: 580px;
+  max-height: 820px;
+  display: flex;
+  flex-direction: column;
   border: 1px solid #3d6168;
   border-radius: 16px;
   overflow: hidden;
@@ -19,6 +24,7 @@
   padding: 10px 16px;
   border-bottom: 1px solid #31535b;
   background: #123541;
+  flex: 0 0 auto;
 }
 
 .archipelago-signal {
@@ -35,15 +41,18 @@
   display: flex;
   position: relative;
   width: 100%;
-  min-height: 640px;
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
   background: #071e2a;
 }
 
 .archipelago-canvas {
   position: relative;
-  flex: 1;
+  flex: 1 1 0%;
   min-width: 0;
-  min-height: 640px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   background:
     radial-gradient(ellipse at 29% 57%, rgba(49, 119, 120, 0.23), transparent 42%),
@@ -296,6 +305,15 @@
   background: #123541;
   color: #99bebb;
   font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.archipelago-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .archipelago-legend-dot {

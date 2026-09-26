@@ -13,6 +13,13 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/_authenticated/runs/$runId/')({
   validateSearch: searchSchema,
+  staticData: {
+    assistant: {
+      routeKey: 'runs.$runId',
+      pageKind: 'run',
+      primaryObject: { kind: 'run', idParam: 'runId' },
+    },
+  },
   beforeLoad: () => {
     const user = useAuthStore.getState().auth.user
     if (!user || !hasPermission(user.permissions, 'run:read')) {

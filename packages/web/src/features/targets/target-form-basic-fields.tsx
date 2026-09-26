@@ -29,6 +29,7 @@ import {
   TARGET_STATUS_LABELS,
 } from './labels'
 import type { TargetFormValues } from './target-form-schema'
+import { TargetFormIdentityFields } from './target-form-identity-fields'
 
 type TargetFormBasicFieldsProps = {
   form: UseFormReturn<TargetFormValues>
@@ -87,6 +88,8 @@ export function TargetFormBasicFields({
           </FormItem>
         )}
       />
+
+      <TargetFormIdentityFields form={form} />
 
       <FormField
         control={form.control}

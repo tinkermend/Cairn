@@ -16,12 +16,14 @@ type TargetFormAccountSectionProps = {
   form: UseFormReturn<TargetFormValues>
   open: boolean
   onOpenChange: (open: boolean) => void
+  allowCredential: boolean
 }
 
 export function TargetFormAccountSection({
   form,
   open,
   onOpenChange,
+  allowCredential,
 }: TargetFormAccountSectionProps) {
   const authMethod = useWatch({ control: form.control, name: 'authMethod' })
   const accountUsername = useWatch({ control: form.control, name: 'accountUsername' })
@@ -110,7 +112,7 @@ export function TargetFormAccountSection({
             />
           </div>
 
-          <FormField
+          {allowCredential ? <FormField
             control={form.control}
             name='accountPassword'
             render={({ field }) => (
@@ -127,9 +129,9 @@ export function TargetFormAccountSection({
                 <FormMessage />
               </FormItem>
             )}
-          />
+          /> : <p className='text-label text-muted-foreground'>可先登记账号。密码由具备全范围凭据权限的成员补齐。</p>}
 
-          {accountPassword?.trim() !== '' ? (
+          {allowCredential && accountPassword?.trim() !== '' ? (
             <div className='pt-1'>
               <ValidityFields control={form.control} required />
             </div>

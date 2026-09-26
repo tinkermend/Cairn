@@ -50,6 +50,7 @@ import {
   runInputValues,
 } from '@/features/runs/run-input-fields'
 import { CONSUMER_LABELS, MODE_LABELS } from './labels'
+import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from '@/features/map/map-accounts'
 
 const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 1, label: '周一' },
@@ -61,7 +62,7 @@ const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 7, label: '周日' },
 ]
 
-export type ScheduleObjectContext = {
+export type ScenarioOrSuiteObjectContext = {
   type: 'scenario_run' | 'suite_run'
   targetId: string
   targetName?: string
@@ -69,6 +70,17 @@ export type ScheduleObjectContext = {
   name: string
   versionId?: string | null
 }
+
+export type MapRefreshObjectContext = {
+  type: 'map_refresh'
+  targetId: string
+  targetName?: string
+  name?: string
+}
+
+export type ScheduleObjectContext =
+  | ScenarioOrSuiteObjectContext
+  | MapRefreshObjectContext
 
 function emptyDefinition(
   type: ScheduleConsumerType,
@@ -170,7 +182,12 @@ export function ScheduleEditorDialog({
     existing?.consumerKey ?? context?.type ?? 'scenario_run'
   )
   const [name, setName] = useState(
-    existing?.name ?? (context ? `${context.name} · 定时执行` : '')
+    existing?.name ??
+      (context
+        ? context.type === 'map_refresh'
+          ? (context.name ?? `${context.targetName ?? '目标知识'} · 采集计划`)
+          : `${context.name} · 定时执行`
+        : '')
   )
   const [targetId, setTargetId] = useState(
     existing?.targetId ?? context?.targetId ?? ''
@@ -296,6 +313,9 @@ export function ScheduleEditorDialog({
       fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
     enabled: Boolean(targetId) && type !== 'knowledge_analysis',
   })
+  const mapAccounts = useMemo(() => {
+    return mapCapableAccounts(accountsQuery.data?.items ?? [])
+  }, [accountsQuery.data?.items])
   const entriesQuery = useQuery({
     queryKey: ['map-entries', targetId],
     queryFn: () => fetchMapSafeEntries(targetId),
@@ -560,11 +580,14 @@ export function ScheduleEditorDialog({
       ...base,
       name: name || '知识地图采集',
       timeRule,
-      timezone,
-      weekdays: (weekdays.length ? weekdays : [1]) as ScheduleWeekday[],
-      windowStart,
-      windowEnd,
-      misfire: 'skip',
+      timezone: timeRule.kind === 'calendar' ? timezone : 'UTC',
+      weekdays:
+        timeRule.kind === 'calendar'
+          ? ((weekdays.length ? weekdays : [1]) as ScheduleWeekday[])
+          : ([1, 2, 3, 4, 5, 6, 7] as ScheduleWeekday[]),
+      windowStart: timeRule.kind === 'calendar' ? windowStart : '00:00',
+      windowEnd: timeRule.kind === 'calendar' ? windowEnd : '23:59',
+      misfire: timeRule.misfire,
       consumer: {
         type: 'map_refresh',
         targetId,
@@ -941,12 +964,17 @@ export function ScheduleEditorDialog({
                   onValueChange={(value) => setAccountId(value)}
                 >
                   <SelectFieldOption value=''>选择账号</SelectFieldOption>
-                  {(accountsQuery.data?.items ?? []).map((item) => (
+                  {mapAccounts.map((item) => (
                     <SelectFieldOption key={item.id} value={item.id}>
                       {item.displayName}
                     </SelectFieldOption>
                   ))}
                 </SelectField>
+                {mapAccounts.length === 0 ? (
+                  <p className='text-caption text-muted-foreground'>
+                    {MAP_ACCOUNT_REQUIRED}
+                  </p>
+                ) : null}
               </div>
               <div className='grid gap-1'>
                 <Label htmlFor='schedule-entry'>安全进入</Label>
@@ -1292,7 +1320,8 @@ export function ScheduleEditorDialog({
                 !canWrite ||
                 saveMutation.isPending ||
                 enableMutation.isPending ||
-                (type === 'scenario_run' && Boolean(inputError))
+                (type === 'scenario_run' && Boolean(inputError)) ||
+                (type === 'map_refresh' && (!accountId || !entryId))
               }
               onClick={() => saveMutation.mutate()}
             >
@@ -1304,7 +1333,8 @@ export function ScheduleEditorDialog({
                 !canWrite ||
                 enableMutation.isPending ||
                 saveMutation.isPending ||
-                (type === 'scenario_run' && Boolean(inputError))
+                (type === 'scenario_run' && Boolean(inputError)) ||
+                (type === 'map_refresh' && (!accountId || !entryId))
               }
               onClick={() => enableMutation.mutate()}
             >

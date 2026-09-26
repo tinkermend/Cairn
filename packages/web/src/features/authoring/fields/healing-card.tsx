@@ -10,8 +10,10 @@ import {
 } from 'lucide-react'
 import {
   isAiStepType,
+  stepRunFor,
   type DebugAction,
   type RunDetailDto,
+  type Step,
   type TargetDescriptor,
 } from '@cairn/shared'
 import { toast } from 'sonner'
@@ -75,10 +77,14 @@ function holdingFailureSummary(error?: { code?: string; safeMessage?: string }):
 
 export function HealingCard({
   run,
+  currentStep,
+  onBeforeRetry,
   onChanged,
   onSaveToDraft,
 }: {
   run: RunDetailDto
+  currentStep?: Step
+  onBeforeRetry?: () => Promise<unknown>
   onChanged?: () => void
   onSaveToDraft?: (target: TargetDescriptor) => void
 }) {
@@ -92,7 +98,7 @@ export function HealingCard({
     : undefined
   const stepUnresolved = holding && !checkpointStep
   const step = checkpointStep
-  const stepRun = step ? run.stepRuns.find((item) => item.stepId === step.id) : undefined
+  const stepRun = step ? stepRunFor(run.stepRuns, step.id) : undefined
   const status = stepRun?.status
   const failed = status === 'FAILED'
   const succeeded = status === 'SUCCEEDED'
@@ -112,13 +118,24 @@ export function HealingCard({
 
   const send = (action: DebugAction) => {
     setBusy(true)
-    void debugRun(run.id, action)
-      .then(() => {
+    const proceed = async () => {
+      if (action.action === 'retry_current' && onBeforeRetry) {
+        const res = await onBeforeRetry()
+        if (res === false || res === null) return
+      }
+      const finalAction: DebugAction = {
+        ...action,
+        ...(action.action === 'retry_current' && currentStep ? { stepOverride: currentStep } : {}),
+      }
+      return debugRun(run.id, finalAction).then(() => {
         onChanged?.()
         if (action.action === 'retry_current' && newlyPicked && saveToDraft) {
           onSaveToDraft?.(newlyPicked)
         }
       })
+    }
+
+    void proceed()
       .catch((error) => {
         if (
           action.action === 'retry_current' &&
@@ -273,19 +290,23 @@ export function HealingCard({
         </div>
       ) : null}
 
-      {holding && (succeeded || (!failed && run.checkpoint?.reason === 'author_pause')) ? (
+      {holding && (succeeded || (!failed && (run.checkpoint?.reason === 'author_pause' || run.checkpoint?.reason === 'step_succeeded'))) ? (
         <div className='space-y-3'>
           <div className='flex items-start gap-2'>
             <CheckCircle2 className='mt-0.5 size-4 shrink-0 text-status-success-foreground' />
             <div className='min-w-0 flex-1'>
               <div className='flex flex-wrap items-center gap-2'>
                 <h4 className='text-body font-semibold text-status-success-foreground'>
-                  当前步骤已通过验证
+                  {run.checkpoint?.reason === 'step_succeeded'
+                    ? '单步重试已成功，已自动重新挂起'
+                    : '当前步骤已通过验证'}
                 </h4>
                 <StatusBadge tone='success'>就绪</StatusBadge>
               </div>
               <p className='mt-0.5 text-small text-muted-foreground'>
-                本步已成功执行，点击继续执行后续安全步骤。
+                {run.checkpoint?.reason === 'step_succeeded'
+                  ? '本步重试成功，已保持受管画面。可继续执行后续步骤，或在此继续调整本步。'
+                  : '本步已成功执行，点击继续执行后续安全步骤。'}
               </p>
             </div>
           </div>

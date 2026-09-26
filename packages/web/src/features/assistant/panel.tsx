@@ -9,7 +9,6 @@ import {
   FileCode,
   GripHorizontal,
   History,
-  Loader2,
   PanelRightClose,
   PanelRightOpen,
   ShieldCheck,
@@ -28,6 +27,7 @@ import { AssistantResultView } from './result'
 import { MiniRunTracker } from './mini-run-tracker'
 import { PromptCards } from './prompt-cards'
 import { HistoryDrawer } from './history-drawer'
+import { ThinkingProcessBlock } from './components/thinking-process'
 
 function contextLabel(context: AssistantPageContext | null): string {
   if (!context) return '帮你理解场景、分析运行、找到功能入口'
@@ -41,16 +41,6 @@ function contextLabel(context: AssistantPageContext | null): string {
   if (context.page === 'target' && context.targetId)
     return `当前目标 · ${context.targetId.slice(0, 8)}…`
   return '结合当前页面，为你提供帮助'
-}
-
-function stageLabel(stage: string | null, queuePos?: number | null): string {
-  if (stage === 'queued') return `排队中${queuePos ? `（第 ${queuePos} 位）` : ''}...`
-  if (stage === 'routing') return '正在理解意图与准入检查...'
-  if (stage === 'loading_facts') return '正在检索上下文事实与证据...'
-  if (stage === 'generating') return '大模型正在深度思考分析...'
-  if (stage === 'validating') return '正在进行事实引用与编译验证...'
-  if (stage === 'persisting') return '正在保存处理结果...'
-  return '正在分析，请稍候…'
 }
 
 function ContextCapsule({
@@ -331,6 +321,13 @@ export function AssistantPanel({
                   <p className='text-label font-medium text-text-muted'>
                     识途助手
                   </p>
+                  {turn.thinkingText ? (
+                    <ThinkingProcessBlock
+                      thinkingText={turn.thinkingText}
+                      thinkingDurationMs={turn.thinkingDurationMs}
+                      isLive={false}
+                    />
+                  ) : null}
                   {turn.result ? (
                     <AssistantResultView
                       result={turn.result}
@@ -385,7 +382,7 @@ export function AssistantPanel({
                               try {
                                 const adopted = await adoptHandler(proposal)
                                 if (adopted.ok) {
-                                  setLastAdopted({ proposalId: proposal.stepId, digest: adopted.digest })
+                                  setLastAdopted({ proposalId: proposal.stepId, digest: adopted.digest ?? '' })
                                   toast.success('已放入本地草稿，尚未保存')
                                 } else {
                                   toast.error(adopted.reason || '采纳失败')
@@ -419,33 +416,13 @@ export function AssistantPanel({
               <p className='text-label font-medium text-text-muted'>
                 识途助手
               </p>
-              <div className='space-y-2 rounded-xl border border-border-default bg-surface-subtle p-3.5 shadow-2xs'>
-                <div className='flex items-center justify-between gap-2'>
-                  <div role='status' className='flex items-center gap-2 text-label text-text-secondary'>
-                    <Loader2 className='size-3.5 animate-spin text-primary-600' />
-                    <span>{stageLabel(activeStage, activeQueuePosition)}</span>
-                  </div>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    className='h-6 px-2 text-label text-text-muted hover:text-status-error-foreground'
-                    onClick={() => void cancel()}
-                  >
-                    取消
-                  </Button>
-                </div>
-                {thinkingText ? (
-                  <details className='group text-label text-text-muted'>
-                    <summary className='cursor-pointer py-0.5 font-medium select-none hover:text-text-primary'>
-                      思考过程 (点击展开)
-                    </summary>
-                    <div className='mt-1 max-h-40 overflow-y-auto rounded border border-border-default bg-surface-card p-2 font-mono text-label leading-relaxed whitespace-pre-wrap text-text-primary'>
-                      {thinkingText}
-                    </div>
-                  </details>
-                ) : null}
-              </div>
+              <ThinkingProcessBlock
+                thinkingText={thinkingText}
+                stage={activeStage}
+                queuePosition={activeQueuePosition}
+                isLive={true}
+                onCancel={() => void cancel()}
+              />
             </div>
           ) : null}
         </div>

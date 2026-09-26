@@ -104,6 +104,7 @@ vi.mock('@/lib/assistant-api', async (importOriginal) => {
       }
     }),
     cancelAssistantTurn: vi.fn(async () => ({ canceled: true })),
+    deleteAssistantConversation: vi.fn(async () => ({ id: 'mock', deleted: true })),
     fetchAssistantConversations: vi.fn(async () => ({ items: [], nextCursor: null })),
     fetchAssistantTurns: vi.fn(async () => ({ items: [] })),
     fetchAssistantTurn: vi.fn(async () => nextTurnToDeliver),
@@ -121,7 +122,7 @@ vi.mock('@/lib/assistant-api', async (importOriginal) => {
   }
 })
 
-function makeTurn(result: AssistantTurn['result'], question = '测试提问'): AssistantTurn {
+function makeTurn(result: any, question = '测试提问'): AssistantTurn {
   return {
     id: `turn-id-${Math.random().toString(36).slice(2, 8)}`,
     conversationId: 'conv-browser-sim-1',
@@ -133,6 +134,7 @@ function makeTurn(result: AssistantTurn['result'], question = '测试提问'): A
     deadlineAt: '2026-09-23T00:05:00.000Z',
     result,
     createdAt: '2026-09-23T00:00:00.000Z',
+    updatedAt: '2026-09-23T00:00:00.000Z',
   }
 }
 

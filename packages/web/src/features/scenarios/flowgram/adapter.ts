@@ -1,5 +1,6 @@
 import {
   isAuthoringDocumentV2,
+  walkAuthoringNodes,
   type ScenarioDocument,
   type ScenarioAuthoringDocumentV2,
 } from '@cairn/shared'
@@ -10,13 +11,29 @@ import { nodeId } from '../studio-document'
 export function toFlowgram(document: ScenarioDocument | ScenarioAuthoringDocumentV2): FlowDocumentJSON {
   if (isAuthoringDocumentV2(document)) {
     return {
-      nodes: document.nodes.map((node) => {
+      nodes: walkAuthoringNodes(document).map(({ node }) => {
         const id = nodeId(node)
         if (node.kind === 'step') {
           return {
             id,
             type: 'cairn-step',
             data: { step: structuredClone(node.step), nodeKind: 'step' },
+          }
+        }
+        if (node.kind === 'block') {
+          return {
+            id,
+            type: 'cairn-step',
+            data: {
+              nodeKind: 'block',
+              step: {
+                id,
+                name: `分支 · ${node.name || '条件分支'}`,
+                type: 'block' as unknown as any,
+                effectType: 'READ_ONLY',
+                input: {},
+              },
+            },
           }
         }
         return {
@@ -53,9 +70,10 @@ export function applyFlowgramOrder<T extends ScenarioDocument | ScenarioAuthorin
 ): T {
   const nodes = graph.nodes
   if (isAuthoringDocumentV2(document)) {
-    const byId = new Map(document.nodes.map((node) => [nodeId(node), node]))
+    const docNodes = walkAuthoringNodes(document).map((item) => item.node)
+    const byId = new Map(docNodes.map((node) => [nodeId(node), node]))
     if (
-      nodes.length !== document.nodes.length ||
+      nodes.length !== docNodes.length ||
       new Set(nodes.map((node) => node.id)).size !== nodes.length ||
       nodes.some(
         (node) =>

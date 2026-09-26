@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RecordingDraftDetailDto } from '@cairn/shared'
+import { parseDemonstrationFile } from '@cairn/authoring'
 import { useAuthStore } from '@/stores/auth-store'
 import { RecordingDetailPage } from './detail'
 
@@ -9,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   fetchRecording: vi.fn(),
   renameRecording: vi.fn(),
   deleteRecording: vi.fn(),
+  fetchDemonstration: vi.fn(),
+  fetchDemonstrationImage: vi.fn(),
   fetchScenarios: vi.fn(),
   createScenario: vi.fn(),
   // 详情页里的目标定位字段（authoring/fields/target.tsx）会查能力清单；
@@ -20,6 +23,11 @@ vi.mock('@/lib/recordings-api', () => ({
   fetchRecording: mocks.fetchRecording,
   renameRecording: mocks.renameRecording,
   deleteRecording: mocks.deleteRecording,
+}))
+
+vi.mock('@/lib/demonstrations-api', () => ({
+  fetchDemonstration: mocks.fetchDemonstration,
+  fetchDemonstrationImage: mocks.fetchDemonstrationImage,
 }))
 
 vi.mock('@/lib/scenarios-api', () => ({
@@ -198,9 +206,10 @@ describe('录制草稿详情页', () => {
 
     await expect.element(screen.getByText('回填录制草稿到场景')).toBeVisible()
     await expect.element(screen.getByRole('tab', { name: '以草稿新建场景' })).toBeVisible()
+    await screen.getByRole('button', { name: '取消' }).click()
   })
 
-  it('已回填草稿展示前往对应 Studio 的主操作', async () => {
+  it('已回填草稿同时展示前往对应 Studio 与再次回填到场景按钮', async () => {
     mocks.fetchRecording.mockResolvedValue({
       ...mockDraft,
       imported: true,
@@ -211,5 +220,64 @@ describe('录制草稿详情页', () => {
 
     await expect.element(screen.getByText('已回填到场景')).toBeVisible()
     await expect.element(screen.getByRole('link', { name: '前往对应 Studio' })).toBeVisible()
+    const reHandoffBtn = screen.getByRole('button', { name: '再次回填到场景...' })
+    await expect.element(reHandoffBtn).toBeVisible()
+
+    await reHandoffBtn.click()
+    await expect.element(screen.getByText('回填录制草稿到场景')).toBeVisible()
+    await screen.getByRole('button', { name: '取消' }).click()
+  })
+
+  it('支持在步骤流水线中忽略与恢复步骤', async () => {
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText('(已剔除 1 步)')).not.toBeInTheDocument()
+
+    // 找到第一步的“忽略”按钮并点击
+    const ignoreButtons = screen.getByRole('button', { name: '忽略' })
+    await ignoreButtons.first().click()
+
+    await expect.element(screen.getByText('(已剔除 1 步)')).toBeVisible()
+    await expect.element(screen.getByText('已忽略')).toBeVisible()
+
+    // 再次点击“恢复”
+    await screen.getByRole('button', { name: '恢复' }).click()
+    await expect.element(screen.getByText('(已剔除 1 步)')).not.toBeInTheDocument()
+  })
+
+  it('支持 demonstration@1 协议草稿展示统一工作台与原始示教视图切换', async () => {
+    const demoDraft: RecordingDraftDetailDto = {
+      ...mockDraft,
+      sourceProtocol: 'demonstration@1',
+      sourceVersion: 'cairn-crx-capture@1',
+    }
+    mocks.fetchRecording.mockResolvedValue(demoDraft)
+    const validSource = parseDemonstrationFile({
+      profile: 'midscene-yaml-flow@1',
+      targetId: '00000000-0000-4000-8000-000000000001',
+      captureId: '00000000-0000-4000-8000-000000000002',
+      text: 'web:\n  url: https://finance.example.com/login\ntasks:\n  - flow:\n      - aiTap: 登录',
+    })
+    mocks.fetchDemonstration.mockResolvedValue({
+      recordingDraftId: 'rec-123',
+      source: validSource,
+      artifacts: [],
+    })
+
+    const screen = await renderPage()
+
+    // 依然展示统一工作台
+    await expect.element(screen.getByText('操作步骤流水线 (3)')).toBeVisible()
+    const rawViewBtn = screen.getByRole('button', { name: '原始示教视图' })
+    await expect.element(rawViewBtn).toBeVisible()
+
+    // 切换为原始示教事实溯源视图
+    await rawViewBtn.click()
+    await expect.element(screen.getByText('原始示教事实溯源')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '返回步骤流水线工作台' })).toBeVisible()
+
+    // 返回工作台
+    await screen.getByRole('button', { name: '返回步骤流水线工作台' }).click()
+    await expect.element(screen.getByText('操作步骤流水线 (3)')).toBeVisible()
   })
 })

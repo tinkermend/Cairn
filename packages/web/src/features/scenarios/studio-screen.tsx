@@ -47,11 +47,26 @@ import { RunVideoSection } from '@/features/runs/run-video'
 import { PlacementHint } from '@/features/runs/placement-hint'
 import { useRunObservation } from '@/features/runs/use-run-observation'
 import { RUN_STATUS_LABELS, runStatusTone } from '@/features/runs/labels'
+import { computeScreenAlignment } from '@/features/authoring/observe'
 import { cn } from '@/lib/utils'
 
-const LIVE_RUN_STATUSES = ['SCHEDULED', 'QUEUED', 'RUNNING', 'WAITING_FOR_AUTH']
+const LIVE_RUN_STATUSES = ['SCHEDULED', 'QUEUED', 'RUNNING', 'WAITING_FOR_AUTH', 'HOLDING']
 const sessionTransport = sessionBrowserTransport('session')
 const operationTransport = sessionBrowserTransport('operation')
+
+export type StudioScreenProps = {
+  runId?: string
+  scenarioId?: string
+  targetId?: string
+  targetAccountId?: string
+  onStartTrial?: () => void
+  selectedStepId?: string
+  selectedStepName?: string
+  selectedIsFirst?: boolean
+  stepOrder?: string[]
+  onRunToStep?: (targetStepId: string) => void
+  trialDisabledReason?: string
+}
 
 export function StudioScreen({
   runId,
@@ -59,19 +74,13 @@ export function StudioScreen({
   targetId,
   targetAccountId,
   onStartTrial,
+  selectedStepId,
   selectedStepName,
   selectedIsFirst,
+  stepOrder = [],
+  onRunToStep,
   trialDisabledReason,
-}: {
-  runId?: string
-  scenarioId?: string
-  targetId?: string
-  targetAccountId?: string
-  onStartTrial?: () => void
-  selectedStepName?: string
-  selectedIsFirst?: boolean
-  trialDisabledReason?: string
-}) {
+}: StudioScreenProps) {
   const user = useAuthStore((state) => state.auth.user)
   const canRead = Boolean(user && hasPermission(user.permissions, 'run:read'))
   const canExecute = Boolean(user && hasPermission(user.permissions, 'run:execute'))
@@ -166,6 +175,79 @@ export function StudioScreen({
     connecting,
     lastAuthError: session?.lastAuthError,
   })
+
+  const selectedStepRun = run?.stepRuns?.find((sr) => sr.stepId === selectedStepId)
+  const selectedScreenshotEvidence = evidence?.items?.find(
+    (item) =>
+      item.type === 'screenshot' &&
+      item.status === 'available' &&
+      (selectedStepRun ? item.stepRunId === selectedStepRun.id : true),
+  )
+
+  const liveRunForAlignment = isLiveState && run
+    ? {
+        status: run.status,
+        checkpoint: run.checkpoint,
+        stepRuns: run.stepRuns,
+      }
+    : null
+
+  const alignmentStatus = computeScreenAlignment({
+    sessionOpen: Boolean(sessionOpen),
+    liveRun: liveRunForAlignment,
+    selectedStepId,
+    stepOrder,
+    hasOfflineScreenshot: Boolean(selectedScreenshotEvidence),
+  })
+
+  const alignmentBanner =
+    (alignmentStatus === 'behind' || alignmentStatus === 'session_initial') && selectedStepId ? (
+      <div className='mx-3 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-small'>
+        <div className='flex items-center gap-2'>
+          <span className='size-2 rounded-full bg-status-warning' />
+          <span className='text-foreground'>
+            当前画面处于【{alignmentStatus === 'session_initial' ? '系统初始页' : '前序步骤'}】，选中的步骤是【{selectedStepName || '当前步骤'}】
+          </span>
+        </div>
+        <div className='flex items-center gap-2'>
+          {canExecute ? (
+            <Button
+              size='sm'
+              className='h-7 px-2.5 text-label'
+              disabled={Boolean(trialDisabledReason)}
+              onClick={() => onRunToStep?.(selectedStepId)}
+            >
+              <Play className='size-3.5 mr-1' />
+              运行到此步前置
+            </Button>
+          ) : null}
+          {trialDisabledReason ? (
+            <span className='text-label text-muted-foreground'>试跑不可用：{trialDisabledReason}。</span>
+          ) : null}
+        </div>
+      </div>
+    ) : alignmentStatus === 'aligned' && selectedStepId ? (
+      <div className='mx-3 mt-2 flex items-center gap-2 rounded-md border border-status-success/30 bg-status-success/10 px-3 py-1.5 text-label text-status-success-foreground'>
+        <span className='size-2 rounded-full bg-status-success' />
+        <span>画面已对齐至步骤「{selectedStepName || '当前步骤'}」前置，可在画面上精准指认目标</span>
+      </div>
+    ) : !selectedStepId && selectedIsFirst === false && showSessionLive ? (
+      <Alert variant='info' className='mx-3 mt-2'>
+        <AlertDescription>
+          <p>
+            现在看到的是会话停放的当前页面，不是执行到「{selectedStepName || '当前步骤'}」之后的页面。您可以点击上方「手动操作」在受管画面中切到对应菜单或弹窗后再点「拾取对象」；也可以保存并试跑已保存的步骤。
+          </p>
+          <div className='mt-2 flex flex-wrap items-center gap-2'>
+            <Button size='sm' disabled={Boolean(trialDisabledReason)} onClick={onStartTrial}>
+              试跑
+            </Button>
+            {trialDisabledReason ? (
+              <span className='text-label'>试跑不可用：{trialDisabledReason}。</span>
+            ) : null}
+          </div>
+        </AlertDescription>
+      </Alert>
+    ) : null
 
   const currentOpStatus = session?.currentOperation?.status ?? operationQuery.data?.status
   const currentErrorCode = operationQuery.data?.errorCode ?? session?.lastAuthError
@@ -414,6 +496,7 @@ export function StudioScreen({
       <div className='flex min-h-0 flex-1 flex-col justify-start overflow-y-auto'>
         {showRunLive && run ? (
           <div className='space-y-2'>
+            {alignmentBanner}
             {run.authCheckpoint ? (
               <div className='mx-3 mt-2 space-y-1 rounded-md border border-border-card bg-muted/40 p-3 text-small'>
                 <p className='font-medium text-foreground'>
@@ -468,23 +551,8 @@ export function StudioScreen({
                   </div>
                 </AlertDescription>
               </Alert>
-            ) : selectedIsFirst === false ? (
-              <Alert variant='info' className='mx-3 mt-2'>
-                <AlertDescription>
-                  <p>
-                    现在看到的是会话停放的当前页面，不是执行到「{selectedStepName || '当前步骤'}」之后的页面。您可以点击上方「手动操作」在受管画面中切到对应菜单或弹窗后再点「拾取对象」；也可以保存并试跑已保存的步骤。
-                  </p>
-                  <div className='mt-2 flex flex-wrap items-center gap-2'>
-                    <Button size='sm' disabled={Boolean(trialDisabledReason)} onClick={onStartTrial}>
-                      试跑
-                    </Button>
-                    {trialDisabledReason ? (
-                      <span className='text-label'>试跑不可用：{trialDisabledReason}。</span>
-                    ) : null}
-                  </div>
-                </AlertDescription>
-              </Alert>
             ) : null}
+            {alignmentBanner}
             <BrowserView
               runId={sessionViewId}
               runStatus={occupyingOperationId ? (session?.currentOperation?.status ?? 'RUNNING') : 'RUNNING'}
@@ -510,6 +578,23 @@ export function StudioScreen({
                 </Collapsible>
               </div>
             ) : null}
+          </div>
+        ) : alignmentStatus === 'offline_snapshot' && selectedScreenshotEvidence && runId ? (
+          <div className='flex flex-col flex-1 p-3 space-y-2'>
+            <div className='flex items-center justify-between rounded-md border border-border-card bg-muted/40 px-3 py-1.5 text-label text-muted-foreground'>
+              <span>📷 正在展示历史试跑留存现场截图（离线参考）</span>
+              {run?.finishedAt ? <span>执行于 {new Date(run.finishedAt).toLocaleTimeString()}</span> : null}
+            </div>
+            <div className='flex-1 overflow-auto rounded-md border border-border-default bg-black/5 flex items-center justify-center p-2 min-h-[300px]'>
+              <img
+                src={`/api/runs/${runId}/evidences/${selectedScreenshotEvidence.id}/content`}
+                alt='离线步骤历史截图'
+                className='max-w-full max-h-[480px] object-contain shadow-sm rounded border border-border-card'
+              />
+            </div>
+            <p className='text-center text-caption text-muted-foreground'>
+              当前受管会话未连接。连接会话或发起试跑后可启用实时指认与单步调试。
+            </p>
           </div>
         ) : showVideoFallback && run ? (
           <div className='space-y-3 p-3'>
@@ -569,7 +654,7 @@ export function StudioScreen({
                     <div className='flex flex-col items-center gap-1'>
                       <div
                         className={cn(
-                          'flex size-7 items-center justify-center rounded-full text-caption font-semibold transition-all',
+                          'flex size-7 items-center justify-center rounded-full text-caption font-semibold transition-colors',
                           isFailed
                             ? 'bg-destructive text-destructive-foreground ring-4 ring-destructive/20'
                             : isDone

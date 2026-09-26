@@ -11,7 +11,7 @@ import {
 } from '@cairn/shared'
 import { OutcomeListEditor } from './outcome-editor'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { ChevronDown, Plus } from 'lucide-react'
+import { ChevronDown, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -352,10 +352,29 @@ export function InputsEditor({
         inputs.map((input, index) => (
           <div
             key={`${input.key}-${index}`}
-            className='p-3 border rounded-lg bg-card space-y-3'
+            className='p-3 border rounded-lg bg-card space-y-3 shadow-xs'
           >
-            <div className='grid gap-2 sm:grid-cols-12 items-center'>
-              <div className='sm:col-span-4'>
+            <div className='flex items-center justify-between'>
+              <span className='text-caption font-medium text-muted-foreground'>
+                参数 #{index + 1}
+              </span>
+              <Button
+                type='button'
+                variant='ghost'
+                size='sm'
+                disabled={disabled}
+                className='h-6 px-1.5 text-caption text-muted-foreground hover:text-destructive gap-1'
+                onClick={() =>
+                  onChange(inputs.filter((_, itemIndex) => itemIndex !== index))
+                }
+              >
+                <Trash2 className='size-3' />
+                <span>移除</span>
+              </Button>
+            </div>
+
+            <div className='grid grid-cols-2 gap-2.5'>
+              <div>
                 <Label className='text-caption text-muted-foreground mb-1 block'>参数标识 (Key)</Label>
                 <Input
                   id={`studio-input-${input.key}`}
@@ -363,6 +382,7 @@ export function InputsEditor({
                   value={input.key}
                   disabled={disabled}
                   placeholder='如: phone, idCard'
+                  className='h-8 text-label'
                   onChange={(event) =>
                     onChange(
                       inputs.map((item, itemIndex) =>
@@ -374,13 +394,14 @@ export function InputsEditor({
                   }
                 />
               </div>
-              <div className='sm:col-span-4'>
+              <div>
                 <Label className='text-caption text-muted-foreground mb-1 block'>参数名称 (Label)</Label>
                 <Input
                   aria-label={`输入名称 ${index + 1}`}
                   value={input.label}
                   disabled={disabled}
                   placeholder='如: 手机号'
+                  className='h-8 text-label'
                   onChange={(event) =>
                     onChange(
                       inputs.map((item, itemIndex) =>
@@ -392,47 +413,34 @@ export function InputsEditor({
                   }
                 />
               </div>
-              <div className='sm:col-span-3'>
-                <Label className='text-caption text-muted-foreground mb-1 block'>类型</Label>
-                <Select
-                  value={input.type ?? 'string'}
-                  disabled={disabled}
-                  onValueChange={(val: any) =>
-                    onChange(
-                      inputs.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? { ...item, type: val }
-                          : item
-                      )
+            </div>
+
+            <div>
+              <Label className='text-caption text-muted-foreground mb-1 block'>类型</Label>
+              <Select
+                value={input.type ?? 'string'}
+                disabled={disabled}
+                onValueChange={(val: any) =>
+                  onChange(
+                    inputs.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? { ...item, type: val }
+                        : item
                     )
-                  }
-                >
-                  <SelectTrigger className='w-full text-label h-9'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value='string'>文本 (string)</SelectItem>
-                    <SelectItem value='number'>数值 (number)</SelectItem>
-                    <SelectItem value='boolean'>布尔 (boolean)</SelectItem>
-                    <SelectItem value='date'>日期 (date)</SelectItem>
-                    <SelectItem value='file'>文件 (file)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className='sm:col-span-1 flex justify-end pt-5'>
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='sm'
-                  disabled={disabled}
-                  className='h-9 text-muted-foreground hover:text-destructive'
-                  onClick={() =>
-                    onChange(inputs.filter((_, itemIndex) => itemIndex !== index))
-                  }
-                >
-                  移除
-                </Button>
-              </div>
+                  )
+                }
+              >
+                <SelectTrigger className='w-full min-w-0 text-label h-8'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='string'>文本 (string)</SelectItem>
+                  <SelectItem value='number'>数值 (number)</SelectItem>
+                  <SelectItem value='boolean'>布尔 (boolean)</SelectItem>
+                  <SelectItem value='date'>日期 (date)</SelectItem>
+                  <SelectItem value='file'>文件 (file)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <GeneratorConfigEditor

@@ -6,7 +6,7 @@ import { fetchSchedule, fetchSchedules } from '@/lib/schedules-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ScheduleEditorDialog, type ScheduleObjectContext } from './editor'
+import { ScheduleEditorDialog, type ScenarioOrSuiteObjectContext } from './editor'
 import { ScheduleDetailDialog } from './detail'
 
 export function ObjectSchedules({
@@ -15,7 +15,7 @@ export function ObjectSchedules({
   className,
   trigger,
 }: {
-  context: ScheduleObjectContext
+  context: ScenarioOrSuiteObjectContext
   size?: 'default' | 'sm'
   className?: string
   trigger?: (props: { onClick: () => void }) => React.ReactNode
@@ -41,7 +41,7 @@ export function ObjectSchedules({
   </>
 }
 
-function ObjectSchedulesDialog({ context, onClose }: { context: ScheduleObjectContext; onClose: () => void }) {
+function ObjectSchedulesDialog({ context, onClose }: { context: ScenarioOrSuiteObjectContext; onClose: () => void }) {
   const canWrite = useCan('schedule:write')
   const [pages, setPages] = useState<(string | undefined)[]>([undefined])
   const [editing, setEditing] = useState<ScheduleDto | 'new' | null>(null)

@@ -43,7 +43,7 @@ describe('侧栏导航', () => {
 
   it('移动入口不扩大权限：凭据仍需目标读取权限，运维不等于管理权限', () => {
     expect(visibleTitles('resources', user(['credential:read']))).toEqual([])
-    expect(visibleTitles('resources', user(['credential:read', 'target:read']))).toEqual(['目标系统', '目标账号'])
+    expect(visibleTitles('resources', user(['credential:read', 'target:read']))).toEqual(['目标系统'])
     expect(visibleTitles('operations', user(['session:read']))).toEqual(['执行节点'])
     expect(visibleTitles('operations', user(['monitor:read']))).toEqual(['监控'])
     expect(visibleTitles('governance', user(SYSTEM_ROLE_DEFINITIONS.operator.permissions))).toEqual([])

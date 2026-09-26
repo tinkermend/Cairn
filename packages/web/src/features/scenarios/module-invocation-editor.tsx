@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -168,6 +169,19 @@ export function ModuleInvocationEditor({
             {moduleKey ? <p className='text-label text-muted-foreground break-all'>{moduleKey}</p> : null}
           </div>
           <div className='flex flex-wrap items-center gap-2'>
+            <label className='flex items-center gap-1.5 text-label cursor-pointer text-muted-foreground select-none mr-2'>
+              <Switch
+                checked={!node.disabled}
+                disabled={disabled}
+                aria-label='模块启用状态'
+                onCheckedChange={(checked) =>
+                  onChange({ ...node, disabled: !checked ? true : undefined })
+                }
+              />
+              <span className='text-2xs font-medium text-foreground'>
+                {node.disabled ? '已跳过' : '已启用'}
+              </span>
+            </label>
             <Button size='sm' variant='outline' onClick={() => setPreviewOpen(true)}>
               <Eye className='size-4 mr-1' />
               查看展开步骤

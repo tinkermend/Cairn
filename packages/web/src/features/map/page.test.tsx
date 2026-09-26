@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   fetchMapSummary: vi.fn(),
   fetchMapObjects: vi.fn(),
   fetchMapPages: vi.fn(),
+  fetchMapAtlasPages: vi.fn(),
   fetchMapObject: vi.fn(),
   fetchMapChanges: vi.fn(),
   fetchMapImpacts: vi.fn(),
@@ -30,6 +31,8 @@ const mocks = vi.hoisted(() => ({
   updateMapJobPolicy: vi.fn(),
   fetchMapSafeEntries: vi.fn(),
   createMapSafeEntry: vi.fn(),
+  updateMapSafeEntry: vi.fn(),
+  archiveMapSafeEntry: vi.fn(),
   previewMapJob: vi.fn(),
   createMapJob: vi.fn(),
   fetchExplorationPolicy: vi.fn(),
@@ -43,6 +46,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: mocks.fetchTarget,
+  fetchTargets: vi.fn(async () => ({ items: [] })),
   fetchTargetAccounts: mocks.fetchTargetAccounts,
 }))
 vi.mock('@/lib/map-api', () => mocks)
@@ -69,6 +73,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     ...actual,
     getRouteApi: () => ({
       useParams: () => ({ targetId: TARGET_ID }),
+      useSearch: () => ({ view: 'list' }),
+      useNavigate: () => vi.fn(),
     }),
     Link: ({ children }: { children: ReactNode }) => <a href='#'>{children}</a>,
   }
@@ -308,11 +314,70 @@ describe('目标知识页', () => {
     await screen.getByRole('tab', { name: /地图维护/ }).click()
     await expect.element(screen.getByRole('heading', { name: '地图维护' })).toBeVisible()
     await expect.element(screen.getByText('手工作业关闭')).toBeVisible()
+    await page.screenshot({
+      path: '../../../../../.run/omd-review/maintenance-tab.png',
+    })
 
     await screen.getByRole('tab', { name: /知识资产/ }).click()
     await expect.element(screen.getByText('查看知识')).toBeVisible()
     await page.screenshot({
       path: '../../../../../.run/omd-review/desktop.png',
+    })
+  })
+
+  it('维护者视图：地图维护与采集卡片对齐且紧凑呈现', async () => {
+    signIn([
+      'target:read',
+      'map:read',
+      'map:review',
+      'map:publish',
+      'map:maintain',
+      'map:explore',
+      'schedule:read',
+      'schedule:write',
+    ])
+    mocks.fetchMapSafeEntries.mockResolvedValue({
+      items: [
+        {
+          targetId: TARGET_ID,
+          entryId: '22222222-2222-4222-8222-222222222222',
+          version: 1,
+          name: '主控制台',
+          url: 'https://app.example.com/console',
+          arrivalName: '控制台概览',
+          arrivalTarget: { framePath: [], candidates: [{ by: 'css', value: 'body' }] },
+          safetyBasisKind: 'confirmed_path',
+          summary: '已核实主控入口',
+          jobKinds: ['map_probe', 'map_refresh', 'map_explore'],
+          createdAt: '2026-09-24T00:00:00.000Z',
+        },
+      ],
+    })
+    mocks.fetchTargetAccounts.mockResolvedValue({
+      items: [
+        {
+          id: 'acc-1',
+          targetId: TARGET_ID,
+          displayName: '运维账号',
+          username: 'ops-admin',
+          status: 'active',
+          usage: 'both',
+        },
+      ],
+    })
+    mocks.fetchMapJobPolicy.mockResolvedValue({
+      targetId: TARGET_ID,
+      revision: 1,
+      policy: {
+        manualJobsEnabled: true,
+      },
+    })
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: /地图维护/ }).click()
+    await expect.element(screen.getByRole('heading', { name: '安全进入路径' })).toBeVisible()
+    await expect.element(screen.getByRole('heading', { name: '地图维护' })).toBeVisible()
+    await page.screenshot({
+      path: '../../../../../.run/omd-review/maintenance-tab-full.png',
     })
   })
 

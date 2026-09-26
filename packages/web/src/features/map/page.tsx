@@ -21,6 +21,7 @@ import { AutoRefreshCard } from './auto-refresh'
 import { ConsumptionPolicyCard } from './consumption-policy'
 import { ExplorationCard } from './exploration'
 import { JobMaintenanceCard } from './job-maintenance'
+import { SafeEntriesCard } from './safe-entries-card'
 import { MapSummaryBanner } from './summary-banner'
 
 const route = getRouteApi('/_authenticated/targets/$targetId/map/')
@@ -222,7 +223,7 @@ export function TargetMapPage() {
                 </TabsTrigger>
                 <TabsTrigger value='policy'>
                   <ShieldCheck className='size-4' />
-                  运行消费与探索
+                  运行消费策略
                 </TabsTrigger>
               </TabsList>
 
@@ -243,13 +244,14 @@ export function TargetMapPage() {
               </TabsContent>
 
               <TabsContent value='maintenance' className='space-y-5'>
+                <SafeEntriesCard targetId={targetId} />
                 <JobMaintenanceCard targetId={targetId} />
                 <AutoRefreshCard targetId={targetId} />
+                <ExplorationCard targetId={targetId} />
               </TabsContent>
 
               <TabsContent value='policy' className='space-y-5'>
                 <ConsumptionPolicyCard targetId={targetId} />
-                <ExplorationCard targetId={targetId} />
               </TabsContent>
             </Tabs>
           </>

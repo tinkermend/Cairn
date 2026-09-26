@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   buildRunVideoChapters,
   faceScreenshot,
@@ -13,7 +14,7 @@ import {
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { fetchEvidenceContent } from '@/lib/runs-api'
+import { fetchEvidenceContent, fetchRunIterations } from '@/lib/runs-api'
 import { Button } from '@/components/ui/button'
 import { missingReasonLabel } from './labels'
 import { RunVideoPlayer } from './run-video-player'
@@ -74,9 +75,17 @@ export function RunVideoSection({
   const showVideo = shouldShowRunVideo(run, items)
   const video = findRunVideo(items)
   const videoPayload = readRunVideoPayload(video?.payload)
+  const hasLoops = Boolean(run.snapshot.controlFlow?.blocks.some((block) => block.kind !== 'if'))
+  // 循环体按项存放，章节需要各项的起止时间；只在有录像且有循环时取一次迭代列表。
+  const iterationsQuery = useQuery({
+    queryKey: ['run-video-iterations', run.id, run.status],
+    queryFn: () => fetchRunIterations(run.id, { limit: 200, offset: 0 }),
+    enabled: showVideo && hasLoops,
+  })
+  const iterations = iterationsQuery.data?.iterations
   const chapterModel = useMemo(
-    () => (showVideo ? buildRunVideoChapters({ run, payload: videoPayload, evidenceItems: items }) : null),
-    [showVideo, run, videoPayload, items],
+    () => (showVideo ? buildRunVideoChapters({ run, payload: videoPayload, evidenceItems: items, iterations }) : null),
+    [showVideo, run, videoPayload, items, iterations],
   )
 
   if (!showVideo || !chapterModel) return null

@@ -33,9 +33,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { DateRangePicker, type DateRange } from '@/components/date-range-picker'
+import { StatusBadge } from '@/components/status-badge'
 import { dateRange, rangeToDayKeys } from '@/features/audit/range'
 import { RecordingRenameDialog } from './rename-dialog'
 import { DemonstrationFileDialog } from './import-file-dialog'
+import { RecordingHandoffDialog } from './components/handoff-dialog'
 
 export function RecordingsPage() {
   const page = useCursorPage()
@@ -59,6 +61,7 @@ export function RecordingsPage() {
   const [range, setRange] = useState<DateRange | undefined>()
   const [renaming, setRenaming] = useState<RecordingDraftDto | null>(null)
   const [removing, setRemoving] = useState<RecordingDraftDto | null>(null)
+  const [handoffItem, setHandoffItem] = useState<RecordingDraftDto | null>(null)
 
   const filters = useMemo(() => {
     const days = rangeToDayKeys(range)
@@ -122,24 +125,49 @@ export function RecordingsPage() {
           <div className='overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
             <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider p-4'>
               <div className='flex flex-wrap items-center gap-2'>
+                <div className='flex items-center rounded-md border border-border-divider bg-surface-subtle p-0.5'>
+                  <Button
+                    variant={imported === 'all' ? 'secondary' : 'ghost'}
+                    size='sm'
+                    className='h-7 px-2.5 text-label'
+                    onClick={() => {
+                      setImported('all')
+                      page.reset()
+                    }}
+                  >
+                    全部
+                  </Button>
+                  <Button
+                    variant={imported === 'false' ? 'secondary' : 'ghost'}
+                    size='sm'
+                    className='h-7 px-2.5 text-label'
+                    onClick={() => {
+                      setImported('false')
+                      page.reset()
+                    }}
+                  >
+                    待回填
+                  </Button>
+                  <Button
+                    variant={imported === 'true' ? 'secondary' : 'ghost'}
+                    size='sm'
+                    className='h-7 px-2.5 text-label'
+                    onClick={() => {
+                      setImported('true')
+                      page.reset()
+                    }}
+                  >
+                    已回填
+                  </Button>
+                </div>
                 <Button
                   variant={hasPending === 'true' ? 'secondary' : 'ghost'}
                   size='sm'
+                  className='h-7 px-2.5 text-label'
                   aria-pressed={hasPending === 'true'}
                   onClick={() => handleHasPendingChange(hasPending === 'true' ? 'all' : 'true')}
                 >
-                  待处理
-                </Button>
-                <Button
-                  variant={imported === 'true' ? 'secondary' : 'ghost'}
-                  size='sm'
-                  aria-pressed={imported === 'true'}
-                  onClick={() => {
-                    setImported(imported === 'true' ? 'all' : 'true')
-                    page.reset()
-                  }}
-                >
-                  已回填
+                  仅待处理
                 </Button>
                 <DateRangePicker
                   value={range}
@@ -205,10 +233,11 @@ export function RecordingsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>场景名称</TableHead>
+                    <TableHead>草稿名称</TableHead>
                     <TableHead>目标系统</TableHead>
                     <TableHead>来源</TableHead>
                     <TableHead>步骤</TableHead>
+                    <TableHead>回填状态</TableHead>
                     <TableHead>待处理</TableHead>
                     <TableHead>上传人</TableHead>
                     <TableHead>时间</TableHead>
@@ -240,13 +269,45 @@ export function RecordingsPage() {
                       </TableCell>
                       <TableCell>{recordingSourceLabel(item.sourceVersion)}</TableCell>
                       <TableCell>{item.itemCount}</TableCell>
-                      <TableCell>{item.unresolvedCount}</TableCell>
+                      <TableCell>
+                        {item.imported && item.importedScenarioId ? (
+                          <Link
+                            to='/scenarios/$scenarioId'
+                            params={{ scenarioId: item.importedScenarioId }}
+                            className='inline-flex items-center gap-1 hover:underline'
+                            title='已回填至场景，点击前往查看'
+                          >
+                            <StatusBadge tone='success'>已回填</StatusBadge>
+                          </Link>
+                        ) : (
+                          <StatusBadge tone='neutral'>待回填</StatusBadge>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {item.unresolvedCount > 0 ? (
+                          <span className='inline-flex items-center gap-1 font-medium text-status-warning-foreground'>
+                            {item.unresolvedCount}
+                          </span>
+                        ) : (
+                          <span className='text-muted-foreground'>0</span>
+                        )}
+                      </TableCell>
                       <TableCell>{item.createdBy.displayName}</TableCell>
                       <TableCell className='text-muted-foreground'>
                         {new Date(item.createdAt).toLocaleString('zh-CN')}
                       </TableCell>
                       <TableCell>
-                        <div className='flex items-center justify-end gap-1'>
+                        <div className='flex items-center justify-end gap-1.5'>
+                          {canEditItem(item) && !item.imported ? (
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              className='h-7 px-2 text-label'
+                              onClick={() => setHandoffItem(item)}
+                            >
+                              回填
+                            </Button>
+                          ) : null}
                           {canEditItem(item) ? (
                             <Button
                               variant='ghost'
@@ -325,6 +386,20 @@ export function RecordingsPage() {
           void queryClient.invalidateQueries({ queryKey: ['recordings'] })
         }}
       />
+
+      {handoffItem ? (
+        <RecordingHandoffDialog
+          open={Boolean(handoffItem)}
+          onOpenChange={(open) => {
+            if (!open) setHandoffItem(null)
+          }}
+          recordingId={handoffItem.id}
+          recordingName={handoffItem.name}
+          targetId={handoffItem.targetId}
+          targetName={handoffItem.targetName}
+          sourceProtocol={handoffItem.sourceProtocol}
+        />
+      ) : null}
     </>
   )
 }

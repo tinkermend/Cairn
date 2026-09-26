@@ -4,6 +4,12 @@ import { SessionsPage } from '@/features/sessions'
 import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/sessions/')({
+  staticData: {
+    assistant: {
+      routeKey: 'sessions.index',
+      pageKind: 'session',
+    },
+  },
   beforeLoad: () => {
     const user = useAuthStore.getState().auth.user
     if (!user || !hasPermission(user.permissions, 'session:read')) {

@@ -384,7 +384,7 @@ export function AssistantResultView({
                 key={`${item.topic}-${idx}`}
                 data-testid={`guide-item-${item.topic}`}
                 className={cn(
-                  'group relative flex flex-col justify-between rounded-lg border border-border-default bg-surface-card p-2.5 shadow-2xs transition-[border-color,box-shadow]',
+                  'group relative flex flex-col justify-between rounded-lg border border-border-default bg-surface-card px-2.5 py-1.5 shadow-2xs transition-[border-color,box-shadow]',
                   hasHref &&
                     'hover:border-primary-400 cursor-pointer hover:shadow-xs'
                 )}
@@ -400,7 +400,7 @@ export function AssistantResultView({
                       aria-hidden='true'
                     />
                     <span
-                      className='truncate text-small font-medium text-text-primary'
+                      className='truncate text-small font-medium leading-tight text-text-primary'
                       title={item.title}
                     >
                       {item.title}
@@ -421,9 +421,9 @@ export function AssistantResultView({
                 </div>
 
                 {/* 次行：说明文本截断 + 紧凑进入按钮 */}
-                <div className='mt-1.5 flex min-w-0 items-center justify-between gap-2'>
+                <div className='mt-1 flex min-w-0 items-center justify-between gap-2'>
                   <p
-                    className='line-clamp-1 min-w-0 flex-1 text-xs leading-normal text-text-secondary'
+                    className='line-clamp-1 min-w-0 flex-1 text-2xs leading-tight text-text-secondary'
                     title={item.steps}
                   >
                     {item.steps}
@@ -435,7 +435,7 @@ export function AssistantResultView({
                       size='sm'
                       aria-label='打开入口'
                       title='打开入口'
-                      className='text-2xs h-6 shrink-0 gap-0.5 px-2 font-medium text-primary hover:bg-primary/5 hover:text-primary'
+                      className='text-2xs h-5 shrink-0 gap-0.5 px-1.5 font-medium text-primary hover:bg-primary/5 hover:text-primary'
                       onClick={(e) => {
                         e.stopPropagation()
                         go(item.href!)
@@ -761,6 +761,106 @@ export function AssistantResultView({
             </Button>
           </div>
         ) : null}
+      </div>
+    )
+  }
+
+  if (result.kind === 'knowledge_answer') {
+    return (
+      <div
+        className='space-y-3 rounded-xl border border-border-default bg-surface-card p-3.5 shadow-2xs'
+        data-testid='knowledge-answer-card'
+      >
+        <div className='flex items-start gap-2.5 text-small text-text-primary leading-relaxed'>
+          <Sparkles className='size-4 text-primary-600 shrink-0 mt-0.5' aria-hidden='true' />
+          <div className='space-y-2 min-w-0 flex-1'>
+            <p className='font-medium text-text-primary whitespace-pre-wrap'>{result.summary}</p>
+
+            {result.claims?.length ? (
+              <div className='space-y-2 pt-1' data-testid='knowledge-claims-list'>
+                {result.claims.map((claim, idx) => (
+                  <div
+                    key={idx}
+                    className='rounded-lg border border-border-default/60 bg-surface-subtle/50 p-2.5 space-y-1.5'
+                  >
+                    <div className='flex items-center gap-1.5 flex-wrap'>
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded px-1.5 py-0.5 text-3xs font-medium',
+                          claim.factKind === 'observed' &&
+                            'bg-status-success-background text-status-success-foreground border border-status-success-foreground/20',
+                          claim.factKind === 'human_confirmed' &&
+                            'bg-primary/10 text-primary border border-primary/20',
+                          claim.factKind === 'inferred' &&
+                            'bg-status-warning-background text-status-warning-foreground border border-status-warning-foreground/20',
+                        )}
+                      >
+                        {claim.factKind === 'observed' && '系统观测'}
+                        {claim.factKind === 'human_confirmed' && '官方规则/文档'}
+                        {claim.factKind === 'inferred' && '合理推断'}
+                      </span>
+                      {claim.citations?.map((cit, cIdx) => (
+                        <span
+                          key={cIdx}
+                          className='inline-flex items-center font-mono text-3xs text-text-muted bg-surface-base px-1.5 py-0.5 rounded border border-border-default/40'
+                        >
+                          {cit}
+                        </span>
+                      ))}
+                    </div>
+                    <p className='text-small text-text-secondary leading-normal'>{claim.text}</p>
+                    {claim.premises?.length ? (
+                      <p className='text-3xs text-text-muted'>
+                        依据前提: {claim.premises.join('; ')}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {result.missing?.length ? (
+              <div
+                className='rounded-lg border border-status-warning-foreground/20 bg-status-warning-background p-2.5 text-2xs space-y-1'
+                data-testid='knowledge-missing-list'
+              >
+                <p className='font-medium text-status-warning-foreground flex items-center gap-1'>
+                  <HelpCircle className='size-3 text-status-warning-foreground' />
+                  未决或缺失信息
+                </p>
+                <ul className='list-disc list-inside text-text-muted space-y-0.5'>
+                  {result.missing.map((m, idx) => (
+                    <li key={idx}>
+                      <span className='font-mono font-medium text-text-secondary'>{m.key}</span>:{' '}
+                      {m.description || m.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {result.nextActions?.length ? (
+              <div className='flex items-center gap-2 flex-wrap pt-2 border-t border-border-divider'>
+                <span className='text-2xs text-text-muted'>推荐操作:</span>
+                {result.nextActions.map((action, idx) => (
+                  <Button
+                    key={idx}
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    className='h-6 gap-1 px-2 text-2xs font-medium text-primary hover:bg-primary/5'
+                    onClick={() => {
+                      if (action.href) go(action.href)
+                    }}
+                  >
+                    <ArrowRight className='size-3 text-primary-600' />
+                    {action.label}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
     )
   }

@@ -10,6 +10,7 @@ const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 
 const mocks = vi.hoisted(() => ({
   fetchTarget: vi.fn(),
+  fetchTargetOverview: vi.fn(),
   fetchTargetAccounts: vi.fn(),
   fetchTargetAuthProfile: vi.fn(),
   fetchAuthProfileValidation: vi.fn(),
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   updateTargetAccount: vi.fn(),
   updateTargetSessionPolicy: vi.fn(),
   updateTargetResolutionPolicy: vi.fn(),
+  updateTargetAiActionTrace: vi.fn(),
   fetchSessionOverview: vi.fn(),
   fetchScenarios: vi.fn(),
 }))
@@ -37,7 +39,7 @@ vi.mock('@/lib/sessions-api', () => ({
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
 }))
-let routerSearch: { action?: string; prefill_username?: string } = {}
+let routerSearch: { action?: string; prefill_username?: string; tab?: 'accounts' | 'scenarios' } = {}
 const navigateMock = vi.fn()
 const accountDialogMock = vi.fn()
 
@@ -65,13 +67,15 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   }
 })
 
-function signIn(permissions = ['target:read', 'target:write', 'target:delete', 'map:read']) {
+function signIn(permissions = ['target:read', 'target:write', 'target:delete', 'map:read', 'session:read', 'workflow:read']) {
   useAuthStore.getState().auth.setUser({
     id: 'u1',
     displayName: '测试',
     email: null,
     roles: [],
     permissions,
+    targetScopes: [{ roleId: 'test', mode: 'all', targetIds: [] }],
+    targetScopePermissions: [{ roleId: 'test', permissions }],
   })
 }
 
@@ -162,6 +166,9 @@ describe('TargetDetailPage 账号列表', () => {
       ],
       nextCursor: null,
     })
+    mocks.fetchTargetOverview.mockResolvedValue({
+      items: [{ target: { id: TARGET_ID }, scenarios: { state: 'available', value: { total: 1, active: 1 } } }],
+    })
   })
 
   afterEach(() => {
@@ -184,7 +191,14 @@ describe('TargetDetailPage 账号列表', () => {
       search: 'ops',
       limit: 20,
     })
-    expect(mocks.fetchSessionOverview).toHaveBeenCalledWith({ targetId: TARGET_ID })
+    expect(mocks.fetchSessionOverview).toHaveBeenCalledWith(expect.objectContaining({ targetId: TARGET_ID }))
+  })
+
+  it('从 URL 恢复关联场景 Tab', async () => {
+    routerSearch = { tab: 'scenarios' }
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('tab', { name: '关联场景' })).toHaveAttribute('data-state', 'active')
+    await expect.element(screen.getByText('商城冒烟巡检')).toBeInTheDocument()
   })
 
   it('cap>1 时会话列带最坏状态和占用分数', async () => {
@@ -477,8 +491,32 @@ describe('TargetDetailPage 账号列表', () => {
     )
   })
 
+  it('目标范围不含当前系统时隐藏写操作并拒绝添加账号深链', async () => {
+    routerSearch = { action: 'create-account' }
+    const current = useAuthStore.getState().auth.user!
+    useAuthStore.getState().auth.setUser({
+      ...current,
+      permissions: [...current.permissions, 'run:delete'],
+      targetScopes: [
+        { roleId: 'reader', mode: 'all', targetIds: [] },
+        { roleId: 'writer', mode: 'selected', targetIds: ['22222222-2222-4222-8222-222222222222'] },
+      ],
+      targetScopePermissions: [
+        { roleId: 'reader', permissions: ['target:read'] },
+        { roleId: 'writer', permissions: ['target:write', 'target:delete', 'run:delete'] },
+      ],
+    })
+    const screen = await renderPage()
+    await expect.element(screen.getByText('演示商城').first()).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '编辑系统' }).query()).toBeNull()
+    expect(screen.getByRole('button', { name: '添加目标账号' }).query()).toBeNull()
+    expect(screen.getByRole('button', { name: '删除' }).query()).toBeNull()
+    expect(screen.getByTestId('account-form-dialog').query()).toBeNull()
+    await expect.poll(() => navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: {}, replace: true }))
+  })
+
   it('账号行正确展示凭据状态、到期倒计时，点击换密可唤起快捷改密弹窗并提交更新', async () => {
-    signIn(['target:read', 'target:write', 'credential:write'])
+    signIn(['target:read', 'target:write', 'credential:read', 'credential:write'])
     const futureDue = new Date(Date.now() + 15 * 86400 * 1000).toISOString()
     mocks.fetchTargetAccounts.mockResolvedValue({
       items: [
@@ -527,4 +565,3 @@ describe('TargetDetailPage 账号列表', () => {
     expect(screen.getByRole('button', { name: /换密/ }).query()).toBeNull()
   })
 })
-

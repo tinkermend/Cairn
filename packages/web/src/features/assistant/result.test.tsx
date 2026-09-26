@@ -309,7 +309,7 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
     expect(enterButtons[0].textContent).toContain('进入')
 
     // 点击按钮跳转
-    await enterButtons[0].click()
+    await (enterButtons[0] as HTMLElement).click()
     expect(navigateMock).toHaveBeenCalledWith({ to: '/targets' })
     expect(onNavigate).toHaveBeenCalled()
   })
@@ -385,5 +385,50 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
     await expect.element(screen.getByText(/视线移至页面【左侧步骤编排列表】/)).toBeInTheDocument()
     await expect.element(screen.getByText(/快捷键：Cmd\/Ctrl \+ S/)).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '展开添加步骤' })).toBeInTheDocument()
+  })
+
+  it('正确渲染有源问答 knowledge_answer 卡片、事实类别与引用', async () => {
+    const knowledgeResult = {
+      kind: 'knowledge_answer' as const,
+      summary: '在 Studio 中可以配置每个确定性步骤的最大重试次数与退避延迟。',
+      claims: [
+        {
+          factKind: 'human_confirmed' as const,
+          text: '确定性步骤支持配置 maxAttempts',
+          citations: ['help:studio-retry'],
+        },
+        {
+          factKind: 'observed' as const,
+          text: '当前运行状态为 COMPLETED',
+          citations: ['run:01920000-0000-7000-8000-000000000100'],
+        },
+      ],
+      missing: [
+        {
+          key: 'step_timeout',
+          reason: 'not_configured',
+          description: '该步骤未配置显式超时时间',
+        },
+      ],
+      asOf: '2026-09-23T12:00:00.000Z',
+      nextActions: [
+        {
+          kind: 'studio.step' as const,
+          label: '前往场景工作室',
+          href: '/scenarios',
+          citations: [],
+        },
+      ],
+    }
+
+    const screen = await render(<AssistantResultView result={knowledgeResult} />)
+    await expect.element(screen.getByTestId('knowledge-answer-card')).toBeInTheDocument()
+    await expect.element(screen.getByText(/在 Studio 中可以配置每个确定性步骤/)).toBeInTheDocument()
+    await expect.element(screen.getByText('官方规则/文档')).toBeInTheDocument()
+    await expect.element(screen.getByText('系统观测')).toBeInTheDocument()
+    await expect.element(screen.getByText('help:studio-retry')).toBeInTheDocument()
+    await expect.element(screen.getByText('run:01920000-0000-7000-8000-000000000100')).toBeInTheDocument()
+    await expect.element(screen.getByTestId('knowledge-missing-list')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '前往场景工作室' })).toBeInTheDocument()
   })
 })

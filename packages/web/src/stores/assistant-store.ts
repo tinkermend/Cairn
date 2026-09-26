@@ -14,6 +14,7 @@ import {
   createAssistantConversation,
   createAssistantTurn,
   cancelAssistantTurn,
+  deleteAssistantConversation,
   observeAssistantTurn,
   fetchAssistantCapabilities,
   fetchAssistantConversations,
@@ -94,6 +95,7 @@ type AssistantState = {
   dockWidth: number
   activeQuote: AssistantQuoteContext | null
   boundContext: AssistantBoundContext | null
+  currentBindingOwnerToken: string | null
 
   // 进阶二业务协同控制
   trackedRunId: string | null
@@ -128,7 +130,8 @@ type AssistantState = {
   setDockWidth: (width: number) => void
   setQuote: (quote: AssistantQuoteContext | null) => void
   clearQuote: () => void
-  bindPageContext: (context: AssistantBoundContext | null) => void
+  bindPageContext: (context: AssistantBoundContext | null, ownerToken?: string) => void
+  unbindPageContext: (ownerToken?: string) => void
 
   setTrackedRunId: (runId: string | null) => void
   setPreviewStepId: (stepId: string | null) => void
@@ -138,6 +141,7 @@ type AssistantState = {
   fetchRecentConversations: () => Promise<void>
   switchConversation: (id: string) => Promise<void>
   setHistoryOpen: (open: boolean) => void
+  deleteConversation: (id: string) => Promise<void>
   deleteConversationLocally: (id: string) => void
 }
 
@@ -195,6 +199,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   dockWidth: getSavedDockWidth(),
   activeQuote: null,
   boundContext: null,
+  currentBindingOwnerToken: null,
 
   trackedRunId: null,
   previewStepId: null,
@@ -257,7 +262,18 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     set({ activeQuote, open: true })
   },
   clearQuote: () => set({ activeQuote: null }),
-  bindPageContext: (boundContext) => set({ boundContext }),
+  bindPageContext: (boundContext, ownerToken) =>
+    set({ boundContext, currentBindingOwnerToken: ownerToken ?? null }),
+  unbindPageContext: (ownerToken) => {
+    const currentToken = get().currentBindingOwnerToken
+    if (!ownerToken || currentToken === ownerToken) {
+      set({
+        boundContext: null,
+        currentBindingOwnerToken: null,
+        pageContext: null,
+      })
+    }
+  },
 
   submit: async () => {
     const { question, conversationId, pageContext, capabilityHint, busy, activeQuote } = get()
@@ -365,10 +381,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         },
         onTurn: (turn) => {
           set((state) => {
+            const turnWithThinking: AssistantTurn = {
+              ...turn,
+              thinkingText: turn.thinkingText || state.thinkingText || undefined,
+              thinkingDurationMs: turn.thinkingDurationMs ?? undefined,
+            }
             const exists = state.turns.some((t) => t.id === turn.id)
             const updatedTurns = exists
-              ? state.turns.map((t) => (t.id === turn.id ? turn : t))
-              : [turn, ...state.turns]
+              ? state.turns.map((t) => (t.id === turn.id ? turnWithThinking : t))
+              : [turnWithThinking, ...state.turns]
 
             const isDone = turn.status !== 'RUNNING' && turn.status !== 'QUEUED'
             if (isDone) {
@@ -380,6 +401,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
                 activeTurnId: null,
                 activeStage: null,
                 activeQueuePosition: null,
+                thinkingText: '',
+                thinkingStream: false,
               }
             }
             return {
@@ -393,7 +416,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           // If SSE disconnected, fetch turn directly as catch-up
           if (activeConversationId) {
             void fetchAssistantTurns(activeConversationId, { limit: 50 }).then((history) => {
-              set({ turns: history.items, busy: false, activeTurnId: null, activeStage: null })
+              set({ turns: history.items, busy: false, activeTurnId: null, activeStage: null, thinkingText: '', thinkingStream: false })
             })
           }
         },
@@ -406,6 +429,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         activeTurnId: null,
         activeStage: null,
         activeQueuePosition: null,
+        thinkingText: '',
+        thinkingStream: false,
         error: error instanceof ApiRequestError ? error.message : '助手请求失败',
       })
     }
@@ -424,6 +449,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       activeTurnId: null,
       activeStage: null,
       activeQueuePosition: null,
+      thinkingText: '',
+      thinkingStream: false,
     })
   },
 
@@ -529,9 +556,16 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     }
   },
 
-  deleteConversationLocally: (id: string) => {
+  deleteConversation: async (id: string) => {
     const currentId = get().conversationId
     const isCurrent = currentId === id
+    const previousConversations = get().conversations
+
+    if (isCurrent) {
+      activeObserverCleanup?.()
+      activeObserverCleanup = null
+    }
+
     set((state) => ({
       conversations: state.conversations.filter((c) => c.id !== id),
       ...(isCurrent
@@ -540,8 +574,28 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             turns: [],
             question: '',
             activeQuote: null,
+            busy: false,
+            activeTurnId: null,
+            activeStage: null,
+            activeQueuePosition: null,
+            thinkingText: '',
+            thinkingStream: false,
           }
         : {}),
     }))
+
+    try {
+      await deleteAssistantConversation(id)
+    } catch (error) {
+      // 若后端删除失败，回滚会话列表并提示错误
+      set({
+        conversations: previousConversations,
+        error: error instanceof ApiRequestError ? error.message : '删除会话失败',
+      })
+    }
+  },
+
+  deleteConversationLocally: (id: string) => {
+    void get().deleteConversation(id)
   },
 }))

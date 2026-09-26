@@ -240,4 +240,20 @@ describe('StepEditor', () => {
     await screen.getByRole('button', { name: '高级选项', exact: true }).click()
     await expect.element(screen.getByLabelText('超时（毫秒，可选）')).toBeInTheDocument()
   })
+
+  it('打开提取全部匹配时写入默认上限', async () => {
+    const onChange = vi.fn()
+    const screen = await render(editor(extract, onChange))
+    await screen.getByLabelText('提取全部匹配').click()
+    const enabled = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as Step
+    expect(enabled.type === 'extract' && enabled.input.many).toEqual({ maxItems: 50 })
+  })
+
+  it('关闭提取全部匹配时去掉 many', async () => {
+    const onChange = vi.fn()
+    const screen = await render(editor({ ...extract, input: { ...extract.input, many: { maxItems: 50 } } }, onChange))
+    await screen.getByLabelText('提取全部匹配').click()
+    const disabled = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as Step
+    expect(disabled.type === 'extract' && disabled.input.many).toBeUndefined()
+  })
 })

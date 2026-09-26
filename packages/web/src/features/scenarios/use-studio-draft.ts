@@ -1,8 +1,12 @@
 import { compileScenarioDocument, deriveOutcomeManifest } from '@cairn/authoring'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  authoringHasModuleInvocations,
+  authoringSteps,
   isAuthoringDocumentV2,
+  locateNode,
   toAuthoringDocumentV2,
+  walkAuthoringNodes,
   type CompileResolutionContext,
   type OutcomeContract,
   type RuntimeInvariant,
@@ -96,7 +100,7 @@ export function useStudioDraft(
     return toAuthoringDocumentV2(candidate)
   }, [candidate])
 
-  const nodes = v2Document?.nodes ?? []
+  const nodes = v2Document ? walkAuthoringNodes(v2Document).map((item) => item.node) : []
 
   const selectedNode = useMemo(() => {
     if (!nodes || !selectedId) return null
@@ -114,13 +118,13 @@ export function useStudioDraft(
     return null
   }, [candidate, selectedId, selectedNode, stepOverlays])
 
-  const selectedIndex = selectedNode && v2Document ? v2Document.nodes.findIndex((n) => nodeId(n) === selectedId) : -1
+  const selectedIndex = selectedNode && v2Document ? locateNode(v2Document, selectedId!)?.index ?? -1 : -1
 
   const compile = useMemo(() => {
     if (!candidate || hasFieldDrafts) return null
     if (isAuthoringDocumentV2(candidate)) {
-      if (candidate.nodes.some((node) => node.kind === 'module')) return null
-      const stepNodes = candidate.nodes.filter((n) => n.kind === 'step').map((n) => n.step)
+      if (authoringHasModuleInvocations(candidate)) return null
+      const stepNodes = authoringSteps(candidate)
       if (stepNodes.length === 0) {
         return { ok: true, compilerVersion: 3, diagnostics: [] }
       }
@@ -163,9 +167,9 @@ export function useStudioDraft(
     (next: Step) => {
       if (!candidate) return
       if (isAuthoringDocumentV2(candidate)) {
-        const current = candidate.nodes.find(
-          (node) => node.kind === 'step' && node.step.id === next.id,
-        )
+        const current = walkAuthoringNodes(candidate).find(
+          (item) => item.node.kind === 'step' && item.node.step.id === next.id,
+        )?.node
         const nextNode: ScenarioAuthoringNode =
           current?.kind === 'step' ? { ...current, step: next } : { kind: 'step', step: next }
         const committed = tryReplaceNode(candidate, nextNode)
@@ -205,7 +209,9 @@ export function useStudioDraft(
     (stepId: string, outcomes: OutcomeContract[]) => {
       const v2 = ensureV2()
       if (!v2) return
-      const current = v2.nodes.find((node) => node.kind === 'step' && node.step.id === stepId)
+      const current = walkAuthoringNodes(v2).find(
+        (item) => item.node.kind === 'step' && item.node.step.id === stepId,
+      )?.node
       if (current?.kind !== 'step') return
       const committed = tryReplaceNode(v2, { ...current, outcomes })
       if (committed.ok) setCandidate(committed.document)
@@ -244,7 +250,9 @@ export function useStudioDraft(
         setCandidate({ ...v2, scenarioOutcomes: next })
         return
       }
-      const current = v2.nodes.find((node) => node.kind === 'step' && node.step.id === input.stepId)
+      const current = walkAuthoringNodes(v2).find(
+        (item) => item.node.kind === 'step' && item.node.step.id === input.stepId,
+      )?.node
       if (current?.kind !== 'step') return
       const outcomes = (current.outcomes ?? []).map((contract) =>
         contract.id === input.contractId && contract.rule.kind === 'deterministic'
@@ -341,7 +349,7 @@ export function useStudioDraft(
       setRemoteStale(false)
       setSelectedId((current) => {
         const nodes = isAuthoringDocumentV2(next.document)
-          ? next.document.nodes
+          ? walkAuthoringNodes(next.document).map((item) => item.node)
           : next.document.steps.map((step) => ({ kind: 'step' as const, step }))
         const ids = new Set(nodes.map((node) => nodeId(node)))
         return current && ids.has(current) ? current : firstAuthoringNodeId(next.document)

@@ -23,6 +23,7 @@ import {
   previewRecordingImport,
 } from '@/lib/scenarios-api'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -42,6 +43,8 @@ import {
 } from '@/components/ui/sheet'
 import { StatusBadge } from '@/components/status-badge'
 
+const DEFAULT_DISCARD_REASON = '用户在回填时选择忽略'
+
 type LocalDisposition =
   | { disposition: 'accept' }
   | { disposition: 'discard'; reason: string }
@@ -56,6 +59,7 @@ export type RecordingImportPanelProps = {
   stepCount: number
   inputs: readonly ScenarioInputDecl[]
   independentSteps?: { id: string; name: string }[]
+  initialPlaceholderStepId?: string
   canApply: boolean
   hasLocalChanges?: boolean
   onOpenChange: (open: boolean) => void
@@ -67,7 +71,7 @@ export type RecordingImportPanelProps = {
 export function RecordingImportPanel(props: RecordingImportPanelProps) {
   const source = useQuery({ queryKey: ['recordings', props.recordingDraftId], queryFn: () => fetchRecording(props.recordingDraftId!), enabled: props.open && Boolean(props.recordingDraftId) })
   if (props.open && props.recordingDraftId && !source.data) return <Sheet open onOpenChange={props.onOpenChange}><SheetContent><SheetHeader><SheetTitle>录制回填预览</SheetTitle><SheetDescription>{source.isError ? '无法读取来源，请重试。' : '正在读取来源…'}</SheetDescription></SheetHeader>{source.isError && <Button onClick={() => void source.refetch()}>重试</Button>}</SheetContent></Sheet>
-  if (source.data?.sourceProtocol === 'demonstration@1') return <DemonstrationImportPanel key={props.recordingDraftId} {...props} />
+  if (source.data?.sourceProtocol === 'demonstration@1') return <DemonstrationImportPanel key={`${props.recordingDraftId}:${props.initialPlaceholderStepId ?? ''}`} {...props} />
   return <LegacyRecordingImportPanel {...props} />
 }
 
@@ -119,7 +123,7 @@ function LegacyRecordingImportPanel({
                 ? { disposition: 'discard' as const, reason: '未确认为成功条件' }
                 : item.ready
                   ? { disposition: 'accept' as const }
-                  : { disposition: 'discard' as const, reason: '' },
+                  : { disposition: 'discard' as const, reason: DEFAULT_DISCARD_REASON },
             ]),
           ),
         )
@@ -136,7 +140,7 @@ function LegacyRecordingImportPanel({
     return preview.items.filter((item) => {
       const choice = choices[item.sourceIndexes.join(',')]
       if (!choice) return true
-      if (choice.disposition === 'discard') return choice.reason.trim().length === 0
+      if (choice.disposition === 'discard') return false
       if (choice.disposition === 'accept') return !item.ready
       return false
     }).length
@@ -150,6 +154,35 @@ function LegacyRecordingImportPanel({
     }).length
   }, [choices, preview])
 
+  const handleAcceptAllReady = () => {
+    if (!preview) return
+    setChoices((prev) => {
+      const next = { ...prev }
+      for (const item of preview.items) {
+        if (item.ready && !item.outcomeCandidate) {
+          next[item.sourceIndexes.join(',')] = { disposition: 'accept' }
+        }
+      }
+      return next
+    })
+  }
+
+  const handleDiscardAllUnresolved = () => {
+    if (!preview) return
+    setChoices((prev) => {
+      const next = { ...prev }
+      for (const item of preview.items) {
+        if (!item.ready) {
+          next[item.sourceIndexes.join(',')] = {
+            disposition: 'discard',
+            reason: DEFAULT_DISCARD_REASON,
+          }
+        }
+      }
+      return next
+    })
+  }
+
   async function apply() {
     if (!preview || !recordingDraftId || pending > 0) return
     const dispositions: RecordingDisposition[] = preview.items.map((item) => {
@@ -160,7 +193,8 @@ function LegacyRecordingImportPanel({
       if (choice.disposition === 'replace') {
         return { sourceIndexes: item.sourceIndexes, disposition: 'replace', step: choice.step }
       }
-      return { sourceIndexes: item.sourceIndexes, disposition: 'discard', reason: choice.reason.trim() }
+      const reason = choice.reason.trim() || DEFAULT_DISCARD_REASON
+      return { sourceIndexes: item.sourceIndexes, disposition: 'discard', reason }
     })
     if (insertCount === 0) {
       toast.message('已放弃导入，草稿未改动')
@@ -259,6 +293,30 @@ function LegacyRecordingImportPanel({
                 ⚠️ <strong>流程缺少业务检查点</strong>：当前录制仅包含操作动作，未捕获断言。建议回填后在流程末尾补充检查点（如校验“提交成功”提示）。
               </div>
             )}
+            {/* 批量决策工具栏 */}
+            <div className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-border-card bg-muted/20 px-3 py-2 text-label'>
+              <span className='text-label text-muted-foreground'>批量决策：</span>
+              <div className='flex items-center gap-2'>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  className='h-7 text-label'
+                  onClick={handleAcceptAllReady}
+                >
+                  一键采纳所有就绪项
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='ghost'
+                  className='h-7 text-label text-muted-foreground hover:text-foreground'
+                  onClick={handleDiscardAllUnresolved}
+                >
+                  一键舍弃所有待处理项
+                </Button>
+              </div>
+            </div>
             <ol className='min-h-0 flex-1 space-y-3 overflow-y-auto pr-1'>
               {preview.items.map((item) => (
                 <PreviewItem
@@ -350,43 +408,38 @@ function PreviewItem({
         <Button
           size='sm'
           variant={discarded ? 'default' : 'outline'}
-          onClick={() => onChange({ disposition: 'discard', reason: discarded ? choice.reason : '' })}
+          onClick={() =>
+            onChange({
+              disposition: 'discard',
+              reason: discarded && choice.reason ? choice.reason : DEFAULT_DISCARD_REASON,
+            })
+          }
         >
           <CircleX className='size-3.5' />
           舍弃
         </Button>
       </div>
       {fillTarget ? (
-        <div className='mt-3 space-y-2'>
-          <Label>绑定到场景输入</Label>
-          {inputs.length === 0 ? (
-            <p className='text-label text-muted-foreground'>先在场景输入中声明参数，或舍弃此项。</p>
-          ) : (
-            <Select
-              value={selectedFrom ?? ''}
-              onValueChange={(key) => onChange(replaceFill(item, fillTarget, key))}
-            >
-              <SelectTrigger className='w-full' aria-label={`${item.name} 绑定参数`}>
-                <SelectValue placeholder='选择参数' />
-              </SelectTrigger>
-              <SelectContent>
-                {inputs.map((input) => (
-                  <SelectItem key={input.key} value={input.key}>
-                    {input.label || input.key}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
+        <FillParameterBinding
+          item={item}
+          fillTarget={fillTarget}
+          inputs={inputs}
+          selectedFrom={selectedFrom}
+          onChange={onChange}
+        />
       ) : null}
       {discarded ? (
         <Textarea
           className='mt-2'
           rows={2}
-          placeholder='说明舍弃原因'
-          value={choice.reason}
-          onChange={(event) => onChange({ disposition: 'discard', reason: event.target.value })}
+          placeholder='说明舍弃原因（可选，默认为回填时忽略）'
+          value={choice.reason === DEFAULT_DISCARD_REASON ? '' : choice.reason}
+          onChange={(event) =>
+            onChange({
+              disposition: 'discard',
+              reason: event.target.value.trim() ? event.target.value : DEFAULT_DISCARD_REASON,
+            })
+          }
         />
       ) : null}
       {!item.ready && !fillTarget ? (
@@ -396,6 +449,86 @@ function PreviewItem({
         </p>
       ) : null}
     </li>
+  )
+}
+
+function FillParameterBinding({
+  item,
+  fillTarget,
+  inputs,
+  selectedFrom,
+  onChange,
+}: {
+  item: RecordingImportPreviewItem
+  fillTarget: TargetDescriptor
+  inputs: readonly ScenarioInputDecl[]
+  selectedFrom?: string
+  onChange: (next: LocalDisposition) => void
+}) {
+  const [customMode, setCustomMode] = useState(inputs.length === 0)
+  const [customKey, setCustomKey] = useState('')
+
+  return (
+    <div className='mt-3 space-y-2 rounded-md border border-border-card bg-muted/20 p-2.5'>
+      <div className='flex items-center justify-between'>
+        <Label className='text-label font-medium'>绑定参数</Label>
+        {inputs.length > 0 && (
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            className='h-6 px-1.5 text-label text-primary'
+            onClick={() => setCustomMode(!customMode)}
+          >
+            {customMode ? '选择已有参数' : '＋ 自定义参数名'}
+          </Button>
+        )}
+      </div>
+
+      {!customMode && inputs.length > 0 ? (
+        <Select
+          value={selectedFrom ?? ''}
+          onValueChange={(key) => onChange(replaceFill(item, fillTarget, key))}
+        >
+          <SelectTrigger className='w-full bg-card' aria-label={`${item.name} 绑定参数`}>
+            <SelectValue placeholder='选择参数' />
+          </SelectTrigger>
+          <SelectContent>
+            {inputs.map((input) => (
+              <SelectItem key={input.key} value={input.key}>
+                {input.label || input.key}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : (
+        <div className='space-y-1.5'>
+          <div className='flex items-center gap-2'>
+            <Input
+              value={customKey}
+              onChange={(e) => {
+                setCustomKey(e.target.value)
+                const trimmed = e.target.value.trim()
+                if (trimmed) {
+                  onChange(replaceFill(item, fillTarget, trimmed))
+                }
+              }}
+              placeholder={item.sensitive ? '如: password' : '输入参数名，如: username'}
+              className='h-8 bg-card text-label font-mono'
+              aria-label={`${item.name} 输入参数键名`}
+            />
+          </div>
+          <p className='text-label text-muted-foreground'>
+            输入参数键名后将自动生成带参填充步骤，回填后在场景中可用。
+          </p>
+        </div>
+      )}
+      {selectedFrom && (
+        <p className='text-label font-mono text-status-success-foreground'>
+          ✓ 已绑定参数: {selectedFrom}
+        </p>
+      )}
+    </div>
   )
 }
 

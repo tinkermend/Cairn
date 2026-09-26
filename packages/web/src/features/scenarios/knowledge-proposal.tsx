@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import {
+  authoringSteps,
   scenarioDocumentDigest,
   isAuthoringDocumentV2,
+  walkAuthoringNodes,
   type ScenarioAuthoringDocumentV2,
   type AuthoringProposal,
   type ScenarioDocument,
@@ -49,14 +51,17 @@ function KnowledgeProposalContent(props: KnowledgeProposalProps) {
   const flatDocument: ScenarioDocument | undefined = isAuthoringDocumentV2(
     props.document
   )
-    ? props.document.nodes.some((node) => node.kind === 'module' || (node.outcomes?.length ?? 0) > 0)
+    ? walkAuthoringNodes(props.document).some(
+        ({ node }) =>
+          node.kind === 'module' ||
+          node.kind === 'block' ||
+          (node.kind === 'step' && (node.outcomes?.length ?? 0) > 0),
+      )
       ? undefined
       : {
           schemaVersion: 1,
           inputs: props.document.inputs,
-          steps: props.document.nodes.flatMap((node) =>
-            node.kind === 'step' ? [node.step] : []
-          ),
+          steps: authoringSteps(props.document),
         }
     : props.document
   const canAssist = useCan('ai:assist')

@@ -2,6 +2,7 @@
 @import 'tw-animate-css';
 @import './theme.css';
 @import './collection-summary.css';
+@import './target-identity.css';
 
 /*
  * Inter 自托管（拉丁子集，可变字重 400–700，SIL OFL 1.1）。
@@ -149,6 +150,29 @@
 @utility video-still-pattern {
   background-image: radial-gradient(circle, var(--surface-card) 1px, transparent 1px);
   background-size: 4px 4px;
+}
+
+.run-video-player:fullscreen {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  background: var(--surface-page);
+}
+
+.run-video-player:fullscreen .run-video-frame {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  max-width: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.run-video-player:fullscreen video {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 @utility faded-bottom {

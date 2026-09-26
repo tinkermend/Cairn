@@ -565,11 +565,20 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       })
 
       await openAssistant()
-      await expect.element(page.getByText('大模型正在深度思考分析...')).toBeVisible()
+      await expect.element(page.getByText('大模型正在思考分析...')).toBeVisible()
 
-      // 展开思考过程
-      const summary = page.getByText('思考过程 (点击展开)')
-      await summary.click()
+      // 深度思考在生成阶段默认展开呈现
+      await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).toBeVisible()
+
+      // 支持手动点击折叠
+      const foldBtn = page.getByRole('button', { name: '收起思考过程' })
+      await foldBtn.click()
+      const expandBtn = page.getByRole('button', { name: '展开思考过程' })
+      await expect.element(expandBtn).toBeVisible()
+
+      // 再次点击展开
+      await expandBtn.click()
+      await expect.element(page.getByRole('button', { name: '收起思考过程' })).toBeVisible()
       await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).toBeVisible()
     })
 

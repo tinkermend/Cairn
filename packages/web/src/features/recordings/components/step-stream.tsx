@@ -28,6 +28,8 @@ type Props = {
   onStatusFilterChange: (filter: FilterOption) => void
   searchQuery: string
   onSearchQueryChange: (query: string) => void
+  ignoredIndexes?: Set<number>
+  onToggleIgnore?: (index: number) => void
 }
 
 function getStepIcon(action: string, candidateType?: string) {
@@ -76,6 +78,8 @@ export function RecordingStepStream({
   onStatusFilterChange,
   searchQuery,
   onSearchQueryChange,
+  ignoredIndexes,
+  onToggleIgnore,
 }: Props) {
   const mappedCount = items.filter((i) => i.status === 'mapped').length
   const parameterizedCount = items.filter((i) => i.status === 'parameterized').length
@@ -203,18 +207,32 @@ export function RecordingStepStream({
             const isSelected = item.index === selectedIndex
             const targetSummary = extractTargetSummary(item)
             const statusInfo = STATUS_CONFIG[item.status]
+            const isIgnored = Boolean(ignoredIndexes?.has(item.index))
 
             return (
-              <li key={`${item.index}-${item.sourceAction}`}>
-                <button
-                  type='button'
-                  onClick={() => onSelectIndex(item.index)}
-                  className={cn(
-                    'w-full text-left rounded-lg border p-3 shadow-card transition-colors flex items-start gap-3',
-                    isSelected
-                      ? 'border-primary bg-primary-50/80 ring-1 ring-primary/40'
+              <li
+                key={`${item.index}-${item.sourceAction}`}
+                className={cn(
+                  'w-full text-left rounded-lg border p-3 shadow-card transition-colors flex items-start gap-3',
+                  isSelected
+                    ? 'border-primary bg-primary-50/80 ring-1 ring-primary/40'
+                    : isIgnored
+                      ? 'border-border-card/60 bg-muted/20 opacity-60'
                       : 'border-border-card bg-card hover:border-border-card-hover hover:bg-muted/40',
-                  )}
+                )}
+              >
+                {/* 步骤可点击主体区域 */}
+                <div
+                  className='flex min-w-0 flex-1 cursor-pointer items-start gap-3'
+                  onClick={() => onSelectIndex(item.index)}
+                  role='button'
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onSelectIndex(item.index)
+                    }
+                  }}
                 >
                   {/* 步号指示器 */}
                   <div
@@ -222,7 +240,9 @@ export function RecordingStepStream({
                       'flex size-7 shrink-0 items-center justify-center rounded-md text-label font-semibold tracking-tight',
                       isSelected
                         ? 'bg-primary text-primary-foreground'
-                        : 'bg-surface-subtle text-muted-foreground border border-border-divider',
+                        : isIgnored
+                          ? 'bg-muted text-muted-foreground'
+                          : 'bg-surface-subtle text-muted-foreground border border-border-divider',
                     )}
                   >
                     {String(item.index + 1).padStart(2, '0')}
@@ -230,12 +250,16 @@ export function RecordingStepStream({
 
                   {/* 步骤正文内容 */}
                   <div className='min-w-0 flex-1 space-y-1'>
-                    <div className='flex items-center justify-between gap-2'>
-                      <div className='flex items-center gap-2 min-w-0'>
-                        {getStepIcon(item.sourceAction, item.candidateStepType)}
-                        <span className='text-body font-medium text-foreground truncate'>{item.name}</span>
-                      </div>
-                      <StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>
+                    <div className='flex items-center gap-2 min-w-0'>
+                      {getStepIcon(item.sourceAction, item.candidateStepType)}
+                      <span
+                        className={cn(
+                          'text-body font-medium text-foreground truncate',
+                          isIgnored && 'line-through text-muted-foreground',
+                        )}
+                      >
+                        {item.name}
+                      </span>
                     </div>
 
                     {/* 目标选择器或URL语义提炼 */}
@@ -271,7 +295,28 @@ export function RecordingStepStream({
                       ) : null}
                     </div>
                   </div>
-                </button>
+                </div>
+
+                {/* 状态徽标与忽略操作区域（与主体点击解耦） */}
+                <div className='flex items-center gap-1.5 shrink-0'>
+                  {isIgnored ? (
+                    <StatusBadge tone='neutral'>已忽略</StatusBadge>
+                  ) : (
+                    <StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>
+                  )}
+                  {onToggleIgnore ? (
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='ghost'
+                      className='h-6 px-1.5 text-label text-muted-foreground hover:text-foreground'
+                      onClick={() => onToggleIgnore(item.index)}
+                      title={isIgnored ? '恢复此步骤' : '忽略此步骤（不导入）'}
+                    >
+                      {isIgnored ? '恢复' : '忽略'}
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             )
           })}

@@ -8,12 +8,18 @@ import { page } from 'vitest/browser'
 import { ApiRequestError } from '@/lib/api-client'
 import { AiStepFields } from '@/features/authoring/fields/ai'
 import { DemonstrationImportPanel } from './demonstration-import-panel'
+import { RecordingImportPanel } from './recording-import-panel'
 
 const mocks = vi.hoisted(() => ({
   preview: vi.fn(),
   apply: vi.fn(),
   source: vi.fn(),
   scenario: vi.fn(),
+  recording: vi.fn(),
+}))
+vi.mock('@/lib/recordings-api', async (original) => ({
+  ...(await original<typeof import('@/lib/recordings-api')>()),
+  fetchRecording: mocks.recording,
 }))
 vi.mock('@/lib/demonstrations-api', async (original) => ({
   ...(await original<typeof import('@/lib/demonstrations-api')>()),
@@ -43,7 +49,7 @@ const preview = previewDemonstration({
 })
 const onApplied = vi.fn()
 
-function panel(canApply = true) {
+function panel(canApply = true, initialPlaceholderStepId?: string) {
   return render(
     <QueryClientProvider
       client={
@@ -59,6 +65,7 @@ function panel(canApply = true) {
         stepCount={1}
         inputs={[]}
         independentSteps={[{ id: scenarioId, name: '旧步骤' }]}
+        initialPlaceholderStepId={initialPlaceholderStepId}
         canApply={canApply}
         hasLocalChanges={!canApply}
         onApplied={onApplied}
@@ -80,6 +87,7 @@ describe('demonstration review and atomic editing', () => {
       placement: body.placement,
     }))
     mocks.source.mockResolvedValue({ recordingDraftId, source, artifacts: [] })
+    mocks.recording.mockResolvedValue({ sourceProtocol: 'demonstration@1' })
     mocks.scenario.mockResolvedValue({ draft: { revision: 2 } })
     mocks.apply.mockResolvedValue({
       scenario: { id: scenarioId },
@@ -139,6 +147,40 @@ describe('demonstration review and atomic editing', () => {
         },
       ]),
     })
+  })
+
+  it('defaults new recording scenarios to replacing their placeholder', async () => {
+    const screen = await panel(true, scenarioId)
+    await expect.element(screen.getByText('录制步骤将直接成为新场景的步骤，占位导航会被移除。')).toBeVisible()
+    await vi.waitFor(() => expect(mocks.preview).toHaveBeenCalledWith(scenarioId, expect.objectContaining({ placement: { kind: 'replace_initial', nodeId: scenarioId } })))
+  })
+
+  it('updates the default placement when the new scenario loads after its recording', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    function view(placeholderStepId?: string) {
+      return <QueryClientProvider client={client}>
+        <RecordingImportPanel
+          open
+          scenarioId={scenarioId}
+          recordingDraftId={recordingDraftId}
+          revision={1}
+          insertAnchor={{ kind: 'start' }}
+          stepCount={1}
+          inputs={[]}
+          independentSteps={[{ id: scenarioId, name: '录制导入占位' }]}
+          initialPlaceholderStepId={placeholderStepId}
+          canApply
+          onApplied={onApplied}
+          onConflict={vi.fn()}
+          onSelectDraft={vi.fn()}
+          onOpenChange={vi.fn()}
+        />
+      </QueryClientProvider>
+    }
+    const screen = await render(view())
+    await vi.waitFor(() => expect(mocks.preview).toHaveBeenCalledWith(scenarioId, expect.objectContaining({ placement: { kind: 'start' } })))
+    await screen.rerender(view(scenarioId))
+    await vi.waitFor(() => expect(mocks.preview).toHaveBeenCalledWith(scenarioId, expect.objectContaining({ placement: { kind: 'replace_initial', nodeId: scenarioId } })))
   })
 
   it('shows unsaved-change protection on a narrow screen without horizontal overflow', async () => {
@@ -201,4 +243,3 @@ describe('demonstration review and atomic editing', () => {
     await batchButtons.first().click()
   })
 })
-

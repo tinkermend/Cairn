@@ -6,6 +6,7 @@ import {
   faceScreenshot,
   hasPermission,
   readRunVideoPayload,
+  stepRunFor,
 } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { connectionLabel, connectionTone, useRunObservation } from '@/features/runs/use-run-observation'
@@ -72,7 +73,7 @@ export function TrialPanel({
     })
     if (!chapterModel.clock) return
     const step = run.snapshot.steps.find((s) => s.id === selectedDraftStepId)
-    const stepRun = step ? run.stepRuns.find((sr) => sr.stepId === step.id) : undefined
+    const stepRun = step ? stepRunFor(run.stepRuns, step.id) : undefined
     if (stepRun) {
       const chapter = chapterModel.chapters.find((c) => c.stepRunId === stepRun.id)
       if (chapter) {
@@ -101,7 +102,7 @@ export function TrialPanel({
       ? run?.snapshot.steps.find((step) => selectedModule.expandedStepIds.includes(step.id))
       : run?.snapshot.steps.find((step) => step.id === selectedDraftStepId) ??
         run?.snapshot.steps.find((step) => step.id === derivedForDraft?.stepId)) ?? run?.snapshot.steps[0]
-  const stepRun = historic ? run?.stepRuns.find((item) => item.stepId === historic.id) : undefined
+  const stepRun = historic && run ? stepRunFor(run.stepRuns, historic.id) : undefined
   const latestAttempt = stepRun?.attempts[stepRun.attempts.length - 1]
   const attemptEvidence = (evidence?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
   const screenshot = latestAttempt ? faceScreenshot(attemptEvidence, latestAttempt.id) : undefined

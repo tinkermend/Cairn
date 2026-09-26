@@ -9,6 +9,12 @@ export const Route = createFileRoute('/_authenticated/platform-config/')({
     action: typeof search.action === 'string' ? search.action : undefined,
     section: typeof search.section === 'string' ? search.section : undefined,
   }),
+  staticData: {
+    assistant: {
+      routeKey: 'platform-config.index',
+      pageKind: 'platform-config',
+    },
+  },
   beforeLoad: ({ search }) => {
     if (search.tab === 'alerting') throw redirect({ to: '/notifications', search: { tab: 'alerts' } })
     const user = useAuthStore.getState().auth.user

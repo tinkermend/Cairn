@@ -493,6 +493,14 @@ function AiContent({ data }: { data: MonitorAiCard }) {
             {formatMetric(data.errors)}
           </span>
         </div>
+        {data.textCalls && data.visionCalls && (data.textCalls.availability === 'known' || data.visionCalls.availability === 'known') ? (
+          <div className="mt-1.5 flex items-center justify-between border-t border-border-divider/50 pt-1.5 text-label">
+            <span className="text-muted-foreground">文本 / 视觉</span>
+            <span className="font-mono text-foreground">
+              {formatMetric(data.textCalls)} / {formatMetric(data.visionCalls)}
+            </span>
+          </div>
+        ) : null}
       </div>
 
       {/* 卡片 2: Token 吞吐 */}
@@ -513,6 +521,14 @@ function AiContent({ data }: { data: MonitorAiCard }) {
             <span className="text-muted-foreground">输出 Token</span>
             <span className="font-mono font-medium text-foreground">{formatMetric(data.outputTokens)}</span>
           </div>
+          {data.textTokens && data.visionTokens && (data.textTokens.availability === 'known' || data.visionTokens.availability === 'known') ? (
+            <div className="flex items-center justify-between border-t border-border-divider/50 pt-1.5">
+              <span className="text-muted-foreground">文本 / 视觉 Token</span>
+              <span className="font-mono font-medium text-foreground">
+                {formatMetric(data.textTokens)} / {formatMetric(data.visionTokens)}
+              </span>
+            </div>
+          ) : null}
         </div>
       </div>
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { can, canAny, filterNavItems, visibleByPermission } from './rbac'
+import { can, canAny, canCreateTarget, canCreateTargetWithCredential, canOnTarget, filterNavItems, visibleByPermission } from './rbac'
 import type { AuthUser } from '@/stores/auth-store'
 
 const admin: AuthUser = {
@@ -27,6 +27,58 @@ describe('can', () => {
     expect(can(admin, 'role:write')).toBe(true)
     expect(can(viewer, 'role:write')).toBe(false)
     expect(can(viewer, 'role:read')).toBe(true)
+  })
+})
+
+describe('目标范围动作显隐', () => {
+  const targetA = '00000000-0000-4000-8000-000000000001'
+  const targetB = '00000000-0000-4000-8000-000000000002'
+  const scoped: AuthUser = {
+    ...user(['target:read', 'target:write', 'target:delete', 'run:delete']),
+    targetScopes: [
+      { roleId: 'reader', mode: 'all', targetIds: [] },
+      { roleId: 'editor', mode: 'selected', targetIds: [targetA] },
+    ],
+    targetScopePermissions: [
+      { roleId: 'reader', permissions: ['target:read'] },
+      { roleId: 'editor', permissions: ['target:write', 'target:delete', 'run:delete'] },
+    ],
+  }
+
+  it('只显示当前系统范围内可执行的动作', () => {
+    expect(canOnTarget(scoped, 'target:write', targetA)).toBe(true)
+    expect(canOnTarget(scoped, 'target:write', targetB)).toBe(false)
+    expect(canOnTarget(scoped, 'target:delete', targetA)).toBe(true)
+    expect(canOnTarget(scoped, 'run:delete', targetB)).toBe(false)
+  })
+
+  it('创建目标须同时具有全范围读写权限', () => {
+    expect(canCreateTarget(scoped)).toBe(false)
+    expect(canCreateTarget(user(['target:read', 'target:write']))).toBe(false)
+    expect(canOnTarget(user(['target:read', 'target:write']), 'target:write', targetA)).toBe(false)
+    expect(canCreateTarget({
+      ...scoped,
+      targetScopes: scoped.targetScopes?.map((scope) => ({ ...scope, mode: 'all', targetIds: [] })),
+    })).toBe(true)
+  })
+
+  it('随新目标写入秘密还需要全范围凭据权限', () => {
+    const broad = {
+      ...scoped,
+      targetScopes: [
+        { roleId: 'reader', mode: 'all' as const, targetIds: [] },
+        { roleId: 'editor', mode: 'all' as const, targetIds: [] },
+        { roleId: 'credential', mode: 'selected' as const, targetIds: [targetA] },
+      ],
+      targetScopePermissions: [
+        ...scoped.targetScopePermissions!,
+        { roleId: 'credential', permissions: ['credential:read', 'credential:write'] },
+      ],
+      permissions: [...scoped.permissions, 'credential:read', 'credential:write'],
+    }
+    expect(canCreateTarget(broad)).toBe(true)
+    expect(canCreateTargetWithCredential(broad)).toBe(false)
+    expect(canCreateTargetWithCredential({ ...broad, targetScopes: broad.targetScopes.map((scope) => ({ ...scope, mode: 'all', targetIds: [] })) })).toBe(true)
   })
 })
 

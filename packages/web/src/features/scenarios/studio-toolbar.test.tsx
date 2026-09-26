@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { userEvent } from 'vitest/browser'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ScenarioDetailDto, TargetDto } from '@cairn/shared'
 import '@/styles/index.css'
@@ -13,7 +14,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@/features/schedules/object-schedules', () => ({
-  ObjectSchedules: ({ trigger, size }: { trigger?: (props: { onClick: () => void }) => React.ReactNode; size?: string }) => {
+  ObjectSchedules: ({ trigger }: { trigger?: (props: { onClick: () => void }) => React.ReactNode; size?: string }) => {
     if (trigger) {
       return trigger({ onClick: () => {} })
     }
@@ -21,7 +22,7 @@ vi.mock('@/features/schedules/object-schedules', () => ({
   },
 }))
 
-const mockScenario: ScenarioDetailDto = {
+const mockScenario = {
   id: 'sc-1',
   targetId: 'target-1',
   name: '测试用场景名称很长很长很长很长',
@@ -32,18 +33,22 @@ const mockScenario: ScenarioDetailDto = {
   updatedAt: '2026-09-01T00:00:00Z',
   draft: {
     revision: 1,
-    document: { steps: [] },
+    document: { schemaVersion: 1, inputs: [], steps: [] },
   },
-}
+} as unknown as ScenarioDetailDto
 
-const mockTarget: TargetDto = {
+const mockTarget = {
   id: 'target-1',
+  code: 'target-1',
   name: '目标电商中台',
   entryUrl: 'https://example.com',
+  loginUrl: null,
+  authMethod: 'password',
+  captchaMode: 'none',
   status: 'active',
   createdAt: '2026-09-01T00:00:00Z',
   updatedAt: '2026-09-01T00:00:00Z',
-}
+} as unknown as TargetDto
 
 function renderToolbar(containerWidth = 1000) {
   const queryClient = new QueryClient({
@@ -199,4 +204,113 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     await expect.poll(() => screen.getByTestId('object-schedules-btn').elements()).toHaveLength(0)
     await expect.element(screen.getByRole('button', { name: '更多' })).toBeInTheDocument()
   })
+
+  it('草稿修改 dirty 时，保存草稿呈现为 Outline 强调色，试跑为唯一实心蓝主按钮', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={true}
+            hasDraftDirty={true}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canAssist={true}
+            canPropose={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={() => {}}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onOpenAssistant={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>
+    )
+
+    const saveBtn = screen.getByRole('button', { name: '保存草稿' })
+    const trialBtn = screen.getByRole('button', { name: '试跑' })
+
+    // 保存草稿为 outline 并带 primary 边框强调，试跑带 action-shadow
+    await expect.element(saveBtn).toHaveClass('border-primary')
+    await expect.element(trialBtn).toHaveClass('action-shadow')
+  })
+
+  it('支持场景名称内联单击重命名与 Enter 保存 / Escape 取消', async () => {
+    const onRename = vi.fn().mockResolvedValue(true)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={false}
+            hasDraftDirty={false}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canAssist={true}
+            canPropose={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={() => {}}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onRename={onRename}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onOpenAssistant={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>
+    )
+
+    // 点击重命名笔图标触发内联输入
+    const editBtn = screen.getByRole('button', { name: '重命名' })
+    await editBtn.click()
+
+    const input = screen.getByLabelText('场景名称输入')
+    await expect.element(input).toBeInTheDocument()
+
+    // 输入新名称并按 Enter 保存
+    await input.fill('全新的场景标题')
+    await userEvent.keyboard('{Enter}')
+
+    expect(onRename).toHaveBeenCalledWith('全新的场景标题')
+  })
 })
+

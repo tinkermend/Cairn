@@ -14,6 +14,13 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/_authenticated/scenarios/$scenarioId/')({
   validateSearch: searchSchema,
+  staticData: {
+    assistant: {
+      routeKey: 'scenarios.$scenarioId',
+      pageKind: 'studio',
+      primaryObject: { kind: 'scenario', idParam: 'scenarioId' },
+    },
+  },
   beforeLoad: () => {
     const user = useAuthStore.getState().auth.user
     if (!user || !hasPermission(user.permissions, 'workflow:read')) {

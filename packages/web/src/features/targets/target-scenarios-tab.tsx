@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Layers, Plus, Search } from 'lucide-react'
 import { fetchScenarios } from '@/lib/scenarios-api'
+import { useCursorPage } from '@/hooks/use-cursor-page'
+import { useCan } from '@/hooks/use-permissions'
+import { CursorPagination } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -24,26 +27,25 @@ interface TargetScenariosTabProps {
 }
 
 export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabProps) {
+  const page = useCursorPage()
+  const canRead = useCan('workflow:read')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all')
 
   const query = useQuery({
-    queryKey: ['scenarios', { targetId }],
-    queryFn: () => fetchScenarios({ targetId, limit: 100 }),
+    queryKey: ['scenarios', { targetId, search, statusFilter, cursor: page.cursor, limit: page.pageSize }],
+    queryFn: () => fetchScenarios({ targetId, search: search.trim() || undefined, status: statusFilter === 'all' ? undefined : statusFilter, cursor: page.cursor, limit: page.pageSize }),
+    placeholderData: keepPreviousData,
+    enabled: canRead,
   })
 
-  const allItems = query.data?.items ?? []
-  const filteredItems = useMemo(() => {
-    return allItems.filter((item) => {
-      if (statusFilter !== 'all' && item.status !== statusFilter) return false
-      if (search.trim() && !item.name.toLowerCase().includes(search.trim().toLowerCase())) {
-        return false
-      }
-      return true
-    })
-  }, [allItems, search, statusFilter])
+  const items = query.data?.items ?? []
 
   const isFiltered = Boolean(search.trim() || statusFilter !== 'all')
+
+  if (!canRead) {
+    return <section aria-label='关联场景' className='rounded-lg border border-border-card bg-card p-5 text-label text-muted-foreground'>当前账号无权查看关联场景。</section>
+  }
 
   if (query.isPending) {
     return <PageSkeleton />
@@ -79,7 +81,7 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
         </div>
         <div className='flex flex-wrap items-center gap-2'>
           <Button variant='outline' size='sm' asChild>
-            <Link to='/scenarios'>
+            <Link to='/scenarios' search={{ targetId }}>
               <Plus />
               新建场景
             </Link>
@@ -101,7 +103,7 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
               variant={statusFilter === val ? 'secondary' : 'ghost'}
               size='sm'
               aria-pressed={statusFilter === val}
-              onClick={() => setStatusFilter(val)}
+              onClick={() => { setStatusFilter(val); page.reset() }}
             >
               {label}
             </Button>
@@ -116,13 +118,13 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
             aria-label='搜索场景'
             placeholder='搜索场景名称'
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); page.reset() }}
             className='pl-9'
           />
         </div>
       </div>
 
-      {filteredItems.length === 0 ? (
+      {items.length === 0 ? (
         <EmptyState
           title={isFiltered ? '没有匹配的关联场景' : '该系统暂未关联场景'}
           description={
@@ -137,6 +139,7 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
                 onClick={() => {
                   setSearch('')
                   setStatusFilter('all')
+                  page.reset()
                 }}
               >
                 清除筛选
@@ -158,7 +161,7 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredItems.map((scenario) => (
+              {items.map((scenario) => (
                 <TableRow key={scenario.id}>
                   <TableCell className='py-4 font-medium text-text-primary'>
                     <Link
@@ -203,6 +206,19 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
           </Table>
         </div>
       )}
+      <div className='flex flex-wrap items-center justify-between gap-3 border-t border-border-divider px-4 py-3'>
+        <p role='status' className='text-label text-muted-foreground'>本页 {items.length} 条</p>
+        <CursorPagination
+          pageIndex={page.pageIndex}
+          pageSize={page.pageSize}
+          hasPreviousPage={page.pageIndex > 0}
+          hasNextPage={Boolean(query.data?.nextCursor)}
+          updating={query.isFetching && query.isPlaceholderData}
+          onPageSizeChange={page.setPageSize}
+          onPreviousPage={page.goPrev}
+          onNextPage={() => { if (query.data?.nextCursor) page.goNext(query.data.nextCursor) }}
+        />
+      </div>
     </section>
   )
 }
