@@ -12,6 +12,7 @@ import type {
   ReportSubjectKind,
   ReportTriggerStatus,
   ReportFormat,
+  ReportAiInterpretation,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
@@ -283,3 +284,34 @@ export const reportTriggers = cairnSchema.table('report_triggers', {
   uniqueIndex('report_triggers_subject_idx').on(t.subjectKind, t.subjectId),
   index('report_triggers_pending_idx').on(t.status, t.updatedAt),
 ])
+
+export const reportAiJobs = cairnSchema.table(
+  'report_ai_jobs',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    targetId: uuid('target_id').notNull().references(() => targets.id, { onDelete: 'restrict' }),
+    reportId: uuid('report_id').notNull().references(() => reports.id, { onDelete: 'restrict' }),
+    baseRevisionId: uuid('base_revision_id').notNull().references(() => reportRevisions.id, { onDelete: 'restrict' }),
+    status: text('status').notNull().default('pending').$type<'pending' | 'running' | 'completed' | 'failed' | 'skipped'>(),
+    model: text('model'),
+    promptVersion: text('prompt_version'),
+    inputDigest: text('input_digest'),
+    interpretation: jsonb('interpretation').$type<ReportAiInterpretation>(),
+    aiRevisionId: uuid('ai_revision_id').references(() => reportRevisions.id, { onDelete: 'restrict' }),
+    tokenUsage: jsonb('token_usage').$type<{ promptTokens?: number; completionTokens?: number; totalTokens?: number }>(),
+    durationMs: integer('duration_ms'),
+    error: text('error'),
+    retryCount: integer('retry_count').notNull().default(0),
+    idempotencyKey: text('idempotency_key').notNull(),
+    holderWorkerId: text('holder_worker_id'),
+    holderInstanceId: uuid('holder_instance_id'),
+    leaseUntil: timestamp('lease_until', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('report_ai_jobs_idempotency_idx').on(t.reportId, t.baseRevisionId),
+    index('report_ai_jobs_pending_idx').on(t.status, t.leaseUntil),
+  ],
+)
+

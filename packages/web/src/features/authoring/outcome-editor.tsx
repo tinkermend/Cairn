@@ -91,12 +91,17 @@ export function OutcomeListEditor({
           添加条件
         </Button>
       </div>
+      <p className='text-caption text-muted-foreground'>
+        {scope === 'scenario'
+          ? '微文案引导：评估整套业务的最终结果（如订单是否真实创建）。'
+          : '微文案引导：检查本动作是否成功执行（如按钮已点击、弹窗已出现）。'}
+      </p>
       {outcomes.length === 0 ? (
-        <p className='text-small text-muted-foreground'>
+        <div className='rounded-md border border-dashed border-border-divider p-3 text-caption text-muted-foreground bg-muted/20'>
           {scope === 'scenario'
-            ? '还没有场景级成功条件。可以从页面选择对象，用业务语言写下期望。'
+            ? '业务结果未评估：当前无场景级完成标准。流程执行成功不代表业务最终达标，建议在此添加最终业务断言。'
             : '还没有成功条件。若无需在此步骤单独校验页面状态，可直接留空，不影响步骤正常执行。'}
-        </p>
+        </div>
       ) : (
         <ul className='space-y-3'>
           {outcomes.map((contract, index) => (

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm'
 import {
   DEFAULT_REPORT_CONFIG,
   EXPORT_ARTIFACTS_PROTOCOL,
@@ -25,6 +25,7 @@ import {
   type CreateReportRevisionBody,
   type ExportJobDto,
   type JsonValue,
+  type ReportAiInterpretation,
   type ReportConfig,
   type ReportDocument,
   type ReportDto,
@@ -98,21 +99,46 @@ export function toRevision(row: {
 }
 
 export async function loadReportDto(db: Db, reportId: string, revisionId?: string): Promise<ReportDto> {
-  const { reports, reportRevisions, exportJobs } = schemaFor(db)
+  const { reports, reportRevisions, exportJobs, reportAiJobs } = schemaFor(db)
   const [report] = await db.select().from(reports).where(eq(reports.id, reportId)).limit(1)
   if (!report || report.deletedAt) throw notFound('REPORT_NOT_FOUND', '报告不存在或已删除')
   const [revision] = await db
     .select()
     .from(reportRevisions)
     .where(and(eq(reportRevisions.reportId, reportId), revisionId ? eq(reportRevisions.id, revisionId) : undefined))
-    .orderBy(desc(reportRevisions.revisionNo))
+    .orderBy(sql`CASE WHEN ${reportRevisions.sealedAt} IS NOT NULL THEN 1 ELSE 0 END DESC`, desc(reportRevisions.revisionNo))
     .limit(1)
   const [materialJob] = revision ? await db.select({ id: exportJobs.id }).from(exportJobs).where(and(eq(exportJobs.reportRevisionId, revision.id), eq(exportJobs.kind, 'report_materialize'))).orderBy(desc(exportJobs.createdAt)).limit(1) : []
+  const [aiJobRow] = await db
+    .select()
+    .from(reportAiJobs)
+    .where(eq(reportAiJobs.reportId, reportId))
+    .orderBy(desc(reportAiJobs.createdAt))
+    .limit(1)
+  const aiJob = aiJobRow
+    ? {
+        id: aiJobRow.id,
+        reportId: aiJobRow.reportId,
+        baseRevisionId: aiJobRow.baseRevisionId,
+        status: aiJobRow.status,
+        model: aiJobRow.model ?? null,
+        promptVersion: aiJobRow.promptVersion ?? null,
+        inputDigest: aiJobRow.inputDigest ?? null,
+        tokenUsage: aiJobRow.tokenUsage ?? null,
+        durationMs: aiJobRow.durationMs ?? null,
+        error: aiJobRow.error ?? null,
+        aiRevisionId: aiJobRow.aiRevisionId ?? null,
+        interpretation: aiJobRow.interpretation ?? null,
+        createdAt: aiJobRow.createdAt.toISOString(),
+        updatedAt: aiJobRow.updatedAt.toISOString(),
+      }
+    : null
   return reportDtoSchema.parse({
     id: report.id,
     targetId: report.targetId,
     subject: subjectOf(report),
     currentRevision: revision ? { ...toRevision(revision), materialJobId: materialJob?.id ?? null } : null,
+    aiJob,
     createdAt: report.createdAt.toISOString(),
   })
 }
@@ -156,7 +182,7 @@ export async function assertReportSourceReadable(db: Db, subject: ReportSubject,
 
 export async function listReports(db: Db, query: Partial<ReportListQuery> = {}, actorId?: string) {
   const parsed = reportListQuerySchema.parse(query)
-  const { exportJobs, reports, reportRevisions, runs, suiteRunItems, suiteRuns, targets } = schemaFor(db)
+  const { exportJobs, reports, reportRevisions, reportAiJobs, runs, suiteRunItems, suiteRuns, targets } = schemaFor(db)
   const suiteScope = await scopedTargetFilter(db, actorId, reports.targetId, 'suite:read')
   const filters: (SQL | undefined)[] = [
     await scopedTargetFilter(db, actorId, reports.targetId, 'report:read'),
@@ -192,7 +218,7 @@ export async function listReports(db: Db, query: Partial<ReportListQuery> = {}, 
     .select({
       id: reportRevisions.id,
       reportId: reportRevisions.reportId,
-      rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${reportRevisions.reportId} ORDER BY ${reportRevisions.revisionNo} DESC)`.as('rn'),
+      rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${reportRevisions.reportId} ORDER BY CASE WHEN ${reportRevisions.sealedAt} IS NOT NULL THEN 1 ELSE 0 END DESC, ${reportRevisions.revisionNo} DESC)`.as('rn'),
     })
     .from(reportRevisions)
     .where(inArray(reportRevisions.reportId, reportIds))
@@ -253,14 +279,66 @@ export async function listReports(db: Db, query: Partial<ReportListQuery> = {}, 
     revisionByReportId.set(row.revision.reportId, row.revision)
   }
 
+  const rankedAiJobs = db
+    .select({
+      id: reportAiJobs.id,
+      reportId: reportAiJobs.reportId,
+      baseRevisionId: reportAiJobs.baseRevisionId,
+      status: reportAiJobs.status,
+      model: reportAiJobs.model,
+      promptVersion: reportAiJobs.promptVersion,
+      inputDigest: reportAiJobs.inputDigest,
+      tokenUsage: reportAiJobs.tokenUsage,
+      durationMs: reportAiJobs.durationMs,
+      error: reportAiJobs.error,
+      aiRevisionId: reportAiJobs.aiRevisionId,
+      interpretation: reportAiJobs.interpretation,
+      createdAt: reportAiJobs.createdAt,
+      updatedAt: reportAiJobs.updatedAt,
+      rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${reportAiJobs.reportId} ORDER BY ${reportAiJobs.createdAt} DESC)`.as('rn'),
+    })
+    .from(reportAiJobs)
+    .where(inArray(reportAiJobs.reportId, reportIds))
+    .as('ranked_ai_jobs')
+
+  const latestAiJobRows = reportIds.length === 0 ? [] : await db
+    .select()
+    .from(rankedAiJobs)
+    .where(eq(rankedAiJobs.rn, 1))
+
+  const aiJobByReportId = new Map<string, typeof latestAiJobRows[number]>()
+  for (const row of latestAiJobRows) {
+    aiJobByReportId.set(row.reportId, row)
+  }
+
   const items = page.items.map((report) => {
     const revision = revisionByReportId.get(report.id)
     const materialJobId = revision ? materialJobIdByRevisionId.get(revision.id) ?? null : null
+    const aiJobRow = aiJobByReportId.get(report.id)
+    const aiJob = aiJobRow
+      ? {
+          id: aiJobRow.id,
+          reportId: aiJobRow.reportId,
+          baseRevisionId: aiJobRow.baseRevisionId,
+          status: aiJobRow.status,
+          model: aiJobRow.model ?? null,
+          promptVersion: aiJobRow.promptVersion ?? null,
+          inputDigest: aiJobRow.inputDigest ?? null,
+          tokenUsage: aiJobRow.tokenUsage ?? null,
+          durationMs: aiJobRow.durationMs ?? null,
+          error: aiJobRow.error ?? null,
+          aiRevisionId: aiJobRow.aiRevisionId ?? null,
+          interpretation: aiJobRow.interpretation ?? null,
+          createdAt: aiJobRow.createdAt.toISOString(),
+          updatedAt: aiJobRow.updatedAt.toISOString(),
+        }
+      : null
     return reportDtoSchema.parse({
       id: report.id,
       targetId: report.targetId,
       subject: subjectOf(report),
       currentRevision: revision ? { ...toRevision(revision), materialJobId } : null,
+      aiJob,
       createdAt: report.createdAt.toISOString(),
     })
   })
@@ -752,6 +830,25 @@ async function createReportTx(db: Db, input: CreateReportBody, actor: AuditActor
       sealedAt: null,
     })
     await prepareReportMaterials(tx, { reportId, revisionId, targetId: captured.targetId, source: captured.payload, config, actorId: actor.kind === 'service' ? undefined : actor.id })
+
+    let aiPolicy: 'inherit' | 'disabled' = 'inherit'
+    if (input.subject.kind === 'RUN') {
+      const { runReportContexts } = schemaFor(tx)
+      const [ctx] = await tx.select({ outputPolicy: runReportContexts.outputPolicy }).from(runReportContexts).where(eq(runReportContexts.runId, input.subject.runId)).limit(1)
+      aiPolicy = ctx?.outputPolicy?.aiSummaryPolicy ?? 'inherit'
+    } else {
+      const { suiteRuns } = schemaFor(tx)
+      const [suiteRow] = await tx.select({ snapshot: suiteRuns.snapshot }).from(suiteRuns).where(eq(suiteRuns.id, input.subject.suiteRunId)).limit(1)
+      aiPolicy = (suiteRow?.snapshot?.outputPolicy as any)?.aiSummaryPolicy ?? 'inherit'
+    }
+    if (aiPolicy !== 'disabled') {
+      await enqueueReportAiJob(tx, {
+        targetId: captured.targetId,
+        reportId,
+        baseRevisionId: revisionId,
+      })
+    }
+
     await recordAudit(tx, actor, 'report.create', 'report', reportId, `创建报告「${title}」`)
   })
   return getReport(db, reportId, actor.kind === 'service' ? undefined : actor.id)
@@ -1455,7 +1552,7 @@ export async function getLatestHtmlReportArtifact(
   const [revision] = await db
     .select({ id: reportRevisions.id, renderVersion: reportRevisions.renderVersion })
     .from(reportRevisions)
-    .where(eq(reportRevisions.reportId, report.id))
+    .where(and(eq(reportRevisions.reportId, report.id), isNotNull(reportRevisions.sealedAt)))
     .orderBy(desc(reportRevisions.revisionNo))
     .limit(1)
 
@@ -1538,5 +1635,383 @@ export async function isReportGenerationPending(
     .limit(1)
 
   return Boolean(job)
+}
+
+export type ReportAiGrant = {
+  jobId: string
+  workerId: string
+  instanceId: string
+}
+
+export async function enqueueReportAiJob(
+  db: Db,
+  input: {
+    targetId: string
+    reportId: string
+    baseRevisionId: string
+    idempotencyKey?: string
+  },
+) {
+  const { reportAiJobs } = schemaFor(db)
+  const [existing] = await db
+    .select({ id: reportAiJobs.id, status: reportAiJobs.status })
+    .from(reportAiJobs)
+    .where(and(eq(reportAiJobs.reportId, input.reportId), eq(reportAiJobs.baseRevisionId, input.baseRevisionId)))
+    .limit(1)
+  if (existing) return existing.id
+
+  const id = newId()
+  const key = input.idempotencyKey ?? `report-ai:${input.reportId}:${input.baseRevisionId}`
+  await db.insert(reportAiJobs).values({
+    id,
+    targetId: input.targetId,
+    reportId: input.reportId,
+    baseRevisionId: input.baseRevisionId,
+    status: 'pending',
+    idempotencyKey: key,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+  return id
+}
+
+export async function claimReportAiJobs(
+  db: Db,
+  input: {
+    workerId: string
+    instanceId: string
+    limit?: number
+    leaseMs?: number
+  },
+) {
+  return atomic(db, async (tx) => claimReportAiJobsTx(tx, input))
+}
+
+async function claimReportAiJobsTx(
+  db: Db,
+  input: { workerId: string; instanceId: string; limit?: number; leaseMs?: number },
+) {
+  const { reportAiJobs, workers, reportRevisions, exportJobs } = schemaFor(db)
+  const now = new Date()
+  const [worker] = await db
+    .select()
+    .from(workers)
+    .where(and(eq(workers.id, input.workerId), eq(workers.instanceId, input.instanceId)))
+    .limit(1)
+  if (!worker || worker.status !== 'READY' || (worker.heartbeatExpiresAt && worker.heartbeatExpiresAt <= now)) return []
+
+  const active = await db
+    .select({ workerId: reportAiJobs.holderWorkerId })
+    .from(reportAiJobs)
+    .where(and(eq(reportAiJobs.status, 'running'), sql`${reportAiJobs.leaseUntil} > ${now}`))
+  if (active.length >= 4 || active.filter((j) => j.workerId === input.workerId).length >= 2) return []
+
+  const leaseUntil = new Date(now.getTime() + (input.leaseMs ?? 60_000))
+  const claimable = or(
+    eq(reportAiJobs.status, 'pending'),
+    and(eq(reportAiJobs.status, 'running'), sql`${reportAiJobs.leaseUntil} < ${now}`),
+  )
+
+  const rows = await locked(
+    db,
+    db
+      .select()
+      .from(reportAiJobs)
+      .where(claimable)
+      .orderBy(sql`CASE WHEN ${reportAiJobs.status} = 'running' THEN 0 ELSE 1 END`, reportAiJobs.updatedAt, reportAiJobs.id)
+      .limit(16),
+    true,
+  )
+
+  const claimed = []
+  for (const row of rows) {
+    if (claimed.length >= Math.min(input.limit ?? 1, 2)) break
+    const [baseRevision] = await db
+      .select({ id: reportRevisions.id, sealedAt: reportRevisions.sealedAt, preparationError: reportRevisions.preparationError })
+      .from(reportRevisions)
+      .where(eq(reportRevisions.id, row.baseRevisionId))
+      .limit(1)
+
+    if (!baseRevision) {
+      await db.update(reportAiJobs).set({ status: 'failed', error: '基线报告修订不存在', leaseUntil: null, updatedAt: now }).where(eq(reportAiJobs.id, row.id))
+      continue
+    }
+    if (baseRevision.preparationError) {
+      await db.update(reportAiJobs).set({ status: 'failed', error: `基线报告材料准备失败：${baseRevision.preparationError}`, leaseUntil: null, updatedAt: now }).where(eq(reportAiJobs.id, row.id))
+      continue
+    }
+    if (!baseRevision.sealedAt) {
+      continue
+    }
+
+    const renderJobs = await db
+      .select({ status: exportJobs.status })
+      .from(exportJobs)
+      .where(and(eq(exportJobs.reportRevisionId, row.baseRevisionId), eq(exportJobs.kind, 'report_render')))
+    if (renderJobs.some((j) => ['queued', 'running'].includes(j.status))) {
+      continue
+    }
+
+    const updated = await updateRows(
+      db,
+      reportAiJobs,
+      {
+        status: 'running',
+        holderWorkerId: input.workerId,
+        holderInstanceId: input.instanceId,
+        leaseUntil,
+        retryCount: row.retryCount + (row.status === 'running' ? 1 : 0),
+        updatedAt: now,
+      },
+      and(eq(reportAiJobs.id, row.id), claimable),
+      { id: reportAiJobs.id },
+    )
+    if (updated.length === 0) continue
+    claimed.push({
+      ...row,
+      id: row.id,
+      jobId: row.id,
+      workerId: input.workerId,
+      instanceId: input.instanceId,
+      holderWorkerId: input.workerId,
+      holderInstanceId: input.instanceId,
+      leaseUntil,
+      retryCount: row.retryCount + (row.status === 'running' ? 1 : 0),
+    })
+  }
+  return claimed
+}
+
+export async function renewReportAiJob(db: Db, grant: ReportAiGrant, leaseMs = 60_000) {
+  const { reportAiJobs } = schemaFor(db)
+  const rows = await updateRows(
+    db,
+    reportAiJobs,
+    { leaseUntil: new Date(Date.now() + leaseMs), updatedAt: new Date() },
+    and(
+      eq(reportAiJobs.id, grant.jobId),
+      eq(reportAiJobs.status, 'running'),
+      eq(reportAiJobs.holderWorkerId, grant.workerId),
+      eq(reportAiJobs.holderInstanceId, grant.instanceId),
+    ),
+    { id: reportAiJobs.id },
+  )
+  return rows.length === 1
+}
+
+export async function completeReportAiJob(
+  db: Db,
+  input: ReportAiGrant & {
+    status: 'completed' | 'failed' | 'skipped'
+    error?: string
+    model?: string
+    promptVersion?: string
+    inputDigest?: string
+    tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number }
+    durationMs?: number
+    interpretation?: ReportAiInterpretation
+    aiRevisionId?: string
+  },
+) {
+  const { reportAiJobs } = schemaFor(db)
+  const rows = await updateRows(
+    db,
+    reportAiJobs,
+    {
+      status: input.status,
+      error: input.error?.slice(0, 512) ?? null,
+      model: input.model ?? null,
+      promptVersion: input.promptVersion ?? null,
+      inputDigest: input.inputDigest ?? null,
+      tokenUsage: input.tokenUsage ?? null,
+      durationMs: input.durationMs ?? null,
+      interpretation: input.interpretation ?? null,
+      aiRevisionId: input.aiRevisionId ?? null,
+      leaseUntil: null,
+      updatedAt: new Date(),
+    },
+    and(
+      eq(reportAiJobs.id, input.jobId),
+      eq(reportAiJobs.holderWorkerId, input.workerId),
+      eq(reportAiJobs.holderInstanceId, input.instanceId),
+    ),
+    { id: reportAiJobs.id },
+  )
+  return rows.length === 1
+}
+
+export async function createReportAiRevision(
+  db: Db,
+  input: {
+    reportId: string
+    baseRevisionId: string
+    interpretation: ReportAiInterpretation
+  },
+) {
+  return atomic(db, async (tx) => {
+    const { reportRevisions, reportRevisionMaterials, reports } = schemaFor(tx)
+    const [report] = await tx.select().from(reports).where(eq(reports.id, input.reportId)).limit(1)
+    if (!report || report.deletedAt) throw notFound('REPORT_NOT_FOUND', '报告不存在或已删除')
+
+    const [baseRevision] = await locked(tx, tx.select().from(reportRevisions).where(eq(reportRevisions.id, input.baseRevisionId)))
+    if (!baseRevision || !baseRevision.sealedAt) throw conflict('REPORT_NOT_SEALED', '基准报告修订不存在或尚未封存')
+
+    const [latestSealed] = await tx
+      .select()
+      .from(reportRevisions)
+      .where(and(eq(reportRevisions.reportId, input.reportId), isNotNull(reportRevisions.sealedAt)))
+      .orderBy(desc(reportRevisions.revisionNo))
+      .limit(1)
+
+    const isCurrentBase = !latestSealed || latestSealed.id === baseRevision.id
+    const nextNo = (latestSealed ? latestSealed.revisionNo : baseRevision.revisionNo) + 1
+    const revisionId = newId()
+
+    const baseDoc = reportDocumentSchema.parse(baseRevision.document)
+    const document: ReportDocument = {
+      ...baseDoc,
+      aiInterpretation: input.interpretation,
+      identity: {
+        reportId: input.reportId,
+        revisionId,
+        revisionNo: nextNo,
+        parentRevisionId: null,
+      },
+      generatedAt: new Date().toISOString(),
+    }
+
+    await tx.insert(reportRevisions).values({
+      id: revisionId,
+      reportId: input.reportId,
+      revisionNo: nextNo,
+      stage: baseRevision.stage,
+      scope: baseRevision.scope,
+      title: baseRevision.title,
+      config: baseRevision.config,
+      templateVersion: baseRevision.templateVersion,
+      renderVersion: REPORT_RENDER_VERSION,
+      sourceSnapshotId: baseRevision.sourceSnapshotId,
+      parentReportRevisionId: null,
+      contentCompleteness: baseRevision.contentCompleteness,
+      document,
+      documentDigest: sha256Hex(document),
+      createdByConsoleAccountId: baseRevision.createdByConsoleAccountId,
+      serviceCallerId: baseRevision.serviceCallerId,
+      idempotencyKey: `ai-revision:${input.baseRevisionId}`,
+      requestDigest: sha256Hex(document),
+      sealedAt: null,
+    })
+
+    const baseMaterials = await tx.select().from(reportRevisionMaterials).where(eq(reportRevisionMaterials.revisionId, baseRevision.id))
+    for (const mat of baseMaterials) {
+      await tx.insert(reportRevisionMaterials).values({
+        id: newId(),
+        revisionId,
+        kind: mat.kind,
+        evidenceId: mat.evidenceId,
+        runId: mat.runId,
+        sourceObjectId: mat.sourceObjectId,
+        sourceDigest: mat.sourceDigest,
+        status: mat.status,
+        missingReason: mat.missingReason,
+        caption: mat.caption,
+        byteSize: mat.byteSize,
+        artifactId: mat.artifactId,
+        width: mat.width,
+        height: mat.height,
+      })
+    }
+
+    return {
+      revisionId,
+      document,
+      revisionNo: nextNo,
+      isCurrentBase,
+      targetId: report.targetId,
+    }
+  })
+}
+
+export async function sealReportAiRevision(
+  db: Db,
+  input: {
+    revisionId: string
+    htmlArtifactId: string
+  },
+) {
+  return atomic(db, async (tx) => {
+    const { reportRevisions, reportRevisionOutputs, artifacts, storedObjects } = schemaFor(tx)
+    const [revision] = await locked(tx, tx.select().from(reportRevisions).where(eq(reportRevisions.id, input.revisionId)))
+    if (!revision) throw notFound('REPORT_NOT_FOUND', '修订不存在')
+    if (revision.sealedAt) return true
+
+    const [artifact] = await tx
+      .select()
+      .from(artifacts)
+      .innerJoin(storedObjects, eq(storedObjects.artifactId, artifacts.id))
+      .where(
+        and(
+          eq(artifacts.id, input.htmlArtifactId),
+          eq(storedObjects.status, 'available'),
+          isNull(storedObjects.deleteRequestedAt),
+          sql`${storedObjects.retainUntil} > ${new Date()}`,
+        ),
+      )
+      .limit(1)
+    if (!artifact) throw badRequest('EXPORT_ARTIFACT_INVALID', 'AI 报告 HTML 产物不可用')
+
+    await tx.insert(reportRevisionOutputs).values({
+      id: newId(),
+      revisionId: revision.id,
+      format: 'html',
+      renderVersion: revision.renderVersion,
+      artifactId: input.htmlArtifactId,
+    })
+
+    await tx.update(reportRevisions).set({
+      sealedAt: new Date(),
+    }).where(eq(reportRevisions.id, revision.id))
+
+    return true
+  })
+}
+
+export async function retryReportAiJob(
+  db: Db,
+  reportId: string,
+  actor: AuditActor,
+) {
+  return atomic(db, async (tx) => {
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
+    const report = await loadReportDto(tx, reportId)
+    if (actor.kind !== 'service') {
+      await assertTargetPermission(tx, actor.id, report.targetId, 'report:export')
+    }
+    const { reportAiJobs } = schemaFor(tx)
+    const [job] = await tx
+      .select()
+      .from(reportAiJobs)
+      .where(eq(reportAiJobs.reportId, reportId))
+      .orderBy(desc(reportAiJobs.createdAt))
+      .limit(1)
+    if (!job) throw notFound('REPORT_AI_JOB_NOT_FOUND', '未找到可重试的报告 AI 作业')
+
+    if (job.status === 'completed') {
+      throw conflict('REPORT_AI_JOB_COMPLETED', 'AI 辅助解读已完成，无需重试')
+    }
+
+    await tx.update(reportAiJobs).set({
+      status: 'pending',
+      error: null,
+      leaseUntil: null,
+      retryCount: job.retryCount + 1,
+      updatedAt: new Date(),
+    }).where(eq(reportAiJobs.id, job.id))
+
+    await recordAudit(tx, actor, 'report.export.retry', 'report', reportId, '重试报告 AI 辅助解读')
+    return loadReportDto(tx, reportId)
+  })
 }
 

@@ -36,8 +36,8 @@ export function SectionDataOutcomes({
         <div className='space-y-1.5'>
           <Label htmlFor={fieldElementId(step.id, ['outputKey'])} className='text-label'>
             {step.type === 'extract' || step.type === 'ai_extract' || step.type === 'download'
-              ? '输出变量名（建议填写）'
-              : '输出变量名（可选）'}
+              ? '保存本步结果为（建议填写 outputKey）'
+              : '保存本步结果为（可选 outputKey）'}
           </Label>
           <Input
             id={fieldElementId(step.id, ['outputKey'])}

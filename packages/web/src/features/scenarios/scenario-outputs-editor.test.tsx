@@ -41,10 +41,10 @@ describe('ScenarioOutputsEditor', () => {
     await expect.element(getByText('核心指标 (1/20)')).toBeInTheDocument()
     await expect.element(getByText('单行宽表字段 (1/20)')).toBeInTheDocument()
 
-    // 检查实时推演预览面板：${item_count} 被模拟为带有单位的样例值
+    // 检查结构化预览面板：${item_count} 展示语义与单位，不编造 1,420 等虚构数值
     const previewEl = getByTestId('summary-preview-panel')
     await expect.element(previewEl).toBeInTheDocument()
-    await expect.element(previewEl).toHaveTextContent('巡检完成，在售商品 1,420 件 件')
+    await expect.element(previewEl).toHaveTextContent('巡检完成，在售商品 [在售商品数 (件)] 件')
 
     // 检查快捷插入变量按键
     const insertCustomBtn = getByRole('button', { name: /\+.*custom_val.*/ })

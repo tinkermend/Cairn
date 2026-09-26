@@ -147,3 +147,24 @@ export async function finishReportMaterials(db: Db, grant: ExportGrant) {
     await cleanupUnusedJobArtifacts(tx, job.id)
   })
 }
+
+export async function getRevisionMaterialsWithKeys(db: Db, revisionId: string) {
+  const { reportRevisionMaterials, storedObjects } = schemaFor(db)
+  return db
+    .select({
+      id: reportRevisionMaterials.id,
+      kind: reportRevisionMaterials.kind,
+      caption: reportRevisionMaterials.caption,
+      width: reportRevisionMaterials.width,
+      height: reportRevisionMaterials.height,
+      status: reportRevisionMaterials.status,
+      digest: reportRevisionMaterials.digest,
+      artifactId: reportRevisionMaterials.artifactId,
+      objectKey: storedObjects.objectKey,
+      objectStatus: storedObjects.status,
+    })
+    .from(reportRevisionMaterials)
+    .leftJoin(storedObjects, eq(storedObjects.artifactId, reportRevisionMaterials.artifactId))
+    .where(eq(reportRevisionMaterials.revisionId, revisionId))
+    .orderBy(asc(reportRevisionMaterials.id))
+}

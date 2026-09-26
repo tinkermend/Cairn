@@ -84,19 +84,19 @@ export const recordingGeneralizationDtoSchema = z.strictObject({
 export type RecordingGeneralizationDto = z.infer<typeof recordingGeneralizationDtoSchema>
 
 export const saveGeneralizationDecisionsBodySchema = z.strictObject({
-  revision: z.number().int().positive(),
+  revision: z.number().int().nonnegative(),
   decisions: z.array(demonstrationDecisionSchema),
 })
 export type SaveGeneralizationDecisionsBody = z.infer<typeof saveGeneralizationDecisionsBodySchema>
 
 export const submitGeneralizationRoundBodySchema = z
   .strictObject({
-    revision: z.number().int().positive(),
+    revision: z.number().int().nonnegative(),
     intent: z.string().trim().max(4096).optional(),
     quickAction: z
       .enum(['relax_timeout', 'extract', 'parameterize', 'expect_outcome', 'clean_login', 'clean_misfires'])
       .optional(),
-    targetStepId: entityIdSchema.optional(),
+    targetStepId: z.string().min(1).max(128).optional(),
     targetSourceId: z.string().min(1).max(128).optional(),
   })
   .refine((b) => Boolean(b.intent || b.quickAction), {
@@ -107,6 +107,6 @@ export type SubmitGeneralizationRoundBody = z.infer<typeof submitGeneralizationR
 export const handoffCreateScenarioBodySchema = z.strictObject({
   name: scenarioNameSchema,
   candidateDigest: digestHexSchema,
-  revision: z.number().int().positive(),
+  revision: z.number().int().nonnegative(),
 })
 export type HandoffCreateScenarioBody = z.infer<typeof handoffCreateScenarioBodySchema>

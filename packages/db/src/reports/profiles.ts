@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm'
-import { DEFAULT_REPORT_CONFIG, allSuiteMembers, parseReportTitle, reportConfigTitleSources, reportTitleSources, renderReportTitleV2, reportConfigSchema, reportProfileDtoSchema, reportProfileListQuerySchema, saveReportProfileBodySchema, saveScenarioReportDefaultsBodySchema, substituteReportTitle, type JsonValue, type OutputPolicy, type ReportConfig, type ReportTitleSource, type SaveReportProfileBody, type SuiteDocument } from '@cairn/shared'
+import { DEFAULT_REPORT_CONFIG, allSuiteMembers, parseReportTitle, reportConfigTitleSources, reportTitleSources, renderReportTitleV2, reportConfigSchema, reportProfileDtoSchema, reportProfileListQuerySchema, saveReportProfileBodySchema, saveScenarioReportDefaultsBodySchema, substituteReportTitle, outputPolicySchema, type JsonValue, type OutputPolicy, type ReportConfig, type ReportTitleSource, type SaveReportProfileBody, type SuiteDocument } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { atomic, insertIgnoreRows, locked, schemaFor } from '../native.js'
 import { newId } from '../id.js'
@@ -169,7 +169,7 @@ export async function getScenarioReportDefaults(db: Db, scenarioId: string, acto
     scenarioId,
     profileId: binding?.profileId ?? null,
     revision: binding?.revision ?? 0,
-    outputPolicy: binding?.outputPolicy ?? { autoGenerateReport: false, memberReportPolicy: 'inherit' },
+    outputPolicy: outputPolicySchema.parse(binding?.outputPolicy ?? {}),
   }
 }
 
@@ -192,7 +192,7 @@ export async function saveScenarioReportDefaults(db: Db, scenarioId: string, bod
     }
     const [existing] = await tx.select().from(scenarioReportDefaults).where(eq(scenarioReportDefaults.scenarioId, scenarioId)).limit(1)
     if ((existing?.revision ?? 0) !== input.expectedRevision) throw conflict('REPORT_DEFAULTS_REVISION_CONFLICT', '默认报告配置已更新，请刷新后重试')
-    const outputPolicy = input.outputPolicy ?? existing?.outputPolicy ?? { autoGenerateReport: false, memberReportPolicy: 'inherit' }
+    const outputPolicy = outputPolicySchema.parse(input.outputPolicy ?? existing?.outputPolicy ?? {})
     const next = { scenarioId, profileId: input.profileId, revision: input.expectedRevision + 1, outputPolicy }
     if (existing) await tx.update(scenarioReportDefaults).set(next).where(eq(scenarioReportDefaults.scenarioId, scenarioId))
     else await tx.insert(scenarioReportDefaults).values(next)
@@ -222,7 +222,7 @@ export async function freezeRunReportContext(db: Db, input: {
   const override = input.overrideProfileId ? await resolveReportProfile(db, input.targetId, input.overrideProfileId) : null
   const config = reportConfigSchema.parse({ ...baseline.config, ...override?.config })
   const configSources: Record<string, JsonValue> = { scenario: baseline.source, member: override?.source ?? null }
-  const outputPolicy = binding?.outputPolicy ?? { autoGenerateReport: false, memberReportPolicy: 'inherit' }
+  const outputPolicy = outputPolicySchema.parse(binding?.outputPolicy ?? {})
   await db.insert(runReportContexts).values({
     runId: input.runId,
     displayName: input.displayName ?? input.scenarioName ?? '未命名场景',

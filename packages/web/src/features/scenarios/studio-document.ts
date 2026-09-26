@@ -209,6 +209,106 @@ export function documentContextKeysAny(
   return documentContextKeys(document)
 }
 
+export interface VariableSourceItem {
+  key: string
+  label: string
+  category: 'input' | 'step' | 'module'
+  categoryLabel: string
+  description: string
+  stepIndex?: number
+  stepName?: string
+  nodeId?: string
+}
+
+export function collectVariableSources(
+  document: ScenarioDocument | ScenarioAuthoringDocumentV2 | null | undefined
+): VariableSourceItem[] {
+  if (!document) return []
+  const sources: VariableSourceItem[] = []
+
+  // 1. 场景输入
+  if (isAuthoringDocumentV2(document)) {
+    for (const input of document.inputs) {
+      if (input.key) {
+        sources.push({
+          key: input.key,
+          label: input.label || input.key,
+          category: 'input',
+          categoryLabel: '场景输入',
+          description: `场景输入 · ${input.label || input.key} (${input.key})`,
+        })
+      }
+    }
+  } else if ('inputs' in document && Array.isArray((document as any).inputs)) {
+    for (const input of (document as any).inputs) {
+      if (input.key) {
+        sources.push({
+          key: input.key,
+          label: input.label || input.key,
+          category: 'input',
+          categoryLabel: '场景输入',
+          description: `场景输入 · ${input.label || input.key} (${input.key})`,
+        })
+      }
+    }
+  }
+
+  // 2. 步骤产出与模块产出
+  if (isAuthoringDocumentV2(document)) {
+    let stepOrdinal = 1
+    for (const item of walkAuthoringNodes(document)) {
+      const node = item.node
+      if (node.kind === 'step') {
+        const currentOrdinal = stepOrdinal++
+        if (node.step.outputKey) {
+          sources.push({
+            key: node.step.outputKey,
+            label: node.step.name || `步骤 ${currentOrdinal}`,
+            category: 'step',
+            categoryLabel: `第 ${currentOrdinal} 步`,
+            description: `第 ${currentOrdinal} 步 · ${node.step.name || '步骤'} (${node.step.outputKey})`,
+            stepIndex: currentOrdinal - 1,
+            stepName: node.step.name,
+            nodeId: node.id,
+          })
+        }
+      } else if (node.kind === 'module') {
+        if (node.outputBindings) {
+          for (const [moduleOutKey, targetKey] of Object.entries(node.outputBindings)) {
+            if (targetKey) {
+              sources.push({
+                key: targetKey,
+                label: `${node.name || '模块'}.${moduleOutKey}`,
+                category: 'module',
+                categoryLabel: `模块「${node.name || '模块'}」`,
+                description: `模块「${node.name || '模块'}」· ${moduleOutKey} (${targetKey})`,
+                nodeId: node.invocationId,
+              })
+            }
+          }
+        }
+      }
+    }
+  } else if ('steps' in document && Array.isArray(document.steps)) {
+    document.steps.forEach((step, idx) => {
+      if (step.outputKey) {
+        sources.push({
+          key: step.outputKey,
+          label: step.name || `步骤 ${idx + 1}`,
+          category: 'step',
+          categoryLabel: `第 ${idx + 1} 步`,
+          description: `第 ${idx + 1} 步 · ${step.name || '步骤'} (${step.outputKey})`,
+          stepIndex: idx,
+          stepName: step.name,
+          nodeId: step.id,
+        })
+      }
+    })
+  }
+
+  return sources
+}
+
 export function removeAuthoringNode(
   document: ScenarioAuthoringDocumentV2,
   id: string

@@ -121,10 +121,12 @@ export function RecordingDetailPage() {
   })
 
   const selectedItem =
-    filteredItems.find((i) => i.index === selectedIndex) ??
-    filteredItems[0] ??
-    items.find((i) => i.index === selectedIndex) ??
-    items[0]
+    selectedIndex >= 0
+      ? filteredItems.find((i) => i.index === selectedIndex) ??
+        items.find((i) => i.index === selectedIndex) ??
+        filteredItems[0] ??
+        items[0]
+      : undefined
 
   const currentFilteredIdx = selectedItem ? filteredItems.findIndex((i) => i.index === selectedItem.index) : -1
 
@@ -292,6 +294,8 @@ export function RecordingDetailPage() {
             }}
             canWrite={canWrite}
             selectedStepId={selectedItem ? `rec_${selectedItem.index}` : undefined}
+            selectedStepName={selectedItem?.name}
+            onClearSelection={() => setSelectedIndex(-1)}
           />
         ) : viewMode === 'candidate' ? (
           <CandidateScenarioPreview

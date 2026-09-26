@@ -22,6 +22,7 @@ import {
 import {
   foldRecordingGeneralization,
   generateQuickActionRound,
+  interpretGeneralizationIntent,
   suggestDemonstration,
 } from '@cairn/authoring'
 import type { Db } from '../client.js'
@@ -371,9 +372,60 @@ export async function submitRecordingGeneralizationRound(
 
       finalizedRound = ruleRes.round
     } else if (body.intent) {
-      // G3: 自然语言意图泛化
-      // 规则守卫：若未配置模型，明确报错不可用，不做关键词模糊冒充
-      throw badRequest('MODEL_NOT_CONFIGURED', '平台尚未配置模型，自然语言泛化暂不可用')
+      // G3: 自然语言意图泛化（支持正反例解释、负例安全阻断与规则降级）
+      const targetDatasetsRows = await txDb
+        .select()
+        .from(datasets)
+        .where(and(eq(datasets.targetId, draftRow.targetId), isNull(datasets.deletedAt)))
+
+      const targetDatasets = targetDatasetsRows.map((ds) => ({
+        id: ds.id,
+        name: ds.name,
+        schema: ds.columnsMeta.map((col) => ({
+          key: col.key,
+          name: col.name,
+          type: col.type,
+          sampleValues: col.sampleValues,
+        })),
+      }))
+
+      const [targetRow] = await txDb
+        .select()
+        .from(targets)
+        .where(and(eq(targets.id, draftRow.targetId), isNull(targets.deletedAt)))
+        .limit(1)
+
+      const [authAccount] = await txDb
+        .select()
+        .from(targetAccounts)
+        .where(and(eq(targetAccounts.targetId, draftRow.targetId), isNull(targetAccounts.deletedAt)))
+        .limit(1)
+
+      const targetHasAuth = Boolean(
+        targetRow?.loginUrl ||
+          targetRow?.loginFields ||
+          targetRow?.currentAuthProfileRevision ||
+          authAccount,
+      )
+
+      const roundId = newId()
+      const nlpRes = interpretGeneralizationIntent({
+        recordingDraftId,
+        roundId,
+        intent: body.intent,
+        targetStepId: body.targetStepId,
+        targetSourceId: body.targetSourceId,
+        source: sourceRow.source,
+        currentDocument: curFold.document,
+        targetDatasets,
+        targetHasAuth,
+      })
+
+      if (!nlpRes.ok) {
+        throw badRequest(nlpRes.error.code, nlpRes.error.message)
+      }
+
+      finalizedRound = nlpRes.round
     } else {
       throw badRequest('INVALID_GENERALIZATION_REQUEST', '必须提供自然语言意图或快捷操作')
     }

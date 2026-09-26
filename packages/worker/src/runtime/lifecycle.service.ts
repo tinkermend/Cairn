@@ -102,6 +102,7 @@ import {
 import { deliverNotifications } from "./notification-delivery";
 import { deliverServiceWebhooks } from "./service-webhook-delivery";
 import { dispatchExportJobs } from "./report-render";
+import { dispatchReportAiJobs } from "./report-ai-runner";
 import { cleanupRunFileWorkspaces } from "../engine/run-file-workspace.js";
 import {
   claimWorkerPeriodicSlots,
@@ -974,6 +975,7 @@ export class LifecycleService
   }
 
   private async dispatchNotifications(): Promise<void> {
+    const store = typeof this.objects?.objectStore === "function" ? this.objects.objectStore() : undefined;
     await deliverNotifications({
       db: this.handle,
       secrets: this.secrets,
@@ -981,23 +983,40 @@ export class LifecycleService
       instanceId: this.instanceId,
       signal: this.notificationAbort.signal,
       blockedHosts: webhookControlPlaneHosts(),
-      store: this.objects.objectStore(),
+      store,
     });
-    await dispatchExportJobs(
-      this.handle,
-      this.objects.objectStore(),
-      {
-        workerId: config.CAIRN_WORKER_ID,
-        instanceId: this.instanceId,
-        signal: this.notificationAbort.signal,
-      },
-      (renew) => {
-        this.exportHeartbeats.add(renew);
-        return () => {
-          this.exportHeartbeats.delete(renew);
-        };
-      },
-    );
+    if (store) {
+      await dispatchExportJobs(
+        this.handle,
+        store,
+        {
+          workerId: config.CAIRN_WORKER_ID,
+          instanceId: this.instanceId,
+          signal: this.notificationAbort.signal,
+        },
+        (renew) => {
+          this.exportHeartbeats.add(renew);
+          return () => {
+            this.exportHeartbeats.delete(renew);
+          };
+        },
+      );
+      await dispatchReportAiJobs(
+        this.handle,
+        store,
+        {
+          workerId: config.CAIRN_WORKER_ID,
+          instanceId: this.instanceId,
+          signal: this.notificationAbort.signal,
+        },
+        this.secrets,
+      ).catch((error) => {
+        this.logger.error(
+          error instanceof Error ? error.message : error,
+          "报告 AI 解读调度失败",
+        );
+      });
+    }
   }
 
   private startVideoMediaDispatch(): void {

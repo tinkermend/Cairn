@@ -5,6 +5,7 @@ export const outputPolicySchema = z.strictObject({
   autoGenerateReport: z.boolean().default(false),
   reportProfileId: entityIdSchema.nullable().optional(),
   memberReportPolicy: z.enum(['inherit', 'suppress']).default('inherit'),
+  aiSummaryPolicy: z.enum(['inherit', 'disabled']).default('inherit'),
 })
 export type OutputPolicy = z.infer<typeof outputPolicySchema>
 

@@ -9,8 +9,9 @@ import { REPORT_TITLE_CATALOG, reportTitleSources, type ReportTitleSource } from
 export { REPORT_TITLE_CATALOG, parseReportTitle, reportTitleSources, renderReportTitleV2, type ReportTitleSource, type ReportTitleSegment } from './report-title-template.js'
 
 export const EXPORT_ARTIFACTS_PROTOCOL = 'export-artifacts@2' as const
-export const REPORT_RENDER_VERSION = 'report-render@8' as const
+export const REPORT_RENDER_VERSION = 'report-render@9' as const
 export const REPORT_TEMPLATE_VERSION = 'report-template@1' as const
+export const REPORT_AI_PROMPT_VERSION = 'v1' as const
 
 export const REPORT_LIMITS = Object.freeze({
   screenshots: 200,
@@ -332,11 +333,37 @@ export const reportRevisionDtoSchema = z.object({
 })
 export type ReportRevisionDto = z.infer<typeof reportRevisionDtoSchema>
 
+export const reportAiJobStatusSchema = z.enum(['pending', 'running', 'completed', 'failed', 'skipped'])
+export type ReportAiJobStatus = z.infer<typeof reportAiJobStatusSchema>
+
+export const reportAiJobDtoSchema = z.object({
+  id: entityIdSchema,
+  reportId: entityIdSchema,
+  baseRevisionId: entityIdSchema,
+  status: reportAiJobStatusSchema,
+  model: z.string().nullable().optional(),
+  promptVersion: z.string().nullable().optional(),
+  inputDigest: z.string().nullable().optional(),
+  tokenUsage: z.object({
+    promptTokens: z.number().optional(),
+    completionTokens: z.number().optional(),
+    totalTokens: z.number().optional(),
+  }).nullable().optional(),
+  durationMs: z.number().int().nonnegative().nullable().optional(),
+  error: z.string().nullable().optional(),
+  aiRevisionId: entityIdSchema.nullable().optional(),
+  interpretation: z.lazy(() => reportAiInterpretationSchema).nullable().optional(),
+  createdAt: utcInstantSchema,
+  updatedAt: utcInstantSchema,
+})
+export type ReportAiJobDto = z.infer<typeof reportAiJobDtoSchema>
+
 export const reportDtoSchema = z.object({
   id: entityIdSchema,
   targetId: entityIdSchema,
   subject: reportSubjectSchema,
   currentRevision: reportRevisionDtoSchema.nullable(),
+  aiJob: reportAiJobDtoSchema.nullable().optional(),
   createdAt: utcInstantSchema,
 })
 export type ReportDto = z.infer<typeof reportDtoSchema>
@@ -451,6 +478,30 @@ export const reportMaterialDtoSchema = z.object({
 })
 export type ReportMaterialDto = z.infer<typeof reportMaterialDtoSchema>
 
+export const reportAiCitationSchema = z.strictObject({
+  statement: z.string().max(512),
+  citationIds: z.array(z.string().max(128)).max(16),
+})
+export type ReportAiCitation = z.infer<typeof reportAiCitationSchema>
+
+export const reportAiHypothesisSchema = z.strictObject({
+  cause: z.string().max(512),
+  likelihood: z.enum(['high', 'medium', 'low']),
+  basis: z.string().max(512),
+})
+export type ReportAiHypothesis = z.infer<typeof reportAiHypothesisSchema>
+
+export const reportAiInterpretationSchema = z.strictObject({
+  model: z.string().max(128),
+  generatedAt: utcInstantSchema,
+  status: z.enum(['conclusive', 'inconclusive']),
+  observation: z.string().max(2048),
+  findings: z.array(reportAiCitationSchema).max(16),
+  hypotheses: z.array(reportAiHypothesisSchema).max(8),
+  suggestions: z.array(z.string().max(512)).max(8),
+})
+export type ReportAiInterpretation = z.infer<typeof reportAiInterpretationSchema>
+
 export const reportDocumentSchema = z.strictObject({
   identity: z.object({ reportId: entityIdSchema, revisionId: entityIdSchema, revisionNo: z.number().int().positive(), parentRevisionId: entityIdSchema.nullable() }).optional(),
   stage: reportStageSchema,
@@ -476,6 +527,7 @@ export const reportDocumentSchema = z.strictObject({
   verdict: suiteVerdictSchema.nullable().optional(),
   outcomeStatus: outcomeStatusSchema.nullable().optional(),
   evidenceStatus: runEvidenceStatusSchema.nullable().optional(),
+  aiInterpretation: reportAiInterpretationSchema.optional(),
 })
 export type ReportDocument = z.infer<typeof reportDocumentSchema>
 

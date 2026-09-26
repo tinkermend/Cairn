@@ -17,6 +17,12 @@ import {
   Send,
   Loader2,
   FileDiff,
+  Target,
+  FileText,
+  AlertCircle,
+  X,
+  HelpCircle,
+  ShieldAlert,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -38,6 +44,8 @@ type Props = {
   onGeneralizationUpdated: (gen: RecordingGeneralizationDto, doc?: ScenarioAuthoringDocumentV2) => void
   canWrite?: boolean
   selectedStepId?: string
+  selectedStepName?: string
+  onClearSelection?: () => void
 }
 
 export function GeneralizationPanel({
@@ -47,10 +55,13 @@ export function GeneralizationPanel({
   onGeneralizationUpdated,
   canWrite = true,
   selectedStepId,
+  selectedStepName,
+  onClearSelection,
 }: Props) {
   const [intentInput, setIntentInput] = useState('')
   const [submittingAction, setSubmittingAction] = useState<string | null>(null)
   const [operatingRoundId, setOperatingRoundId] = useState<string | null>(null)
+  const [lastClarification, setLastClarification] = useState<{ code?: string; message: string } | null>(null)
 
   if (!generalization) {
     return (
@@ -69,6 +80,7 @@ export function GeneralizationPanel({
       toast.error('工作层已完成回填并锁定，不可再提交新轮次')
       return
     }
+    setLastClarification(null)
     setSubmittingAction(action)
     try {
       const res = await submitRecordingGeneralizationRound(recordingId, {
@@ -79,27 +91,48 @@ export function GeneralizationPanel({
       toast.success(`快捷泛化「${action}」已生成待审轮次`)
       onGeneralizationUpdated(res.generalization, res.candidateDocument)
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : '提交快捷泛化失败')
+      const msg =
+        error instanceof ApiRequestError
+          ? error.payload?.message || error.message
+          : error instanceof Error
+          ? error.message
+          : '提交快捷泛化失败'
+      toast.error(msg)
+      setLastClarification({
+        code: error instanceof ApiRequestError ? error.payload?.code : undefined,
+        message: msg,
+      })
     } finally {
       setSubmittingAction(null)
     }
   }
 
-  const handleSubmitIntent = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!intentInput.trim() || isLocked) return
+  const handleSubmitIntent = async (customIntent?: string) => {
+    const textToSubmit = (customIntent ?? intentInput).trim()
+    if (!textToSubmit || isLocked) return
+    setLastClarification(null)
     setSubmittingAction('intent')
     try {
       const res = await submitRecordingGeneralizationRound(recordingId, {
         revision: generalization.revision,
-        intent: intentInput.trim(),
+        intent: textToSubmit,
         targetStepId: selectedStepId,
       })
       toast.success('自然语言泛化轮次已生成')
       setIntentInput('')
       onGeneralizationUpdated(res.generalization, res.candidateDocument)
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : '自然语言泛化失败')
+      const msg =
+        error instanceof ApiRequestError
+          ? error.payload?.message || error.message
+          : error instanceof Error
+          ? error.message
+          : '自然语言泛化失败'
+      toast.error(msg)
+      setLastClarification({
+        code: error instanceof ApiRequestError ? error.payload?.code : undefined,
+        message: msg,
+      })
     } finally {
       setSubmittingAction(null)
     }
@@ -146,7 +179,42 @@ export function GeneralizationPanel({
 
   return (
     <div className='flex flex-col gap-5'>
-      {/* 快捷操作区 */}
+      {/* 顶部意图目标上下文条 */}
+      <div className='flex items-center justify-between rounded-lg border border-border-card bg-muted/30 px-3.5 py-2.5 shadow-sm'>
+        <div className='flex items-center gap-2.5 text-sm'>
+          {selectedStepId ? (
+            <>
+              <Target className='size-4 text-primary shrink-0' />
+              <div className='flex items-center gap-1.5'>
+                <span className='text-muted-foreground'>当前锚定步骤：</span>
+                <Badge variant='secondary' className='font-mono font-medium text-foreground'>
+                  {selectedStepName ? `${selectedStepName} (${selectedStepId})` : selectedStepId}
+                </Badge>
+              </div>
+            </>
+          ) : (
+            <>
+              <FileText className='size-4 text-muted-foreground shrink-0' />
+              <span className='text-muted-foreground'>
+                当前处于 <strong className='text-foreground font-medium'>整篇草稿模式</strong>（若需针对特定步骤调参/取数，可在流水线上选中该步骤）
+              </span>
+            </>
+          )}
+        </div>
+        {selectedStepId && onClearSelection ? (
+          <Button
+            variant='ghost'
+            size='sm'
+            onClick={onClearSelection}
+            className='h-7 gap-1 text-xs text-muted-foreground hover:text-foreground'
+          >
+            <X className='size-3.5' />
+            清除锚定（转为整份草稿）
+          </Button>
+        ) : null}
+      </div>
+
+      {/* 规则类快捷泛化 */}
       <Card className='border-border-card bg-card shadow-card'>
         <CardHeader className='pb-3'>
           <div className='flex items-center justify-between'>
@@ -233,7 +301,7 @@ export function GeneralizationPanel({
         </CardContent>
       </Card>
 
-      {/* 自然语言意图输入 */}
+      {/* 自然语言意图泛化 */}
       <Card className='border-border-card bg-card shadow-card'>
         <CardHeader className='pb-3'>
           <div className='flex items-center gap-2'>
@@ -244,12 +312,47 @@ export function GeneralizationPanel({
             以自然语言提出修改意图（如「将第 2 步的查询参数化，并在末尾断言查询成功」）。
           </CardDescription>
         </CardHeader>
-        <CardContent className='pt-0'>
-          <form onSubmit={handleSubmitIntent} className='flex gap-2'>
+        <CardContent className='flex flex-col gap-3 pt-0'>
+          {/* 澄清与拦截引导卡片 */}
+          {lastClarification ? (
+            <div className='flex items-start justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-foreground shadow-sm'>
+              <div className='flex items-start gap-2.5'>
+                <ShieldAlert className='size-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0' />
+                <div className='flex flex-col gap-0.5'>
+                  <span className='font-semibold text-amber-700 dark:text-amber-400'>
+                    泛化意图拦截与澄清引导
+                  </span>
+                  <span className='text-muted-foreground text-xs leading-relaxed'>
+                    {lastClarification.message}
+                  </span>
+                </div>
+              </div>
+              <Button
+                variant='ghost'
+                size='icon'
+                onClick={() => setLastClarification(null)}
+                className='size-6 text-muted-foreground hover:text-foreground shrink-0'
+              >
+                <X className='size-3.5' />
+              </Button>
+            </div>
+          ) : null}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              void handleSubmitIntent()
+            }}
+            className='flex gap-2'
+          >
             <Input
               value={intentInput}
               onChange={(e) => setIntentInput(e.target.value)}
-              placeholder='输入泛化意图指令...'
+              placeholder={
+                selectedStepId
+                  ? '输入针对当前步骤或整份草稿的泛化意图（如：多等一会儿、改成参数）...'
+                  : '输入泛化意图指令（如：把客户名称改成参数、确认看到保存成功）...'
+              }
               disabled={!canWrite || isLocked || submittingAction !== null}
               className='flex-1'
             />
@@ -262,6 +365,60 @@ export function GeneralizationPanel({
               提交
             </Button>
           </form>
+
+          {/* 推荐正例与常见负例 Pills */}
+          <div className='flex flex-col gap-2 pt-1 border-t border-border-card/40'>
+            <div className='flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground'>
+              <span className='flex items-center gap-1 font-medium text-foreground mr-1'>
+                <HelpCircle className='size-3 text-primary' />
+                推荐正例:
+              </span>
+              {[
+                '这一步多等一会儿',
+                '把这里的输入值改成参数',
+                '确认看到预期保存成功',
+                '把这里的工单数量取出来',
+              ].map((pill) => (
+                <button
+                  key={pill}
+                  type='button'
+                  disabled={!canWrite || isLocked || submittingAction !== null}
+                  onClick={() => {
+                    setIntentInput(pill)
+                  }}
+                  className='rounded-md border border-border-card bg-muted/40 px-2 py-0.5 text-xs hover:border-primary/50 hover:bg-primary/5 transition-colors disabled:opacity-50'
+                >
+                  {pill}
+                </button>
+              ))}
+            </div>
+
+            <div className='flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground'>
+              <span className='flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 mr-1'>
+                <AlertCircle className='size-3' />
+                边界防呆体验 (负例):
+              </span>
+              {[
+                '帮我优化一下',
+                '对每个客户都点击一次',
+                '把密码写死为 Abc123456',
+                '把这一步移到最前面',
+                '如果失败就跳过',
+              ].map((pill) => (
+                <button
+                  key={pill}
+                  type='button'
+                  disabled={!canWrite || isLocked || submittingAction !== null}
+                  onClick={() => {
+                    setIntentInput(pill)
+                  }}
+                  className='rounded-md border border-amber-500/20 bg-amber-500/5 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400/90 hover:border-amber-500/40 hover:bg-amber-500/10 transition-colors disabled:opacity-50'
+                >
+                  {pill}
+                </button>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 

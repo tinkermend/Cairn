@@ -1,4 +1,4 @@
-import type { JsonValue, ReportDocument } from '@cairn/shared'
+import type { JsonValue, ReportAiInterpretation, ReportDocument } from '@cairn/shared'
 
 export type ReportImage = {
   id: string
@@ -573,20 +573,132 @@ const SHARED_STYLES = `
   .toast.show { display: block; animation: fadeIn 0.2s ease; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
+  /* AI Interpretation Card */
+  .ai-card {
+    background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 100%);
+    border: 1px solid #bbf7d0;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 24px;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+  }
+  .ai-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #dcfce7;
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ai-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #166534;
+  }
+  .ai-card-meta {
+    font-size: 12px;
+    color: #4b5563;
+  }
+  .ai-card-disclaimer {
+    display: inline-block;
+    background: #e2e8f0;
+    color: #475569;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    margin-left: 6px;
+  }
+  .ai-alert-inconclusive {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    color: #92400e;
+    font-size: 13px;
+  }
+  .ai-observation {
+    font-size: 14px;
+    color: #1f2937;
+    line-height: 1.6;
+    margin-bottom: 14px;
+    background: #ffffff;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+  }
+  .ai-section-subtitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: #374151;
+    margin-top: 14px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ai-finding-item {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }
+  .ai-finding-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .ai-finding-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: #111827;
+  }
+  .ai-finding-detail {
+    font-size: 13px;
+    color: #4b5563;
+    line-height: 1.5;
+  }
+  .ai-citation-pill {
+    display: inline-flex;
+    align-items: center;
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    color: #334155;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    margin-left: 4px;
+  }
+  .ai-suggestion-list {
+    margin-left: 20px;
+    font-size: 13px;
+    color: #374151;
+    line-height: 1.6;
+  }
+
   /* Media Print Optimizations */
   @media print {
     @page { size: A4 portrait; margin: 12mm; }
     body { background: #ffffff !important; padding: 0 !important; color: #000000 !important; }
     .container { max-width: 100% !important; padding: 0 !important; }
     .no-print { display: none !important; }
-    .header-card, .stat-card, .table-card, details.step-accordion {
+    .header-card, .stat-card, .table-card, .ai-card, details.step-accordion {
       box-shadow: none !important;
       border-color: #cbd5e1 !important;
     }
     details.step-accordion { display: block !important; }
     details.step-accordion > * { display: block !important; }
     .step-chevron { display: none !important; }
-    table, tr, .stat-card, details.step-accordion {
+    table, tr, .stat-card, .ai-card, details.step-accordion {
       break-inside: avoid !important;
       page-break-inside: avoid !important;
     }
@@ -658,6 +770,89 @@ const SHARED_SCRIPT = `
     }
   }
 `
+
+// ---------------------------------------------------------------------------
+// AI Interpretation Card Renderer
+// ---------------------------------------------------------------------------
+export function renderAiInterpretationCard(ai: ReportAiInterpretation | undefined, timeZone: string): string {
+  if (!ai) return ''
+
+  const modelText = escapeHtml(ai.model)
+  const dateText = formatDate(ai.generatedAt, timeZone)
+
+  let inconclusiveHtml = ''
+  if (ai.status === 'inconclusive') {
+    inconclusiveHtml = `
+      <div class="ai-alert-inconclusive">
+        ⚠️ <strong>材料不足声明：</strong>当前运行证据与数据不足以得出全面判定。
+      </div>`
+  }
+
+  let findingsHtml = ''
+  if (ai.findings && ai.findings.length > 0) {
+    findingsHtml = `
+      <div class="ai-section-subtitle">主要异常与关键发现 (${ai.findings.length})</div>
+      <div class="ai-findings-list">
+        ${ai.findings.map((f) => {
+          const citations = (f.citationIds || []).map((cid) => `<span class="ai-citation-pill">#${escapeHtml(cid)}</span>`).join('')
+          return `
+            <div class="ai-finding-item">
+              <div class="ai-finding-detail">${escapeHtml(f.statement)} ${citations}</div>
+            </div>`
+        }).join('')}
+      </div>`
+  }
+
+  let hypothesesHtml = ''
+  if (ai.hypotheses && ai.hypotheses.length > 0) {
+    hypothesesHtml = `
+      <div class="ai-section-subtitle">原因分析与推测假设 (${ai.hypotheses.length})</div>
+      <div class="ai-hypotheses-list">
+        ${ai.hypotheses.map((h) => {
+          const likelihoodBadge = h.likelihood === 'high' ? 'badge-danger' : h.likelihood === 'medium' ? 'badge-warning' : 'badge-neutral'
+          const likelihoodLabel = h.likelihood === 'high' ? '高可能性' : h.likelihood === 'medium' ? '中等可能' : '低可能性'
+          return `
+            <div class="ai-finding-item">
+              <div class="ai-finding-header">
+                <span class="badge ${likelihoodBadge}">${likelihoodLabel}</span>
+                <span class="ai-finding-title">${escapeHtml(h.cause)}</span>
+              </div>
+              <div class="ai-finding-detail"><strong>依据：</strong>${escapeHtml(h.basis)}</div>
+            </div>`
+        }).join('')}
+      </div>`
+  }
+
+  let suggestionsHtml = ''
+  if (ai.suggestions && ai.suggestions.length > 0) {
+    suggestionsHtml = `
+      <div class="ai-section-subtitle">建议排查与核验动作</div>
+      <ol class="ai-suggestion-list">
+        ${ai.suggestions.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}
+      </ol>`
+  }
+
+  return `
+    <div class="ai-card">
+      <div class="ai-card-header">
+        <div class="ai-card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          AI 辅助解读
+        </div>
+        <div class="ai-card-meta">
+          生成时间：${dateText} · 模型：${modelText}
+          <span class="ai-card-disclaimer">仅供辅助参考 · 不作为业务结论标准</span>
+        </div>
+      </div>
+      ${inconclusiveHtml}
+      <div class="ai-observation">
+        <strong>总体观察：</strong>${escapeHtml(ai.observation)}
+      </div>
+      ${findingsHtml}
+      ${hypothesesHtml}
+      ${suggestionsHtml}
+    </div>`
+}
 
 // ---------------------------------------------------------------------------
 // Template A: Single Scenario Execution Template (RUN)
@@ -769,6 +964,8 @@ export function renderSingleScenarioHtml(document: ReportDocument, images: Repor
         </div>
       </div>
     </div>
+
+    ${renderAiInterpretationCard(document.aiInterpretation, timeZone)}
 
     <!-- L2 步骤执行流水与断言矩阵 -->
     <div class="section">
@@ -1077,6 +1274,8 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
         </div>
       </div>
     </div>
+
+    ${renderAiInterpretationCard(document.aiInterpretation, timeZone)}
 
     <!-- L1 核心业务巡检对照总表 -->
     <div class="section">

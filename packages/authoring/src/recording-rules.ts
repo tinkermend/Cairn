@@ -31,7 +31,7 @@ export interface TargetDataset {
 export interface GenerateQuickActionRoundOptions {
   recordingDraftId: string
   roundId: string
-  action: 'relax_timeout' | 'parameterize' | 'expect_outcome' | 'clean_login' | 'clean_misfires'
+  action: 'relax_timeout' | 'extract' | 'parameterize' | 'expect_outcome' | 'clean_login' | 'clean_misfires'
   targetStepId?: string
   targetSourceId?: string
   source: DemonstrationSource
@@ -109,6 +109,45 @@ export function generateQuickActionRound(
         },
       ]
       intentText = `放宽步骤「${step.name}」超时等待至 ${relaxedTimeout}ms`
+      break
+    }
+
+    case 'extract': {
+      if (!targetNode && allNodes.length > 0) {
+        targetNode = allNodes[allNodes.length - 1]
+      }
+      if (!targetNode || targetNode.node.kind !== 'step') {
+        return {
+          ok: false,
+          error: { code: 'STEP_NOT_FOUND', message: '未找到锚点步骤，请先在流水线上选中一步' },
+        }
+      }
+      const anchorStep = targetNode.node.step
+      const opId = deterministicStepId(recordingDraftId, roundId, '0')
+      const extractStepId = deterministicStepId(recordingDraftId, roundId, 'step_extract')
+
+      operations = [
+        {
+          kind: 'insert_step',
+          id: opId,
+          anchorStepId: anchorStep.id,
+          step: {
+            type: 'ai_extract',
+            id: extractStepId,
+            name: `提取步骤「${anchorStep.name}」页面数据`,
+            effectType: 'READ_ONLY',
+            outputKey: 'extracted_value',
+            input: {
+              instruction: '提取当前页面的关键业务指标或工单数量',
+              outputSchema: {
+                kind: 'object',
+                fields: [{ name: 'count', type: 'number', required: true }],
+              },
+            },
+          },
+        },
+      ]
+      intentText = `在步骤「${anchorStep.name}」后插入数据提取步骤 (ai_extract)`
       break
     }
 
@@ -483,8 +522,8 @@ export function interpretGeneralizationIntent(
 
   // 1. 负例 1: 指代不明 / 模糊问句 (§13 负例 1)
   const vaguePatterns = [
-    /^(写清楚|写清楚一点|弄好它|优化一下|修改一下|搞定它|搞一下|改好|弄好|完善一下)$/,
-    /^(调整一下|处理一下|优化|改一下)$/,
+    /^(帮我|麻烦|请)?(写清楚|写清楚一点|弄好它|优化一下|修改一下|搞定它|搞一下|改好|弄好|完善一下|调整一下|处理一下|优化|改一下)$/,
+    /^(帮我|麻烦|请)?(弄一下|整一下|调一下)$/,
   ]
   if (rawIntent.length < 3 || vaguePatterns.some((p) => p.test(rawIntent))) {
     return {
@@ -516,8 +555,9 @@ export function interpretGeneralizationIntent(
 
   // 3. 负例 3: 明文口令字面量 (§13 负例 3 & §6 D类)
   const sensitiveLiteralPatterns = [
-    /(密码|口令).*(改成|设为|填入|输入|是)\s*[a-zA-Z0-9_\-@#!$%^&*]{3,}/,
-    /写死(密码|口令)/,
+    /(密码|口令).*(改成|设为|填入|输入|写死|固定为|是)\s*[a-zA-Z0-9_\-@#!$%^&*]{3,}/,
+    /写死.*(密码|口令)/,
+    /(密码|口令).*写死/,
   ]
   if (sensitiveLiteralPatterns.some((p) => p.test(rawIntent))) {
     return {

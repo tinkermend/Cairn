@@ -28,6 +28,7 @@ import {
 import { ObjectSchedules } from '@/features/schedules/object-schedules'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { SCENARIO_STATUS_LABELS } from './labels'
+import { cn } from '@/lib/utils'
 
 export type StudioToolbarProps = {
   scenario: ScenarioDetailDto | undefined
@@ -51,6 +52,7 @@ export type StudioToolbarProps = {
   canRecord: boolean
   canDelete: boolean
   disabled: boolean
+  isScenarioView?: boolean
   onSave: () => void
   onPublish: () => void
   onStartTrial: () => void
@@ -86,6 +88,7 @@ export function StudioToolbar({
   canRecord,
   canDelete,
   disabled,
+  isScenarioView = false,
   onSave,
   onPublish,
   onStartTrial,
@@ -334,26 +337,17 @@ export function StudioToolbar({
                 </Link>
               </Button>
 
-              {onOpenSettings ? (
-                <Button
-                  size='sm'
-                  variant='outline'
-                  onClick={onOpenSettings}
-                  title='场景配置'
-                >
-                  <Settings className='size-3.5 mr-1' />
-                  场景配置
-                </Button>
-              ) : null}
-
               {canAssist && canReadTarget ? (
                 <Button
                   size='sm'
                   variant='outline'
-                  onClick={() => onOpenAssistant('解释当前步骤', 'scenario.explain')}
+                  onClick={() => onOpenAssistant(
+                    isScenarioView ? '解释整套业务流程与全局契约' : '解释当前步骤',
+                    'scenario.explain'
+                  )}
                 >
                   <Sparkles className='size-3.5 text-ai-foreground mr-1' />
-                  解释步骤
+                  {isScenarioView ? '解释场景' : '解释步骤'}
                 </Button>
               ) : null}
 
@@ -367,6 +361,33 @@ export function StudioToolbar({
                 </Button>
               ) : null}
             </>
+          ) : null}
+
+          {/* 场景配置全局入口（稳定可见，断点优先保障） */}
+          {onOpenSettings ? (
+            containerWidth >= 960 ? (
+              <Button
+                size='sm'
+                variant={isScenarioView ? 'secondary' : 'outline'}
+                className={cn(isScenarioView && 'border-primary/40 bg-primary/10 text-primary font-medium shadow-xs')}
+                onClick={onOpenSettings}
+                title='整个场景配置'
+              >
+                <Settings className='size-3.5 mr-1' />
+                场景配置
+              </Button>
+            ) : (
+              <Button
+                size='icon'
+                variant={isScenarioView ? 'secondary' : 'outline'}
+                className={cn('size-8', isScenarioView && 'border-primary/40 bg-primary/10 text-primary')}
+                onClick={onOpenSettings}
+                title='整个场景配置'
+                aria-label='整个场景配置'
+              >
+                <Settings className='size-3.5' />
+              </Button>
+            )
           ) : null}
 
           {/* 核心主动作（各分辨率均保持可达） */}
@@ -443,10 +464,13 @@ export function StudioToolbar({
                   </DropdownMenuItem>
                   {canAssist && canReadTarget ? (
                     <DropdownMenuItem
-                      onClick={() => onOpenAssistant('解释当前步骤', 'scenario.explain')}
+                      onClick={() => onOpenAssistant(
+                        isScenarioView ? '解释整套业务流程与全局契约' : '解释当前步骤',
+                        'scenario.explain'
+                      )}
                     >
                       <Sparkles className='mr-2 size-3.5 text-ai-foreground' />
-                      解释当前步骤
+                      {isScenarioView ? '解释场景全局' : '解释当前步骤'}
                     </DropdownMenuItem>
                   ) : null}
                   {canPropose ? (

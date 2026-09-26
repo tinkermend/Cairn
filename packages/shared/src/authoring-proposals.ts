@@ -95,7 +95,7 @@ export const AUTHORING_STEP_FIELD_POLICIES: Record<
     allowsOutputKey: false,
   },
   ai_extract: {
-    allowedInputKeys: ['instruction', 'schema'],
+    allowedInputKeys: ['instruction', 'outputSchema', 'schema'],
     allowsOutputKey: true,
   },
   ai_assert: {

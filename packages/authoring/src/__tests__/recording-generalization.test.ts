@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseDemonstrationFile } from '../demonstration-adapters.js'
 import { foldRecordingGeneralization } from '../recording-generalization.js'
-import { generateQuickActionRound } from '../recording-rules.js'
+import { generateQuickActionRound, interpretGeneralizationIntent } from '../recording-rules.js'
 
 const targetId = '00000000-0000-4000-8000-000000000001'
 const captureId = '00000000-0000-4000-8000-000000000002'
@@ -204,6 +204,166 @@ describe('recording generalization engine', () => {
     expect(outcomeRes.ok).toBe(true)
     if (outcomeRes.ok) {
       expect(outcomeRes.round.operations[0].kind).toBe('add_outcome')
+    }
+  })
+
+  it('correctly interprets positive natural language user requests', () => {
+    const source = createSampleSource()
+    const baseFold = foldRecordingGeneralization({
+      source,
+      recordingDraftId,
+      baseDecisions: [],
+      rounds: [],
+    })
+    expect(baseFold.ok).toBe(true)
+    if (!baseFold.ok) return
+
+    // S1: 调参意图
+    const s1Res = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: roundRelaxId,
+      intent: '这一步多等一会儿',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(s1Res.ok).toBe(true)
+    if (s1Res.ok) {
+      expect(s1Res.round.operations[0].kind).toBe('set_step_policy')
+    }
+
+    // S2: 参数化意图
+    const s2Res = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: roundParamId,
+      intent: '客户名改成参数，以后按数据集批量跑',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(s2Res.ok).toBe(true)
+    if (s2Res.ok) {
+      expect(s2Res.round.decisionPatches.length).toBeGreaterThan(0)
+    }
+
+    // S3: 成功条件与期望结果
+    const s3Res = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: roundOutcomeId,
+      intent: '提交后应该看到保存成功',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(s3Res.ok).toBe(true)
+    if (s3Res.ok) {
+      expect(s3Res.round.operations[0].kind).toBe('add_outcome')
+    }
+
+    // 清洗意图
+    const cleanRes = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: roundCleanLoginId,
+      intent: '帮我剔除登录步骤',
+      source,
+      currentDocument: baseFold.document,
+      targetHasAuth: true,
+    })
+    expect(cleanRes.ok).toBe(true)
+    if (cleanRes.ok) {
+      expect(cleanRes.round.operations.some((o) => o.kind === 'remove_step')).toBe(true)
+    }
+
+    // 取数意图
+    const extractRes = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: '00000000-0000-4000-8000-000000000099',
+      intent: '把这里的工单数量取出来',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(extractRes.ok).toBe(true)
+    if (extractRes.ok) {
+      expect(extractRes.round.operations[0].kind).toBe('insert_step')
+    }
+  })
+
+  it('accurately intercepts negative examples with domain error codes and guidance (§13)', () => {
+    const source = createSampleSource()
+    const baseFold = foldRecordingGeneralization({
+      source,
+      recordingDraftId,
+      baseDecisions: [],
+      rounds: [],
+    })
+    expect(baseFold.ok).toBe(true)
+    if (!baseFold.ok) return
+
+    // 负例 1: 指代不明 / 模糊意图 -> CLARIFICATION_NEEDED
+    const neg1 = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: 'neg-1',
+      intent: '优化一下',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(neg1.ok).toBe(false)
+    if (!neg1.ok) {
+      expect(neg1.error.code).toBe('CLARIFICATION_NEEDED')
+      expect(neg1.error.message).toContain('意图过于模糊')
+    }
+
+    // 负例 2: 页面列表循环 / 页面驱动 -> PAGE_LOOP_UNSUPPORTED
+    const neg2 = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: 'neg-2',
+      intent: '对页面上每一个客户都点一次',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(neg2.ok).toBe(false)
+    if (!neg2.ok) {
+      expect(neg2.error.code).toBe('PAGE_LOOP_UNSUPPORTED')
+      expect(neg2.error.message).toContain('一期暂不支持页面列表循环')
+    }
+
+    // 负例 3: 明文口令字面量 -> SENSITIVE_LITERAL_FORBIDDEN
+    const neg3 = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: 'neg-3',
+      intent: '密码改成 123456',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(neg3.ok).toBe(false)
+    if (!neg3.ok) {
+      expect(neg3.error.code).toBe('SENSITIVE_LITERAL_FORBIDDEN')
+      expect(neg3.error.message).toContain('禁止在泛化意图中写入明文密码')
+    }
+
+    // 负例 4: 步骤重排 -> REORDERING_NOT_SUPPORTED
+    const neg4 = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: 'neg-4',
+      intent: '把第2步移到第1步前面',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(neg4.ok).toBe(false)
+    if (!neg4.ok) {
+      expect(neg4.error.code).toBe('REORDERING_NOT_SUPPORTED')
+      expect(neg4.error.message).toContain('录制顺序即业务操作顺序')
+    }
+
+    // 负例 5: 控制分支结构 -> CONTROL_FLOW_UNSUPPORTED
+    const neg5 = interpretGeneralizationIntent({
+      recordingDraftId,
+      roundId: 'neg-5',
+      intent: '如果失败了就跳转到另外一个网页',
+      source,
+      currentDocument: baseFold.document,
+    })
+    expect(neg5.ok).toBe(false)
+    if (!neg5.ok) {
+      expect(neg5.error.code).toBe('CONTROL_FLOW_UNSUPPORTED')
+      expect(neg5.error.message).toContain('一期暂不支持条件分支')
     }
   })
 })

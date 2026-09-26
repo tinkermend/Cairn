@@ -1,14 +1,16 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { ScenarioDataRowFieldDecl, ScenarioMetricDecl, ScenarioOutputDecl } from '@cairn/shared'
-import { Plus, Trash2, TrendingUp, Table, FileText, Sparkles } from 'lucide-react'
+import { Plus, Trash2, TrendingUp, Table, FileText, Sparkles, ChevronDown, ChevronRight, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import type { VariableSourceItem } from './studio-document'
 
 export type ScenarioOutputsEditorProps = {
   outputs?: ScenarioOutputDecl
   disabled?: boolean
   availableContextKeys?: string[]
+  variableSources?: VariableSourceItem[]
   onChange: (outputs: ScenarioOutputDecl | undefined) => void
 }
 
@@ -16,6 +18,7 @@ export function ScenarioOutputsEditor({
   outputs,
   disabled,
   availableContextKeys,
+  variableSources,
   onChange,
 }: ScenarioOutputsEditorProps) {
   const summaryInput = useRef<HTMLInputElement>(null)
@@ -24,26 +27,47 @@ export function ScenarioOutputsEditor({
     dataRowFields: [],
   }
 
-  const candidateKeys = useMemo(() => {
-    return Array.from(
-      new Set([
-        ...(availableContextKeys ?? []),
-        ...(current.metrics ?? []).map((m) => m.key).filter(Boolean),
-        ...(current.metrics ?? []).map((m) => m.fromContextKey).filter(Boolean),
-      ]),
-    )
-  }, [availableContextKeys, current.metrics])
+  const hasAdvancedOutputs = (current.metrics?.length ?? 0) > 0 || (current.dataRowFields?.length ?? 0) > 0
+  const [advancedOpen, setAdvancedOpen] = useState(hasAdvancedOutputs)
 
+  const sourceMap = useMemo(() => {
+    const map = new Map<string, VariableSourceItem>()
+    for (const src of variableSources ?? []) {
+      map.set(src.key, src)
+    }
+    return map
+  }, [variableSources])
+
+  const candidateKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const src of variableSources ?? []) {
+      if (src.key) keys.add(src.key)
+    }
+    for (const key of availableContextKeys ?? []) {
+      if (key) keys.add(key)
+    }
+    for (const m of current.metrics ?? []) {
+      if (m.key) keys.add(m.key)
+      if (m.fromContextKey) keys.add(m.fromContextKey)
+    }
+    return Array.from(keys)
+  }, [availableContextKeys, current.metrics, variableSources])
+
+  // 结构化模板预览：展示变量槽位与语义来源，不编造 1,420 等虚构数值
   const simulatedSummary = useMemo(() => {
     if (!current.summaryTemplate) return null
     return current.summaryTemplate.replace(/\$\{([a-zA-Z0-9_]+)\}/g, (_match, key: string) => {
       const metric = (current.metrics ?? []).find((m) => m.key === key)
       if (metric) {
-        return `1,420${metric.unit ? ` ${metric.unit}` : ''}`
+        return `[${metric.name || key}${metric.unit ? ` (${metric.unit})` : ''}]`
       }
-      return ''
+      const source = sourceMap.get(key)
+      if (source) {
+        return `[${source.label}: ${key}]`
+      }
+      return `[${key}]`
     })
-  }, [current.summaryTemplate, current.metrics])
+  }, [current.summaryTemplate, current.metrics, sourceMap])
 
   const unresolvedSummaryKeys = useMemo(() => {
     const available = new Set(candidateKeys)
@@ -173,32 +197,53 @@ export function ScenarioOutputsEditor({
                 <span>快捷插入变量：</span>
               </div>
               <div className='flex flex-wrap gap-1.5'>
-                {candidateKeys.map((key) => (
-                  <button
-                    key={key}
-                    type='button'
-                    onClick={() => insertVariable(key)}
-                    className='inline-flex items-center rounded bg-muted px-2 py-0.5 text-xs font-mono text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-border-card/50 transition-colors'
-                    title={`点击插入 \${${key}}`}
-                  >
-                    +${`{${key}}`}
-                  </button>
-                ))}
+                {candidateKeys.map((key) => {
+                  const src = sourceMap.get(key)
+                  return (
+                    <button
+                      key={key}
+                      type='button'
+                      onClick={() => insertVariable(key)}
+                      className='inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-xs font-mono text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-border-card/50 transition-colors'
+                      title={src ? `插入 ${src.description}` : `点击插入 \${${key}}`}
+                    >
+                      <span>+${`{${key}}`}</span>
+                      {src ? (
+                        <span className='text-[10px] text-primary/80 font-sans font-normal'>
+                          ({src.label})
+                        </span>
+                      ) : null}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
 
-          {/* 实时推演预览 */}
+          {/* 结构化模板预览 */}
           {simulatedSummary && (
             <div
-              className='rounded-md border border-border-card/60 bg-muted/20 p-2.5 text-xs'
+              className='rounded-md border border-border-card/60 bg-muted/20 p-2.5 text-xs space-y-1'
               data-testid='summary-preview-panel'
             >
-              <span className='font-medium text-muted-foreground mr-1.5'>实时模拟推演：</span>
-              <span className='font-medium text-foreground italic'>{simulatedSummary}</span>
-              {unresolvedSummaryKeys.length ? <span className='block text-destructive'>未知变量按运行规则显示为空。</span> : null}
+              <div className='flex items-center gap-1.5'>
+                <span className='font-medium text-muted-foreground'>结论结构预览：</span>
+                <span className='font-medium text-foreground'>{simulatedSummary}</span>
+              </div>
+              <p className='text-[11px] text-muted-foreground'>
+                提示：预览展示模板中变量槽位与语义来源，真实运行将从上下文填入实际结算值。
+              </p>
+              {unresolvedSummaryKeys.length ? <span className='block text-destructive text-[11px]'>未知变量按运行规则显示为空。</span> : null}
             </div>
           )}
+
+          {/* 系统自动指标说明 */}
+          <div className='rounded-md border border-border-divider/60 bg-surface-subtle p-2.5 text-xs text-muted-foreground flex items-start gap-2'>
+            <Info className='size-3.5 text-muted-foreground shrink-0 mt-0.5' />
+            <span>
+              <strong>系统自动指标提示：</strong>未显式配置指标时，引擎会在运行终态自动收集提取步骤（extract / ai_extract）的标量结果作为指标交付。
+            </span>
+          </div>
 
           <div>
             <Label htmlFor='summary-context-key' className='text-xs text-muted-foreground mb-1 block'>
@@ -216,204 +261,230 @@ export function ScenarioOutputsEditor({
         </div>
       </div>
 
-      {/* 2. 核心指标列表 */}
-      <div className='rounded-lg border border-border-card bg-card p-4 space-y-3 shadow-sm'>
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-2'>
-            <TrendingUp className='size-4 text-primary' />
-            <h4 className='text-sm font-medium text-foreground'>
-              核心指标 ({(current.metrics ?? []).length}/20)
-            </h4>
-          </div>
-          <Button
-            type='button'
-            size='sm'
-            variant='outline'
-            disabled={disabled || (current.metrics?.length ?? 0) >= 20}
-            onClick={addMetric}
-          >
-            <Plus className='size-3.5 mr-1' />
-            添加指标
-          </Button>
-        </div>
+      {/* 高级配置触发器：核心指标与单行宽表 */}
+      <div className='border-t border-border-divider pt-2'>
+        <button
+          type='button'
+          onClick={() => setAdvancedOpen(!advancedOpen)}
+          className='flex w-full items-center justify-between py-2 text-xs font-medium text-muted-foreground hover:text-foreground'
+        >
+          <span className='flex items-center gap-1.5'>
+            {advancedOpen ? <ChevronDown className='size-3.5' /> : <ChevronRight className='size-3.5' />}
+            <span>高级输出配置（核心指标与单行宽表）</span>
+            {hasAdvancedOutputs && (
+              <span className='rounded bg-primary/10 text-primary px-1.5 py-0.2 text-[10px]'>
+                已配置 ({(current.metrics ?? []).length} 指标 / {(current.dataRowFields ?? []).length} 字段)
+              </span>
+            )}
+          </span>
+          <span className='text-[11px] text-muted-foreground'>
+            {advancedOpen ? '收起' : '展开'}
+          </span>
+        </button>
 
-        {(!current.metrics || current.metrics.length === 0) ? (
-          <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-xs text-muted-foreground bg-muted/20'>
-            尚未声明业务指标。未配置时将自动提取提取步骤 (extract) 的标量输出。
-          </div>
-        ) : (
-          <div className='space-y-3'>
-            {current.metrics.map((metric, idx) => (
-              <div
-                key={`metric-${idx}`}
-                className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
-              >
-                <div className='flex items-center justify-between'>
-                  <span className='text-xs font-medium text-muted-foreground'>指标 #{idx + 1}</span>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    disabled={disabled}
-                    onClick={() => removeMetric(idx)}
-                    className='h-6 w-6 p-0 text-muted-foreground hover:text-destructive'
-                    title='删除指标'
-                  >
-                    <Trash2 className='size-3.5' />
-                  </Button>
+        {advancedOpen && (
+          <div className='space-y-5 pt-3'>
+            {/* 2. 核心指标列表 */}
+            <div className='rounded-lg border border-border-card bg-card p-4 space-y-3 shadow-sm'>
+              <div className='flex items-center justify-between'>
+                <div className='flex items-center gap-2'>
+                  <TrendingUp className='size-4 text-primary' />
+                  <h4 className='text-sm font-medium text-foreground'>
+                    核心指标 ({(current.metrics ?? []).length}/20)
+                  </h4>
                 </div>
-                <div className='grid grid-cols-2 gap-2'>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>指标标识 (Key)</Label>
-                    <Input
-                      value={metric.key}
-                      disabled={disabled}
-                      placeholder='item_count'
-                      onChange={(e) => updateMetric(idx, { key: e.target.value.toLowerCase().trim() })}
-                      className='text-xs font-mono h-8'
-                    />
-                  </div>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>显示名称</Label>
-                    <Input
-                      value={metric.name}
-                      disabled={disabled}
-                      placeholder='在售商品数'
-                      onChange={(e) => updateMetric(idx, { name: e.target.value })}
-                      className='text-xs h-8'
-                    />
-                  </div>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={disabled || (current.metrics?.length ?? 0) >= 20}
+                  onClick={addMetric}
+                >
+                  <Plus className='size-3.5 mr-1' />
+                  添加指标
+                </Button>
+              </div>
+
+              {(!current.metrics || current.metrics.length === 0) ? (
+                <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-xs text-muted-foreground bg-muted/20'>
+                  尚未声明业务指标。未配置时将自动提取提取步骤 (extract) 的标量输出。
                 </div>
-                <div className='grid grid-cols-2 gap-2'>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
-                    <Input
-                      value={metric.fromContextKey}
-                      disabled={disabled}
-                      placeholder='report'
-                      onChange={(e) => updateMetric(idx, { fromContextKey: e.target.value })}
-                      className='text-xs font-mono h-8'
-                    />
-                  </div>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>属性 / 单位</Label>
-                    <div className='flex gap-1'>
-                      <Input
-                        value={metric.fromField ?? ''}
-                        disabled={disabled}
-                        placeholder='字段'
-                        onChange={(e) => updateMetric(idx, { fromField: e.target.value || undefined })}
-                        className='text-xs font-mono h-8 w-1/2'
-                        title='若上下文变量为对象，提取此内部属性'
-                      />
-                      <Input
-                        value={metric.unit ?? ''}
-                        disabled={disabled}
-                        placeholder='单位'
-                        onChange={(e) => updateMetric(idx, { unit: e.target.value || undefined })}
-                        className='text-xs h-8 w-1/2'
-                      />
+              ) : (
+                <div className='space-y-3'>
+                  {current.metrics.map((metric, idx) => (
+                    <div
+                      key={`metric-${idx}`}
+                      className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
+                    >
+                      <div className='flex items-center justify-between'>
+                        <span className='text-xs font-medium text-muted-foreground'>指标 #{idx + 1}</span>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='sm'
+                          disabled={disabled}
+                          onClick={() => removeMetric(idx)}
+                          className='h-6 w-6 p-0 text-muted-foreground hover:text-destructive'
+                          title='删除指标'
+                        >
+                          <Trash2 className='size-3.5' />
+                        </Button>
+                      </div>
+                      <div className='grid grid-cols-2 gap-2'>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>指标标识 (Key)</Label>
+                          <Input
+                            value={metric.key}
+                            disabled={disabled}
+                            placeholder='item_count'
+                            onChange={(e) => updateMetric(idx, { key: e.target.value.toLowerCase().trim() })}
+                            className='text-xs font-mono h-8'
+                          />
+                        </div>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>显示名称</Label>
+                          <Input
+                            value={metric.name}
+                            disabled={disabled}
+                            placeholder='在售商品数'
+                            onChange={(e) => updateMetric(idx, { name: e.target.value })}
+                            className='text-xs h-8'
+                          />
+                        </div>
+                      </div>
+                      <div className='grid grid-cols-2 gap-2'>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
+                          <Input
+                            value={metric.fromContextKey}
+                            disabled={disabled}
+                            placeholder='report'
+                            onChange={(e) => updateMetric(idx, { fromContextKey: e.target.value })}
+                            className='text-xs font-mono h-8'
+                          />
+                        </div>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>属性 / 单位</Label>
+                          <div className='flex gap-1'>
+                            <Input
+                              value={metric.fromField ?? ''}
+                              disabled={disabled}
+                              placeholder='字段'
+                              onChange={(e) => updateMetric(idx, { fromField: e.target.value || undefined })}
+                              className='text-xs font-mono h-8 w-1/2'
+                              title='若上下文变量为对象，提取此内部属性'
+                            />
+                            <Input
+                              value={metric.unit ?? ''}
+                              disabled={disabled}
+                              placeholder='单位'
+                              onChange={(e) => updateMetric(idx, { unit: e.target.value || undefined })}
+                              className='text-xs h-8 w-1/2'
+                            />
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              )}
+            </div>
 
-      {/* 3. 单行宽表字段 */}
-      <div className='rounded-lg border border-border-card bg-card p-4 space-y-3 shadow-sm'>
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-2'>
-            <Table className='size-4 text-primary' />
-            <h4 className='text-sm font-medium text-foreground'>
-              单行宽表字段 ({(current.dataRowFields ?? []).length}/20)
-            </h4>
-          </div>
-          <Button
-            type='button'
-            size='sm'
-            variant='outline'
-            disabled={disabled || (current.dataRowFields?.length ?? 0) >= 20}
-            onClick={addDataRowField}
-          >
-            <Plus className='size-3.5 mr-1' />
-            添加字段
-          </Button>
-        </div>
-
-        {(!current.dataRowFields || current.dataRowFields.length === 0) ? (
-          <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-xs text-muted-foreground bg-muted/20'>
-            尚未声明宽表字段。声明后可在批量分析、测试套件汇总中横向聚合。
-          </div>
-        ) : (
-          <div className='space-y-3'>
-            {current.dataRowFields.map((field, idx) => (
-              <div
-                key={`field-${idx}`}
-                className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
-              >
-                <div className='flex items-center justify-between'>
-                  <span className='text-xs font-medium text-muted-foreground'>字段 #{idx + 1}</span>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    disabled={disabled}
-                    onClick={() => removeDataRowField(idx)}
-                    className='h-6 w-6 p-0 text-muted-foreground hover:text-destructive'
-                    title='删除字段'
-                  >
-                    <Trash2 className='size-3.5' />
-                  </Button>
+            {/* 3. 单行宽表字段 */}
+            <div className='rounded-lg border border-border-card bg-card p-4 space-y-3 shadow-sm'>
+              <div className='flex items-center justify-between'>
+                <div className='flex items-center gap-2'>
+                  <Table className='size-4 text-primary' />
+                  <h4 className='text-sm font-medium text-foreground'>
+                    单行宽表字段 ({(current.dataRowFields ?? []).length}/20)
+                  </h4>
                 </div>
-                <div className='grid grid-cols-2 gap-2'>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>列标识 (Key)</Label>
-                    <Input
-                      value={field.columnKey}
-                      disabled={disabled}
-                      placeholder='sku_id'
-                      onChange={(e) => updateDataRowField(idx, { columnKey: e.target.value.trim() })}
-                      className='text-xs font-mono h-8'
-                    />
-                  </div>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>表头标题</Label>
-                    <Input
-                      value={field.columnHeader}
-                      disabled={disabled}
-                      placeholder='商品编号'
-                      onChange={(e) => updateDataRowField(idx, { columnHeader: e.target.value })}
-                      className='text-xs h-8'
-                    />
-                  </div>
-                </div>
-                <div className='grid grid-cols-2 gap-2'>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
-                    <Input
-                      value={field.fromContextKey}
-                      disabled={disabled}
-                      placeholder='product'
-                      onChange={(e) => updateDataRowField(idx, { fromContextKey: e.target.value })}
-                      className='text-xs font-mono h-8'
-                    />
-                  </div>
-                  <div>
-                    <Label className='text-xs text-muted-foreground block mb-1'>嵌套字段 (可选)</Label>
-                    <Input
-                      value={field.fromField ?? ''}
-                      disabled={disabled}
-                      placeholder='sku'
-                      onChange={(e) => updateDataRowField(idx, { fromField: e.target.value || undefined })}
-                      className='text-xs font-mono h-8'
-                    />
-                  </div>
-                </div>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={disabled || (current.dataRowFields?.length ?? 0) >= 20}
+                  onClick={addDataRowField}
+                >
+                  <Plus className='size-3.5 mr-1' />
+                  添加字段
+                </Button>
               </div>
-            ))}
+
+              {(!current.dataRowFields || current.dataRowFields.length === 0) ? (
+                <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-xs text-muted-foreground bg-muted/20'>
+                  尚未声明宽表字段。声明后可在批量分析、测试套件汇总中横向聚合。
+                </div>
+              ) : (
+                <div className='space-y-3'>
+                  {current.dataRowFields.map((field, idx) => (
+                    <div
+                      key={`field-${idx}`}
+                      className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
+                    >
+                      <div className='flex items-center justify-between'>
+                        <span className='text-xs font-medium text-muted-foreground'>字段 #{idx + 1}</span>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='sm'
+                          disabled={disabled}
+                          onClick={() => removeDataRowField(idx)}
+                          className='h-6 w-6 p-0 text-muted-foreground hover:text-destructive'
+                          title='删除字段'
+                        >
+                          <Trash2 className='size-3.5' />
+                        </Button>
+                      </div>
+                      <div className='grid grid-cols-2 gap-2'>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>列标识 (Key)</Label>
+                          <Input
+                            value={field.columnKey}
+                            disabled={disabled}
+                            placeholder='sku_id'
+                            onChange={(e) => updateDataRowField(idx, { columnKey: e.target.value.trim() })}
+                            className='text-xs font-mono h-8'
+                          />
+                        </div>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>表头标题</Label>
+                          <Input
+                            value={field.columnHeader}
+                            disabled={disabled}
+                            placeholder='商品编号'
+                            onChange={(e) => updateDataRowField(idx, { columnHeader: e.target.value })}
+                            className='text-xs h-8'
+                          />
+                        </div>
+                      </div>
+                      <div className='grid grid-cols-2 gap-2'>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
+                          <Input
+                            value={field.fromContextKey}
+                            disabled={disabled}
+                            placeholder='product'
+                            onChange={(e) => updateDataRowField(idx, { fromContextKey: e.target.value })}
+                            className='text-xs font-mono h-8'
+                          />
+                        </div>
+                        <div>
+                          <Label className='text-xs text-muted-foreground block mb-1'>对象内字段 (可选)</Label>
+                          <Input
+                            value={field.fromField ?? ''}
+                            disabled={disabled}
+                            placeholder='sku'
+                            onChange={(e) => updateDataRowField(idx, { fromField: e.target.value || undefined })}
+                            className='text-xs font-mono h-8'
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
