@@ -1,101 +1,41 @@
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import {
-  COMPILER_VERSION,
-  FACTORY_EXPLORATION_POLICY,
   FACTORY_MAP_JOB_POLICY,
-  MAP_EXPLORE_PROTOCOL,
   MAP_JOBS_PROTOCOL,
   canonicalJson,
-  explorationPolicyDtoSchema,
-  explorationPolicySchema,
-  explorationPolicyUpdateBodySchema,
-  frozenMapJobSchema,
   isMapJobRun,
-  mapJobCreateBodySchema,
-  mapJobCreateResponseSchema,
   mapJobDtoSchema,
-  mapJobCommandKey,
-  mapJobIdempotencyKey,
   mapJobPolicyDtoSchema,
   mapJobPolicySchema,
   mapJobPolicyUpdateBodySchema,
-  mapSafeEntryCreateBodySchema,
-  mapSafeEntryUpdateBodySchema,
-  mapSafeEntryArchiveBodySchema,
-  mapSafeEntryDtoSchema,
-  mapSafeEntrySchema,
-  scenarioDefinitionFromSteps,
   type ExecutionActor,
-  type ExplorationPolicy,
-  type ExplorationPolicyDto,
-  type ExplorationPolicyUpdateBody,
-  type MapJobCreateBody,
-  type MapJobCreateResponse,
   type MapJobDto,
   type MapJobKind,
   type MapJobPolicy,
   type MapJobPolicyDto,
   type MapJobPolicyUpdateBody,
   type MapJobStopReason,
-  type MapSafeEntryCreateBody,
-  type MapSafeEntryUpdateBody,
-  type MapSafeEntryArchiveBody,
-  type MapSafeEntryDto,
-  type Step,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { recordAudit } from '../audit/record.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, insertRows, locked, schemaFor } from '../native.js'
-import { createRunWithSnapshot, requestRunCancel } from '../runs/runs.js'
-import { isUniqueViolation } from '../runs/errors.js'
-import { findLiveSessions } from '../sessions/sessions.js'
-import {
-  conflict,
-  notFound,
-  mapActiveSliceExists,
-  mapAuthPreparationRequired,
-  mapCommandIdempotencyConflict,
-  mapConsumerUnavailable,
-  mapForbidden,
-  mapNotFound,
-  mapRevisionConflict,
-} from './errors.js'
-import { getPlatformConfig } from '../platform-config/store.js'
+import { requestRunCancel } from '../runs/runs.js'
+import { mapCommandIdempotencyConflict, mapNotFound, mapRevisionConflict } from './errors.js'
 import { requireLiveTarget } from './view.js'
-import { requireMapCapableAccount, requireTargetHasMapCapableAccount } from '../console/account-usage.js'
+import { requireTargetHasMapCapableAccount } from '../console/account-usage.js'
 
 function jobPolicyFromRow(row: {
   policySchemaVersion: number
   policyVersion: number
   manualJobsEnabled: number
-  maxProbePages: number
-  maxProbeObjects: number
-  maxProbeActions: number
-  maxProbeSeconds: number
-  maxRefreshPages: number
-  maxRefreshObjects: number
-  maxRefreshActions: number
-  maxRefreshSeconds: number
   sliceWorkSeconds: number
-  defaultDepth: string
-  staticRefreshDays: number
 }): MapJobPolicy {
   return mapJobPolicySchema.parse({
     schemaVersion: row.policySchemaVersion,
     policyVersion: row.policyVersion,
     manualJobsEnabled: row.manualJobsEnabled === 1,
-    maxProbePages: row.maxProbePages,
-    maxProbeObjects: row.maxProbeObjects,
-    maxProbeActions: row.maxProbeActions,
-    maxProbeSeconds: row.maxProbeSeconds,
-    maxRefreshPages: row.maxRefreshPages,
-    maxRefreshObjects: row.maxRefreshObjects,
-    maxRefreshActions: row.maxRefreshActions,
-    maxRefreshSeconds: row.maxRefreshSeconds,
     sliceWorkSeconds: row.sliceWorkSeconds,
-    defaultDepth: row.defaultDepth,
-    staticRefreshDays: row.staticRefreshDays,
   })
 }
 
@@ -146,17 +86,7 @@ export async function updateMapJobPolicy(
       policySchemaVersion: policy.schemaVersion,
       policyVersion: policy.policyVersion,
       manualJobsEnabled: policy.manualJobsEnabled ? 1 : 0,
-      maxProbePages: policy.maxProbePages,
-      maxProbeObjects: policy.maxProbeObjects,
-      maxProbeActions: policy.maxProbeActions,
-      maxProbeSeconds: policy.maxProbeSeconds,
-      maxRefreshPages: policy.maxRefreshPages,
-      maxRefreshObjects: policy.maxRefreshObjects,
-      maxRefreshActions: policy.maxRefreshActions,
-      maxRefreshSeconds: policy.maxRefreshSeconds,
       sliceWorkSeconds: policy.sliceWorkSeconds,
-      defaultDepth: policy.defaultDepth,
-      staticRefreshDays: policy.staticRefreshDays,
       revision: nextRevision,
       updatedBy: actor.id,
       updatedAt: now,
@@ -167,375 +97,6 @@ export async function updateMapJobPolicy(
     await insertRows(tx, mapJobPolicyCommands, { id: newId(), targetId, commandKey: parsed.idempotencyKey, payload, result })
     await recordAudit(tx, actor, 'map.job_policy.update', 'target', targetId, parsed.reason)
     return result
-  })
-}
-
-function explorationPolicyFromRow(row: {
-  policySchemaVersion: number
-  policyVersion: number
-  exploreEnabled: number
-  exploreMode: ExplorationPolicy['mode']
-  modelEnabled: number
-  maxHopDepth: number
-  maxNewPages: number
-  maxCandidates: number
-  maxActions: number
-  maxSeconds: number
-  sliceWorkSeconds: number
-  allowlistJson: ExplorationPolicy['allowlist']
-  seedRefsJson: ExplorationPolicy['seedRefs']
-}): ExplorationPolicy {
-  return explorationPolicySchema.parse({
-    schemaVersion: row.policySchemaVersion,
-    policyVersion: row.policyVersion,
-    exploreEnabled: row.exploreEnabled === 1,
-    mode: row.exploreMode,
-    modelEnabled: row.modelEnabled === 1,
-    maxHopDepth: row.maxHopDepth,
-    maxNewPages: row.maxNewPages,
-    maxCandidates: row.maxCandidates,
-    maxActions: row.maxActions,
-    maxSeconds: row.maxSeconds,
-    sliceWorkSeconds: row.sliceWorkSeconds,
-    allowlist: row.allowlistJson,
-    seedRefs: row.seedRefsJson,
-  })
-}
-
-export async function getExplorationPolicy(db: Db, targetId: string): Promise<ExplorationPolicyDto> {
-  await requireLiveTarget(db, targetId)
-  const { mapExplorationPolicies } = schemaFor(db)
-  const [row] = await db.select().from(mapExplorationPolicies).where(eq(mapExplorationPolicies.targetId, targetId)).limit(1)
-  return explorationPolicyDtoSchema.parse({
-    targetId,
-    revision: row?.revision ?? 0,
-    policy: row ? explorationPolicyFromRow(row) : FACTORY_EXPLORATION_POLICY,
-    updatedAt: (row?.updatedAt ?? new Date(0)).toISOString(),
-  })
-}
-
-export async function updateExplorationPolicy(
-  db: Db,
-  targetId: string,
-  body: ExplorationPolicyUpdateBody,
-  actor: ExecutionActor,
-): Promise<ExplorationPolicyDto> {
-  const parsed = explorationPolicyUpdateBodySchema.parse(body)
-  await requireLiveTarget(db, targetId)
-  return atomic(db, async (tx) => {
-    const { mapExplorationPolicies, mapExplorationPolicyCommands } = schemaFor(tx)
-    const [receipt] = await tx
-      .select()
-      .from(mapExplorationPolicyCommands)
-      .where(
-        and(
-          eq(mapExplorationPolicyCommands.targetId, targetId),
-          eq(mapExplorationPolicyCommands.commandKey, parsed.idempotencyKey),
-        ),
-      )
-      .limit(1)
-    const payload = { body: parsed }
-    if (receipt) {
-      if (canonicalJson(receipt.payload) !== canonicalJson(payload)) mapCommandIdempotencyConflict()
-      return explorationPolicyDtoSchema.parse(receipt.result)
-    }
-    const [current] = await locked(tx, tx.select().from(mapExplorationPolicies).where(eq(mapExplorationPolicies.targetId, targetId)))
-    const expected = current?.revision ?? 0
-    if (expected !== parsed.expectedRevision) mapRevisionConflict('探索政策修订已变更')
-    const now = await clockNow(tx)
-    const nextRevision = expected + 1
-    const policy = explorationPolicySchema.parse({
-      ...(current ? explorationPolicyFromRow(current) : FACTORY_EXPLORATION_POLICY),
-      policyVersion: nextRevision,
-      exploreEnabled: parsed.exploreEnabled,
-      mode: parsed.mode,
-      modelEnabled: parsed.modelEnabled,
-      allowlist: parsed.allowlist,
-      seedRefs: parsed.seedRefs,
-    })
-    const values = {
-      policySchemaVersion: policy.schemaVersion,
-      policyVersion: policy.policyVersion,
-      exploreEnabled: policy.exploreEnabled ? 1 : 0,
-      exploreMode: policy.mode,
-      modelEnabled: policy.modelEnabled ? 1 : 0,
-      maxHopDepth: policy.maxHopDepth,
-      maxNewPages: policy.maxNewPages,
-      maxCandidates: policy.maxCandidates,
-      maxActions: policy.maxActions,
-      maxSeconds: policy.maxSeconds,
-      sliceWorkSeconds: policy.sliceWorkSeconds,
-      allowlistJson: policy.allowlist,
-      seedRefsJson: policy.seedRefs,
-      revision: nextRevision,
-      updatedBy: actor.id,
-      updatedAt: now,
-    }
-    if (current) await tx.update(mapExplorationPolicies).set(values).where(eq(mapExplorationPolicies.targetId, targetId))
-    else await tx.insert(mapExplorationPolicies).values({ targetId, ...values })
-    const result = await getExplorationPolicy(tx, targetId)
-    await insertRows(tx, mapExplorationPolicyCommands, {
-      id: newId(),
-      targetId,
-      commandKey: parsed.idempotencyKey,
-      payload,
-      result,
-    })
-    await recordAudit(tx, actor, 'map.exploration_policy.update', 'target', targetId, parsed.reason)
-    return result
-  })
-}
-
-export async function listMapSafeEntries(
-  db: Db,
-  targetId: string,
-  options?: { includeArchived?: boolean },
-): Promise<{ items: MapSafeEntryDto[] }> {
-  await requireLiveTarget(db, targetId)
-  const { mapSafeEntries } = schemaFor(db)
-  const condition = options?.includeArchived
-    ? eq(mapSafeEntries.targetId, targetId)
-    : and(eq(mapSafeEntries.targetId, targetId), isNull(mapSafeEntries.archivedAt))
-  const rows = await db.select().from(mapSafeEntries).where(condition).orderBy(desc(mapSafeEntries.createdAt))
-  return {
-    items: rows.map((row) =>
-      mapSafeEntryDtoSchema.parse({
-        targetId,
-        entryId: row.id,
-        version: row.entryVersion,
-        name: row.entryName,
-        url: row.entryUrl,
-        arrivalName: row.arrivalName,
-        arrivalTarget: row.arrivalTarget,
-        safetyBasis: row.safetyBasis,
-        jobKinds: row.jobKinds,
-        createdAt: row.createdAt.toISOString(),
-        archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
-      }),
-    ),
-  }
-}
-
-export async function createMapSafeEntry(
-  db: Db,
-  targetId: string,
-  body: MapSafeEntryCreateBody,
-  actor: ExecutionActor,
-): Promise<MapSafeEntryDto> {
-  const parsed = mapSafeEntryCreateBodySchema.parse(body)
-  await requireLiveTarget(db, targetId)
-  return atomic(db, async (tx) => {
-    const { mapSafeEntries } = schemaFor(tx)
-    const [receipt] = await tx
-      .select()
-      .from(mapSafeEntries)
-      .where(and(eq(mapSafeEntries.targetId, targetId), eq(mapSafeEntries.commandKey, parsed.idempotencyKey)))
-      .limit(1)
-    if (receipt) {
-      return mapSafeEntryDtoSchema.parse({
-        targetId,
-        entryId: receipt.id,
-        version: receipt.entryVersion,
-        name: receipt.entryName,
-        url: receipt.entryUrl,
-        arrivalName: receipt.arrivalName,
-        arrivalTarget: receipt.arrivalTarget,
-        safetyBasis: receipt.safetyBasis,
-        jobKinds: receipt.jobKinds,
-        createdAt: receipt.createdAt.toISOString(),
-        archivedAt: receipt.archivedAt ? receipt.archivedAt.toISOString() : null,
-      })
-    }
-    const now = await clockNow(tx)
-    const entry = mapSafeEntrySchema.parse({
-      entryId: newId(),
-      version: 1,
-      name: parsed.name,
-      url: parsed.url,
-      arrivalName: parsed.arrivalName,
-      arrivalTarget: parsed.arrivalTarget,
-      safetyBasis: {
-        kind: parsed.safetyBasisKind,
-        summary: parsed.summary,
-        confirmedBy: actor.id,
-        confirmedAt: now.toISOString(),
-      },
-      jobKinds: parsed.jobKinds,
-    })
-    await insertRows(tx, mapSafeEntries, {
-      id: entry.entryId,
-      targetId,
-      entryVersion: entry.version,
-      entryName: entry.name,
-      entryUrl: entry.url,
-      arrivalName: entry.arrivalName,
-      arrivalTarget: entry.arrivalTarget,
-      safetyBasis: entry.safetyBasis,
-      jobKinds: entry.jobKinds,
-      commandKey: parsed.idempotencyKey,
-      createdBy: actor.id,
-      createdAt: now,
-    })
-    await recordAudit(tx, actor, 'map.safe_entry.create', 'target', targetId, parsed.summary)
-    return mapSafeEntryDtoSchema.parse({ ...entry, targetId, createdAt: now.toISOString(), archivedAt: null })
-  })
-}
-
-export async function updateMapSafeEntry(
-  db: Db,
-  targetId: string,
-  entryId: string,
-  body: MapSafeEntryUpdateBody,
-  actor: ExecutionActor,
-): Promise<MapSafeEntryDto> {
-  const parsed = mapSafeEntryUpdateBodySchema.parse(body)
-  await requireLiveTarget(db, targetId)
-  return atomic(db, async (tx) => {
-    const { mapSafeEntries } = schemaFor(tx)
-    const [existing] = await tx
-      .select()
-      .from(mapSafeEntries)
-      .where(and(eq(mapSafeEntries.id, entryId), eq(mapSafeEntries.targetId, targetId)))
-      .limit(1)
-
-    if (!existing || existing.archivedAt) {
-      throw notFound('MAP_SAFE_ENTRY_NOT_FOUND', '安全进入路径不存在或已被归档')
-    }
-
-    if (existing.entryVersion !== parsed.expectedVersion) {
-      throw conflict('MAP_SAFE_ENTRY_OCC_CONFLICT', '安全进入路径已被他人修改，请刷新后重试')
-    }
-
-    const now = await clockNow(tx)
-    const nextVersion = existing.entryVersion + 1
-    const safetyBasis = {
-      kind: parsed.safetyBasisKind,
-      summary: parsed.summary,
-      confirmedBy: actor.id,
-      confirmedAt: now.toISOString(),
-    }
-
-    await tx
-      .update(mapSafeEntries)
-      .set({
-        entryVersion: nextVersion,
-        entryName: parsed.name,
-        entryUrl: parsed.url,
-        arrivalName: parsed.arrivalName,
-        arrivalTarget: parsed.arrivalTarget,
-        safetyBasis,
-        jobKinds: parsed.jobKinds,
-      })
-      .where(and(eq(mapSafeEntries.id, entryId), eq(mapSafeEntries.entryVersion, existing.entryVersion)))
-
-    await recordAudit(tx, actor, 'map.safe_entry.update', 'target', targetId, `更新安全进入路径：${parsed.name}`)
-
-    return mapSafeEntryDtoSchema.parse({
-      targetId,
-      entryId,
-      version: nextVersion,
-      name: parsed.name,
-      url: parsed.url,
-      arrivalName: parsed.arrivalName,
-      arrivalTarget: parsed.arrivalTarget,
-      safetyBasis,
-      jobKinds: parsed.jobKinds,
-      createdAt: existing.createdAt.toISOString(),
-      archivedAt: null,
-    })
-  })
-}
-
-export async function archiveMapSafeEntry(
-  db: Db,
-  targetId: string,
-  entryId: string,
-  body: MapSafeEntryArchiveBody,
-  actor: ExecutionActor,
-): Promise<MapSafeEntryDto> {
-  mapSafeEntryArchiveBodySchema.parse(body)
-  await requireLiveTarget(db, targetId)
-  return atomic(db, async (tx) => {
-    const { mapSafeEntries, mapJobs, schedules, scheduleVersions } = schemaFor(tx)
-    const [existing] = await tx
-      .select()
-      .from(mapSafeEntries)
-      .where(and(eq(mapSafeEntries.id, entryId), eq(mapSafeEntries.targetId, targetId)))
-      .limit(1)
-
-    if (!existing || existing.archivedAt) {
-      throw notFound('MAP_SAFE_ENTRY_NOT_FOUND', '安全进入路径不存在或已被归档')
-    }
-
-    // 1. 检查在途作业
-    const inFlightJobs = await tx
-      .select({ id: mapJobs.id, jobStatus: mapJobs.jobStatus })
-      .from(mapJobs)
-      .where(and(
-        eq(mapJobs.targetId, targetId),
-        eq(mapJobs.entryId, entryId),
-        inArray(mapJobs.jobStatus, ['queued', 'running']),
-      ))
-      .limit(1)
-    if (inFlightJobs.length > 0) {
-      throw conflict('MAP_SAFE_ENTRY_IN_USE', '该安全入口当前有正在执行中的地图作业，请等待作业完成或中止后再删除。')
-    }
-
-    // 2. 检查激活的定时任务
-    const activeSchedules = await tx
-      .select({
-        id: schedules.id,
-        name: schedules.name,
-        consumer: scheduleVersions.consumer,
-      })
-      .from(schedules)
-      .innerJoin(scheduleVersions, eq(schedules.currentVersionId, scheduleVersions.id))
-      .where(and(
-        eq(schedules.targetId, targetId),
-        eq(schedules.enabled, 1),
-        eq(schedules.consumerKey, 'map_refresh'),
-      ))
-
-    for (const sched of activeSchedules) {
-      const consumer = sched.consumer as { type?: string; entryId?: string } | undefined
-      if (consumer && consumer.type === 'map_refresh' && consumer.entryId === entryId) {
-        throw conflict(
-          'MAP_SAFE_ENTRY_IN_USE',
-          `无法删除该入口：定时计划【${sched.name || '地图复查计划'}】正在使用此入口，请先停用或更换该计划的进入路径。`,
-        )
-      }
-    }
-
-    const now = await clockNow(tx)
-    await tx
-      .update(mapSafeEntries)
-      .set({
-        archivedAt: now,
-      })
-      .where(eq(mapSafeEntries.id, entryId))
-
-    await recordAudit(
-      tx,
-      actor,
-      'map.safe_entry.archive',
-      'target',
-      targetId,
-      body.reason || `归档安全进入路径：${existing.entryName}`,
-    )
-
-    return mapSafeEntryDtoSchema.parse({
-      targetId,
-      entryId: existing.id,
-      version: existing.entryVersion,
-      name: existing.entryName,
-      url: existing.entryUrl,
-      arrivalName: existing.arrivalName,
-      arrivalTarget: existing.arrivalTarget,
-      safetyBasis: existing.safetyBasis,
-      jobKinds: existing.jobKinds,
-      createdAt: existing.createdAt.toISOString(),
-      archivedAt: now.toISOString(),
-    })
   })
 }
 
@@ -587,186 +148,6 @@ export async function hasReadyMapJobWorker(db: Db): Promise<boolean> {
   return rows.some((row) => row.status === 'READY' && (row.protocolCapabilities ?? []).includes(MAP_JOBS_PROTOCOL))
 }
 
-export async function hasReadyMapExploreWorker(db: Db): Promise<boolean> {
-  const { workers } = schemaFor(db)
-  const rows = await db.select().from(workers)
-  return rows.some(
-    (row) =>
-      row.status === 'READY' &&
-      (row.protocolCapabilities ?? []).includes(MAP_JOBS_PROTOCOL) &&
-      (row.protocolCapabilities ?? []).includes(MAP_EXPLORE_PROTOCOL),
-  )
-}
-
-export async function createMapJob(
-  db: Db,
-  targetId: string,
-  body: MapJobCreateBody,
-  actor: ExecutionActor,
-  compiled: { steps: Step[]; releaseId?: string },
-): Promise<MapJobCreateResponse> {
-  const parsed = mapJobCreateBodySchema.parse(body)
-  await requireLiveTarget(db, targetId)
-  const commandKey = mapJobCommandKey({
-    source: parsed.source,
-    targetId,
-    targetAccountId: parsed.targetAccountId,
-    manualId: parsed.manualId,
-    occurrenceId: parsed.occurrenceId,
-  })
-  return atomic(db, async (tx) => {
-    const { mapJobCommands, mapJobs, mapJobSlices, mapSafeEntries, scenarios, scenarioVersions } = schemaFor(tx)
-    const [receipt] = await tx
-      .select()
-      .from(mapJobCommands)
-      .where(and(eq(mapJobCommands.targetId, targetId), eq(mapJobCommands.commandKey, commandKey)))
-      .limit(1)
-    const payload = { body: parsed, stepIds: compiled.steps.map((step) => step.id) }
-    if (receipt) {
-      if (canonicalJson({ body: parsed }) !== canonicalJson({ body: (receipt.payload as { body: unknown }).body })) {
-        mapCommandIdempotencyConflict()
-      }
-      return mapJobCreateResponseSchema.parse({
-        ...(receipt.result as MapJobCreateResponse),
-        created: false,
-      })
-    }
-    const policyDto = await getMapJobPolicy(tx, targetId)
-    const exploreDto = parsed.jobKind === 'map_explore' ? await getExplorationPolicy(tx, targetId) : null
-    if (parsed.jobKind === 'map_explore') {
-      if (policyDto.revision !== parsed.expectedPolicyRevision) mapRevisionConflict('作业政策修订已变更')
-      if (exploreDto!.revision !== parsed.expectedExplorationRevision) mapRevisionConflict('探索政策修订已变更')
-      const factory = await getPlatformConfig(tx)
-      if (factory?.document.mapExplorationEnabled !== true) mapForbidden('平台尚未开放地图探索')
-      if (!exploreDto!.policy.exploreEnabled) mapForbidden('该目标尚未开放有界探索')
-      if (exploreDto!.policy.modelEnabled) mapForbidden('本轮不开放模型提名')
-      if (exploreDto!.policy.allowlist.length === 0) mapForbidden('没有可配置安全导航范围')
-    } else {
-      if (policyDto.revision !== parsed.expectedPolicyRevision) mapRevisionConflict('作业政策修订已变更')
-      if (!policyDto.policy.manualJobsEnabled) {
-        mapForbidden('手工地图作业尚未对该目标开放')
-      }
-    }
-    const [entry] = await tx.select().from(mapSafeEntries).where(eq(mapSafeEntries.id, parsed.entryId)).limit(1)
-    if (!entry || entry.targetId !== targetId) mapNotFound('安全进入路径不存在')
-    if (!entry.jobKinds.includes(parsed.jobKind)) mapForbidden('该进入路径不适用于此作业类型')
-    await requireMapCapableAccount(tx, targetId, parsed.targetAccountId)
-    const sessions = await findLiveSessions(tx, { targetId, targetAccountId: parsed.targetAccountId })
-    const session = sessions.find((row) => row.status === 'OPEN' && row.authState === 'AUTHENTICATED')
-    if (!session) {
-      mapAuthPreparationRequired()
-    }
-    if (parsed.jobKind === 'map_explore') {
-      if (!(await hasReadyMapExploreWorker(tx))) mapConsumerUnavailable('没有具备地图探索能力的 Worker')
-    } else if (!(await hasReadyMapJobWorker(tx))) {
-      mapConsumerUnavailable('没有具备地图作业能力的 Worker')
-    }
-    const now = await clockNow(tx)
-    const jobId = newId()
-    const budget =
-      parsed.jobKind === 'map_probe'
-        ? policyDto.policy.maxProbeSeconds
-        : parsed.jobKind === 'map_explore'
-          ? exploreDto!.policy.maxSeconds
-          : policyDto.policy.maxRefreshSeconds
-    const reserved = Math.min(
-      parsed.jobKind === 'map_explore' ? exploreDto!.policy.sliceWorkSeconds : policyDto.policy.sliceWorkSeconds,
-      budget,
-    )
-    try {
-      await insertRows(tx, mapJobs, {
-        id: jobId,
-        targetId,
-        targetAccountId: parsed.targetAccountId,
-        jobKind: parsed.jobKind,
-        jobStatus: 'queued',
-        remainingBudgetSeconds: budget - reserved,
-        policyRevision: policyDto.revision || 1,
-        entryId: entry.id,
-        releaseId: compiled.releaseId ?? null,
-        requestJson: parsed,
-        frozenPolicyJson: policyDto.policy,
-        activeGuard: 'Y',
-        revision: 1,
-        createdBy: actor.id,
-        createdAt: now,
-        updatedAt: now,
-      })
-    } catch (error) {
-      if (isUniqueViolation(error)) mapActiveSliceExists()
-      throw error
-    }
-    const scenarioId = newId()
-    const versionId = newId()
-    const steps = compiled.steps.map((step) => ({ ...step, id: newId() }))
-    const definition = scenarioDefinitionFromSteps(steps)
-    await tx.insert(scenarios).values({
-      id: scenarioId,
-      targetId,
-      name: `[地图作业] ${jobId}`,
-      status: 'active',
-      purpose: 'map_job',
-      createdByConsoleAccountId: actor.id,
-      createdAt: now,
-      updatedAt: now,
-    })
-    await tx.insert(scenarioVersions).values({
-      id: versionId,
-      scenarioId,
-      versionNo: 1,
-      kind: 'published',
-      definition,
-      compilerVersion: COMPILER_VERSION,
-      sourceDigest: `${jobId}:0`,
-      createdByConsoleAccountId: actor.id,
-      createdAt: now,
-    })
-    const created = await createRunWithSnapshot(tx, {
-      scenarioId,
-      scenarioVersionId: versionId,
-      targetAccountId: parsed.targetAccountId,
-      actor,
-      deadlineAt: new Date(now.getTime() + reserved * 1000),
-      mapCapturePolicy: { enabled: true },
-      mapConsumption: { mode: 'off' },
-      mapJob: frozenMapJobSchema.parse({
-        jobId,
-        sliceOrdinal: 0,
-        purpose: parsed.jobKind,
-        releaseId: compiled.releaseId,
-        entryId: entry.id,
-        policyRevision: policyDto.revision || 1,
-        remainingBudgetSeconds: budget - reserved,
-        consumerVersion: MAP_JOBS_PROTOCOL,
-        startBefore: parsed.startBefore,
-        source: parsed.source,
-        occurrenceId: parsed.occurrenceId,
-      }),
-    })
-    await insertRows(tx, mapJobSlices, {
-      id: newId(),
-      jobId,
-      targetId,
-      sliceOrdinal: 0,
-      runId: created.detail.id,
-      reservedSeconds: reserved,
-      createdAt: now,
-    })
-    const dto = await getMapJob(tx, jobId)
-    const result = mapJobCreateResponseSchema.parse({ job: dto, created: true })
-    await insertRows(tx, mapJobCommands, { id: newId(), targetId, commandKey, payload, result })
-    await recordAudit(
-      tx,
-      actor,
-      parsed.jobKind === 'map_explore' ? 'map.explore.create' : 'map.job.create',
-      'target',
-      targetId,
-      `${parsed.jobKind} ${parsed.manualId ?? parsed.occurrenceId ?? ''}`,
-    )
-    return result
-  })
-}
-
 export async function cancelMapJob(db: Db, jobId: string, actor: ExecutionActor): Promise<MapJobDto> {
   return atomic(db, async (tx) => {
     const { mapJobs, mapJobSlices } = schemaFor(tx)
@@ -789,7 +170,7 @@ export async function cancelMapJob(db: Db, jobId: string, actor: ExecutionActor)
 export async function completeMapJobSlice(
   db: Db,
   runId: string,
-  outcome: 'completed' | 'failed' | 'cancelled' | 'needs_review',
+  outcome: 'completed' | 'failed' | 'cancelled',
 ): Promise<{ continue: boolean; jobId: string }> {
   const { mapJobSlices, mapJobs } = schemaFor(db)
   const [slice] = await db.select().from(mapJobSlices).where(eq(mapJobSlices.runId, runId)).limit(1)
@@ -798,18 +179,6 @@ export async function completeMapJobSlice(
     const [job] = await locked(tx, tx.select().from(mapJobs).where(eq(mapJobs.id, slice.jobId)))
     if (!job || job.jobStatus === 'cancelled') return { continue: false, jobId: slice.jobId }
     const now = await clockNow(tx)
-    if (outcome === 'needs_review') {
-      await tx
-        .update(mapJobs)
-        .set({
-          jobStatus: 'needs_review',
-          stopReason: 'action_outcome_unknown',
-          // 保留 activeGuard，阻止同条件新探索作业在未知动作上叠加
-          updatedAt: now,
-        })
-        .where(eq(mapJobs.id, job.id))
-      return { continue: false, jobId: job.id }
-    }
     const stop: MapJobStopReason =
       outcome === 'cancelled' ? 'cancelled' : outcome === 'failed' ? 'slice_failed' : 'completed'
     await tx
@@ -822,26 +191,6 @@ export async function completeMapJobSlice(
       })
       .where(eq(mapJobs.id, job.id))
     return { continue: false, jobId: job.id }
-  })
-}
-
-export async function getMapSafeEntry(db: Db, targetId: string, entryId: string): Promise<MapSafeEntryDto> {
-  await requireLiveTarget(db, targetId)
-  const { mapSafeEntries } = schemaFor(db)
-  const [row] = await db.select().from(mapSafeEntries).where(eq(mapSafeEntries.id, entryId)).limit(1)
-  if (!row || row.targetId !== targetId) mapNotFound('安全进入路径不存在')
-  return mapSafeEntryDtoSchema.parse({
-    targetId,
-    entryId: row.id,
-    version: row.entryVersion,
-    name: row.entryName,
-    url: row.entryUrl,
-    arrivalName: row.arrivalName,
-    arrivalTarget: row.arrivalTarget,
-    safetyBasis: row.safetyBasis,
-    jobKinds: row.jobKinds,
-    createdAt: row.createdAt.toISOString(),
-    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   })
 }
 

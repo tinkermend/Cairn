@@ -3,7 +3,6 @@ import type { z } from 'zod'
 import {
   ANALYSIS_MODE_LABELS,
   SCHEDULE_CONSUMER_LABELS,
-  SCHEDULE_CONSUMER_MAP_REFRESH,
   SCHEDULE_TICK_BATCH,
   SCHEDULE_TIME_RULE_VERSION,
   addLocalDays,
@@ -11,7 +10,6 @@ import {
   canonicalJson,
   consumerTargetAccountId,
   hasAllPermissions,
-  isMapRefreshConsumer,
   isoWeekdayOfDate,
   localDateInTimeZone,
   nextDueFromWindows,
@@ -53,7 +51,6 @@ import {
   type ScheduleWriteResponse,
   type Step,
 } from '@cairn/shared'
-import { requireMapCapableAccount } from '../console/account-usage.js'
 import type { Db } from '../client.js'
 import { recordAudit } from '../audit/record.js'
 import { decodeAuditCursor, encodeAuditCursor } from '../audit/cursor.js'
@@ -61,7 +58,7 @@ import { newId } from '../id.js'
 import { atomic, clockNow, insertIgnoreRows, insertRows, jsonTextEquals, locked, onCommit, schemaFor } from '../native.js'
 import { DomainError, conflict, forbidden, isUniqueViolation, notFound } from '../runs/errors.js'
 import { sha256Hex } from '../runs/digest.js'
-import { cancelMapJob, createMapJob, getMapJob, getMapJobPolicy } from '../map/jobs.js'
+import { cancelMapJob, getMapJob } from '../map/jobs.js'
 import { getOrCreatePlatformConfig } from '../platform-config/store.js'
 import { liveTargetExists } from '../lifecycle.js'
 import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
@@ -105,11 +102,10 @@ function factoryEnabledFor(document: PlatformConfigDocument, type: ScheduleConsu
   if (type === 'scenario_run') return document.scenarioScheduledRunEnabled
   if (type === 'suite_run') return document.suiteScheduledRunEnabled
   if (type === 'knowledge_analysis') return document.knowledgeAnalysisEnabled
-  return document.mapScheduledRefreshEnabled
+  return false
 }
 
 function writePermissionsFor(consumer: ScheduleConsumer): string[] {
-  if (consumer.type === 'map_refresh') return ['schedule:write', 'map:maintain']
   if (consumer.type === 'knowledge_analysis') {
     return ['schedule:write', 'map:analyze', consumer.mode === 'run_incremental' ? 'run:read' : 'map:read', ...(consumer.budget.useAi ? ['ai:execute'] : [])]
   }
@@ -202,7 +198,6 @@ async function scheduleToDto(db: Db, scheduleId: string): Promise<ScheduleDto> {
   const objectLabel = await objectLabelFor(db, definition.consumer)
   const blockReasons: string[] = []
   if (!factoryEnabledFor(config.document, definition.consumer.type)) blockReasons.push('FACTORY_DISABLED')
-  if (definition.consumer.type === 'map_refresh' && !schedule.targetAccountId) blockReasons.push('ACCOUNT_UNAVAILABLE')
   return scheduleDtoSchema.parse({
     scheduleId: schedule.id,
     name: schedule.name ?? version.name ?? objectLabel,
@@ -329,10 +324,7 @@ async function objectLabelFor(db: Db, consumer: ScheduleConsumer): Promise<strin
       .limit(1)
     return row?.name ?? SCHEDULE_CONSUMER_LABELS.suite_run
   }
-  if (consumer.type === 'knowledge_analysis') {
-    return `${SCHEDULE_CONSUMER_LABELS.knowledge_analysis} · ${ANALYSIS_MODE_LABELS[consumer.mode]}`
-  }
-  return SCHEDULE_CONSUMER_LABELS.map_refresh
+  return `${SCHEDULE_CONSUMER_LABELS.knowledge_analysis} · ${ANALYSIS_MODE_LABELS[consumer.mode]}`
 }
 
 async function assertScheduleWritePermission(db: Db, actorId: string, consumer: ScheduleConsumer) {
@@ -629,7 +621,7 @@ export async function listSchedules(db: Db, query: ScheduleListQuery, actorId?: 
     const version = versionsById.get(schedule.currentVersionId)
     if (!version) continue
     const definition = definitionFromVersion(version)
-    let objectLabel = SCHEDULE_CONSUMER_LABELS.map_refresh
+    let objectLabel: string = SCHEDULE_CONSUMER_LABELS[definition.consumer.type]
     if (definition.consumer.type === 'scenario_run') {
       objectLabel = scenarioNamesById.get(definition.consumer.scenarioId) ?? SCHEDULE_CONSUMER_LABELS.scenario_run
     } else if (definition.consumer.type === 'suite_run') {
@@ -640,7 +632,6 @@ export async function listSchedules(db: Db, query: ScheduleListQuery, actorId?: 
 
     const blockReasons: string[] = []
   if (!factoryEnabledFor(config.document, definition.consumer.type)) blockReasons.push('FACTORY_DISABLED')
-    if (definition.consumer.type === 'map_refresh' && !schedule.targetAccountId) blockReasons.push('ACCOUNT_UNAVAILABLE')
 
     loaded.push(
       scheduleDtoSchema.parse({
@@ -719,9 +710,6 @@ export async function writeSchedule(
         .limit(1)
       if (!account || account.targetId !== consumer.targetId || account.status !== 'active') {
         throw notFound('TARGET_ACCOUNT_NOT_FOUND', '目标账号不存在或已停用')
-      }
-      if (isMapRefreshConsumer(consumer)) {
-        await requireMapCapableAccount(tx, consumer.targetId, targetAccountId)
       }
     }
     const now = await clockNow(tx)
@@ -866,9 +854,6 @@ export async function setScheduleEnabled(
     if (parsed.enabled) {
       await assertConsumerResources(tx, dto.definition, actor.id)
       await assertAnalysisIdentityAvailable(tx, dto.definition.consumer, scheduleId)
-    }
-    if (parsed.enabled && isMapRefreshConsumer(dto.definition.consumer)) {
-      await requireMapCapableAccount(tx, current.targetId, dto.definition.consumer.targetAccountId)
     }
     const now = await clockNow(tx)
     const nextDue = parsed.enabled
@@ -1472,35 +1457,7 @@ export async function admitScheduleOccurrence(
           reason: null,
         })
       }
-      if (compiled.includedCount <= 0) return skip('NO_ELIGIBLE_ASSETS')
-      const mapConsumer = isMapRefreshConsumer(definition.consumer) ? definition.consumer : null
-      if (!mapConsumer) return skip('RESOURCE_UNAVAILABLE')
-      const policy = await getMapJobPolicy(tx, mapConsumer.targetId)
-      const created = await createMapJob(
-        tx,
-        mapConsumer.targetId,
-        {
-          source: 'scheduled',
-          occurrenceId: occurrence.id,
-          startBefore: occurrence.windowEndUtc?.toISOString(),
-          expectedPolicyRevision: policy.revision,
-          jobKind: 'map_refresh',
-          targetAccountId: mapConsumer.targetAccountId,
-          entryId: mapConsumer.entryId,
-          selectedAssetRefs: mapConsumer.selectedAssetRefs,
-        },
-        actor,
-        { steps: compiled.steps, releaseId: compiled.releaseId },
-      )
-      await tx
-        .update(scheduleOccurrences)
-        .set({ admissionStatus: 'ADMITTED', jobId: created.job.jobId, admittedAt: now, reason: null })
-        .where(eq(scheduleOccurrences.id, occurrence.id))
-      await appendEvent(tx, schedule.id, 'admitted', { occurrenceId: occurrence.id, jobId: created.job.jobId }, now)
-      return occurrenceToDto(
-        { ...occurrence, admissionStatus: 'ADMITTED', jobId: created.job.jobId, admittedAt: now, reason: null },
-        created.job.firstRunId,
-      )
+      return skip('RESOURCE_UNAVAILABLE')
   }).catch(async error => {
     // Roll back consumer creation before recording a rejection. Catching inside
     // the transaction could commit a partially created suite and its children.

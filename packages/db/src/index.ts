@@ -820,9 +820,6 @@ export const resolveMapView = operation(mapFacts.resolveMapView);
 export const getMapSummary = operation(mapFacts.getMapSummary);
 export const listMapAtlasPages = operation(mapFacts.listMapAtlasPages);
 export const listMapAssets = operation(mapFacts.listMapAssets);
-export const listMapJobCandidateAssets = operation(
-  mapFacts.listMapJobCandidateAssets,
-);
 export const getMapAssetDetail = operation(mapFacts.getMapAssetDetail);
 export const listMapChanges = operation(mapFacts.listMapChanges);
 export const requestMapProjectionRebuild = operation(
@@ -908,43 +905,14 @@ export const updateTargetAccessPolicy = operation(
 );
 export const getMapJobPolicy = operation(mapFacts.getMapJobPolicy);
 export const updateMapJobPolicy = operation(mapFacts.updateMapJobPolicy);
-export const getExplorationPolicy = operation(mapFacts.getExplorationPolicy);
-export const updateExplorationPolicy = operation(
-  mapFacts.updateExplorationPolicy,
-);
-export const listMapSafeEntries = operation(mapFacts.listMapSafeEntries);
-export const createMapSafeEntry = operation(mapFacts.createMapSafeEntry);
-export const updateMapSafeEntry = operation(mapFacts.updateMapSafeEntry);
-export const archiveMapSafeEntry = operation(mapFacts.archiveMapSafeEntry);
-export const getMapSafeEntry = operation(mapFacts.getMapSafeEntry);
 export const getMapJob = operation(mapFacts.getMapJob);
 export const hasReadyMapJobWorker = operation(mapFacts.hasReadyMapJobWorker);
-export const hasReadyMapExploreWorker = operation(
-  mapFacts.hasReadyMapExploreWorker,
-);
-export const createMapJob = operation(mapFacts.createMapJob);
 export const cancelMapJob = operation(mapFacts.cancelMapJob);
 export const completeMapJobSlice = operation(mapFacts.completeMapJobSlice);
 export const hasClaimableUserRun = operation(mapFacts.hasClaimableUserRun);
 export const getTargetStateRule = operation(mapFacts.getTargetStateRule);
 export const upsertTargetStateRule = operation(mapFacts.upsertTargetStateRule);
-export const getExploreEntryRequestProfile = operation(mapFacts.getExploreEntryRequestProfile);
-export const upsertExploreEntryRequestProfile = operation(mapFacts.upsertExploreEntryRequestProfile);
-export const listExploreStateRecipes = operation(mapFacts.listExploreStateRecipes);
-export const getExploreStateRecipe = operation(mapFacts.getExploreStateRecipe);
-export const createExploreStateRecipe = operation(mapFacts.createExploreStateRecipe);
-export const reviewExploreStateRecipe = operation(mapFacts.reviewExploreStateRecipe);
-export const listExploreCandidates = operation(mapFacts.listExploreCandidates);
-export const getExploreCandidate = operation(mapFacts.getExploreCandidate);
-export const reviewExploreCandidate = operation(mapFacts.reviewExploreCandidate);
-export const listExploreTraversals = operation(mapFacts.listExploreTraversals);
-export const reviewUnknownExploreJob = operation(mapFacts.reviewUnknownExploreJob);
 export const recordExploreState = operation(mapFacts.recordExploreState);
-export const recordExploreDiscoveries = operation(mapFacts.recordExploreDiscoveries);
-export const recordExploreTraversal = operation(mapFacts.recordExploreTraversal);
-export const acquireRecipeUsage = operation(mapFacts.acquireRecipeUsage);
-export const acquireReviewQuota = operation(mapFacts.acquireReviewQuota);
-export const consumeExploreCandidateReview = operation(mapFacts.consumeExploreCandidateReview);
 export type { FrozenMapCandidate } from "./map/index.js";
 export {
   mapProjectionTestHooks,
