@@ -2,7 +2,6 @@ import { CANDIDATE_GROUPS_PROTOCOL, MODULE_MANIFEST_PROTOCOL } from './authoring
 import { RESOLUTION_PROTOCOL } from './resolution-policy.js'
 import { LOCATOR_RESOLUTION_PROTOCOL } from './locator-plan.js'
 import { MAP_CONSUMPTION_PROTOCOL } from './map-consumption.js'
-import { MAP_EXPLORE_PROTOCOL } from './map-exploration.js'
 import { MAP_JOBS_PROTOCOL } from './map-jobs.js'
 import { IMPORTED_OUTCOME_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL } from './outcome.js'
 import { AI_ATOMIC_ACTIONS_PROTOCOL, LIST_OUTPUT_PROTOCOL } from './step.js'
@@ -36,7 +35,6 @@ const PROTOCOL_ORDER = [
   CANDIDATE_GROUPS_PROTOCOL,
   MAP_CONSUMPTION_PROTOCOL,
   MAP_JOBS_PROTOCOL,
-  MAP_EXPLORE_PROTOCOL,
   SUITE_ADMISSION_PROTOCOL,
   MAP_SCHEDULER_PROTOCOL,
   UNIFIED_SCHEDULER_PROTOCOL,

@@ -346,7 +346,17 @@ export type PlatformModuleFallback = z.infer<typeof platformModuleFallbackSchema
 export { FACTORY_AI_PATH_LEARNING, platformAiPathLearningSchema, type PlatformAiPathLearning } from './ai-path-learning.js'
 import { FACTORY_AI_PATH_LEARNING, platformAiPathLearningSchema } from './ai-path-learning.js'
 
-export const platformConfigDocumentSchema = z
+/** 已下线能力的开关：存量文档与历史修订里可能仍带着，读取时丢弃。 */
+const RETIRED_PLATFORM_CONFIG_KEYS = ['mapExplorationEnabled'] as const
+
+function dropRetiredPlatformConfigKeys(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) }
+  for (const key of RETIRED_PLATFORM_CONFIG_KEYS) delete copy[key]
+  return copy
+}
+
+const platformConfigDocumentObjectSchema = z
   .strictObject({
     schemaVersion: z.literal(PLATFORM_CONFIG_SCHEMA_VERSION),
     execution: platformExecutionDefaultsSchema,
@@ -365,7 +375,6 @@ export const platformConfigDocumentSchema = z
     scenarioScheduledRunEnabled: z.boolean().default(false),
     suiteScheduledRunEnabled: z.boolean().default(false),
     knowledgeAnalysisEnabled: z.boolean().default(false),
-    mapExplorationEnabled: z.boolean().default(false),
     fixtureStepsEnabled: z.boolean().default(false),
     moduleResolver: platformModuleResolverSchema.default(FACTORY_MODULE_RESOLVER),
     moduleQuality: platformModuleQualitySchema.default(FACTORY_MODULE_QUALITY),
@@ -440,6 +449,7 @@ export const platformConfigDocumentSchema = z
       }
     }
   })
+export const platformConfigDocumentSchema = z.preprocess(dropRetiredPlatformConfigKeys, platformConfigDocumentObjectSchema)
 export type PlatformConfigDocument = z.infer<typeof platformConfigDocumentSchema>
 
 /**
@@ -510,7 +520,6 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   scenarioScheduledRunEnabled: false,
   suiteScheduledRunEnabled: false,
   knowledgeAnalysisEnabled: false,
-  mapExplorationEnabled: false,
   fixtureStepsEnabled: false,
   moduleResolver: FACTORY_MODULE_RESOLVER,
   moduleQuality: FACTORY_MODULE_QUALITY,

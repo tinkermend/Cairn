@@ -1,4 +1,3 @@
-import type { ExplorationAllowlistEntry } from './map-exploration.js'
 import type {
   FrozenMapJob,
   FrozenTargetAccessPolicy,
@@ -159,75 +158,14 @@ export function urlAllowedByCompiledScope(url: string, scope: CompiledAccessScop
   return scope.extraAllowlist.some((entry) => extraEntryMatches(parsed, entry))
 }
 
-function allowlistFromUnknown(value: unknown): ExplorationAllowlistEntry[] {
-  if (!Array.isArray(value)) return []
-  const entries: ExplorationAllowlistEntry[] = []
-  for (const item of value) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
-    const origin = 'origin' in item && typeof item.origin === 'string' ? item.origin : ''
-    if (!canonicalOrigin(origin)) continue
-    const pathPrefix =
-      'pathPrefix' in item && typeof item.pathPrefix === 'string' && item.pathPrefix.trim()
-        ? item.pathPrefix
-        : undefined
-    entries.push(pathPrefix ? { origin, pathPrefix } : { origin })
-  }
-  return entries
-}
-
-function firstNavigateUrl(steps: readonly { type: string; input?: unknown }[] | undefined): string | undefined {
-  for (const step of steps ?? []) {
-    if (step.type !== 'navigate' || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)) continue
-    const url = 'url' in step.input && typeof step.input.url === 'string' ? step.input.url : ''
-    if (url) return url
-  }
-  return undefined
-}
-
-function observeExploreInput(steps: readonly { type: string; input?: unknown }[] | undefined): {
-  mode?: string
-  allowlist: ExplorationAllowlistEntry[]
-} {
-  for (const step of steps ?? []) {
-    if (step.type !== 'map_observe' || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)) {
-      continue
-    }
-    return {
-      mode: 'mode' in step.input && typeof step.input.mode === 'string' ? step.input.mode : undefined,
-      allowlist: allowlistFromUnknown('allowlist' in step.input ? step.input.allowlist : undefined),
-    }
-  }
-  return { allowlist: [] }
-}
-
-function exactEntryAllow(url: string): CompiledAllowlistEntry | undefined {
-  const parsed = parseHttpUrl(url)
-  if (!parsed) return undefined
-  return { origin: parsed.origin, pathPrefix: parsed.pathname || '/', exact: true }
-}
-
 export function compileAccessScopeFromSnapshot(snapshot: {
   accessPolicy?: FrozenTargetAccessPolicy | null
   allowedOrigins?: readonly string[] | null
-  mapJob?: Pick<FrozenMapJob, 'jobId' | 'purpose' | 'source'> | null
-  steps?: readonly { type: string; input?: unknown }[]
+  mapJob?: Pick<FrozenMapJob, 'jobId'> | null
 }): CompiledAccessScope {
   const mapJob = Boolean(snapshot.mapJob?.jobId)
   const purposes = mapJob ? ACCESS_PURPOSES_MAP_JOB : ACCESS_PURPOSES_USER
   const rules = snapshot.accessPolicy?.policy.rules
     ?? compileAccessScopeFromOrigins(snapshot.allowedOrigins ?? []).rules
-  const explore = snapshot.mapJob?.purpose === 'map_explore' || snapshot.mapJob?.source === 'explore'
-  let extraAllowlist: CompiledAllowlistEntry[] | undefined
-  if (explore) {
-    const observed = observeExploreInput(snapshot.steps)
-    if (observed.mode === 'allowlist' && observed.allowlist.length > 0) {
-      extraAllowlist = observed.allowlist.map((entry) => ({
-        origin: entry.origin,
-        ...(entry.pathPrefix ? { pathPrefix: entry.pathPrefix } : {}),
-      }))
-      const entry = exactEntryAllow(firstNavigateUrl(snapshot.steps) ?? '')
-      if (entry) extraAllowlist.push(entry)
-    }
-  }
-  return { purposes: [...purposes], rules, ...(extraAllowlist ? { extraAllowlist } : {}) }
+  return { purposes: [...purposes], rules }
 }
