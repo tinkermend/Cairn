@@ -27,18 +27,6 @@ const mocks = vi.hoisted(() => ({
   fetchMapConsumptionPolicy: vi.fn(),
   updateMapConsumptionPolicy: vi.fn(),
   grantMapConsumptionEligibility: vi.fn(),
-  fetchMapJobPolicy: vi.fn(),
-  updateMapJobPolicy: vi.fn(),
-  fetchMapSafeEntries: vi.fn(),
-  createMapSafeEntry: vi.fn(),
-  updateMapSafeEntry: vi.fn(),
-  archiveMapSafeEntry: vi.fn(),
-  previewMapJob: vi.fn(),
-  createMapJob: vi.fn(),
-  fetchExplorationPolicy: vi.fn(),
-  updateExplorationPolicy: vi.fn(),
-  previewExploration: vi.fn(),
-  createExploration: vi.fn(),
   previewMapGovernance: vi.fn(),
   publishMapRelease: vi.fn(),
   submitMapGovernance: vi.fn(),
@@ -69,7 +57,7 @@ vi.mock('@/lib/schedules-api', () => ({
 vi.mock('@/lib/platform-config-api', () => ({
   fetchPlatformConfig: vi.fn(async () => ({
     revision: 1,
-    document: { mapScheduledRefreshEnabled: false, mapExplorationEnabled: false },
+    document: { mapScheduledRefreshEnabled: false },
     updatedAt: '2026-09-16T00:00:00.000Z',
   })),
 }))
@@ -206,28 +194,6 @@ describe('目标知识页', () => {
       eligibility: null,
       updatedAt: '1970-01-01T00:00:00.000Z',
     })
-    mocks.fetchMapJobPolicy.mockResolvedValue({
-      targetId: TARGET_ID,
-      revision: 0,
-      policy: {
-        schemaVersion: 1,
-        policyVersion: 1,
-        manualJobsEnabled: false,
-        maxProbePages: 1,
-        maxProbeObjects: 8,
-        maxProbeActions: 8,
-        maxProbeSeconds: 300,
-        maxRefreshPages: 5,
-        maxRefreshObjects: 20,
-        maxRefreshActions: 20,
-        maxRefreshSeconds: 900,
-        sliceWorkSeconds: 20,
-        defaultDepth: 'structure',
-        staticRefreshDays: 7,
-      },
-      updatedAt: '1970-01-01T00:00:00.000Z',
-    })
-    mocks.fetchMapSafeEntries.mockResolvedValue({ items: [] })
     mocks.fetchMapChanges.mockResolvedValue({
       items: [],
       view: {
@@ -263,49 +229,7 @@ describe('目标知识页', () => {
       identityHistory: [],
       applicability: 'unknown',
     })
-    mocks.fetchMapJobPolicy.mockResolvedValue({
-      targetId: TARGET_ID,
-      revision: 0,
-      policy: {
-        schemaVersion: 1,
-        policyVersion: 1,
-        manualJobsEnabled: false,
-        maxProbePages: 1,
-        maxProbeObjects: 8,
-        maxProbeActions: 8,
-        maxProbeSeconds: 300,
-        maxRefreshPages: 5,
-        maxRefreshObjects: 20,
-        maxRefreshActions: 20,
-        maxRefreshSeconds: 900,
-        sliceWorkSeconds: 20,
-        defaultDepth: 'structure',
-        staticRefreshDays: 7,
-      },
-      updatedAt: '1970-01-01T00:00:00.000Z',
-    })
-    mocks.fetchMapSafeEntries.mockResolvedValue({ items: [] })
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
-    mocks.fetchExplorationPolicy.mockResolvedValue({
-      targetId: TARGET_ID,
-      revision: 0,
-      policy: {
-        schemaVersion: 1,
-        policyVersion: 1,
-        exploreEnabled: false,
-        mode: 'allowlist',
-        modelEnabled: false,
-        maxHopDepth: 1,
-        maxNewPages: 1,
-        maxCandidates: 8,
-        maxActions: 1,
-        maxSeconds: 300,
-        sliceWorkSeconds: 20,
-        allowlist: [],
-        seedRefs: [],
-      },
-      updatedAt: '1970-01-01T00:00:00.000Z',
-    })
   })
 
   it('OMD02 中文桌面实现显示适用未知项，不以可信徽标概括', async () => {
@@ -316,74 +240,8 @@ describe('目标知识页', () => {
     await expect
       .element(screen.getByRole('button', { name: '发布此版本' }))
       .toBeVisible()
-
-    await screen.getByRole('tab', { name: /地图维护/ }).click()
-    await expect.element(screen.getByRole('heading', { name: '地图维护' })).toBeVisible()
-    await expect.element(screen.getByText('手工作业关闭')).toBeVisible()
-    await page.screenshot({
-      path: '../../../../../.run/omd-review/maintenance-tab.png',
-    })
-
-    await screen.getByRole('tab', { name: /知识资产/ }).click()
-    await expect.element(screen.getByText('查看知识')).toBeVisible()
     await page.screenshot({
       path: '../../../../../.run/omd-review/desktop.png',
-    })
-  })
-
-  it('维护者视图：地图维护与采集卡片对齐且紧凑呈现', async () => {
-    signIn([
-      'target:read',
-      'map:read',
-      'map:review',
-      'map:publish',
-      'map:maintain',
-      'map:explore',
-      'schedule:read',
-      'schedule:write',
-    ])
-    mocks.fetchMapSafeEntries.mockResolvedValue({
-      items: [
-        {
-          targetId: TARGET_ID,
-          entryId: '22222222-2222-4222-8222-222222222222',
-          version: 1,
-          name: '主控制台',
-          url: 'https://app.example.com/console',
-          arrivalName: '控制台概览',
-          arrivalTarget: { framePath: [], candidates: [{ by: 'css', value: 'body' }] },
-          safetyBasisKind: 'confirmed_path',
-          summary: '已核实主控入口',
-          jobKinds: ['map_probe', 'map_refresh', 'map_explore'],
-          createdAt: '2026-09-24T00:00:00.000Z',
-        },
-      ],
-    })
-    mocks.fetchTargetAccounts.mockResolvedValue({
-      items: [
-        {
-          id: 'acc-1',
-          targetId: TARGET_ID,
-          displayName: '运维账号',
-          username: 'ops-admin',
-          status: 'active',
-          usage: 'both',
-        },
-      ],
-    })
-    mocks.fetchMapJobPolicy.mockResolvedValue({
-      targetId: TARGET_ID,
-      revision: 1,
-      policy: {
-        manualJobsEnabled: true,
-      },
-    })
-    const screen = await renderPage()
-    await screen.getByRole('tab', { name: /地图维护/ }).click()
-    await expect.element(screen.getByRole('heading', { name: '安全进入路径' })).toBeVisible()
-    await expect.element(screen.getByRole('heading', { name: '地图维护' })).toBeVisible()
-    await page.screenshot({
-      path: '../../../../../.run/omd-review/maintenance-tab-full.png',
     })
   })
 
