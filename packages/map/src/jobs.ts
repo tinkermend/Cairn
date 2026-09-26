@@ -97,6 +97,13 @@ export function compileMapJobSlice(input: {
   policy?: MapJobPolicy
   exploration?: ExplorationPolicy
   seedUrls?: readonly string[]
+  recipe?: import('@cairn/shared').ExploreSourceStateRecipe
+  candidateAction?: {
+    candidateId: string
+    actionCategory: 'explicit_url' | 'reveal' | 'opaque_navigation'
+    targetUrl?: string
+    targetDescriptor?: TargetDescriptor
+  }
 }): { ok: true; steps: Step[] } | { ok: false; reason: 'compile_rejected' | 'entry_precondition_unknown'; message: string } {
   const policy = input.policy ?? FACTORY_MAP_JOB_POLICY
   if (!input.entry.url || !input.entry.arrivalTarget) {
@@ -155,6 +162,13 @@ function compileExploreSlice(input: {
   entry: MapSafeEntry
   exploration?: ExplorationPolicy
   seedUrls?: readonly string[]
+  recipe?: import('@cairn/shared').ExploreSourceStateRecipe
+  candidateAction?: {
+    candidateId: string
+    actionCategory: 'explicit_url' | 'reveal' | 'opaque_navigation'
+    targetUrl?: string
+    targetDescriptor?: TargetDescriptor
+  }
 }): { ok: true; steps: Step[] } | { ok: false; reason: 'compile_rejected' | 'entry_precondition_unknown'; message: string } {
   const exploration = input.exploration ?? FACTORY_EXPLORATION_POLICY
   if (exploration.modelEnabled) {
@@ -181,42 +195,129 @@ function compileExploreSlice(input: {
       policy: { timeoutMs: 8_000, retryLimit: 0 },
       input: { target: expandArrivalTarget(input.entry.arrivalTarget, input.entry.arrivalName), expect: { kind: 'visible' } },
     },
-    {
-      id: '00000000-0000-4000-8000-000000000103',
-      name: '观察当前表面',
-      type: 'map_observe',
-      effectType: 'READ_ONLY',
-      outputKey: 'explore_observation',
-      policy: { timeoutMs: 8_000, retryLimit: 0 },
-      input: { mode: exploration.mode, allowlist: exploration.allowlist, seedUrls },
-    },
-    {
-      id: '00000000-0000-4000-8000-000000000104',
-      name: '提名下一跳',
-      type: 'map_propose',
-      effectType: 'READ_ONLY',
-      outputKey: 'explore_proposal',
-      policy: { timeoutMs: 8_000, retryLimit: 0 },
-      input: { from: 'explore_observation' },
-    },
-    {
-      id: '00000000-0000-4000-8000-000000000105',
-      name: '守卫后动作',
+  ]
+
+  let stepSeq = 103
+
+  // 若提供了状态配方，确定性重走配方（最多 3 步）
+  if (input.recipe && input.recipe.steps.length > 0) {
+    for (const rStep of input.recipe.steps.slice(0, 3)) {
+      if (rStep.actionKind === 'navigate_known_url' && rStep.url) {
+        steps.push({
+          id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+          name: `配方直达 ${rStep.name}`,
+          type: 'navigate',
+          effectType: 'READ_ONLY',
+          policy: { timeoutMs: 8_000, retryLimit: 0 },
+          input: { url: rStep.url },
+        })
+      } else if (rStep.targetDescriptor) {
+        steps.push({
+          id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+          name: `配方动作 ${rStep.name}`,
+          type: 'click',
+          effectType: 'READ_ONLY',
+          policy: { timeoutMs: 8_000, retryLimit: 0 },
+          input: { target: rStep.targetDescriptor },
+        })
+      }
+      if (rStep.postStateAssertion?.selector) {
+        steps.push({
+          id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+          name: `配方断言 ${rStep.name}`,
+          type: 'assert',
+          effectType: 'READ_ONLY',
+          policy: { timeoutMs: 8_000, retryLimit: 0 },
+          input: {
+            target: { framePath: [], candidates: [{ by: 'css', value: rStep.postStateAssertion.selector }] },
+            expect: { kind: 'visible' },
+          },
+        })
+      }
+    }
+  }
+
+  // 观察当前来源状态
+  steps.push({
+    id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+    name: '观察当前表面',
+    type: 'map_observe',
+    effectType: 'READ_ONLY',
+    outputKey: 'explore_observation',
+    policy: { timeoutMs: 8_000, retryLimit: 0 },
+    input: { mode: exploration.mode, allowlist: exploration.allowlist, seedUrls },
+  })
+
+  // 如果是一次受控动作执行作业
+  if (input.candidateAction) {
+    steps.push({
+      id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+      name: '执行受控动作',
       type: 'map_guarded_action',
-      effectType: 'READ_ONLY',
+      effectType: 'SIDE_EFFECT',
       outputKey: 'explore_action',
-      policy: { timeoutMs: 8_000, retryLimit: 0 },
-      input: { from: 'explore_proposal' },
-    },
-    {
-      id: '00000000-0000-4000-8000-000000000106',
+      policy: { timeoutMs: 12_000, retryLimit: 0 },
+      input: {
+        from: 'explore_proposal',
+        proposal: {
+          kind: input.candidateAction.targetUrl ? 'navigate' : 'reveal',
+          candidateId: input.candidateAction.candidateId,
+          url: input.candidateAction.targetUrl,
+          reason: '用户审核批准的候选动作',
+        },
+        targetDescriptor: input.candidateAction.targetDescriptor,
+      },
+    })
+    steps.push({
+      id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
       name: '核验探索结果',
       type: 'map_verify',
       effectType: 'READ_ONLY',
       outputKey: 'explore_verification',
       policy: { timeoutMs: 8_000, retryLimit: 0 },
       input: { from: 'explore_action', observationFrom: 'explore_observation' },
-    },
-  ]
+    })
+    steps.push({
+      id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+      name: '扫描抵达状态',
+      type: 'map_observe',
+      effectType: 'READ_ONLY',
+      outputKey: 'explore_post_observation',
+      policy: { timeoutMs: 8_000, retryLimit: 0 },
+      input: { mode: exploration.mode, allowlist: exploration.allowlist, seedUrls },
+    })
+  } else {
+    // 默认来源状态扫描链路
+    steps.push(
+      {
+        id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+        name: '提名下一跳',
+        type: 'map_propose',
+        effectType: 'READ_ONLY',
+        outputKey: 'explore_proposal',
+        policy: { timeoutMs: 8_000, retryLimit: 0 },
+        input: { from: 'explore_observation' },
+      },
+      {
+        id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+        name: '守卫后动作',
+        type: 'map_guarded_action',
+        effectType: 'READ_ONLY',
+        outputKey: 'explore_action',
+        policy: { timeoutMs: 8_000, retryLimit: 0 },
+        input: { from: 'explore_proposal' },
+      },
+      {
+        id: `00000000-0000-4000-8000-000000000${stepSeq++}`,
+        name: '核验探索结果',
+        type: 'map_verify',
+        effectType: 'READ_ONLY',
+        outputKey: 'explore_verification',
+        policy: { timeoutMs: 8_000, retryLimit: 0 },
+        input: { from: 'explore_action', observationFrom: 'explore_observation' },
+      },
+    )
+  }
+
   return { ok: true, steps }
 }
