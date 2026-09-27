@@ -104,7 +104,7 @@ describe('消息推送真实 HTTPS / SMTP 协议与外部副作用', () => {
       []
     const { url } = await httpsReceiver((req, res) => {
       let body = ''
-      req.on('data', (c) => {
+      req.on('data', (c: Buffer) => {
         body += c.toString()
       })
       req.on('end', () => {

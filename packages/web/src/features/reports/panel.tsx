@@ -388,12 +388,12 @@ function ReportPanelContent({
                 <div className='flex items-center gap-2'>
                   <span className='text-label font-medium text-foreground'>AI 辅助解读：</span>
                   {current.aiJob.status === 'completed' && (
-                    <span className='rounded bg-emerald-500/10 px-2 py-0.5 text-small font-semibold text-emerald-600 dark:text-emerald-400'>
+                    <span className='rounded bg-status-success-background px-2 py-0.5 text-small font-semibold text-status-success-foreground'>
                       已就绪 ({current.aiJob.model || '平台模型'})
                     </span>
                   )}
                   {['pending', 'running'].includes(current.aiJob.status) && (
-                    <span className='rounded bg-blue-500/10 px-2 py-0.5 text-small font-semibold text-blue-600 dark:text-blue-400 animate-pulse'>
+                    <span className='rounded bg-status-info-background px-2 py-0.5 text-small font-semibold text-status-info-foreground animate-pulse'>
                       正在生成中...
                     </span>
                   )}

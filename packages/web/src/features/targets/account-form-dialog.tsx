@@ -439,14 +439,14 @@ export function AccountFormDialog({
                       <FormLabel>TOTP 密钥 (2FA)</FormLabel>
                       {isEdit && current?.hasTotp ? (
                         <div className='flex items-center gap-2'>
-                          <Badge variant='outline' className='text-emerald-600 border-emerald-300'>
+                          <Badge variant='outline' className='text-status-success-foreground border-status-success-accent/40'>
                             已配置
                           </Badge>
                           <Button
                             type='button'
                             variant='ghost'
                             size='sm'
-                            className='h-6 px-2 text-xs text-destructive hover:text-destructive'
+                            className='h-6 px-2 text-label text-destructive hover:text-destructive'
                             onClick={() => setClearTotpOpen(true)}
                           >
                             清除
@@ -475,7 +475,7 @@ export function AccountFormDialog({
                 <div className='rounded-lg border p-3 space-y-3 bg-muted/20'>
                   <div className='flex items-center justify-between'>
                     <div className='space-y-0.5'>
-                      <div className='text-sm font-medium'>免登凭据 (Playwright StorageState)</div>
+                      <div className='text-body font-medium'>免登凭据 (Playwright StorageState)</div>
                       <p className='text-label text-muted-foreground'>
                         {current.hasStorageState
                           ? `已导入免登上下文${current.storageStateUpdatedAt ? `（更新于 ${new Date(current.storageStateUpdatedAt).toLocaleString()}）` : ''}`
@@ -501,25 +501,25 @@ export function AccountFormDialog({
                   <div className='border-t pt-3 flex items-start justify-between gap-3'>
                     <div className='space-y-1 min-w-0 flex-1'>
                       <div className='flex items-center gap-2'>
-                        <span className='text-sm font-medium'>登录态快照 (Session Snapshot)</span>
+                        <span className='text-body font-medium'>登录态快照 (Session Snapshot)</span>
                         {current.snapshotSummary?.hasSnapshot ? (
                           <span
-                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium ${
+                            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-label font-medium ${
                               current.snapshotSummary.stale
-                                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30'
-                                : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                                ? 'bg-status-warning-background text-status-warning-foreground border border-status-warning-accent/30'
+                                : 'bg-status-success-background text-status-success-foreground border border-status-success-accent/30'
                             }`}
                           >
                             {current.snapshotSummary.stale ? '待刷新 (Stale)' : '有效 (Fresh)'}
                           </span>
                         ) : (
-                          <span className='inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground'>
+                          <span className='inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-label text-muted-foreground'>
                             暂无快照
                           </span>
                         )}
                       </div>
                       {current.snapshotSummary?.hasSnapshot ? (
-                        <div className='grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground pt-1'>
+                        <div className='grid grid-cols-2 gap-x-4 gap-y-1 text-label text-muted-foreground pt-1'>
                           <div>
                             有效 Cookie 数：<span className='text-foreground font-mono'>{current.snapshotSummary.cookieCount ?? 0}</span>
                           </div>
@@ -741,7 +741,7 @@ export function AccountFormDialog({
               <input
                 type='file'
                 accept='.json,application/json'
-                className='text-xs'
+                className='text-label'
                 onChange={(e) => {
                   const file = e.target.files?.[0]
                   if (file) {
@@ -759,7 +759,7 @@ export function AccountFormDialog({
               placeholder='{"cookies": [...], "origins": [...]}'
               value={storageStateText}
               onChange={(e) => setStorageStateText(e.target.value)}
-              className='font-mono text-xs'
+              className='font-mono text-label'
             />
           </div>
           <DialogFooter>

@@ -925,10 +925,10 @@ export function StepPipelineRail({
                       )}
                       {step && 'origin' in item.node && item.node.origin?.kind === 'ai_solidification' && (
                         <span
-                          className='inline-flex items-center gap-1 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1 py-0.2 text-3xs font-medium'
+                          className='inline-flex items-center gap-1 rounded bg-ai-background text-ai-foreground px-1 py-0.5 text-label font-medium'
                           title={`固化自 Attempt: ${item.node.origin.attemptId}\n原指令: ${item.node.origin.instruction}`}
                         >
-                          <Sparkles className='size-2.5 text-amber-600 dark:text-amber-400' />
+                          <Sparkles className='size-2.5 text-ai-foreground' />
                           <span>固化</span>
                         </span>
                       )}

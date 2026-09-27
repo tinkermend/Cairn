@@ -36,6 +36,7 @@ import {
 } from '@/lib/sessions-api'
 import { disposeWorkerSession } from '@/lib/workers-api'
 import { useAuthStore } from '@/stores/auth-store'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
@@ -307,6 +308,12 @@ export function SessionWorkbenchView({
   const detail = useQuery({
     queryKey: ['account-session', targetId, accountId],
     queryFn: () => fetchAccountSession(targetId, accountId),
+  })
+
+  useBreadcrumb({
+    entityId: accountId,
+    parentTitle: detail.data?.targetName || '目标系统',
+    title: detail.data?.accountDisplayName || detail.data?.accountUsername || '会话详情',
   })
   const events = useQuery({
     queryKey: ['account-session-events', targetId, accountId, eventCursor, selectedSessionId],

@@ -343,7 +343,7 @@ describe('Suite Stages Schema & Orchestration Contracts', () => {
 
     // Worker 直接消费已排队的旧消息 payload；缺少新字段时按未核验显示。
     const { undeterminedCount: _removed, ...legacy } = { ...base, healthScore: 100, healthGrade: 'EXCELLENT' as const }
-    const oldCard = buildWechatWorkCard({ summary: legacy as SuiteSummaryBlock, suiteName: '旧消息' })
+    const oldCard = buildWechatWorkCard({ summary: legacy as unknown as SuiteSummaryBlock, suiteName: '旧消息' })
     expect(oldCard.markdown.content).toContain('历史分类未核验')
     expect(oldCard.markdown.content).not.toContain('100分')
     expect(oldCard.markdown.content).not.toContain('✅')

@@ -31,7 +31,28 @@ export function KeyRecordDialog({
   command,
   onSaved,
 }: KeyRecordDialogProps) {
-  const [recordedKey, setRecordedKey] = useState<string | null>(null)
+  if (!command) return null
+
+  return (
+    <KeyRecordDialogContent
+      key={open ? command.id : 'closed'}
+      open={open}
+      onOpenChange={onOpenChange}
+      command={command}
+      onSaved={onSaved}
+    />
+  )
+}
+
+function KeyRecordDialogContent({
+  open,
+  onOpenChange,
+  command,
+  onSaved,
+}: Omit<KeyRecordDialogProps, 'command'> & { command: KeybindingItem }) {
+  const [recordedKey, setRecordedKey] = useState<string | null>(() =>
+    useKeybindingsStore.getState().getEffectiveKey(command.id)
+  )
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
 
@@ -43,17 +64,10 @@ export function KeyRecordDialog({
     : false
 
   useEffect(() => {
-    if (open && command) {
-      const curKey = useKeybindingsStore.getState().getEffectiveKey(command.id)
-      setRecordedKey(curKey)
-      setErrorMsg(null)
-      setTimeout(() => {
-        inputAreaRef.current?.focus()
-      }, 50)
-    }
-  }, [open, command])
-
-  if (!command) return null
+    if (!open) return
+    const timeout = window.setTimeout(() => inputAreaRef.current?.focus(), 50)
+    return () => window.clearTimeout(timeout)
+  }, [open])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -123,11 +137,11 @@ export function KeyRecordDialog({
             tabIndex={0}
             onKeyDown={handleKeyDown}
             onClick={() => inputAreaRef.current?.focus()}
-            className='flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-primary/50 bg-accent/20 p-6 text-center outline-none ring-primary/20 transition-all focus:border-primary focus:ring-4 select-none cursor-pointer'
+            className='flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-primary/50 bg-accent/20 p-6 text-center outline-none ring-primary/20 transition-[border-color,box-shadow,background-color] focus:border-primary focus:ring-4 select-none cursor-pointer'
             data-testid='shortcut-capture-area'
             aria-label='按键录制捕获区'
           >
-            <span className='text-xs text-muted-foreground'>
+            <span className='text-small text-muted-foreground'>
               直接在键盘上按下目标组合键（必须包含 Ctrl、Alt 或 Cmd 修饰键）
             </span>
 
@@ -135,7 +149,7 @@ export function KeyRecordDialog({
               {recordedKey ? (
                 <Kbd shortcut={recordedKey} size='lg' className='shadow-sm' />
               ) : (
-                <span className='text-sm text-muted-foreground animate-pulse'>
+                <span className='text-body text-muted-foreground animate-pulse'>
                   等待按键中...
                 </span>
               )}
@@ -144,7 +158,7 @@ export function KeyRecordDialog({
 
           {errorMsg ? (
             <div
-              className='flex items-center gap-2 rounded-md bg-destructive/10 p-2.5 text-xs text-destructive'
+              className='flex items-center gap-2 rounded-md bg-destructive/10 p-2.5 text-label text-destructive'
               role='alert'
               data-testid='shortcut-error-msg'
             >
@@ -152,14 +166,14 @@ export function KeyRecordDialog({
               <span>{errorMsg}</span>
             </div>
           ) : (
-            <div className='flex items-center justify-between text-xs text-muted-foreground px-1'>
+            <div className='flex items-center justify-between text-label text-muted-foreground px-1'>
               <span>默认键位：<Kbd shortcut={command.defaultKey} size='sm' /></span>
               {isCustom ? (
                 <Button
                   variant='ghost'
                   size='sm'
                   onClick={handleResetToDefault}
-                  className='h-6 px-2 text-xs text-muted-foreground hover:text-foreground'
+                  className='h-6 px-2 text-label text-muted-foreground hover:text-foreground'
                 >
                   <RotateCcw className='mr-1 size-3' />
                   恢复此命令默认

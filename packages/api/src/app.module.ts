@@ -15,6 +15,7 @@ import { AuthModule } from "./auth/auth.module";
 import { BrowserSessionsModule } from "./browser-sessions/browser-sessions.module";
 import { WorkersModule } from "./workers/workers.module";
 import { HealthModule } from "./health/health.module";
+import { PlatformHealthModule } from "./platform-health/platform-health.module";
 import { PermissionsGuard } from "./rbac/permissions.guard";
 import { RbacModule } from "./rbac/rbac.module";
 import { RecordingsModule } from "./recordings/recordings.module";
@@ -53,6 +54,7 @@ import { RepairModule } from "./repair/repair.module";
     DbModule,
     ChangeHintModule,
     HealthModule,
+    PlatformHealthModule,
     AuthModule,
     RbacModule,
     OverviewModule,

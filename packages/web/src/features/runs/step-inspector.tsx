@@ -341,8 +341,8 @@ export function StepInspector({
 
           {/* C. AI 执行摘要（若为 AI 步骤） */}
           {isAi && activeAttempt ? (
-            <div className='rounded-md border border-purple-200 bg-purple-50/50 dark:bg-purple-950/20 p-3 space-y-2'>
-              <div className='flex items-center gap-1.5 text-purple-700 dark:text-purple-300 font-medium text-label'>
+            <div className='rounded-md border border-ai-accent/30 bg-ai-background p-3 space-y-2'>
+              <div className='flex items-center gap-1.5 text-ai-foreground font-medium text-label'>
                 <Sparkles className='size-3.5' />
                 <span>AI 智能动作决策</span>
               </div>

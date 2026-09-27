@@ -305,6 +305,10 @@ describe('RunOutput Assembly & Fallback (AC02, AC03, AC04, AC05)', () => {
       status: 'UNDETERMINED',
       summary: '流程执行完成，但业务结果无法确认。',
     })
+    expect(projectRunOutput(old, 'SUCCEEDED', 'NOT_EVALUATED')).toMatchObject({
+      status: 'UNDETERMINED',
+      summary: '流程执行完成，但业务结果未评价。',
+    })
     expect(projectRunOutput(old, 'SUCCEEDED', 'FAIL')).toMatchObject({
       status: 'ANOMALOUS',
       summary: '流程执行完成，但业务检查未通过。',

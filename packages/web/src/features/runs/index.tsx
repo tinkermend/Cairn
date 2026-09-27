@@ -659,7 +659,7 @@ export function RunsPage() {
                                 </StatusBadge>
                               )
                             ) : (
-                              <span className='text-xs text-muted-foreground'>
+                              <span className='text-label text-muted-foreground'>
                                 —
                               </span>
                             )}
@@ -681,7 +681,7 @@ export function RunsPage() {
                                 </Link>
                               </CatalogName>
                               <span
-                                className='inline-flex items-center rounded border border-border-divider bg-muted/60 px-1 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-muted cursor-pointer select-all'
+                                className='inline-flex items-center rounded border border-border-divider bg-muted/60 px-1 py-0.5 font-mono text-label text-muted-foreground hover:bg-muted cursor-pointer select-all'
                                 title={`完整运行编号：${item.id}（点击复制）`}
                                 onClick={(e) => {
                                   e.preventDefault()
@@ -695,7 +695,7 @@ export function RunsPage() {
                             </div>
                             {item.outputSummary ? (
                               <span
-                                className='text-xs text-muted-foreground truncate'
+                                className='text-label text-muted-foreground truncate'
                                 title={item.outputSummary}
                                 data-testid='run-output-summary-cell'
                               >

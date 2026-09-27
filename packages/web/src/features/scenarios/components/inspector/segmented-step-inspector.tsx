@@ -71,11 +71,11 @@ export function SegmentedStepInspector({
           />
         )}
         {origin?.kind === 'ai_solidification' && (
-          <div className='flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs'>
-            <Sparkles className='size-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5' />
+          <div className='flex items-start gap-2.5 rounded-lg border border-ai-foreground/20 bg-ai-background p-3 text-label'>
+            <Sparkles className='size-4 text-ai-foreground shrink-0 mt-0.5' />
             <div className='space-y-1 min-w-0 flex-1'>
               <div className='flex items-center justify-between gap-2'>
-                <span className='font-medium text-amber-900 dark:text-amber-200'>
+                <span className='font-medium text-ai-foreground'>
                   固化自 AI 视觉步骤
                 </span>
                 <a

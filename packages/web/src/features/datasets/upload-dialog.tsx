@@ -162,7 +162,7 @@ export function DatasetUploadDialog({
         </DialogHeader>
 
         {errorMsg && (
-          <div className='p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2'>
+          <div className='p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-small flex items-center gap-2'>
             <AlertCircle className='h-4 w-4 shrink-0' />
             <span>{errorMsg}</span>
           </div>
@@ -175,8 +175,8 @@ export function DatasetUploadDialog({
                 <Upload className='h-6 w-6' />
               </div>
               <div className='text-center space-y-1'>
-                <p className='text-sm font-medium'>拖拽 Excel 或 CSV 文件到此处，或点击浏览</p>
-                <p className='text-xs text-muted-foreground'>支持 .xlsx, .csv，最大 10MB</p>
+                <p className='text-body font-medium'>选择 Excel 或 CSV 文件</p>
+                <p className='text-small text-muted-foreground'>支持 .xlsx, .csv，最大 10MB</p>
               </div>
               <input
                 type='file'
@@ -201,18 +201,18 @@ export function DatasetUploadDialog({
             <div className='space-y-4'>
               <div className='grid grid-cols-1 md:grid-cols-2 gap-3 p-3 rounded-lg border bg-muted/10'>
                 <div className='space-y-1.5'>
-                  <Label className='text-xs'>数据集名称</Label>
+                  <Label className='text-label'>数据集名称</Label>
                   <Input
-                    className='h-8 text-xs'
+                    className='h-8 text-label'
                     value={datasetName}
                     onChange={(e) => setDatasetName(e.target.value)}
                     placeholder='为数据集命名'
                   />
                 </div>
                 <div className='space-y-1.5'>
-                  <Label className='text-xs'>关联目标系统</Label>
+                  <Label className='text-label'>关联目标系统</Label>
                   <Select value={targetId} onValueChange={setTargetId}>
-                    <SelectTrigger className='h-8 text-xs'>
+                    <SelectTrigger className='h-8 text-label'>
                       <SelectValue placeholder='选择数据集所属的目标系统' />
                     </SelectTrigger>
                     <SelectContent>
@@ -228,11 +228,11 @@ export function DatasetUploadDialog({
 
               {parsed.sheetNames.length > 1 && (
                 <div className='flex items-center gap-2'>
-                  <Label className='text-xs text-muted-foreground whitespace-nowrap'>
+                  <Label className='text-label text-muted-foreground whitespace-nowrap'>
                     选择工作表 (Sheet):
                   </Label>
                   <Select value={selectedSheet} onValueChange={handleSheetChange}>
-                    <SelectTrigger className='h-8 w-48 text-xs'>
+                    <SelectTrigger className='h-8 w-48 text-label'>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -247,11 +247,11 @@ export function DatasetUploadDialog({
               )}
 
               <div className='space-y-2'>
-                <div className='flex items-center justify-between text-xs'>
+                <div className='flex items-center justify-between text-label'>
                   <div className='flex items-center gap-2'>
                     <Table2 className='h-4 w-4 text-primary' />
                     <span className='font-medium'>字段结构与列类型推断</span>
-                    <Badge variant='secondary' className='text-[10px]'>
+                    <Badge variant='secondary' className='text-label'>
                       共 {columns.length} 列
                     </Badge>
                   </div>
@@ -260,7 +260,7 @@ export function DatasetUploadDialog({
                   </span>
                 </div>
 
-                <div className='grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-36 overflow-y-auto p-2 border rounded-lg bg-card text-xs'>
+                <div className='grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-36 overflow-y-auto p-2 border rounded-lg bg-card text-label'>
                   {columns.map((col, idx) => (
                     <div
                       key={col.key}
@@ -270,7 +270,7 @@ export function DatasetUploadDialog({
                         {col.name}
                       </div>
                       <div className='flex items-center justify-between gap-1'>
-                        <span className='text-[10px] text-muted-foreground font-mono truncate'>
+                        <span className='text-label text-muted-foreground font-mono truncate'>
                           {col.key}
                         </span>
                         <Select
@@ -279,7 +279,7 @@ export function DatasetUploadDialog({
                             handleColumnTypeChange(idx, val)
                           }
                         >
-                          <SelectTrigger className='h-6 w-20 text-[10px] px-1.5'>
+                          <SelectTrigger className='h-6 w-20 text-label px-1.5'>
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -297,16 +297,16 @@ export function DatasetUploadDialog({
               </div>
 
               <div className='space-y-2'>
-                <div className='text-xs font-medium text-muted-foreground'>
+                <div className='text-label font-medium text-muted-foreground'>
                   数据行预览 (前 5 行)
                 </div>
                 <div className='border rounded-lg overflow-x-auto max-h-48'>
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className='w-12 text-[11px] text-center'>#</TableHead>
+                        <TableHead className='w-12 text-label text-center'>#</TableHead>
                         {columns.map((col) => (
-                          <TableHead key={col.key} className='text-[11px] font-medium'>
+                          <TableHead key={col.key} className='text-label font-medium'>
                             {col.name}
                           </TableHead>
                         ))}
@@ -315,13 +315,13 @@ export function DatasetUploadDialog({
                     <TableBody>
                       {parsed.activeSheet.rows.slice(0, 5).map((row, rIdx) => (
                         <TableRow key={rIdx}>
-                          <TableCell className='text-[11px] text-center text-muted-foreground font-mono'>
+                          <TableCell className='text-small text-center text-muted-foreground font-mono'>
                             {rIdx + 1}
                           </TableCell>
                           {columns.map((col) => (
                             <TableCell
                               key={col.key}
-                              className='text-[11px] font-mono whitespace-nowrap'
+                              className='text-small font-mono whitespace-nowrap'
                             >
                               {String(row[col.key] ?? '')}
                             </TableCell>

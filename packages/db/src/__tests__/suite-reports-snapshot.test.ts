@@ -4,12 +4,13 @@ import { reportScreenshotRefs } from '../reports/materials.js'
 import {
   DEFAULT_REPORT_CONFIG,
   suiteSummaryBlockSchema,
+  type JsonValue,
   type SuiteSummaryBlock,
 } from '@cairn/shared'
 
 describe('场景集综合巡检报告文档装配与快照', () => {
   it('SUITE_RUN 正确装配四层报告与 suite_business_summary 汇总块', () => {
-    const mockSuiteSource = {
+    const mockSuiteSource: Record<string, JsonValue> = {
       kind: 'SUITE_RUN' as const,
       suiteRunId: '00000000-0000-4000-8000-000000000010',
       suiteName: '每日核心巡检',

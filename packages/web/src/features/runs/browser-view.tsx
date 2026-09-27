@@ -935,7 +935,7 @@ export function BrowserView({
                         onClick={() => setViewPageId(page.pageRef.pageId)}
                       >
                         {duplicateCount > 1 ? (
-                          <span className='text-[10px] text-muted-foreground mr-0.5'>
+                          <span className='text-label text-muted-foreground mr-0.5'>
                             [{managedPageBadge(page.kind)}]
                           </span>
                         ) : null}

@@ -1233,6 +1233,8 @@ export const recreateSessionForOperation = operation(
 
 import * as monitoringImpl from "./monitoring/index.js";
 export const summarizeFleet = operation(monitoringImpl.summarizeFleet);
+export const readPlatformWorkerHealthSummary = operation(monitoringImpl.readPlatformWorkerHealthSummary);
+export type { PlatformWorkerHealthSummary } from "./monitoring/index.js";
 export const summarizeQueues = operation(monitoringImpl.summarizeQueues);
 export const summarizeAnomalies = operation(monitoringImpl.summarizeAnomalies);
 export const listMonitorProfiles = operation(
@@ -1259,6 +1261,10 @@ export const markLostApiInstances = operation(
 export const listApiInstanceCard = operation(
   monitoringImpl.listApiInstanceCard,
 );
+export const readPlatformApiHealthSummary = operation(
+  monitoringImpl.readPlatformApiHealthSummary,
+);
+export type { PlatformApiHealthSummary } from "./monitoring/index.js";
 export const upsertObjectStoreProbe = operation(
   monitoringImpl.upsertObjectStoreProbe,
 );

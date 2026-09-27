@@ -576,6 +576,78 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
   })
 
   describe('4. 方案 A 场景确定性发现能力 (scenario.discover)', () => {
+    describe('普通用户按目标名称找场景', () => {
+      let namedTargetId: string
+      const names = ['设备巡检', '告警处置', '资产核对', '工单跟进']
+
+      beforeAll(async () => {
+        const targetsStore = new TargetsStore(db, () => Buffer.from('encrypted'))
+        const target = await targetsStore.createTarget(
+          createTargetBodySchema.parse({
+            code: `ops-platform-${newId().slice(0, 8)}`,
+            name: '智慧运维管理平台',
+            entryUrl: 'https://ops.example.com',
+            account: { username: 'ops', displayName: '运维账号', password: 'test-password', validity: { mode: 'permanent' } },
+          }),
+          adminActor,
+        )
+        namedTargetId = target.id
+        for (const name of names) {
+          await createScenarioWithVersion(db, {
+            targetId: namedTargetId,
+            name,
+            steps: [{ ...echoStep, id: newId() }],
+            actor: adminActor,
+          })
+        }
+      })
+
+      for (const question of [
+        '有哪些关于智慧运维管理平台的场景？',
+        '列出智慧运维管理平台的场景，方便我找到要查看的场景。',
+      ]) {
+        for (const withContext of [false, true]) {
+          it(`${question}（${withContext ? '目标详情页' : '无页面上下文'}）返回该目标的四个场景`, async () => {
+            currentActor = adminActor
+            const conv = await request(app.getHttpServer()).post('/assistant/conversations').send({}).expect(201)
+            const submitted = await request(app.getHttpServer())
+              .post(`/assistant/conversations/${conv.body.id}/turns`)
+              .send({
+                clientTurnId: `discover-named-${newId()}`,
+                question,
+                capabilityHint: 'scenario.discover',
+                ...(withContext ? { pageContext: { page: 'target', targetId: namedTargetId } } : {}),
+              })
+              .expect(202)
+            const turn = await waitForTurn(conv.body.id, submitted.body.turnId)
+            expect(turn.status).toBe('COMPLETED')
+            expect(turn.result?.kind).toBe('discovery')
+            expect(turn.result.scope).toMatchObject({ targetId: namedTargetId, targetName: '智慧运维管理平台' })
+            expect(turn.result.scope.filter).toBeUndefined()
+            expect(turn.result.candidates.map((candidate: { name: string }) => candidate.name).sort()).toEqual([...names].sort())
+            expect(turn.slots?.filter).toBeUndefined()
+          })
+        }
+      }
+
+      it('无目标权限时按名称查询不泄露目标和场景', async () => {
+        currentActor = userA
+        const conv = await request(app.getHttpServer()).post('/assistant/conversations').send({}).expect(201)
+        const submitted = await request(app.getHttpServer())
+          .post(`/assistant/conversations/${conv.body.id}/turns`)
+          .send({
+            clientTurnId: `discover-named-denied-${newId()}`,
+            question: '有哪些关于智慧运维管理平台的场景？',
+            capabilityHint: 'scenario.discover',
+          })
+          .expect(202)
+        const turn = await waitForTurn(conv.body.id, submitted.body.turnId)
+        expect(turn.result).toMatchObject({ kind: 'discovery', candidates: [] })
+        expect(JSON.stringify(turn.result)).not.toContain(namedTargetId)
+        for (const name of names) expect(JSON.stringify(turn.result)).not.toContain(name)
+      })
+    })
+
     it('User A 成功发现 Target A 场景，带有目标名称消歧与版本', async () => {
       currentActor = userA
       const conv = await request(app.getHttpServer()).post('/assistant/conversations').send({}).expect(201)

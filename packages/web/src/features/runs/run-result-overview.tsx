@@ -368,7 +368,7 @@ export function RunResultOverview({
               <div className='flex-1 mx-3 flex items-center gap-2 min-w-0'>
                 <div className='h-2 flex-1 rounded-full bg-muted/50 overflow-hidden'>
                   <div
-                    className={`h-full rounded-full transition-all ${
+                    className={`h-full rounded-full transition-[width] motion-reduce:transition-none ${
                       step.status === 'FAILED'
                         ? 'bg-status-error-foreground'
                         : percentage >= 30

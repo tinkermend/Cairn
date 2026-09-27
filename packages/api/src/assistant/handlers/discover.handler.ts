@@ -1,21 +1,73 @@
 import {
   type AssistantDiscoveryCandidate,
   type AssistantDiscoveryResult,
+  cleanAssistantQuestion,
   extractScenarioSearchKeyword,
+  normalizeAssistantPageContext,
 } from '@cairn/shared'
 import { listScenarios } from '@cairn/db'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 
+function namedTargetInQuestion(question: string): string | undefined {
+  const cleaned = cleanAssistantQuestion(question)
+  const match = /(?:关于|有关|列出|查看|查询|查找|找出|搜索|找|查)\s*([^，。？?！!]{2,100}?)\s*的(?:所有|全部|现有|可用)?场景/.exec(cleaned)
+  return match?.[1]?.trim() || undefined
+}
+
+function isPlainSearchTerm(value: string): boolean {
+  return value.length <= 40 && !/(?:有哪些|列出|查看|查找|搜索|场景|工作流|关于|有关|方便|帮我|请问|目标系统)/.test(value)
+}
+
 export async function handleScenarioDiscover(
   ctx: AssistantCapabilityHandlerContext,
 ): Promise<AssistantDiscoveryResult> {
-  const { actor, slots, db, targets, onProgress } = ctx
+  const { actor, slots, db, targets, onProgress, question, body } = ctx
   await onProgress?.('loading_facts', '正在检索授权范围内的场景...')
 
-  const targetId = typeof slots.targetId === 'string' && slots.targetId ? slots.targetId : undefined
-  const rawSearch = typeof slots.filter === 'string' && slots.filter ? slots.filter : (typeof slots.search === 'string' ? slots.search : undefined)
-  const extracted = rawSearch ? extractScenarioSearchKeyword(rawSearch) : undefined
-  const search = extracted ?? (rawSearch && rawSearch.length < 50 && !/^(现在都有哪些场景|有哪些场景|所有场景|列出场景|看下场景|查看场景)$/.test(rawSearch) ? rawSearch : undefined)
+  const currentTargetId = normalizeAssistantPageContext(body.pageContext)?.targetId
+  let targetId = currentTargetId ?? (typeof slots.targetId === 'string' && slots.targetId ? slots.targetId : undefined)
+  let targetName: string | undefined
+  const namedTarget = namedTargetInQuestion(question)
+  if (namedTarget && !/^(?:这个|当前|本|该)(?:目标|系统|平台)$/.test(namedTarget)) {
+    // Resolve the name through the actor-scoped target list. A target name is
+    // never a scenario.name filter, and an inaccessible target must stay hidden.
+    const matches: { id: string; name: string }[] = []
+    let nextCursor: string | undefined
+    do {
+      const page = await targets.listTargets({ search: namedTarget, cursor: nextCursor, limit: 100 }, actor)
+      matches.push(...page.items.filter((item) => item.name.toLocaleLowerCase() === namedTarget.toLocaleLowerCase()))
+      nextCursor = page.nextCursor ?? undefined
+    } while (nextCursor && matches.length < 2)
+
+    if (matches.length === 1) {
+      targetId = matches[0]!.id
+      targetName = matches[0]!.name
+    } else if (matches.length > 1 || /(?:平台|系统|站点|应用|网站|后台)$/.test(namedTarget)) {
+      delete slots.targetId
+      delete slots.filter
+      delete slots.search
+      return {
+        kind: 'discovery',
+        candidates: [],
+        scope: { entityType: 'scenario' },
+        coverage: { totalVisible: 0, hasMore: false, observedAt: new Date().toISOString() },
+        message: matches.length > 1
+          ? '当前权限范围内有多个同名目标，请在目标详情页重试。'
+          : '在当前权限范围内未找到匹配的目标或场景。',
+      }
+    }
+  }
+
+  const rawSearch = typeof slots.filter === 'string' && slots.filter ? slots.filter.trim() : (typeof slots.search === 'string' ? slots.search.trim() : undefined)
+  const extracted = extractScenarioSearchKeyword(question)
+  const search = targetName ? undefined : (extracted ?? (rawSearch && isPlainSearchTerm(rawSearch) ? rawSearch : undefined))
+  // Keep persisted slots aligned with the actual query so “下一页” preserves
+  // target scope and never restores a model-supplied sentence fragment.
+  if (targetId) slots.targetId = targetId
+  else delete slots.targetId
+  if (search) slots.filter = search
+  else delete slots.filter
+  delete slots.search
   const status =
     typeof slots.status === 'string' && (slots.status === 'active' || slots.status === 'disabled')
       ? (slots.status as 'active' | 'disabled')
@@ -70,7 +122,7 @@ export async function handleScenarioDiscover(
     candidates,
     scope: {
       targetId,
-      targetName: targetId ? targetMap.get(targetId) : undefined,
+      targetName: targetName ?? (targetId ? targetMap.get(targetId) : undefined),
       entityType: 'scenario',
       filter: search,
     },

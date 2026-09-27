@@ -67,7 +67,7 @@ export function AttemptEvidenceList({
           key={item.id}
           id={`evidence-${item.id}`}
           data-focused={focusEvidenceId === item.id ? 'true' : undefined}
-          className={focusEvidenceId === item.id ? 'ring-2 ring-primary/80 rounded-md transition-all' : ''}
+          className={focusEvidenceId === item.id ? 'ring-2 ring-primary/80 rounded-md transition-shadow motion-reduce:transition-none' : ''}
         >
           <EvidenceItem runId={runId} item={item} forceOpen={focusEvidenceId === item.id} />
         </li>
@@ -103,11 +103,11 @@ function EvidenceItem({
           <span>{screenshotTitle(item)}</span>
           {item.externalAccess ? (
             item.externalAccessSource === 'auto' ? (
-              <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'>
+              <span className='inline-flex items-center px-1.5 py-0.5 rounded text-label font-medium bg-status-success-background text-status-success-foreground'>
                 已自动交付
               </span>
             ) : (
-              <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300'>
+              <span className='inline-flex items-center px-1.5 py-0.5 rounded text-label font-medium bg-status-info-background text-status-info-foreground'>
                 已对外发布
               </span>
             )
@@ -415,16 +415,16 @@ function EvidenceRelease({
           <div className='flex items-center gap-1.5'>
             {allowed ? (
               isAuto ? (
-                <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'>
+                <span className='inline-flex items-center px-1.5 py-0.5 rounded text-label font-medium bg-status-success-background text-status-success-foreground'>
                   已自动交付
                 </span>
               ) : (
-                <span className='inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300'>
+                <span className='inline-flex items-center px-1.5 py-0.5 rounded text-label font-medium bg-status-info-background text-status-info-foreground'>
                   已对外发布
                 </span>
               )
             ) : null}
-            <span className='text-xs font-medium text-foreground'>
+            <span className='text-label font-medium text-foreground'>
               {allowed
                 ? isAuto
                   ? '根据调用方交付策略已自动交付'
@@ -432,7 +432,7 @@ function EvidenceRelease({
                 : '此证据仅控制台可见'}
             </span>
           </div>
-          <p className='text-xs text-muted-foreground'>
+          <p className='text-label text-muted-foreground'>
             {allowed
               ? '外部调用方可通过 OpenAPI 查询或下载此证据。'
               : '默认不向外部调用方开放。如需放行请人工复核。'}

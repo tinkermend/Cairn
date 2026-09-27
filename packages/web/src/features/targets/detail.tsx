@@ -33,6 +33,7 @@ import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
 import { canOnTarget } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCursorPage } from '@/hooks/use-cursor-page'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { CursorPagination } from '@/components/data-table'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
@@ -140,6 +141,11 @@ export function TargetDetailPage() {
   const targetQuery = useQuery({
     queryKey: ['target', targetId],
     queryFn: () => fetchTarget(targetId),
+  })
+
+  useBreadcrumb({
+    entityId: targetId,
+    title: targetQuery.data?.name,
   })
 
   const cleanupQuery = useQuery({

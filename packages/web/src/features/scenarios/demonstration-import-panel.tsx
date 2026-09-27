@@ -291,7 +291,7 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
             </p>
           )}
           {isAiTrace && (
-            <div className='rounded-md border border-sky-500/20 bg-sky-500/10 p-2.5 text-label text-sky-800 dark:text-sky-300'>
+            <div className='rounded-md border border-status-info-accent/30 bg-status-info-background p-2.5 text-label text-status-info-foreground'>
               💡 本次回填来自 AI 动作轨迹固化。建议检查并在最后一个步骤补充 MUST 业务成功条件，以便后续版本验证。
             </div>
           )}
@@ -440,10 +440,10 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                             ) : (
                               <ChevronRight className='h-4 w-4 text-muted-foreground shrink-0' />
                             )}
-                            <span className='text-sm font-semibold truncate'>
+                            <span className='text-body font-semibold truncate'>
                               {group.title}
                             </span>
-                            <Badge variant='outline' className='text-[10px] font-mono shrink-0'>
+                            <Badge variant='outline' className='text-label font-mono shrink-0'>
                               {group.items.length} 个动作
                             </Badge>
                             <Badge
@@ -454,13 +454,13 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                                     ? 'secondary'
                                     : 'outline'
                               }
-                              className='text-[10px] shrink-0'
+                              className='text-label shrink-0'
                             >
                               {group.effectType === 'write'
-                                ? '副作用 (WRITE)'
+                                ? '副作用'
                                 : group.effectType === 'idempotent_write'
-                                  ? '幂等 (IDEMPOTENT)'
-                                  : '只读 (READ)'}
+                                  ? '幂等写入'
+                                  : '只读'}
                             </Badge>
                           </button>
                         </CollapsibleTrigger>
@@ -468,7 +468,7 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                           type='button'
                           size='sm'
                           variant='outline'
-                          className='h-7 text-xs gap-1 shrink-0'
+                          className='h-7 text-label gap-1 shrink-0'
                           disabled={applying || !canBatchAccept}
                           onClick={handleBatchAccept}
                         >

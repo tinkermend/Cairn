@@ -804,4 +804,84 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
     const errorAlert = page.getByText('任务版本已更新，请重新加载后再试')
     await expect.element(errorAlert).toBeVisible()
   })
+
+  // --------------------------------------------------------------------------
+  // 正例 7: 思考中展开展示流式思考过程，且绝不出现两个挨在一起的“识途助手”标题；完成后自动折叠
+  // --------------------------------------------------------------------------
+  it('正例 7: 运行中单回合绝不出现重复助手标题，思考中展开思考文本，完成后自动折叠', async () => {
+    useAssistantStore.setState({
+      turns: [
+        {
+          id: 'turn-running-1',
+          conversationId: 'conv-browser-sim-1',
+          clientTurnId: 'ct-12345678',
+          parentTurnId: null,
+          question: '请分析当前步骤选择器的健壮性并提供加固候选。',
+          capabilityId: 'scenario.explain',
+          status: 'RUNNING',
+          stage: 'generating',
+          deadlineAt: new Date(Date.now() + 60000).toISOString(),
+          result: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      activeTurnId: 'turn-running-1',
+      busy: true,
+      activeStage: 'generating',
+      thinkingText: '正在分析 XPath 与 CSS 选择器的特征...',
+    })
+
+    render(<AssistantHost />)
+
+    // 1. 验证对话流中只有一个“识途助手”标签，绝不出现两个重复挨着
+    const authorLabel = page.getByTestId('turn-assistant-author')
+    await expect.element(authorLabel).toBeVisible()
+    expect(authorLabel.elements()).toHaveLength(1)
+
+    // 2. 验证思考中默认展开并展示思考分析内容
+    await expect.element(page.getByText('大模型正在思考分析…')).toBeVisible()
+    await expect.element(page.getByText('正在分析 XPath 与 CSS 选择器的特征...')).toBeVisible()
+
+    // 3. 模拟任务完成：切换为 COMPLETED 终态，耗时 3200ms
+    useAssistantStore.setState({
+      turns: [
+        {
+          id: 'turn-running-1',
+          conversationId: 'conv-browser-sim-1',
+          clientTurnId: 'ct-12345678',
+          parentTurnId: null,
+          question: '请分析当前步骤选择器的健壮性并提供加固候选。',
+          capabilityId: 'scenario.explain',
+          status: 'COMPLETED',
+          stage: 'persisting',
+          thinkingText: '正在分析 XPath 与 CSS 选择器的特征...',
+          thinkingDurationMs: 3200,
+          deadlineAt: new Date(Date.now() + 60000).toISOString(),
+          result: {
+            kind: 'explanation',
+            summary: '选择器加固候选已生成',
+            references: [],
+            diagnostics: [],
+            executable: false,
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      activeTurnId: null,
+      busy: false,
+      thinkingText: '',
+    })
+
+    // 4. 验证思考完成后自动折叠（显示“已深度思考 (用时 3 秒)”与“点击展开”）
+    await expect.element(page.getByText('已深度思考 (用时 3 秒)')).toBeVisible()
+    await expect.element(page.getByText('点击展开')).toBeVisible()
+
+    // 5. 点击展开，验证完整思考内容与复制按钮
+    await page.getByRole('button', { name: '展开思考过程' }).click()
+    await expect.element(page.getByText('点击折叠')).toBeVisible()
+    await expect.element(page.getByText('正在分析 XPath 与 CSS 选择器的特征...')).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '复制思考过程' })).toBeVisible()
+  })
 })

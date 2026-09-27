@@ -9,6 +9,7 @@ import { subscribeObservation } from '@/lib/observation-stream'
 import { cancelSuiteRun, fetchSuiteRun, rerunSuiteItem } from '@/lib/suites-api'
 import { fetchReports, fetchReportRevision } from '@/lib/reports-api'
 import { useCan } from '@/hooks/use-permissions'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,6 +49,10 @@ export function SuiteRunDetailPage() {
   const query = useQuery({
     queryKey: ['suite-run', suiteRunId],
     queryFn: () => fetchSuiteRun(suiteRunId),
+  })
+  useBreadcrumb({
+    entityId: suiteRunId,
+    title: query.data ? `场景集运行 #${query.data.id.slice(0, 8)}` : undefined,
   })
   useEffect(() => {
     if (!query.isSuccess) return
@@ -233,7 +238,7 @@ export function SuiteRunDetailPage() {
                   ? `${(run.wallClockMs / 1000).toFixed(1)}s`
                   : '执行中'}
                 {run.childDurationMs != null && run.wallClockMs != null && run.childDurationMs > run.wallClockMs ? (
-                  <span className='ml-1 text-xs font-normal text-success'>
+                  <span className='ml-1 text-label font-normal text-status-success-foreground'>
                     (节约 {(((run.childDurationMs - run.wallClockMs) / run.childDurationMs) * 100).toFixed(0)}%)
                   </span>
                 ) : null}
@@ -263,12 +268,12 @@ export function SuiteRunDetailPage() {
                       <div className='flex items-center gap-2'>
                         <span className='font-medium'>{item.displayName}</span>
                         {item.stageId ? (
-                          <Badge variant='outline' className='font-mono text-[10px]'>
+                          <Badge variant='outline' className='font-mono text-label'>
                             Stage {item.stageOrdinal != null ? item.stageOrdinal + 1 : item.stageId}
                           </Badge>
                         ) : null}
                         {item.rerunCount && item.rerunCount > 0 ? (
-                          <Badge variant='secondary' className='text-[10px] bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'>
+                          <Badge variant='secondary' className='text-label bg-status-warning-background text-status-warning-foreground border border-border-default'>
                             重跑第 {item.rerunCount} 次
                           </Badge>
                         ) : null}
@@ -279,17 +284,17 @@ export function SuiteRunDetailPage() {
                     </TableCell>
                     <TableCell>
                       {item.targetAccountId ? (
-                        <span className='font-mono text-xs text-muted-foreground' title={item.targetAccountId}>
+                        <span className='font-mono text-label text-muted-foreground' title={item.targetAccountId}>
                           {item.targetAccountId.slice(0, 8)}
                         </span>
                       ) : (
-                        <span className='text-xs text-muted-foreground'>默认</span>
+                        <span className='text-label text-muted-foreground'>默认</span>
                       )}
                     </TableCell>
                     <TableCell>
                       <div>{SUITE_ADMISSION_LABELS[item.admission]}</div>
                       {item.skipReason ? (
-                        <div className='text-xs text-muted-foreground'>{item.skipReason}</div>
+                        <div className='text-small text-muted-foreground'>{item.skipReason}</div>
                       ) : null}
                     </TableCell>
                     <TableCell>
@@ -356,7 +361,7 @@ export function SuiteRunDetailPage() {
                   <Link
                     to='/reports/$reportId'
                     params={{ reportId: latestReport.id }}
-                    className='text-sm text-link'
+                    className='text-body text-link'
                   >
                     在独立页查看完整报告
                   </Link>

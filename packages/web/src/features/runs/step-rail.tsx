@@ -93,7 +93,7 @@ export function StepRail({
           type='button'
           onClick={onSelectOverview}
           className={cn(
-            'flex w-full items-center justify-between rounded-md px-3 py-2 text-label transition-all',
+            'flex w-full items-center justify-between rounded-md px-3 py-2 text-label transition-[background-color,color,box-shadow] motion-reduce:transition-none',
             selectedMode === 'overview'
               ? 'bg-primary text-primary-foreground font-semibold shadow-xs'
               : 'text-foreground hover:bg-muted font-medium'
@@ -193,7 +193,7 @@ export function StepRail({
                 type='button'
                 onClick={() => onSelectStep(step.id)}
                 className={cn(
-                  'group flex w-full items-center justify-between rounded px-2.5 py-1.5 text-left transition-all',
+                  'group flex w-full items-center justify-between rounded px-2.5 py-1.5 text-left transition-[background-color,color,box-shadow] motion-reduce:transition-none',
                   isSelected
                     ? 'bg-primary/15 text-primary font-semibold ring-1 ring-primary/40'
                     : 'text-foreground hover:bg-muted/60'

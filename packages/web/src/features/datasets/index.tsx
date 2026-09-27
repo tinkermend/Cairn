@@ -151,12 +151,12 @@ export function DatasetsPage() {
                   placeholder='搜索数据集名称...'
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className='pl-9 h-9 text-xs'
+                  className='pl-9 h-9 text-label'
                 />
               </div>
               {canReadTargets && (
                 <Select value={targetId} onValueChange={setTargetId}>
-                  <SelectTrigger aria-label='筛选目标系统' className='w-48 h-9 text-xs'>
+                  <SelectTrigger aria-label='筛选目标系统' className='w-48 h-9 text-label'>
                     <SelectValue placeholder='关联目标系统' />
                   </SelectTrigger>
                   <SelectContent>
@@ -206,26 +206,26 @@ export function DatasetsPage() {
                             <FileSpreadsheet className='h-4 w-4 text-primary shrink-0' />
                             <span>{item.name}</span>
                             {item.createdByAccountId == null && (
-                              <span className='text-xs text-muted-foreground'>已删除账号</span>
+                              <span className='text-label text-muted-foreground'>已删除账号</span>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant='secondary' className='text-[10px] font-mono'>
+                          <Badge variant='secondary' className='text-label font-mono'>
                             {item.sourceType.toUpperCase()}
                           </Badge>
                         </TableCell>
-                        <TableCell className='text-xs text-muted-foreground font-mono truncate max-w-48' title={item.sourceFilename}>
+                        <TableCell className='text-small text-muted-foreground font-mono truncate max-w-48' title={item.sourceFilename}>
                           {item.sourceFilename}
                           {item.selectedSheet ? ` (${item.selectedSheet})` : ''}
                         </TableCell>
-                        <TableCell className='text-xs'>
+                        <TableCell className='text-small'>
                           {targetNames.get(item.targetId) ?? item.targetId}
                         </TableCell>
-                        <TableCell className='text-right text-xs font-mono'>
+                        <TableCell className='text-right text-small font-mono'>
                           <span className='font-semibold'>{item.rowCount}</span> 行 / {item.columns.length} 字段
                         </TableCell>
-                        <TableCell className='text-xs text-muted-foreground'>
+                        <TableCell className='text-small text-muted-foreground'>
                           {new Date(item.updatedAt).toLocaleString()}
                         </TableCell>
                         <TableCell className='text-right'>
@@ -234,7 +234,7 @@ export function DatasetsPage() {
                               type='button'
                               variant='ghost'
                               size='sm'
-                              className='h-8 text-xs'
+                              className='h-8 text-label'
                               onClick={() => setViewingDataset(item)}
                             >
                               <Table2 className='h-3.5 w-3.5 mr-1' />

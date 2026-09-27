@@ -138,8 +138,8 @@ export function MapStepBinding({
     <div className='rounded-lg border border-border-divider/60 bg-muted/20 p-3 space-y-2.5'>
       <div className='flex items-center justify-between gap-2'>
         <div className='flex items-center gap-1.5'>
-          <Label className='text-xs font-semibold text-muted-foreground uppercase tracking-wider'>地图对象</Label>
-          <span className='rounded bg-muted px-1.5 py-0.2 text-[10px] font-medium text-muted-foreground'>选填</span>
+          <Label className='text-label font-semibold text-muted-foreground uppercase tracking-wider'>地图对象</Label>
+          <span className='rounded bg-muted px-1.5 py-0.2 text-label font-medium text-muted-foreground'>选填</span>
         </div>
         <span className='text-label text-muted-foreground'>
           便于查看变更影响
@@ -243,7 +243,7 @@ export function MapStepBinding({
                               {displayName}
                             </span>
                             {item.name ? (
-                              <span className='truncate text-xs text-muted-foreground'>
+                              <span className='truncate text-label text-muted-foreground'>
                                 {item.assetRefKey}
                               </span>
                             ) : null}
@@ -260,7 +260,7 @@ export function MapStepBinding({
                   </CommandGroup>
                 )}
               </CommandList>
-              <div className='flex items-center justify-between border-t border-border-divider px-3 py-2 text-xs text-muted-foreground bg-muted/20'>
+              <div className='flex items-center justify-between border-t border-border-divider px-3 py-2 text-label text-muted-foreground bg-muted/20'>
                 <span>第 {page.pageIndex + 1} 页</span>
                 <div className='flex items-center gap-1'>
                   <Button

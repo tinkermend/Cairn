@@ -1,6 +1,19 @@
 /* 知识海图（Archipelago）专属深海视觉样式表 */
 
 .archipelago-container {
+  --archipelago-topline-muted: #98bdba;
+  --archipelago-topline-text: #bfe5da;
+  --archipelago-topline-divider: #5f8991;
+  --archipelago-topline-hover: #244b54;
+  --archipelago-land-highlight: #f5f9ec;
+  --archipelago-land-middle: #d4ece0;
+  --archipelago-land-low: #99d4c2;
+  --archipelago-cliff-shadow: #176c70;
+  --archipelago-cliff-edge: #174e58;
+  --archipelago-cliff-face: #5baea5;
+  --archipelago-cliff-rim: #b1dfc9;
+  --archipelago-land-rim: #ecfff0;
+  --archipelago-contour: #62aaa1;
   position: relative;
   width: 100%;
   height: calc(100vh - 230px);
@@ -14,6 +27,11 @@
   background: #0c2b36;
   box-shadow: 0 20px 45px rgba(0, 0, 0, 0.16);
 }
+
+.archipelago-topline-muted { color: var(--archipelago-topline-muted); }
+.archipelago-topline-text { color: var(--archipelago-topline-text); }
+.archipelago-topline-divider { color: var(--archipelago-topline-divider); }
+.archipelago-topline-refresh:hover { background: var(--archipelago-topline-hover); }
 
 .archipelago-topline {
   min-height: 60px;

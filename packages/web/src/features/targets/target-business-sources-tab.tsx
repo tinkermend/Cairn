@@ -58,6 +58,10 @@ interface TargetBusinessSourcesTabProps {
   targetName: string
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '未知错误'
+}
+
 export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusinessSourcesTabProps) {
   const queryClient = useQueryClient()
   const [entityType, setEntityType] = useState('manufacturer')
@@ -129,7 +133,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
           limit: 20,
         })
       } catch (err) {
-        if (err instanceof ApiRequestError && (err.payload as any).code === BUSINESS_SOURCE_CURSOR_EXPIRED) {
+        if (err instanceof ApiRequestError && err.payload.code === BUSINESS_SOURCE_CURSOR_EXPIRED) {
           setCursorExpiredError(true)
         }
         throw err
@@ -137,7 +141,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
     },
     enabled: Boolean(sourceQuery.data?.status === 'active' && sourceQuery.data.currentSnapshotId),
     retry: (failureCount, error) => {
-      if (error instanceof ApiRequestError && (error.payload as any).code === BUSINESS_SOURCE_CURSOR_EXPIRED) {
+      if (error instanceof ApiRequestError && error.payload.code === BUSINESS_SOURCE_CURSOR_EXPIRED) {
         return false
       }
       return failureCount < 2
@@ -171,8 +175,8 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
       setActiveCandidateId(data.candidateId)
       void queryClient.invalidateQueries({ queryKey: ['business-source-candidate', targetId, data.candidateId] })
     },
-    onError: (err: any) => {
-      toast.error(`创建候选失败：${err.message}`)
+    onError: (err: unknown) => {
+      toast.error(`创建候选失败：${errorMessage(err)}`)
     },
   })
 
@@ -192,8 +196,8 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
       void queryClient.invalidateQueries({ queryKey: ['target-business-source', targetId, entityType] })
       void queryClient.invalidateQueries({ queryKey: ['target-business-records', targetId] })
     },
-    onError: (err: any) => {
-      toast.error(`审批失败：${err.message}`)
+    onError: (err: unknown) => {
+      toast.error(`审批失败：${errorMessage(err)}`)
     },
   })
 
@@ -212,8 +216,8 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
       void queryClient.invalidateQueries({ queryKey: ['target-business-source', targetId, entityType] })
       void queryClient.invalidateQueries({ queryKey: ['target-business-records', targetId] })
     },
-    onError: (err: any) => {
-      toast.error(`撤回失败：${err.message}`)
+    onError: (err: unknown) => {
+      toast.error(`撤回失败：${errorMessage(err)}`)
     },
   })
 
@@ -245,8 +249,8 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
       })
       setPreviewData(res)
       setPreviewOpen(true)
-    } catch (err: any) {
-      toast.error(`预览失败：${err.message}`)
+    } catch (err: unknown) {
+      toast.error(`预览失败：${errorMessage(err)}`)
     } finally {
       setPreviewLoading(false)
     }
@@ -290,17 +294,17 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
       {/* 头部与实体类型切换 */}
       <div className='flex flex-wrap items-center justify-between gap-4'>
         <div>
-          <h2 className='text-lg font-semibold text-foreground'>「{targetName}」AI 业务数据来源与更新闭环</h2>
-          <p className='text-sm text-muted-foreground'>
+          <h2 className='text-section font-semibold text-foreground'>「{targetName}」AI 业务数据来源与更新闭环</h2>
+          <p className='text-body text-muted-foreground'>
             为平台助手提供确定性业务数据快照与字典检索。仅读取人工审核批准的不可变快照，严禁静默覆盖。
           </p>
         </div>
         <div className='flex items-center gap-2'>
-          <span className='text-sm text-muted-foreground'>业务实体：</span>
+          <span className='text-body text-muted-foreground'>业务实体：</span>
           <select
             value={entityType}
             onChange={(e) => setEntityType(e.target.value)}
-            className='rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm'
+            className='rounded-md border border-input bg-background px-3 py-1.5 text-body shadow-sm'
           >
             <option value='manufacturer'>厂家 (manufacturer)</option>
           </select>
@@ -318,7 +322,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
                 <StatusBadge tone={getSourceTone(currentSource.status)}>
                   {currentSource.status === 'active' ? '生效中' : currentSource.status === 'revoked' ? '已撤回' : '草稿'}
                 </StatusBadge>
-                <span className='rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-mono'>
+                <span className='rounded bg-muted px-2 py-0.5 text-label text-muted-foreground font-mono'>
                   修订版本 v{currentSource.bindingRevision}
                 </span>
               </>
@@ -342,10 +346,10 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
         </div>
 
         {currentSource && currentSource.status === 'active' ? (
-          <div className='mt-4 grid grid-cols-1 gap-4 text-sm md:grid-cols-3'>
+          <div className='mt-4 grid grid-cols-1 gap-4 text-body md:grid-cols-3'>
             <div>
               <span className='text-muted-foreground'>当前快照 ID：</span>
-              <div className='font-mono text-xs text-foreground mt-0.5'>{currentSource.currentSnapshotId}</div>
+              <div className='font-mono text-label text-foreground mt-0.5'>{currentSource.currentSnapshotId}</div>
             </div>
             <div>
               <span className='text-muted-foreground'>覆盖依据声明：</span>
@@ -373,7 +377,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
             </div>
           </div>
         ) : (
-          <div className='mt-4 text-sm text-muted-foreground'>
+          <div className='mt-4 text-body text-muted-foreground'>
             {currentSource?.status === 'revoked'
               ? '当前业务数据源已被撤回。平台助手将无法检索此实体的业务记录，请配置新快照并重新审批。'
               : '当前目标系统尚未配置已审批的业务数据源快照。请在下方配置数据集映射并提交候选构建。'}
@@ -391,13 +395,13 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
 
           <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
             <div>
-              <label className='block text-sm font-medium text-foreground mb-1'>选择源数据集 (同 Target)</label>
+              <label className='block text-body font-medium text-foreground mb-1'>选择源数据集 (同 Target)</label>
               <select
                 data-testid='dataset-select'
                 aria-label='选择源数据集'
                 value={selectedDatasetId}
                 onChange={(e) => setSelectedDatasetId(e.target.value)}
-                className='w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm'
+                className='w-full rounded-md border border-input bg-background px-3 py-2 text-body shadow-sm'
               >
                 <option value=''>-- 请选择已有数据集 --</option>
                 {datasetList.map((ds) => (
@@ -406,23 +410,23 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
                   </option>
                 ))}
               </select>
-              <p className='text-xs text-muted-foreground mt-1'>
+              <p className='text-label text-muted-foreground mt-1'>
                 须为当前目标系统下已导入且未删除的数据集，最多支持扫描 10,000 行。
               </p>
             </div>
 
             <div>
-              <label className='block text-sm font-medium text-foreground mb-1'>业务主键列 (keyColumn) *</label>
+              <label className='block text-body font-medium text-foreground mb-1'>业务主键列 (keyColumn) *</label>
               <Input
                 placeholder='例如：code'
                 value={keyColumn}
                 onChange={(e) => setKeyColumn(e.target.value)}
               />
-              <p className='text-xs text-muted-foreground mt-1'>不可为空，全量扫描中出现重复主键将直接拒绝候选。</p>
+              <p className='text-label text-muted-foreground mt-1'>不可为空，全量扫描中出现重复主键将直接拒绝候选。</p>
             </div>
 
             <div>
-              <label className='block text-sm font-medium text-foreground mb-1'>显示名称列 (displayNameColumn) *</label>
+              <label className='block text-body font-medium text-foreground mb-1'>显示名称列 (displayNameColumn) *</label>
               <Input
                 placeholder='例如：name'
                 value={displayNameColumn}
@@ -431,7 +435,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
             </div>
 
             <div>
-              <label className='block text-sm font-medium text-foreground mb-1'>业务状态列 (statusColumn)</label>
+              <label className='block text-body font-medium text-foreground mb-1'>业务状态列 (statusColumn)</label>
               <Input
                 placeholder='例如：status（可选）'
                 value={statusColumn}
@@ -440,19 +444,19 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
             </div>
 
             <div className='md:col-span-2'>
-              <label className='block text-sm font-medium text-foreground mb-1'>字段白名单 (逗号分隔) *</label>
+              <label className='block text-body font-medium text-foreground mb-1'>字段白名单 (逗号分隔) *</label>
               <Input
                 placeholder='例如：code, name, status, contact, address'
                 value={fieldWhitelist}
                 onChange={(e) => setFieldWhitelist(e.target.value)}
               />
-              <p className='text-xs text-muted-foreground mt-1'>
+              <p className='text-label text-muted-foreground mt-1'>
                 仅白名单字段会写入快照投影；严禁包含密码、口令、Token、密钥等敏感字段（命中将直接阻断）。
               </p>
             </div>
 
             <div>
-              <label className='block text-sm font-medium text-foreground mb-1'>源数据导出时点 (sourceObservedAt)</label>
+              <label className='block text-body font-medium text-foreground mb-1'>源数据导出时点 (sourceObservedAt)</label>
               <Input
                 type='datetime-local'
                 value={sourceObservedAt}
@@ -461,7 +465,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
             </div>
 
             <div>
-              <label className='block text-sm font-medium text-foreground mb-1'>快照有效期至 (validUntil)</label>
+              <label className='block text-body font-medium text-foreground mb-1'>快照有效期至 (validUntil)</label>
               <Input
                 type='datetime-local'
                 value={validUntil}
@@ -470,7 +474,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
             </div>
 
             <div className='md:col-span-2'>
-              <label className='block text-sm font-medium text-foreground mb-1'>覆盖依据声明 (completenessBasis)</label>
+              <label className='block text-body font-medium text-foreground mb-1'>覆盖依据声明 (completenessBasis)</label>
               <Input
                 placeholder='例如：快照全量扫描校验'
                 value={completenessBasis}
@@ -523,7 +527,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
           </div>
 
           {candidate?.validationSummary ? (
-            <div className='space-y-3 text-sm'>
+            <div className='space-y-3 text-body'>
               <div className='flex flex-wrap gap-6'>
                 <div>
                   <span className='text-muted-foreground'>扫描总行数：</span>
@@ -541,11 +545,11 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
 
               {candidate.validationSummary.issues.length > 0 && (
                 <div className='rounded-md border border-destructive/30 bg-destructive/5 p-3'>
-                  <div className='flex items-center gap-1.5 font-medium text-destructive text-sm mb-2'>
+                  <div className='flex items-center gap-1.5 font-medium text-destructive text-body mb-2'>
                     <ShieldAlert className='size-4' />
                     校验不通过原因样本 (前 {candidate.validationSummary.issues.length} 条)：
                   </div>
-                  <ul className='list-disc list-inside space-y-1 text-xs text-destructive'>
+                  <ul className='list-disc list-inside space-y-1 text-label text-destructive'>
                     {candidate.validationSummary.issues.map((iss, idx) => (
                       <li key={idx}>
                         第 {iss.rowIndex + 1} 行 {iss.recordKey ? `[主键: ${iss.recordKey}]` : ''}: {iss.reason}
@@ -556,7 +560,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
               )}
             </div>
           ) : (
-            <p className='text-sm text-muted-foreground'>正在分配 Worker 节点执行批次投影与主键唯一性校验...</p>
+            <p className='text-body text-muted-foreground'>正在分配 Worker 节点执行批次投影与主键唯一性校验...</p>
           )}
         </div>
       )}
@@ -567,7 +571,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
           <div className='flex flex-wrap items-center justify-between gap-4 border-b border-border-divider pb-3'>
             <div>
               <h3 className='font-medium text-foreground'>当前生效快照业务记录浏览器</h3>
-              <p className='text-xs text-muted-foreground'>
+              <p className='text-label text-muted-foreground'>
                 来自快照 <span className='font-mono'>{currentSource.currentSnapshotId}</span> 的只读投影记录，零 Token 确定性检索。
               </p>
             </div>
@@ -645,7 +649,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
                         </StatusBadge>
                       </TableCell>
                       <TableCell className='text-muted-foreground'>第 {record.datasetRowIndex + 1} 行</TableCell>
-                      <TableCell className='font-mono text-xs max-w-xs truncate'>
+                      <TableCell className='font-mono text-label max-w-xs truncate'>
                         {JSON.stringify(record.payload)}
                       </TableCell>
                     </TableRow>
@@ -682,7 +686,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
 
           {previewData && (
             <div className='space-y-4'>
-              <div className='flex flex-wrap gap-4 text-sm'>
+              <div className='flex flex-wrap gap-4 text-body'>
                 <div>采样行数：{previewData.validationDigest.sampleCount}</div>
                 <div className='text-status-success-foreground'>合规行数：{previewData.validationDigest.sampleValidCount}</div>
                 <div className='text-status-error-foreground'>拒绝行数：{previewData.validationDigest.sampleRejectedCount}</div>
@@ -721,7 +725,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
                           <StatusBadge tone='error'>{row.rejectReason || '拒绝'}</StatusBadge>
                         )}
                       </TableCell>
-                      <TableCell className='font-mono text-xs max-w-xs truncate'>
+                      <TableCell className='font-mono text-label max-w-xs truncate'>
                         {JSON.stringify(row.payload)}
                       </TableCell>
                     </TableRow>
@@ -750,7 +754,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
           </DialogHeader>
 
           <div className='space-y-3 py-2'>
-            <label className='block text-sm font-medium text-foreground'>审批依据与核准说明 *</label>
+            <label className='block text-body font-medium text-foreground'>审批依据与核准说明 *</label>
             <Input
               value={approvalBasis}
               onChange={(e) => setApprovalBasis(e.target.value)}
@@ -783,7 +787,7 @@ export function TargetBusinessSourcesTab({ targetId, targetName }: TargetBusines
           </DialogHeader>
 
           <div className='space-y-3 py-2'>
-            <label className='block text-sm font-medium text-foreground'>撤回原因 *</label>
+            <label className='block text-body font-medium text-foreground'>撤回原因 *</label>
             <Input
               value={revocationReason}
               onChange={(e) => setRevocationReason(e.target.value)}

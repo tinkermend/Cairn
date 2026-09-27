@@ -44,7 +44,7 @@
 | **执行复盘与核对 (Run)** | 运行状态与耗时 → 执行录像 → 步骤列表（主截图可见） → Attempt 证据与判断 | 选中步骤与证据必须强联动；失败原因首屏直达；长日志不占满主屏 | [运行复盘](../../../packages/web/src/features/runs/index.tsx) |
 | **对象查找与管理 (CRUD)** | 页面标题与操作 → 集合摘要 → 筛选与表格 → 详情抽屉 | 大数据默认服务端分页；勾选行不占用主操作位；右侧抽屉不重复列出已有属性 | [Target 管理](../../../packages/web/src/features/targets/index.tsx) |
 
-这些是组合规则，不要求为三种布局各造一套框架。认证壳由布局提供：侧栏导航、底栏账号、顶栏全局搜索。新页面只组合 `Main` 与 `PageHeader`，不渲染顶栏。列表标题与侧栏 `title` 一致；详情才加 `PageHeader.parent`。优先扩展 `Main`、`PageHeader` 与已有组件，用 CSS Grid / Flex 组合。重复需求出现后再抽取共用组合。
+这些是组合规则，不要求为三种布局各造一套框架。认证壳由布局提供：侧栏导航（208px 常驻区按总览、编写、运行、目标、运维组织，底部「系统与管理」展示管理入口和平台运行概况，可折叠为 72px 图标栏）、顶栏（56px `h-14`，含动态面包屑、紧凑搜索、识途助手、账号头像）。新页面只组合 `Main` 与 `PageHeader`，不渲染顶栏。列表标题与侧栏 `title` 一致；详情页通过 `useBreadcrumb` 注册实体名并保留 `PageHeader.parent` 任务回链。优先扩展 `Main`、`PageHeader` 与已有组件，用 CSS Grid / Flex 组合。重复需求出现后再抽取共用组合。
 
 新菜单三步：在 `sidebar-data.ts` 登记 → 页用 `Main` + `PageHeader` → 标题与侧栏文案一致。不要为新菜单改顶栏。
 

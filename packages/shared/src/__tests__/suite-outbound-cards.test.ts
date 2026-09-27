@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDingTalkCard, buildFeishuCard, buildWechatWorkCard } from '../notifications.js'
+import { buildDingTalkCard, buildFeishuCard, buildWechatWorkCard } from '../outbound.js'
 import type { SuiteSummaryBlock } from '../reports.js'
 
 const summary: SuiteSummaryBlock = {
@@ -27,7 +27,7 @@ function cardTexts(value: SuiteSummaryBlock): string[] {
   ]
 }
 
-describe('场景集消息卡', () => {
+describe('场景集外发消息卡', () => {
   it('业务未判定时三个渠道均不宣称满分或全部通过', () => {
     for (const text of cardTexts(summary)) {
       expect(text).toContain('未判定 3')

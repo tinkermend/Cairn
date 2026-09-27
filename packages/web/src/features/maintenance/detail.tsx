@@ -311,7 +311,7 @@ export function IncidentDetailPage() {
                   size="sm"
                   onClick={() => setTriageAction('resolve')}
                 >
-                  <CheckCircle2 className="mr-1.5 size-4 text-emerald-600" />
+                  <CheckCircle2 className="mr-1.5 size-4 text-status-success-foreground" />
                   解决/归档
                 </Button>
                 <Button
@@ -1090,24 +1090,24 @@ export function IncidentDetailPage() {
                                   {cand.status === 'proposed' ? '待验证' : cand.status === 'validating' ? '验证中' : cand.status === 'validated' ? '已验证' : cand.status === 'adopted' ? '已采纳' : cand.status === 'rejected' ? '已驳回' : cand.status}
                                 </Badge>
                               </span>
-                              <span className="text-muted-foreground text-xs">
+                              <span className="text-muted-foreground text-label">
                                 观测 {cand.observationCount} 次
                                 {cand.rejectedObservationCount > 0 && ` (驳回后 ${cand.rejectedObservationCount} 次)`}
                               </span>
                             </div>
                             <p className="text-muted-foreground">{cand.hypothesis}</p>
                             {suggested && (
-                              <div className="text-xs bg-background p-2 rounded border font-mono">
+                              <div className="text-label bg-background p-2 rounded border font-mono">
                                 建议新增: {suggested.by} = {suggested.value}
                                 {suggested.name ? ` [name="${suggested.name}"]` : ''}
                               </div>
                             )}
                             <div className="pt-1 flex items-center justify-between">
-                              <span className="text-xs text-muted-foreground">
+                              <span className="text-label text-muted-foreground">
                                 来源: {cand.sourceRunKind === 'published' ? '正式运行' : cand.sourceRunKind === 'trial' ? '试跑' : '调试'}
                               </span>
                               {incident?.lineage?.scenarioId && (
-                                <Button variant="ghost" size="sm" asChild className="h-7 text-xs">
+                                <Button variant="ghost" size="sm" asChild className="h-7 text-label">
                                   <Link
                                     to="/scenarios/$scenarioId"
                                     params={{ scenarioId: incident.lineage.scenarioId }}

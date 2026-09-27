@@ -161,7 +161,7 @@ export function ScenarioOutputsEditor({
       {/* 头部介绍 */}
       <div>
         <h3 className='text-small font-semibold text-foreground'>场景业务输出与指标声明</h3>
-        <p className='text-xs text-muted-foreground mt-1'>
+        <p className='text-small text-muted-foreground mt-1'>
           声明运行完成后的标准化业务结论、核心巡检指标及单行宽表数据。此处声明的输出字段将在运行成功后自动组装为 RunOutput，并按调用方交付策略推送给外部服务。若未配置，引擎将自动按执行状态进行兜底智能装配。
         </p>
       </div>
@@ -170,11 +170,11 @@ export function ScenarioOutputsEditor({
       <div className='rounded-lg border border-border-card bg-card p-4 space-y-3 shadow-sm'>
         <div className='flex items-center gap-2'>
           <FileText className='size-4 text-primary' />
-          <h4 className='text-sm font-medium text-foreground'>业务结论规则</h4>
+          <h4 className='text-body font-medium text-foreground'>业务结论规则</h4>
         </div>
         <div className='space-y-3'>
           <div>
-            <Label htmlFor='summary-template' className='text-xs text-muted-foreground mb-1 block'>
+            <Label htmlFor='summary-template' className='text-label text-muted-foreground mb-1 block'>
               结论插值模板 (支持 ${'{'}variable{'}'} 替换，优先使用)
             </Label>
             <Input
@@ -184,7 +184,7 @@ export function ScenarioOutputsEditor({
               disabled={disabled}
               placeholder='例：巡检完成，在售商品 ${item_count} 件'
               onChange={(e) => handleUpdate({ summaryTemplate: e.target.value || undefined })}
-              className='text-sm'
+              className='text-body'
             />
             {unresolvedSummaryKeys.length ? <p role='alert' className='mt-1 text-label text-destructive'>未知或非法变量：{unresolvedSummaryKeys.join('、')}。运行时这些内容会替换为空；发布前请修正。</p> : null}
           </div>
@@ -192,7 +192,7 @@ export function ScenarioOutputsEditor({
           {/* 候选变量快捷插入 */}
           {candidateKeys.length > 0 && !disabled && (
             <div className='space-y-1.5'>
-              <div className='text-xs text-muted-foreground flex items-center gap-1'>
+              <div className='text-label text-muted-foreground flex items-center gap-1'>
                 <Sparkles className='size-3 text-primary' />
                 <span>快捷插入变量：</span>
               </div>
@@ -204,12 +204,12 @@ export function ScenarioOutputsEditor({
                       key={key}
                       type='button'
                       onClick={() => insertVariable(key)}
-                      className='inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-xs font-mono text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-border-card/50 transition-colors'
+                      className='inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-label font-mono text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-border-card/50 transition-colors'
                       title={src ? `插入 ${src.description}` : `点击插入 \${${key}}`}
                     >
                       <span>+${`{${key}}`}</span>
                       {src ? (
-                        <span className='text-[10px] text-primary/80 font-sans font-normal'>
+                        <span className='text-label text-primary/80 font-sans font-normal'>
                           ({src.label})
                         </span>
                       ) : null}
@@ -223,22 +223,22 @@ export function ScenarioOutputsEditor({
           {/* 结构化模板预览 */}
           {simulatedSummary && (
             <div
-              className='rounded-md border border-border-card/60 bg-muted/20 p-2.5 text-xs space-y-1'
+              className='rounded-md border border-border-card/60 bg-muted/20 p-2.5 text-label space-y-1'
               data-testid='summary-preview-panel'
             >
               <div className='flex items-center gap-1.5'>
                 <span className='font-medium text-muted-foreground'>结论结构预览：</span>
                 <span className='font-medium text-foreground'>{simulatedSummary}</span>
               </div>
-              <p className='text-[11px] text-muted-foreground'>
+              <p className='text-small text-muted-foreground'>
                 提示：预览展示模板中变量槽位与语义来源，真实运行将从上下文填入实际结算值。
               </p>
-              {unresolvedSummaryKeys.length ? <span className='block text-destructive text-[11px]'>未知变量按运行规则显示为空。</span> : null}
+              {unresolvedSummaryKeys.length ? <span className='block text-destructive text-small'>未知变量按运行规则显示为空。</span> : null}
             </div>
           )}
 
           {/* 系统自动指标说明 */}
-          <div className='rounded-md border border-border-divider/60 bg-surface-subtle p-2.5 text-xs text-muted-foreground flex items-start gap-2'>
+          <div className='rounded-md border border-border-divider/60 bg-surface-subtle p-2.5 text-small text-muted-foreground flex items-start gap-2'>
             <Info className='size-3.5 text-muted-foreground shrink-0 mt-0.5' />
             <span>
               <strong>系统自动指标提示：</strong>未显式配置指标时，引擎会在运行终态自动收集提取步骤（extract / ai_extract）的标量结果作为指标交付。
@@ -246,7 +246,7 @@ export function ScenarioOutputsEditor({
           </div>
 
           <div>
-            <Label htmlFor='summary-context-key' className='text-xs text-muted-foreground mb-1 block'>
+            <Label htmlFor='summary-context-key' className='text-label text-muted-foreground mb-1 block'>
               或直接取上下文变量 (Context Key)
             </Label>
             <Input
@@ -255,7 +255,7 @@ export function ScenarioOutputsEditor({
               disabled={disabled}
               placeholder='例：final_summary'
               onChange={(e) => handleUpdate({ summaryFromContextKey: e.target.value || undefined })}
-              className='text-sm font-mono'
+              className='text-body font-mono'
             />
           </div>
         </div>
@@ -266,18 +266,18 @@ export function ScenarioOutputsEditor({
         <button
           type='button'
           onClick={() => setAdvancedOpen(!advancedOpen)}
-          className='flex w-full items-center justify-between py-2 text-xs font-medium text-muted-foreground hover:text-foreground'
+          className='flex w-full items-center justify-between py-2 text-label font-medium text-muted-foreground hover:text-foreground'
         >
           <span className='flex items-center gap-1.5'>
             {advancedOpen ? <ChevronDown className='size-3.5' /> : <ChevronRight className='size-3.5' />}
             <span>高级输出配置（核心指标与单行宽表）</span>
             {hasAdvancedOutputs && (
-              <span className='rounded bg-primary/10 text-primary px-1.5 py-0.2 text-[10px]'>
+              <span className='rounded bg-primary/10 text-primary px-1.5 py-0.5 text-label'>
                 已配置 ({(current.metrics ?? []).length} 指标 / {(current.dataRowFields ?? []).length} 字段)
               </span>
             )}
           </span>
-          <span className='text-[11px] text-muted-foreground'>
+          <span className='text-label text-muted-foreground'>
             {advancedOpen ? '收起' : '展开'}
           </span>
         </button>
@@ -289,7 +289,7 @@ export function ScenarioOutputsEditor({
               <div className='flex items-center justify-between'>
                 <div className='flex items-center gap-2'>
                   <TrendingUp className='size-4 text-primary' />
-                  <h4 className='text-sm font-medium text-foreground'>
+                  <h4 className='text-body font-medium text-foreground'>
                     核心指标 ({(current.metrics ?? []).length}/20)
                   </h4>
                 </div>
@@ -306,8 +306,8 @@ export function ScenarioOutputsEditor({
               </div>
 
               {(!current.metrics || current.metrics.length === 0) ? (
-                <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-xs text-muted-foreground bg-muted/20'>
-                  尚未声明业务指标。未配置时将自动提取提取步骤 (extract) 的标量输出。
+                <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-small text-muted-foreground bg-muted/20'>
+                  尚未声明业务指标。未配置时将自动提取步骤的标量输出。
                 </div>
               ) : (
                 <div className='space-y-3'>
@@ -317,7 +317,7 @@ export function ScenarioOutputsEditor({
                       className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
                     >
                       <div className='flex items-center justify-between'>
-                        <span className='text-xs font-medium text-muted-foreground'>指标 #{idx + 1}</span>
+                        <span className='text-label font-medium text-muted-foreground'>指标 #{idx + 1}</span>
                         <Button
                           type='button'
                           variant='ghost'
@@ -332,46 +332,46 @@ export function ScenarioOutputsEditor({
                       </div>
                       <div className='grid grid-cols-2 gap-2'>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>指标标识 (Key)</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>指标标识 (Key)</Label>
                           <Input
                             value={metric.key}
                             disabled={disabled}
                             placeholder='item_count'
                             onChange={(e) => updateMetric(idx, { key: e.target.value.toLowerCase().trim() })}
-                            className='text-xs font-mono h-8'
+                            className='text-small font-mono h-8'
                           />
                         </div>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>显示名称</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>显示名称</Label>
                           <Input
                             value={metric.name}
                             disabled={disabled}
                             placeholder='在售商品数'
                             onChange={(e) => updateMetric(idx, { name: e.target.value })}
-                            className='text-xs h-8'
+                            className='text-small h-8'
                           />
                         </div>
                       </div>
                       <div className='grid grid-cols-2 gap-2'>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>上下文变量</Label>
                           <Input
                             value={metric.fromContextKey}
                             disabled={disabled}
                             placeholder='report'
                             onChange={(e) => updateMetric(idx, { fromContextKey: e.target.value })}
-                            className='text-xs font-mono h-8'
+                            className='text-small font-mono h-8'
                           />
                         </div>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>属性 / 单位</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>属性 / 单位</Label>
                           <div className='flex gap-1'>
                             <Input
                               value={metric.fromField ?? ''}
                               disabled={disabled}
                               placeholder='字段'
                               onChange={(e) => updateMetric(idx, { fromField: e.target.value || undefined })}
-                              className='text-xs font-mono h-8 w-1/2'
+                              className='text-small font-mono h-8 w-1/2'
                               title='若上下文变量为对象，提取此内部属性'
                             />
                             <Input
@@ -379,7 +379,7 @@ export function ScenarioOutputsEditor({
                               disabled={disabled}
                               placeholder='单位'
                               onChange={(e) => updateMetric(idx, { unit: e.target.value || undefined })}
-                              className='text-xs h-8 w-1/2'
+                              className='text-small h-8 w-1/2'
                             />
                           </div>
                         </div>
@@ -395,7 +395,7 @@ export function ScenarioOutputsEditor({
               <div className='flex items-center justify-between'>
                 <div className='flex items-center gap-2'>
                   <Table className='size-4 text-primary' />
-                  <h4 className='text-sm font-medium text-foreground'>
+                  <h4 className='text-body font-medium text-foreground'>
                     单行宽表字段 ({(current.dataRowFields ?? []).length}/20)
                   </h4>
                 </div>
@@ -412,7 +412,7 @@ export function ScenarioOutputsEditor({
               </div>
 
               {(!current.dataRowFields || current.dataRowFields.length === 0) ? (
-                <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-xs text-muted-foreground bg-muted/20'>
+                <div className='rounded-md border border-dashed border-border-divider p-4 text-center text-small text-muted-foreground bg-muted/20'>
                   尚未声明宽表字段。声明后可在批量分析、测试套件汇总中横向聚合。
                 </div>
               ) : (
@@ -423,7 +423,7 @@ export function ScenarioOutputsEditor({
                       className='p-3 rounded-md border border-border-card/80 bg-muted/15 space-y-2.5'
                     >
                       <div className='flex items-center justify-between'>
-                        <span className='text-xs font-medium text-muted-foreground'>字段 #{idx + 1}</span>
+                        <span className='text-label font-medium text-muted-foreground'>字段 #{idx + 1}</span>
                         <Button
                           type='button'
                           variant='ghost'
@@ -438,45 +438,45 @@ export function ScenarioOutputsEditor({
                       </div>
                       <div className='grid grid-cols-2 gap-2'>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>列标识 (Key)</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>列标识 (Key)</Label>
                           <Input
                             value={field.columnKey}
                             disabled={disabled}
                             placeholder='sku_id'
                             onChange={(e) => updateDataRowField(idx, { columnKey: e.target.value.trim() })}
-                            className='text-xs font-mono h-8'
+                            className='text-small font-mono h-8'
                           />
                         </div>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>表头标题</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>表头标题</Label>
                           <Input
                             value={field.columnHeader}
                             disabled={disabled}
                             placeholder='商品编号'
                             onChange={(e) => updateDataRowField(idx, { columnHeader: e.target.value })}
-                            className='text-xs h-8'
+                            className='text-small h-8'
                           />
                         </div>
                       </div>
                       <div className='grid grid-cols-2 gap-2'>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>上下文变量</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>上下文变量</Label>
                           <Input
                             value={field.fromContextKey}
                             disabled={disabled}
                             placeholder='product'
                             onChange={(e) => updateDataRowField(idx, { fromContextKey: e.target.value })}
-                            className='text-xs font-mono h-8'
+                            className='text-small font-mono h-8'
                           />
                         </div>
                         <div>
-                          <Label className='text-xs text-muted-foreground block mb-1'>对象内字段 (可选)</Label>
+                          <Label className='text-label text-muted-foreground block mb-1'>对象内字段 (可选)</Label>
                           <Input
                             value={field.fromField ?? ''}
                             disabled={disabled}
                             placeholder='sku'
                             onChange={(e) => updateDataRowField(idx, { fromField: e.target.value || undefined })}
-                            className='text-xs font-mono h-8'
+                            className='text-small font-mono h-8'
                           />
                         </div>
                       </div>

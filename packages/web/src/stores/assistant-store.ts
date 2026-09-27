@@ -440,11 +440,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         const terminal = turn.status !== 'RUNNING' && turn.status !== 'QUEUED'
         if (terminal) stopActiveObservation()
         set((state) => {
-          const safeTurn: AssistantTurn = { ...turn, thinkingText: undefined }
+          const effectiveThinkingText = turn.thinkingText ?? (state.thinkingText ? state.thinkingText : undefined)
+          const mergedTurn: AssistantTurn = {
+            ...turn,
+            ...(effectiveThinkingText ? { thinkingText: effectiveThinkingText } : {}),
+          }
           const exists = state.turns.some((item) => item.id === turn.id)
           const turns = exists
-            ? state.turns.map((item) => item.id === turn.id ? safeTurn : item)
-            : [safeTurn, ...state.turns]
+            ? state.turns.map((item) => item.id === turn.id ? mergedTurn : item)
+            : [mergedTurn, ...state.turns]
           return terminal
             ? {
                 turns,
@@ -514,6 +518,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           onEvent: (event) => {
             if (isCurrent()) set({ activeStage: event.stage })
           },
+          onThinking: (delta) => {
+            if (isCurrent()) {
+              set((state) => ({ thinkingText: (state.thinkingText || '') + delta }))
+            }
+          },
           onTurn: applyTurn,
           onError: recoverDisconnected,
         })
@@ -555,7 +564,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }
       const refreshed = await fetchAssistantTurns(conversationId, { limit: 50 }).catch(() => null)
       if (get().conversationId === conversationId && !get().activeTurnId && refreshed) {
-        set({ turns: refreshed.items.map((turn) => ({ ...turn, thinkingText: undefined })) })
+        set({ turns: refreshed.items })
       }
     } catch {
       if (get().conversationId === conversationId && get().activeTurnId === activeTurnId) {
@@ -590,7 +599,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       try {
         const refreshed = await fetchAssistantTurns(conversationId, { limit: 50 })
         if (get().conversationId === conversationId && !get().activeTurnId) {
-          set({ turns: refreshed.items.map((turn) => ({ ...turn, thinkingText: undefined })) })
+          set({ turns: refreshed.items })
         }
       } catch {
         set({ error: '取消请求已提交，但最新状态暂时无法刷新。请稍后查看会话记录。' })
@@ -690,7 +699,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     try {
       const turnList = await fetchAssistantTurns(id, { limit: 50 })
       if (get().conversationId !== id) return
-      set({ turns: turnList.items.map((turn) => ({ ...turn, thinkingText: undefined })), busy: false })
+      set({ turns: turnList.items, busy: false })
     } catch (err) {
       if (get().conversationId !== id) return
       set({

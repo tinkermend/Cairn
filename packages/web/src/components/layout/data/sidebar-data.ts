@@ -109,3 +109,9 @@ export const sidebarData: SidebarData = {
     },
   ],
 }
+
+/** 常驻导航组：总览、编写、运行、目标、运维 */
+export const persistentNavGroups: NavGroup[] = sidebarData.navGroups.slice(0, 5)
+
+/** 系统与管理弹层只保留管理组 */
+export const systemNavGroups: NavGroup[] = sidebarData.navGroups.slice(5)

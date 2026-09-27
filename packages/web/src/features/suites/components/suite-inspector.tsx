@@ -100,7 +100,7 @@ export function SuiteInspector({
         {isStageMode ? (
           <div className='rounded-lg border border-border-divider/70 bg-muted/40 p-2.5 text-label space-y-1.5'>
             <div className='flex items-center justify-between'>
-              <span className='font-medium text-foreground text-xs'>阶段流水线编排已生效</span>
+              <span className='font-medium text-foreground text-label'>阶段流水线编排已生效</span>
               <span className='text-3xs font-mono text-primary bg-primary/10 px-1.5 py-0.5 rounded'>各阶段独立配置</span>
             </div>
             <p className='text-muted-foreground text-3xs leading-relaxed'>
@@ -331,11 +331,11 @@ export function SuiteInspector({
                 />
                 <div>
                   <div className='font-medium text-foreground'>自动生成集合总报告</div>
-                  <div className='text-xs text-muted-foreground'>
+                  <div className='text-small text-muted-foreground'>
                     场景集全部成员运行完成并结算证据后，自动触发生成集合总报告与 Word / PDF。
                   </div>
                   {!canExport && canWrite ? (
-                    <div className='text-xs text-amber-600 mt-1'>
+                    <div className='text-small text-status-warning-foreground mt-1'>
                       开启自动生成报告需要导出权限 (report:export)
                     </div>
                   ) : null}
@@ -363,7 +363,7 @@ export function SuiteInspector({
                   />
                   <div>
                     <div className='font-medium text-foreground'>抑制成员单场景报告</div>
-                    <div className='text-xs text-muted-foreground'>
+                    <div className='text-small text-muted-foreground'>
                       仅生成集合总报告，强制抑制子场景单报告导出，防止大集合并发耗尽 Worker 资源。
                     </div>
                   </div>

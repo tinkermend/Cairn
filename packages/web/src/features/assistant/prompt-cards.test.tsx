@@ -125,4 +125,22 @@ describe('PromptCards 能力与承诺', () => {
     await expect.element(screen.getByTestId('prompt-card-run-step-diagnose')).toBeInTheDocument()
     await expect.element(screen.getByTestId('prompt-card-run-diagnose-rca')).toBeInTheDocument()
   })
+
+  it('方案B气泡流：提示词胶囊具备 tooltip 说明且类名符合紧凑药丸规范', async () => {
+    const onSelectPrompt = vi.fn()
+    const screen = await render(
+      <PromptCards
+        pageContext={null}
+        capabilities={capabilities(['platform.guide'])}
+        onSelectPrompt={onSelectPrompt}
+      />,
+    )
+
+    const chip = screen.getByTestId('prompt-card-auth-create')
+    await expect.element(chip).toBeInTheDocument()
+    await expect.element(chip).toHaveAttribute('title', '查看场景和编辑步骤的位置')
+    // 包含 rounded-full 与 py-1.5 气泡胶囊契约
+    expect(chip.element().className).toContain('rounded-full')
+    expect(chip.element().className).toContain('py-1.5')
+  })
 })

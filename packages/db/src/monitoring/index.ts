@@ -1,4 +1,5 @@
 export { summarizeFleet } from './fleet.js'
+export { readPlatformWorkerHealthSummary, type PlatformWorkerHealthSummary } from './platform-health.js'
 export { summarizeQueues, countSessionOperationBacklog } from './queues.js'
 export { summarizeAnomalies, countRecoveryCappedRuns, countRecoveryCappedRunsFromRuns } from './anomalies.js'
 export { listMonitorProfiles } from './profiles.js'
@@ -9,6 +10,8 @@ export {
   markApiInstanceStopped,
   markLostApiInstances,
   listApiInstanceCard,
+  readPlatformApiHealthSummary,
+  type PlatformApiHealthSummary,
   type ApiInstanceHeartbeatInput,
 } from './instances.js'
 export {

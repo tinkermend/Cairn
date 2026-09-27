@@ -21,13 +21,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { serializeKeyboardEvent, useKeybindingsStore } from '@/stores/keybindings-store'
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state'
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const SIDEBAR_WIDTH = '208px'
 const SIDEBAR_WIDTH_MOBILE = '18rem'
 const SIDEBAR_WIDTH_ICON = '72px'
-const SIDEBAR_KEYBOARD_SHORTCUT = 'b'
 
 type SidebarContextProps = {
   state: 'expanded' | 'collapsed'
@@ -97,10 +97,19 @@ function SidebarProvider({
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
-      ) {
+      const target = event.target as HTMLElement | null
+      const inInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable ||
+          Boolean(target.closest('[data-key-recording]')) ||
+          Boolean(target.closest('[data-recording="true"]')))
+      if (inInput) return
+
+      const shortcut = serializeKeyboardEvent(event)
+      const effectiveKey = useKeybindingsStore.getState().getEffectiveKey('sidebar.toggle')
+      if (shortcut && shortcut === effectiveKey) {
         event.preventDefault()
         toggleSidebar()
       }
@@ -399,7 +408,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<'div'>) {
       data-slot='sidebar-content'
       data-sidebar='content'
       className={cn(
-        'flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto group-data-[collapsible=icon]:overflow-hidden',
+        'flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden',
         className
       )}
       {...props}

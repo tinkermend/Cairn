@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import {
+  DEFAULT_API_LOST_AFTER_SECONDS,
   heartbeatFresh,
   knownMetric,
   unknownMetric,
@@ -161,5 +162,58 @@ export async function listApiInstanceCard(db: Db, asOf: Date): Promise<{
     lost: knownMetric(lost),
     derivedCount: knownMetric(derived),
     items,
+  }
+}
+
+export interface PlatformApiHealthSummary {
+  recentlyLostInstances: number
+  earliestApiValidUntil: Date | null
+}
+
+/**
+ * 平台健康只关注最近一个心跳租期内失联的在服实例。
+ * 监控卡仍保留全部 LOST 历史，不能用它的累计计数判断当前平台状态。
+ */
+export async function readPlatformApiHealthSummary(db: Db, asOf: Date): Promise<PlatformApiHealthSummary> {
+  const { apiInstances } = schemaFor(db)
+  const rows = await db
+    .select({
+      status: apiInstances.status,
+      heartbeatExpiresAt: apiInstances.heartbeatExpiresAt,
+      lostAfterSeconds: apiInstances.lostAfterSeconds,
+    })
+    .from(apiInstances)
+    .where(inArray(apiInstances.status, ['READY', 'DRAINING', 'LOST']))
+
+  const nowMs = asOf.getTime()
+  let recentlyLostInstances = 0
+  let earliestApiValidUntilMs: number | null = null
+
+  for (const row of rows) {
+    const expiresMs = row.heartbeatExpiresAt?.getTime()
+    if (expiresMs == null) continue
+
+    if (row.status === 'READY' || row.status === 'DRAINING') {
+      if (expiresMs > nowMs) {
+        // 新鲜实例的下一个状态转换点是心跳到期。
+        earliestApiValidUntilMs = Math.min(earliestApiValidUntilMs ?? expiresMs, expiresMs)
+        continue
+      }
+    }
+
+    // 失联只在到期后的一个租期内影响当前健康；随后仅在监控历史中保留。
+    const lostAfterSeconds = row.lostAfterSeconds && row.lostAfterSeconds > 0
+      ? row.lostAfterSeconds
+      : DEFAULT_API_LOST_AFTER_SECONDS
+    const incidentEndsMs = expiresMs + lostAfterSeconds * 1000
+    if (incidentEndsMs <= nowMs) continue
+
+    recentlyLostInstances += 1
+    earliestApiValidUntilMs = Math.min(earliestApiValidUntilMs ?? incidentEndsMs, incidentEndsMs)
+  }
+
+  return {
+    recentlyLostInstances,
+    earliestApiValidUntil: earliestApiValidUntilMs == null ? null : new Date(earliestApiValidUntilMs),
   }
 }

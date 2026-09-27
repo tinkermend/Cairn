@@ -137,7 +137,7 @@ export function BatchesPage() {
 
             <div className='flex items-center gap-3'>
               <Select value={scenarioFilter} onValueChange={setScenarioFilter}>
-                <SelectTrigger className='w-56 h-9 text-xs'>
+                <SelectTrigger className='w-56 h-9 text-label'>
                   <SelectValue placeholder='按场景筛选' />
                 </SelectTrigger>
                 <SelectContent>
@@ -190,14 +190,14 @@ export function BatchesPage() {
                             <Layers className='h-4 w-4 text-primary shrink-0' />
                             <span>{batch.name}</span>
                             {batch.createdByAccountId == null && (
-                              <span className='text-xs text-muted-foreground'>已删除账号</span>
+                              <span className='text-label text-muted-foreground'>已删除账号</span>
                             )}
                           </Link>
                         </TableCell>
-                        <TableCell className='text-xs'>
+                        <TableCell className='text-small'>
                           {scenarioNames.get(batch.scenarioId) ?? batch.scenarioId}
                         </TableCell>
-                        <TableCell className='text-xs'>
+                        <TableCell className='text-small'>
                           {datasetNames.get(batch.datasetId) ?? batch.datasetId}
                         </TableCell>
                         <TableCell>
@@ -211,13 +211,13 @@ export function BatchesPage() {
                                     ? 'destructive'
                                     : 'outline'
                             }
-                            className='text-[10px] font-mono'
+                            className='text-label font-mono'
                           >
                             {batch.status}
                           </Badge>
                         </TableCell>
-                        <TableCell className='text-right text-xs font-mono'>
-                          <span className='text-emerald-600 dark:text-emerald-400 font-bold'>
+                        <TableCell className='text-right text-small font-mono'>
+                          <span className='text-status-success-foreground font-bold'>
                             {batch.successItems}
                           </span>
                           {' / '}
@@ -225,7 +225,7 @@ export function BatchesPage() {
                           {' / '}
                           <span>{batch.totalItems}</span>
                         </TableCell>
-                        <TableCell className='text-xs text-muted-foreground'>
+                        <TableCell className='text-small text-muted-foreground'>
                           {new Date(batch.createdAt).toLocaleString()}
                         </TableCell>
                         <TableCell className='text-right'>
@@ -233,7 +233,7 @@ export function BatchesPage() {
                             type='button'
                             variant='ghost'
                             size='sm'
-                            className='h-8 text-xs gap-1'
+                            className='h-8 text-label gap-1'
                             onClick={() => void navigate({ to: `/batches/${batch.id}` })}
                           >
                             <span>详情</span>

@@ -23,4 +23,4 @@ React 19 + Vite 控制台。SPA。
 
 ## 功能范围与设计
 
-开发前先读[前端工作流](../../docs/design/front/ai-workflow.md)和[设计规范](../../docs/design/front/README.md)。当前范围与交付顺序以[主计划](../../docs/plan/识途开发路线与工程实施计划.md)及对应方案为准；脚手架候选能力不作为独立待办清单。
+开发前先读[前端工作流](../../docs/design/front/ai-workflow.md)和[设计规范](../../docs/design/front/README.md)。当前范围与交付顺序以[活跃方案索引](../../docs/spec/README.md)及对应代码为准；脚手架候选能力不作为独立待办清单。

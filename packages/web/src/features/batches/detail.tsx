@@ -67,6 +67,8 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
   })
 
   const batch = batchQuery.data
+  const scenarioId = batch?.scenarioId
+  const datasetId = batch?.datasetId
 
   const itemsQuery = useQuery({
     queryKey: ['batch-items', batchId, itemStatusFilter, cursor],
@@ -82,15 +84,15 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
   })
 
   const scenarioQuery = useQuery({
-    queryKey: ['scenario', batch?.scenarioId],
-    queryFn: () => (batch ? fetchScenario(batch.scenarioId) : null),
-    enabled: Boolean(batch),
+    queryKey: ['scenario', scenarioId],
+    queryFn: () => (scenarioId ? fetchScenario(scenarioId) : null),
+    enabled: Boolean(scenarioId),
   })
 
   const datasetQuery = useQuery({
-    queryKey: ['dataset', batch?.datasetId],
-    queryFn: () => (batch ? fetchDataset(batch.datasetId) : null),
-    enabled: Boolean(batch),
+    queryKey: ['dataset', datasetId],
+    queryFn: () => (datasetId ? fetchDataset(datasetId) : null),
+    enabled: Boolean(datasetId),
   })
 
   function handlePause() {
@@ -174,7 +176,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
         <Button
           variant='ghost'
           size='sm'
-          className='gap-1 text-xs'
+          className='gap-1 text-label'
           onClick={() => void navigate({ to: '/batches' })}
         >
           <ArrowLeft className='h-4 w-4' />
@@ -190,7 +192,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
             <Button
               variant='outline'
               size='sm'
-              className='gap-1 text-xs'
+              className='gap-1 text-label'
               disabled={exportPending}
               onClick={handleExport}
             >
@@ -203,7 +205,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                 <Button
                   variant='outline'
                   size='sm'
-                  className='gap-1 text-xs'
+                  className='gap-1 text-label'
                   disabled={isActionPending}
                   onClick={handlePause}
                 >
@@ -216,7 +218,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                 <Button
                   variant='default'
                   size='sm'
-                  className='gap-1 text-xs'
+                  className='gap-1 text-label'
                   disabled={isActionPending}
                   onClick={handleResume}
                 >
@@ -229,7 +231,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                 <Button
                   variant='destructive'
                   size='sm'
-                  className='gap-1 text-xs'
+                  className='gap-1 text-label'
                   disabled={isActionPending}
                   onClick={handleCancel}
                 >
@@ -242,7 +244,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                 <Button
                   variant='secondary'
                   size='sm'
-                  className='gap-1 text-xs'
+                  className='gap-1 text-label'
                   disabled={isActionPending || batch.status === 'RUNNING'}
                   onClick={handleRetryFailed}
                 >
@@ -259,8 +261,8 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
         <div className='flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-destructive'>
           <AlertTriangle className='mt-0.5 h-5 w-5 shrink-0' />
           <div>
-            <h4 className='text-sm font-semibold'>批次未能开始执行</h4>
-            <p className='mt-1 text-xs text-destructive/90'>{batch.pausedReason}</p>
+            <h4 className='text-section font-semibold'>批次未能开始执行</h4>
+            <p className='mt-1 text-small text-destructive/90'>{batch.pausedReason}</p>
           </div>
         </div>
       )}
@@ -271,8 +273,8 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
           <div className='flex items-start gap-3'>
             <AlertTriangle className='h-5 w-5 shrink-0 mt-0.5' />
             <div>
-              <h4 className='font-semibold text-sm'>自适应熔断器已触发保护性暂停</h4>
-              <p className='text-xs mt-1 text-destructive/90'>
+              <h4 className='font-semibold text-section'>自适应熔断器已触发保护性暂停</h4>
+              <p className='text-small mt-1 text-destructive/90'>
                 {batch.pausedReason}。系统已阻止并发扩散与无效重试。排查目标系统服务可用性后，可一键恢复运行。
               </p>
             </div>
@@ -282,7 +284,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
               <Button
                 size='sm'
                 variant='outline'
-                className='border-destructive/30 hover:bg-destructive/20 text-xs'
+                className='border-destructive/30 hover:bg-destructive/20 text-label'
                 onClick={handleResume}
                 disabled={isActionPending}
               >
@@ -291,7 +293,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
               <Button
                 size='sm'
                 variant='destructive'
-                className='text-xs'
+                className='text-label'
                 onClick={handleCancel}
                 disabled={isActionPending}
               >
@@ -305,7 +307,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
       {/* Progress & Metrics Card */}
       <div className='grid grid-cols-2 md:grid-cols-5 gap-3'>
         <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-xs text-muted-foreground'>运行状态</div>
+          <div className='text-label text-muted-foreground'>运行状态</div>
           <div className='flex items-center gap-2 mt-2'>
             <Badge
               variant={
@@ -317,36 +319,36 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                       ? 'destructive'
                       : 'outline'
               }
-              className='text-xs px-2 py-0.5 font-mono'
+              className='text-label px-2 py-0.5 font-mono'
             >
               {batch.status}
             </Badge>
-            <span className='text-xs text-muted-foreground'>{percentComplete}%</span>
+            <span className='text-label text-muted-foreground'>{percentComplete}%</span>
           </div>
         </div>
 
         <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-xs text-muted-foreground'>总执行项</div>
-          <div className='text-2xl font-bold font-mono mt-1'>{batch.totalItems}</div>
+          <div className='text-label text-muted-foreground'>总执行项</div>
+          <div className='text-stat font-bold font-mono mt-1'>{batch.totalItems}</div>
         </div>
 
         <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-xs text-emerald-600 dark:text-emerald-400'>成功执行</div>
-          <div className='text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-1'>
+          <div className='text-label text-status-success-foreground'>成功执行</div>
+          <div className='text-stat font-bold font-mono text-status-success-foreground mt-1'>
             {batch.successItems}
           </div>
         </div>
 
         <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-xs text-destructive'>失败错误</div>
-          <div className='text-2xl font-bold font-mono text-destructive mt-1'>
+          <div className='text-label text-destructive'>失败错误</div>
+          <div className='text-stat font-bold font-mono text-destructive mt-1'>
             {batch.failedItems}
           </div>
         </div>
 
         <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-xs text-amber-600 dark:text-amber-400'>需人工复核</div>
-          <div className='text-2xl font-bold font-mono text-amber-600 dark:text-amber-400 mt-1'>
+          <div className='text-label text-status-warning-foreground'>需人工复核</div>
+          <div className='text-stat font-bold font-mono text-status-warning-foreground mt-1'>
             {batch.reviewItems}
           </div>
         </div>
@@ -356,15 +358,15 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
       <div className='space-y-3'>
         <div className='flex items-center justify-between'>
           <div className='flex items-center gap-2'>
-            <h3 className='text-sm font-semibold'>执行明细项 (Items)</h3>
-            <Badge variant='outline' className='text-xs'>
+            <h3 className='text-section font-semibold'>执行明细项</h3>
+            <Badge variant='outline' className='text-label'>
               共 {itemsQuery.data?.total ?? 0} 项
             </Badge>
           </div>
 
           <div className='flex items-center gap-2'>
             <Select value={itemStatusFilter} onValueChange={setItemStatusFilter}>
-              <SelectTrigger className='h-8 w-36 text-xs'>
+              <SelectTrigger className='h-8 w-36 text-label'>
                 <SelectValue placeholder='状态筛选' />
               </SelectTrigger>
               <SelectContent>
@@ -384,19 +386,19 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className='w-16 text-center text-xs'>行号</TableHead>
-                <TableHead className='w-28 text-xs'>执行状态</TableHead>
-                <TableHead className='w-28 text-xs'>判定结论</TableHead>
-                <TableHead className='w-24 text-xs'>故障归因</TableHead>
-                <TableHead className='text-xs'>错误详情 / 诊断简讯</TableHead>
-                <TableHead className='w-36 text-xs'>耗时 / 时间</TableHead>
-                <TableHead className='w-24 text-right text-xs'>单次运行</TableHead>
+                <TableHead className='w-16 text-center text-label'>行号</TableHead>
+                <TableHead className='w-28 text-label'>执行状态</TableHead>
+                <TableHead className='w-28 text-label'>判定结论</TableHead>
+                <TableHead className='w-24 text-label'>故障归因</TableHead>
+                <TableHead className='text-label'>错误详情 / 诊断简讯</TableHead>
+                <TableHead className='w-36 text-label'>耗时 / 时间</TableHead>
+                <TableHead className='w-24 text-right text-label'>单次运行</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className='h-32 text-center text-xs text-muted-foreground'>
+                  <TableCell colSpan={7} className='h-32 text-center text-small text-muted-foreground'>
                     {itemsQuery.isPending ? '正在加载明细...' : '暂无符合条件的执行项'}
                   </TableCell>
                 </TableRow>
@@ -409,19 +411,19 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
 
                   return (
                     <TableRow key={item.id}>
-                      <TableCell className='text-center font-mono text-xs text-muted-foreground'>
+                      <TableCell className='text-center font-mono text-small text-muted-foreground'>
                         {item.datasetRowIndex + 1}
                       </TableCell>
                       <TableCell>
                         <Badge
                           variant='outline'
-                          className={`text-[10px] font-mono ${
+                          className={`text-label font-mono ${
                             item.itemStatus === 'SUCCEEDED'
-                              ? 'text-emerald-600 border-emerald-300 dark:text-emerald-400'
+                              ? 'text-status-success-foreground border-border-default'
                               : item.itemStatus === 'FAILED'
                                 ? 'text-destructive border-destructive/30'
                                 : item.itemStatus === 'NEEDS_REVIEW'
-                                  ? 'text-amber-600 border-amber-300 dark:text-amber-400'
+                                  ? 'text-status-warning-foreground border-border-default'
                                   : item.itemStatus === 'RUNNING'
                                     ? 'text-primary border-primary/30 animate-pulse'
                                     : 'text-muted-foreground'
@@ -430,7 +432,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                           {item.itemStatus}
                         </Badge>
                       </TableCell>
-                      <TableCell className='text-xs font-mono truncate max-w-28'>
+                      <TableCell className='text-small font-mono truncate max-w-28'>
                         {item.outcomeVerdict ?? '-'}
                       </TableCell>
                       <TableCell>
@@ -443,18 +445,18 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                                   ? 'outline'
                                   : 'secondary'
                             }
-                            className='text-[10px] font-mono'
+                            className='text-label font-mono'
                           >
                             {item.failureDomain}
                           </Badge>
                         ) : (
-                          <span className='text-xs text-muted-foreground'>-</span>
+                          <span className='text-small text-muted-foreground'>-</span>
                         )}
                       </TableCell>
-                      <TableCell className='text-xs text-muted-foreground max-w-md truncate' title={item.errorMessage ?? ''}>
+                      <TableCell className='text-small text-muted-foreground max-w-md truncate' title={item.errorMessage ?? ''}>
                         {item.errorMessage ?? '-'}
                       </TableCell>
-                      <TableCell className='text-xs text-muted-foreground font-mono'>
+                      <TableCell className='text-small text-muted-foreground font-mono'>
                         {durationMs !== null ? `${(durationMs / 1000).toFixed(1)}s` : '-'}
                       </TableCell>
                       <TableCell className='text-right'>
@@ -462,13 +464,13 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                           <Link
                             to='/runs/$runId'
                             params={{ runId: item.runId }}
-                            className='inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono'
+                            className='inline-flex items-center gap-1 text-small text-primary hover:underline font-mono'
                           >
                             <span>查看</span>
                             <ExternalLink className='h-3 w-3' />
                           </Link>
                         ) : (
-                          <span className='text-xs text-muted-foreground'>-</span>
+                          <span className='text-small text-muted-foreground'>-</span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -480,7 +482,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
         </div>
 
         <div className='flex items-center justify-between pt-2'>
-          <span className='text-xs text-muted-foreground'>
+          <span className='text-small text-muted-foreground'>
             显示 {items.length} 项
           </span>
           <div className='flex items-center gap-2'>

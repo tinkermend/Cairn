@@ -37,9 +37,9 @@ export const IslandNode = memo(function IslandNode({
       <svg viewBox='0 0 340 225' aria-hidden='true' focusable='false'>
         <defs>
           <linearGradient id={`land-${artId}`} x1='0' y1='0' x2='0.86' y2='1'>
-            <stop offset='0%' stopColor='#f5f9ec' />
-            <stop offset='53%' stopColor='#d4ece0' />
-            <stop offset='100%' stopColor='#99d4c2' />
+            <stop offset='0%' stopColor='var(--archipelago-land-highlight)' />
+            <stop offset='53%' stopColor='var(--archipelago-land-middle)' />
+            <stop offset='100%' stopColor='var(--archipelago-land-low)' />
           </linearGradient>
           <clipPath id={`clip-${artId}`}>
             <path d={shape} />
@@ -50,23 +50,23 @@ export const IslandNode = memo(function IslandNode({
         <path
           d={shape}
           transform='translate(0 19)'
-          fill='#176c70'
-          stroke='#174e58'
+          fill='var(--archipelago-cliff-shadow)'
+          stroke='var(--archipelago-cliff-edge)'
           strokeWidth={3}
         />
         {/* 中层岩层侧壁 */}
         <path
           d={shape}
           transform='translate(0 10)'
-          fill='#5baea5'
-          stroke='#b1dfc9'
+          fill='var(--archipelago-cliff-face)'
+          stroke='var(--archipelago-cliff-rim)'
           strokeWidth={2}
         />
         {/* 顶层陆地表面 */}
         <path
           d={shape}
           fill={`url(#land-${artId})`}
-          stroke='#ecfff0'
+          stroke='var(--archipelago-land-rim)'
           strokeWidth={2.5}
         />
 
@@ -74,7 +74,7 @@ export const IslandNode = memo(function IslandNode({
         <g
           clipPath={`url(#clip-${artId})`}
           fill='none'
-          stroke='#62aaa1'
+          stroke='var(--archipelago-contour)'
           strokeWidth={1.25}
           opacity={0.45}
         >

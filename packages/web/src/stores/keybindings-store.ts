@@ -45,6 +45,14 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingItem[] = [
     globalBypassInput: true,
   },
   {
+    id: 'sidebar.toggle',
+    label: '展开/收起侧栏',
+    category: 'global',
+    defaultKey: 'mod+b',
+    allowCustomization: true,
+    globalBypassInput: false,
+  },
+  {
     id: 'palette.open',
     label: '打开全局速寻/命令盘',
     category: 'global',
@@ -70,6 +78,25 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingItem[] = [
   },
 ]
 
+/** 将可配置写法统一为录制器使用的 Token，避免 Ctrl/Cmd 别名与 mod 被当作不同键位。 */
+export function normalizeKeybinding(shortcut: string): string | null {
+  const parts = shortcut.trim().toLowerCase().split('+').map((part) => part.trim())
+  if (parts.some((part) => !part)) return null
+
+  const key = parts.pop()
+  if (!key || !/^(?:[a-z]|[0-9]|f\d+|enter|space|backspace|escape|up|down|left|right)$/.test(key))
+    return null
+
+  const modifiers = parts.map((part) => {
+    if (['ctrl', 'control', 'meta', 'cmd', 'command'].includes(part)) return 'mod'
+    return part
+  })
+  if (modifiers.some((part) => !['mod', 'alt', 'shift'].includes(part))) return null
+  if (new Set(modifiers).size !== modifiers.length) return null
+
+  return [...['mod', 'alt', 'shift'].filter((part) => modifiers.includes(part)), key].join('+')
+}
+
 /**
  * 将键盘原生事件归一化为标准的键位序列 Token (如 'mod+j', 'mod+shift+p')
  * 采用 e.code 提取物理硬件键，彻底消除输入法（IME）和大小写锁定的干扰
@@ -77,6 +104,8 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingItem[] = [
 export function serializeKeyboardEvent(e: KeyboardEvent): string | null {
   const parts: string[] = []
 
+  // mod 代表二者之一；同时按下 Ctrl 与 Cmd 不属于任何可配置键位。
+  if (e.metaKey && e.ctrlKey) return null
   if (e.metaKey || e.ctrlKey) parts.push('mod')
   if (e.altKey) parts.push('alt')
   if (e.shiftKey) parts.push('shift')
@@ -127,19 +156,20 @@ export function validateKeybinding(
   targetCommandId: string,
   bindings: Record<string, string>
 ): { ok: true } | { ok: false; reason: string } {
-  const normalized = shortcut.trim().toLowerCase()
-  if (!normalized) {
+  if (!shortcut.trim()) {
     return { ok: false, reason: '快捷键不能为空' }
   }
+  const normalized = normalizeKeybinding(shortcut)
+  if (!normalized) return { ok: false, reason: '快捷键格式无效' }
 
   // 1. 绝对黑名单拦截
   if (RESERVED_SYSTEM_SHORTCUTS.includes(normalized)) {
     return { ok: false, reason: '该快捷键已被浏览器系统保留，严禁绑定' }
   }
 
-  // 2. 强修饰键强制校验（必须包含 mod, ctrl, alt 之一）
+  // 2. 强修饰键强制校验（Ctrl/Cmd 已规范化为 mod）
   const parts = normalized.split('+')
-  const hasStrongModifier = parts.some((p) => ['mod', 'ctrl', 'alt'].includes(p))
+  const hasStrongModifier = parts.some((p) => ['mod', 'alt'].includes(p))
   if (!hasStrongModifier) {
     return {
       ok: false,
@@ -149,7 +179,7 @@ export function validateKeybinding(
 
   // 3. 内部冲突检测
   for (const [cmdId, key] of Object.entries(bindings)) {
-    if (cmdId !== targetCommandId && key === normalized) {
+    if (cmdId !== targetCommandId && normalizeKeybinding(key) === normalized) {
       const conflictItem = DEFAULT_KEYBINDINGS.find((i) => i.id === cmdId)
       return {
         ok: false,
@@ -170,7 +200,9 @@ function loadSavedCustomBindings(): Record<string, string> {
     if (parsed && typeof parsed === 'object') {
       return parsed
     }
-  } catch {}
+  } catch {
+    // 无效的本地偏好不能阻止默认快捷键加载。
+  }
   return {}
 }
 
@@ -182,7 +214,9 @@ function persistCustomBindings(customMap: Record<string, string>): void {
     } else {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(customMap))
     }
-  } catch {}
+  } catch {
+    // 存储不可用时，当前页面的快捷键仍可正常使用。
+  }
 }
 
 export interface KeybindingsState {
@@ -201,8 +235,9 @@ export const useKeybindingsStore = create<KeybindingsState>((set, get) => ({
 
   getEffectiveKey: (commandId: string) => {
     const custom = get().customBindings[commandId]
-    if (custom) return custom
     const def = get().commands.find((c) => c.id === commandId)
+    const normalized = custom ? normalizeKeybinding(custom) : null
+    if (normalized && !RESERVED_SYSTEM_SHORTCUTS.includes(normalized)) return normalized
     return def?.defaultKey || ''
   },
 
@@ -223,7 +258,7 @@ export const useKeybindingsStore = create<KeybindingsState>((set, get) => ({
 
     const nextCustom = {
       ...get().customBindings,
-      [commandId]: shortcut.trim().toLowerCase(),
+      [commandId]: normalizeKeybinding(shortcut)!,
     }
 
     set({ customBindings: nextCustom })

@@ -43,12 +43,18 @@ import { StepInspector } from './step-inspector'
 import { PlacementHint } from './placement-hint'
 import { AttemptEvidenceList } from './evidence-viewer'
 import { RunResultOverview } from './run-result-overview'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
   const search = useSearch({ from: '/_authenticated/runs/$runId/' })
   const navigate = useNavigate()
   const { run, evidence, connection, query: runQuery, refresh, eventSeq } = useRunObservation(runId)
+
+  useBreadcrumb({
+    entityId: runId,
+    title: run ? `${run.scenarioName || '运行'} #${run.id.slice(0, 8)}` : undefined,
+  })
   const [note, setNote] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -521,7 +527,7 @@ export function RunDetailPage() {
                   type='button'
                   onClick={() => setSelectedMode('overview')}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-all',
+                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-[border-color,color] motion-reduce:transition-none',
                     selectedMode === 'overview'
                       ? 'border-primary text-primary font-semibold'
                       : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -535,7 +541,7 @@ export function RunDetailPage() {
                   type='button'
                   onClick={() => setSelectedMode('step')}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-all',
+                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-[border-color,color] motion-reduce:transition-none',
                     selectedMode === 'step'
                       ? 'border-primary text-primary font-semibold'
                       : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -549,7 +555,7 @@ export function RunDetailPage() {
                   type='button'
                   onClick={() => setSelectedMode('video')}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-all',
+                    'flex items-center gap-1.5 px-3 py-2 text-label font-medium border-b-2 transition-[border-color,color] motion-reduce:transition-none',
                     selectedMode === 'video'
                       ? 'border-primary text-primary font-semibold'
                       : 'border-transparent text-muted-foreground hover:text-foreground'

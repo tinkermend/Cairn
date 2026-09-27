@@ -161,24 +161,23 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
       const desc = page.getByText('帮你理解场景、分析运行、找到功能入口')
       await expect.element(desc).toBeVisible()
 
-      // UI 巡检 2：ContextCapsule 全局身份
+      // UI 巡检 2：ContextCapsule 全局身份（顶部副标题直属呈现，无冗余长句）
       const globalBadge = page.getByText('全局上下文 · 识途通用助理')
       await expect.element(globalBadge).toBeVisible()
 
-      // UI 巡检 3：全局推荐 Chips
-      const guideChip = page.getByRole('button', { name: '🚀 快速上手编排', exact: true })
-      const errorRunsChip = page.getByRole('button', { name: '📊 查看近期异常运行', exact: true })
-      const navChip = page.getByRole('button', { name: '📋 常用功能导航', exact: true })
-      await expect.element(guideChip).toBeVisible()
-      await expect.element(errorRunsChip).toBeVisible()
-      await expect.element(navChip).toBeVisible()
+      // UI 巡检 3：顶部不再出现重复冗余的通用推荐按钮
+      await expect.element(page.getByRole('button', { name: '🚀 快速上手编排' })).not.toBeInTheDocument()
 
-      // 用户行为正例：普通用户点击「🚀 快速上手编排」发起提问
+      // UI 巡检 4：下方启动区提供紧凑胶囊（方案 B），展示场景编排指引
+      const guideChip = page.getByRole('button', { name: '找到场景编排入口' })
+      await expect.element(guideChip).toBeVisible()
+
+      // 用户行为正例：普通用户点击「找到场景编排入口」发起提问
       await userEvent.click(guideChip)
       expect(createAssistantTurn).toHaveBeenCalledWith(
         'conv-user-journey',
         expect.objectContaining({
-          question: expect.stringContaining('如何从零录制并编排一个新场景'),
+          question: expect.stringContaining('在哪里打开场景编排和场景工作区？'),
           capabilityHint: 'platform.guide',
         })
       )

@@ -34,17 +34,18 @@ export function DatasetRowsDialog({
   const [activeTab, setActiveTab] = useState<'rows' | 'profile'>('rows')
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   const [cursorHistory, setCursorHistory] = useState<(string | undefined)[]>([])
+  const datasetId = dataset?.id
 
   const rowsQuery = useQuery({
-    queryKey: ['dataset-rows', dataset?.id, cursor],
-    queryFn: () => (dataset ? fetchDatasetRows(dataset.id, { limit: 50, cursor }) : null),
-    enabled: Boolean(dataset && open && activeTab === 'rows'),
+    queryKey: ['dataset-rows', datasetId, cursor],
+    queryFn: () => (datasetId ? fetchDatasetRows(datasetId, { limit: 50, cursor }) : null),
+    enabled: Boolean(datasetId && open && activeTab === 'rows'),
   })
 
   const profileQuery = useQuery({
-    queryKey: ['dataset-profile', dataset?.id],
-    queryFn: () => (dataset ? fetchDatasetProfile(dataset.id) : null),
-    enabled: Boolean(dataset && open && activeTab === 'profile'),
+    queryKey: ['dataset-profile', datasetId],
+    queryFn: () => (datasetId ? fetchDatasetProfile(datasetId) : null),
+    enabled: Boolean(datasetId && open && activeTab === 'profile'),
   })
 
   if (!dataset) return null
@@ -62,7 +63,7 @@ export function DatasetRowsDialog({
               <Table2 className='h-5 w-5 text-primary' />
               {dataset.name}
             </DialogTitle>
-            <Badge variant='outline' className='text-xs'>
+            <Badge variant='outline' className='text-label'>
               共 {dataset.rowCount} 行记录
             </Badge>
           </div>
@@ -92,13 +93,13 @@ export function DatasetRowsDialog({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className='w-14 text-center text-xs'>行号</TableHead>
-                    <TableHead className='w-20 text-center text-xs'>状态</TableHead>
+                    <TableHead className='w-14 text-center text-label'>行号</TableHead>
+                    <TableHead className='w-20 text-center text-label'>状态</TableHead>
                     {columns.map((col) => (
-                      <TableHead key={col.key} className='text-xs font-medium'>
+                      <TableHead key={col.key} className='text-label font-medium'>
                         <div className='flex flex-col'>
                           <span>{col.name}</span>
-                          <span className='text-[10px] text-muted-foreground font-mono font-normal'>
+                          <span className='text-label text-muted-foreground font-mono font-normal'>
                             {col.key}
                           </span>
                         </div>
@@ -111,7 +112,7 @@ export function DatasetRowsDialog({
                     <TableRow>
                       <TableCell
                         colSpan={columns.length + 2}
-                        className='h-32 text-center text-muted-foreground text-xs'
+                        className='h-32 text-center text-muted-foreground text-small'
                       >
                         {rowsQuery.isPending ? '正在加载数据行...' : '暂无数据行'}
                       </TableCell>
@@ -119,20 +120,20 @@ export function DatasetRowsDialog({
                   ) : (
                     items.map((row) => (
                       <TableRow key={row.id}>
-                        <TableCell className='text-center font-mono text-xs text-muted-foreground'>
+                        <TableCell className='text-center font-mono text-small text-muted-foreground'>
                           {row.rowIndex + 1}
                         </TableCell>
                         <TableCell className='text-center'>
                           {row.validStatus === 'valid' ? (
-                            <Badge variant='outline' className='text-[10px] text-emerald-600 border-emerald-300 dark:text-emerald-400'>
+                            <Badge variant='outline' className='text-label text-status-success-foreground border-border-default'>
                               有效
                             </Badge>
                           ) : row.validStatus === 'warning' ? (
-                            <Badge variant='outline' className='text-[10px] text-amber-600 border-amber-300 dark:text-amber-400'>
+                            <Badge variant='outline' className='text-label text-status-warning-foreground border-border-default'>
                               警告
                             </Badge>
                           ) : (
-                            <Badge variant='outline' className='text-[10px] text-destructive border-destructive/30'>
+                            <Badge variant='outline' className='text-label text-destructive border-destructive/30'>
                               异常
                             </Badge>
                           )}
@@ -140,7 +141,7 @@ export function DatasetRowsDialog({
                         {columns.map((col) => (
                           <TableCell
                             key={col.key}
-                            className='font-mono text-xs max-w-xs truncate'
+                            className='font-mono text-small max-w-xs truncate'
                             title={String(row.rowData[col.key] ?? '')}
                           >
                             {String(row.rowData[col.key] ?? '')}
@@ -154,7 +155,7 @@ export function DatasetRowsDialog({
             </div>
 
             <div className='flex items-center justify-between pt-2'>
-              <span className='text-xs text-muted-foreground'>
+              <span className='text-small text-muted-foreground'>
                 显示 {items.length} 行
               </span>
               <div className='flex items-center gap-2'>
@@ -194,19 +195,19 @@ export function DatasetRowsDialog({
 
           <TabsContent value='profile' className='flex flex-col flex-1 min-h-0'>
             {profileQuery.isPending && (
-              <div className='h-48 flex items-center justify-center text-sm text-muted-foreground'>
+              <div className='h-48 flex items-center justify-center text-body text-muted-foreground'>
                 正在计算数据画像与异常预检...
               </div>
             )}
             {profileQuery.isError && (
-              <div className='h-48 flex items-center justify-center text-sm text-destructive gap-2'>
+              <div className='h-48 flex items-center justify-center text-body text-destructive gap-2'>
                 <AlertCircle className='h-4 w-4' />
                 获取数据画像失败
               </div>
             )}
             {profile && (
               <div className='flex flex-col gap-3 flex-1 min-h-0 overflow-auto'>
-                <div className='flex flex-wrap items-center gap-4 p-3 rounded-md bg-muted/30 border text-xs'>
+                <div className='flex flex-wrap items-center gap-4 p-3 rounded-md bg-muted/30 border text-label'>
                   <div>
                     <span className='text-muted-foreground'>真实总行数: </span>
                     <span className='font-mono font-semibold'>{profile.totalRows}</span>
@@ -214,7 +215,7 @@ export function DatasetRowsDialog({
                   <div>
                     <span className='text-muted-foreground'>分析行数: </span>
                     <span className='font-mono font-semibold'>{profile.analyzedRows}</span>
-                    <Badge variant='secondary' className='ml-1 text-[10px]'>
+                    <Badge variant='secondary' className='ml-1 text-label'>
                       {profile.isSampled ? '采样分析' : '全量覆盖'}
                     </Badge>
                   </div>
@@ -228,49 +229,49 @@ export function DatasetRowsDialog({
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className='text-xs'>字段名称</TableHead>
-                        <TableHead className='text-xs'>推断类型</TableHead>
-                        <TableHead className='text-xs'>空值率 (缺失数)</TableHead>
-                        <TableHead className='text-xs'>唯一值数</TableHead>
-                        <TableHead className='text-xs'>文本长度区间</TableHead>
-                        <TableHead className='text-xs'>预警与提示</TableHead>
+                        <TableHead className='text-label'>字段名称</TableHead>
+                        <TableHead className='text-label'>推断类型</TableHead>
+                        <TableHead className='text-label'>空值率 (缺失数)</TableHead>
+                        <TableHead className='text-label'>唯一值数</TableHead>
+                        <TableHead className='text-label'>文本长度区间</TableHead>
+                        <TableHead className='text-label'>预警与提示</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {profile.columns.map((col) => (
                         <TableRow key={col.name}>
-                          <TableCell className='text-xs font-medium font-mono'>
+                          <TableCell className='text-small font-medium font-mono'>
                             {col.name}
                           </TableCell>
                           <TableCell>
-                            <Badge variant='outline' className='text-[10px] font-mono'>
+                            <Badge variant='outline' className='text-label font-mono'>
                               {col.inferredType}
                             </Badge>
                           </TableCell>
-                          <TableCell className='text-xs font-mono'>
+                          <TableCell className='text-small font-mono'>
                             {(col.nullRate * 100).toFixed(1)}% ({col.nullCount})
                           </TableCell>
-                          <TableCell className='text-xs font-mono'>
+                          <TableCell className='text-small font-mono'>
                             {col.distinctCount}
                           </TableCell>
-                          <TableCell className='text-xs font-mono text-muted-foreground'>
+                          <TableCell className='text-small font-mono text-muted-foreground'>
                             {col.minLength ?? 0} ~ {col.maxLength ?? 0} 字符
                           </TableCell>
-                          <TableCell className='text-xs'>
+                          <TableCell className='text-small'>
                             {col.sampleAnomalies.length > 0 ? (
                               <div className='flex flex-wrap gap-1'>
                                 {col.sampleAnomalies.map((a, i) => (
                                   <Badge
                                     key={i}
                                     variant='outline'
-                                    className='text-[10px] text-amber-600 border-amber-300 dark:text-amber-400'
+                                    className='text-label text-status-warning-foreground border-border-default'
                                   >
                                     {a}
                                   </Badge>
                                 ))}
                               </div>
                             ) : (
-                              <span className='text-muted-foreground text-xs'>正常</span>
+                              <span className='text-muted-foreground text-small'>正常</span>
                             )}
                           </TableCell>
                         </TableRow>

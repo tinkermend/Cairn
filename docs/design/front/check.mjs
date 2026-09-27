@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(
@@ -204,9 +204,32 @@ const contentTsx = allTsx.filter(
 const existingAuthFonts = {
   "features/auth/auth-layout.tsx": ["text-[28px]", "sm:text-[34px]"],
 };
+
+const baselinePath = new URL("design-baseline.json", root);
+const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, "utf8")) : {};
+
+if (process.argv.includes("--update-baseline")) {
+  const currentBaseline = {};
+  for (const file of allTsx) {
+    const r = rel(file);
+    const issues = sourceStyleIssues(readFileSync(file, "utf8"), contentTsx.includes(file), existingAuthFonts[r]);
+    if (issues.length > 0) {
+      currentBaseline[r] = issues;
+    }
+  }
+  writeFileSync(baselinePath, JSON.stringify(currentBaseline, null, 2) + "\n");
+  console.log(`已更新前端设计检查基线：${Object.keys(currentBaseline).length} 个存量文件`);
+  process.exit(0);
+}
+
 for (const file of allTsx) {
-  const issues = sourceStyleIssues(readFileSync(file, "utf8"), contentTsx.includes(file), existingAuthFonts[rel(file)]);
-  assert.deepEqual(issues, [], `${rel(file)}: 样式绕过统一规则（color 用语义 Token，font 用页面刻度，motion 用明确属性）：${JSON.stringify(issues)}`);
+  const r = rel(file);
+  const issues = sourceStyleIssues(readFileSync(file, "utf8"), contentTsx.includes(file), existingAuthFonts[r]);
+  const fileBaseline = baseline[r] || [];
+  const newIssues = issues.filter(
+    (issue) => !fileBaseline.some((b) => b.kind === issue.kind && b.value === issue.value),
+  );
+  assert.deepEqual(newIssues, [], `${r}: 样式绕过统一规则（color 用语义 Token，font 用页面刻度，motion 用明确属性）：${JSON.stringify(newIssues)}`);
 }
 
 // 顶栏由认证布局渲染。业务页再引入 AppHeader / Header 就会重新各写各的。

@@ -624,7 +624,7 @@ export function AssistantResultView({
         {result.stepSummary ? (
           <p className='text-small text-text-secondary'>{result.stepSummary}</p>
         ) : null}
-        {result.diagnostics.length > 0 ? (
+        {(result.diagnostics?.length ?? 0) > 0 ? (
           <div className='rounded-md border border-border-divider bg-surface-subtle p-2.5 space-y-1.5'>
             <div className='text-label font-medium text-text-secondary'>诊断分析</div>
             <ul className='space-y-1 text-label text-text-muted'>

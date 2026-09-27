@@ -7,7 +7,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { Kbd } from '@/components/ui/kbd'
 import { formatShortcut } from '@/lib/platform'
 import { assistantIcon } from './icon'
 
@@ -51,9 +50,9 @@ export function HeaderAssistantTrigger() {
               ) : null}
             </div>
             <span className='hidden sm:inline text-label font-medium'>识途助手</span>
-            <Kbd shortcut={toggleKey} size='sm' className='hidden md:inline-flex' />
           </Button>
         </TooltipTrigger>
+        {/* 快捷键只放提示里：顶栏已由搜索框展示一枚按键徽标，不再并排第二枚 */}
         <TooltipContent side='bottom'>识途助手 ({shortcutHint})</TooltipContent>
       </Tooltip>
     </Can>

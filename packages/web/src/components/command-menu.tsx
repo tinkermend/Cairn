@@ -1,7 +1,7 @@
 import React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, type LinkProps } from '@tanstack/react-router'
-import { ArrowRight, ChevronRight } from 'lucide-react'
+import { ArrowRight, ChevronRight, Sparkles } from 'lucide-react'
 import { useSearch } from '@/context/search-provider'
 import {
   CommandDialog,
@@ -12,6 +12,7 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { can, filterNavItems } from '@/lib/rbac'
 import { fetchRuns } from '@/lib/runs-api'
 import { fetchScenarios } from '@/lib/scenarios-api'
@@ -66,6 +67,12 @@ export function CommandMenu() {
   const [query, setQuery] = React.useState('')
   const [debounced, setDebounced] = React.useState('')
 
+  // Assistant store bindings
+  const busy = useAssistantStore((s) => s.busy)
+  const assistantDraft = useAssistantStore((s) => s.question)
+  const activeQuote = useAssistantStore((s) => s.activeQuote)
+  const capabilities = useAssistantStore((s) => s.capabilities)
+
   React.useEffect(() => {
     const timer = setTimeout(() => setDebounced(query.trim()), 300)
     return () => clearTimeout(timer)
@@ -81,6 +88,7 @@ export function CommandMenu() {
   const canReadScenarios = can(user, 'workflow:read')
   const canReadRuns = can(user, 'run:read')
   const canReadTargets = can(user, 'target:read')
+  const canAssist = can(user, 'ai:assist')
 
   const scenarios = useQuery({
     queryKey: ['command-menu', 'scenarios', objectQuery],
@@ -107,6 +115,51 @@ export function CommandMenu() {
   )
 
   const needle = query.trim().toLowerCase()
+  const trimmedQuery = query.trim()
+  const showAskAssistant = Boolean(trimmedQuery) && canAssist
+
+  let disabledReason: string | null = null
+  if (busy) {
+    disabledReason = '助手正在回复中'
+  } else if (assistantDraft && assistantDraft.trim().length > 0) {
+    disabledReason = '助手输入框有未发送的草稿'
+  } else if (activeQuote) {
+    disabledReason = '助手有待处理的引用内容'
+  } else if (capabilities?.modelEnabled === false) {
+    disabledReason = '平台 AI 尚未启用'
+  }
+
+  const handleAskAssistant = React.useCallback(async () => {
+    if (disabledReason) return
+    const questionSnapshot = trimmedQuery
+    if (!questionSnapshot) return
+
+    // 固定输入快照，关闭命令菜单
+    closeMenu()
+
+    // 打开助手并填入该问题，显式调用 submit() 发送一次
+    const assistantStore = useAssistantStore.getState()
+    assistantStore.openPanel({ question: questionSnapshot })
+
+    try {
+      await assistantStore.submit()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '发送失败，请稍后重试'
+      useAssistantStore.setState({ error: message })
+    }
+
+    // 确保键盘焦点最终落在助手
+    requestAnimationFrame(() => {
+      const input = document.getElementById('assistant-question') as HTMLTextAreaElement | null
+      if (input) {
+        input.focus()
+      } else {
+        const panel = document.querySelector('[data-assistant-panel="true"]') as HTMLElement | null
+        panel?.focus()
+      }
+    })
+  }, [closeMenu, disabledReason, trimmedQuery])
+
   const pages = pageItems(user).filter(
     (item) => !needle || item.text.toLowerCase().includes(needle)
   )
@@ -119,6 +172,8 @@ export function CommandMenu() {
     (canReadScenarios && scenarios.isError) ||
     (canReadRuns && runs.isError) ||
     (canReadTargets && targets.isError)
+
+  const hasAnyResults = pages.length > 0 || !objectGroupsEmpty || showAskAssistant
 
   return (
     <CommandDialog
@@ -134,7 +189,7 @@ export function CommandMenu() {
       />
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
-          {pages.length === 0 && objectGroupsEmpty && !failed ? (
+          {!hasAnyResults && !failed ? (
             <CommandEmpty>没有叫这个名字的页面、场景、运行或目标。</CommandEmpty>
           ) : null}
           {pages.length > 0 ? (
@@ -193,7 +248,7 @@ export function CommandMenu() {
                     runCommand(() => navigate({ to: '/runs/$runId', params: { runId: item.id } }))
                   }
                 >
-                  <span className='font-mono text-xs text-muted-foreground mr-1.5'>
+                  <span className='font-mono text-caption text-muted-foreground mr-1.5'>
                     #{item.id.slice(0, 8)}
                   </span>
                   <span className='truncate'>{item.scenarioName}</span>
@@ -227,6 +282,30 @@ export function CommandMenu() {
                   <span className='ms-auto text-label text-muted-foreground'>{item.code}</span>
                 </CommandItem>
               ))}
+            </CommandGroup>
+          ) : null}
+          {showAskAssistant ? (
+            <CommandGroup heading='智能助手'>
+              <CommandItem
+                key='ask-assistant'
+                value={`ask-assistant:${trimmedQuery}`}
+                disabled={Boolean(disabledReason)}
+                onSelect={() => {
+                  if (!disabledReason) {
+                    void handleAskAssistant()
+                  }
+                }}
+              >
+                <div className='flex size-4 items-center justify-center text-primary'>
+                  <Sparkles className='size-3.5' />
+                </div>
+                <span className='truncate'>问识途助手：{trimmedQuery}</span>
+                {disabledReason ? (
+                  <span className='ms-auto text-caption text-muted-foreground shrink-0'>
+                    {disabledReason}
+                  </span>
+                ) : null}
+              </CommandItem>
             </CommandGroup>
           ) : null}
         </ScrollArea>

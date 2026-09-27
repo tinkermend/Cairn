@@ -121,7 +121,7 @@ export function AtlasView({
               <h2 className='truncate text-body font-bold text-white'>
                 知识资产全景海域
               </h2>
-              <p className='text-caption text-[#98bdba]'>
+              <p className='text-caption archipelago-topline-muted'>
                 已观测 {atlasQuery.data?.totalObservedPages ?? rawItems.length} 座页面海岛 ·{' '}
                 {totalObjects} 个知识地标
               </p>
@@ -130,7 +130,7 @@ export function AtlasView({
 
           <div className='flex items-center gap-2'>
             {selectedPageItem ? (
-              <div className='flex items-center gap-1.5 text-caption text-[#bfe5da]'>
+              <div className='flex items-center gap-1.5 text-caption archipelago-topline-text'>
                 <button
                   type='button'
                   className='hover:underline hover:text-white'
@@ -141,7 +141,7 @@ export function AtlasView({
                 >
                   全景海图
                 </button>
-                <span className='text-[#5f8991]'>/</span>
+                <span className='archipelago-topline-divider'>/</span>
                 <span className='font-semibold text-white truncate max-w-[140px]'>
                   {selectedPageItem.displayName}
                 </span>
@@ -151,7 +151,7 @@ export function AtlasView({
             <Button
               variant='ghost'
               size='sm'
-              className='h-7 text-[#bfe5da] hover:bg-[#244b54] hover:text-white'
+              className='h-7 archipelago-topline-text archipelago-topline-refresh hover:text-white'
               onClick={() => void atlasQuery.refetch()}
               title='重新测绘海域'
             >

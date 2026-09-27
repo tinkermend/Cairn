@@ -146,7 +146,7 @@ function interpolateTemplate(template: string, context: Record<string, JsonValue
 
 function needsSafeSummary(status?: string | null, outcomeStatus?: string | null): boolean {
   return status === 'FAILED' || status === 'CANCELLED' || status === 'NEEDS_REVIEW' ||
-    outcomeStatus === 'FAIL' || outcomeStatus === 'UNKNOWN'
+    outcomeStatus === 'FAIL' || outcomeStatus === 'UNKNOWN' || outcomeStatus === 'NOT_EVALUATED'
 }
 
 /**
@@ -198,6 +198,10 @@ export function deriveFallbackSummary(
     return status === 'SUCCEEDED'
       ? '流程执行完成，但业务结果无法确认。'
       : '业务结果无法确认。'
+  } else if (outcomeStatus === 'NOT_EVALUATED') {
+    return status === 'SUCCEEDED'
+      ? '流程执行完成，但业务结果未评价。'
+      : '业务结果未评价。'
   } else {
     return '流程执行完成。'
   }

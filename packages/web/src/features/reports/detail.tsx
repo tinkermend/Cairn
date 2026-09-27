@@ -4,6 +4,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { Share2, Check } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { createReportShareToken, fetchReport, fetchReportRevision } from '@/lib/reports-api'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
@@ -17,6 +18,11 @@ export function ReportDetailPage() {
   const report = useQuery({
     queryKey: ['report', reportId],
     queryFn: () => fetchReport(reportId),
+  })
+
+  useBreadcrumb({
+    entityId: reportId,
+    title: report.data?.currentRevision?.title || '运行报告',
   })
   const currentRevisionId = report.data?.currentRevision?.id
   const revisionDetail = useQuery({
@@ -37,8 +43,8 @@ export function ReportDetailPage() {
       setCopied(true)
       toast.success('免登录只读分享链接已复制到剪贴板（24小时内有效）')
       setTimeout(() => setCopied(false), 3000)
-    } catch (err: any) {
-      toast.error(err?.message || '生成分享链接失败')
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : '生成分享链接失败')
     } finally {
       setSharing(false)
     }
@@ -51,11 +57,11 @@ export function ReportDetailPage() {
         description='查看固定修订、导出进度和交付文件。'
         parent={
           <Link
-            to='/evidence'
-            search={{ tab: 'reports' }}
+            to='/runs'
+            search={{ view: 'reports' }}
             className='text-link'
           >
-            返回结果与报告
+            返回报告列表
           </Link>
         }
       />
@@ -95,7 +101,7 @@ export function ReportDetailPage() {
                 disabled={sharing}
                 className='gap-2'
               >
-                {copied ? <Check className='size-4 text-emerald-500' /> : <Share2 className='size-4' />}
+                {copied ? <Check className='size-4 text-status-success-foreground' /> : <Share2 className='size-4' />}
                 {copied ? '链接已复制' : sharing ? '生成中...' : '分享只读报告'}
               </Button>
             )}

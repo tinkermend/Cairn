@@ -788,9 +788,6 @@ function ChannelForm({
               <SelectFieldOption value='cairn.outbound@1'>
                 标准推送（推荐）
               </SelectFieldOption>
-              <SelectFieldOption value='cairn.notification@1'>
-                标准通知（兼容）
-              </SelectFieldOption>
               <SelectFieldOption value='legacy_alert@1'>
                 兼容旧版告警
               </SelectFieldOption>

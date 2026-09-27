@@ -22,7 +22,7 @@ export const Route = createFileRoute('/_authenticated/outbound/')({
     const user = useAuthStore.getState().auth.user
     if (
       !user ||
-      !['outbound:read', 'notification:read', 'platform-config:read', 'workflow:write'].some(
+      !['outbound:read', 'platform-config:read', 'workflow:write'].some(
         (p) => hasPermission(user.permissions, p)
       )
     )

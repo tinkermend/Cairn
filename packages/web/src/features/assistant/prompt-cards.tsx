@@ -250,7 +250,7 @@ export function PromptCards({
     <div
       role='region'
       aria-label='推荐引导与常见问题'
-      className='my-auto w-full space-y-4 py-2'
+      className='w-full space-y-4 pt-1 pb-4'
       data-testid='assistant-prompt-cards'
     >
       <div>
@@ -285,7 +285,7 @@ export function PromptCards({
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-label font-medium transition-colors select-none',
                 isActive
-                  ? 'bg-primary-50 text-primary-600 border border-primary-200 shadow-2xs'
+                  ? 'bg-primary/10 text-primary border border-primary/20 shadow-2xs'
                   : 'bg-surface-subtle text-text-secondary border border-border-default hover:border-border-muted hover:text-text-primary',
               )}
             >
@@ -296,42 +296,38 @@ export function PromptCards({
         })}
       </div>
 
-      {/* 小卡片矩阵 */}
+      {/* 提示词胶囊气泡流 (Prompt Chips / Pills ≤ 36px - 方案 B) */}
       <div
         id={`${categoryTabsId}-panel-${currentCategory.key}`}
         role='tabpanel'
         aria-labelledby={`${categoryTabsId}-tab-${currentCategory.key}`}
-        className='grid grid-cols-1 @[420px]:grid-cols-2 gap-2.5 pt-1'
+        className='flex flex-wrap items-center gap-2 pt-1'
       >
         {currentCategory.cards.map((card) => {
           const CardIcon = card.icon
+          const hasEmoji = /\p{Extended_Pictographic}/u.test(card.title)
           return (
             <button
               key={card.id}
               type='button'
               data-testid={`prompt-card-${card.id}`}
-              aria-label={currentCategory.key === 'recommended' ? `推荐提问：${card.title}` : undefined}
+              title={card.description}
               onClick={() => onSelectPrompt(card.question, card.capabilityHint)}
-              className='group relative flex flex-col justify-between rounded-xl border border-border-default bg-surface-card p-3 text-start transition-colors hover:border-primary-400 hover:bg-surface-subtle hover:shadow-2xs cursor-pointer select-none'
+              className='group inline-flex items-center gap-2 rounded-full border border-border-default bg-surface-card px-3 py-1.5 text-label font-medium text-text-secondary shadow-2xs transition-colors hover:border-primary/50 hover:bg-surface-subtle hover:text-text-primary cursor-pointer select-none active:scale-[0.98]'
             >
-              <div className='flex items-start justify-between gap-2 w-full'>
-                <div className='flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-subtle text-text-secondary group-hover:bg-primary-50 group-hover:text-primary-600 transition-colors'>
-                  <CardIcon className='size-3.5' aria-hidden='true' />
-                </div>
-                <ArrowRight
-                  className='size-3.5 text-text-muted group-hover:text-primary-600 group-hover:translate-x-0.5 transition-transform'
+              {!hasEmoji && (
+                <CardIcon
+                  className='size-3.5 shrink-0 text-text-muted group-hover:text-primary transition-colors'
                   aria-hidden='true'
                 />
-              </div>
-
-              <div className='mt-2.5 min-w-0 space-y-1'>
-                <span className='block text-small font-semibold text-text-primary truncate group-hover:text-primary-600 transition-colors'>
-                  {card.title}
-                </span>
-                <span className='block text-label text-text-muted line-clamp-2 leading-relaxed font-normal'>
-                  {card.description}
-                </span>
-              </div>
+              )}
+              <span className='truncate group-hover:text-primary transition-colors'>
+                {card.title}
+              </span>
+              <ArrowRight
+                className='size-3 shrink-0 text-text-muted opacity-40 group-hover:opacity-100 group-hover:text-primary group-hover:translate-x-0.5 transition-transform'
+                aria-hidden='true'
+              />
             </button>
           )
         })}

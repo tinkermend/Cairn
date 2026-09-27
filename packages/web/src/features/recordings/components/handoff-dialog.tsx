@@ -387,7 +387,7 @@ export function RecordingHandoffDialog({
                     <button
                       type='button'
                       onClick={() => setAnchorMode('end')}
-                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
+                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-[background-color,border-color,color,box-shadow] ${
                         anchorMode === 'end'
                           ? 'border-primary bg-primary/5 text-primary shadow-xs'
                           : 'border-border bg-card hover:bg-surface-subtle text-foreground'
@@ -416,7 +416,7 @@ export function RecordingHandoffDialog({
                         }
                       }}
                       disabled={existingSteps.length === 0}
-                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
+                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-[background-color,border-color,color,box-shadow] ${
                         anchorMode === 'after_step'
                           ? 'border-primary bg-primary/5 text-primary shadow-xs'
                           : 'border-border bg-card hover:bg-surface-subtle text-foreground disabled:opacity-50'
@@ -437,7 +437,7 @@ export function RecordingHandoffDialog({
                     <button
                       type='button'
                       onClick={() => setAnchorMode('start')}
-                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
+                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-[background-color,border-color,color,box-shadow] ${
                         anchorMode === 'start'
                           ? 'border-primary bg-primary/5 text-primary shadow-xs'
                           : 'border-border bg-card hover:bg-surface-subtle text-foreground'
@@ -466,7 +466,7 @@ export function RecordingHandoffDialog({
                         }
                       }}
                       disabled={existingSteps.length === 0 || sourceProtocol !== 'demonstration@1'}
-                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
+                      className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-[background-color,border-color,color,box-shadow] ${
                         anchorMode === 'replace'
                           ? 'border-primary bg-primary/5 text-primary shadow-xs'
                           : 'border-border bg-card hover:bg-surface-subtle text-foreground disabled:opacity-50'
@@ -550,10 +550,10 @@ export function RecordingHandoffDialog({
                     {anchorMode === 'start' && draftItems.map((item, idx) => (
                       <span
                         key={`ins-start-${idx}`}
-                        className='inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/40 px-2 py-1 font-medium text-emerald-800 dark:text-emerald-300'
+                        className='inline-flex items-center gap-1 rounded bg-status-success-background border border-status-success-accent/40 px-2 py-1 font-medium text-status-success-foreground'
                         title={item.name}
                       >
-                        <Plus className='size-3 text-emerald-600' />
+                        <Plus className='size-3 text-status-success-foreground' />
                         +{idx + 1}. {item.name.slice(0, 10)}
                       </span>
                     ))}
@@ -561,7 +561,7 @@ export function RecordingHandoffDialog({
                     {/* 折叠视窗：若前序步骤过多，折叠非锚点前序 */}
                     {existingSteps.length > 4 && anchorMode === 'end' ? (
                       <>
-                        <span className='rounded bg-muted px-2 py-1 text-muted-foreground text-3xs font-mono'>
+                        <span className='rounded bg-muted px-2 py-1 text-muted-foreground text-label font-mono'>
                           … 前序 {existingSteps.length - 2} 步 (已折叠)
                         </span>
                         <ChevronRight className='size-3 text-muted-foreground shrink-0' />
@@ -593,10 +593,10 @@ export function RecordingHandoffDialog({
                             {isAfterAnchor && draftItems.map((item, dIdx) => (
                               <span
                                 key={`ins-after-${dIdx}`}
-                                className='inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/40 px-2 py-1 font-medium text-emerald-800 dark:text-emerald-300'
+                                className='inline-flex items-center gap-1 rounded bg-status-success-background border border-status-success-accent/40 px-2 py-1 font-medium text-status-success-foreground'
                                 title={item.name}
                               >
-                                <Plus className='size-3 text-emerald-600' />
+                                <Plus className='size-3 text-status-success-foreground' />
                                 +{idx + dIdx + 2}. {item.name.slice(0, 10)}
                               </span>
                             ))}
@@ -610,21 +610,21 @@ export function RecordingHandoffDialog({
                     {anchorMode === 'end' && draftItems.map((item, idx) => (
                       <span
                         key={`ins-end-${idx}`}
-                        className='inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/40 px-2 py-1 font-medium text-emerald-800 dark:text-emerald-300'
+                        className='inline-flex items-center gap-1 rounded bg-status-success-background border border-status-success-accent/40 px-2 py-1 font-medium text-status-success-foreground'
                         title={item.name}
                       >
-                        <Plus className='size-3 text-emerald-600' />
+                        <Plus className='size-3 text-status-success-foreground' />
                         +{existingSteps.length + idx + 1}. {item.name.slice(0, 10)}
                       </span>
                     ))}
                   </div>
 
                   {unresolvedCount > 0 ? (
-                    <p className='text-3xs text-status-warning-foreground pt-0.5'>
+                    <p className='text-label text-status-warning-foreground pt-0.5'>
                       ⚠️ 注意：草稿中包含 {unresolvedCount} 个待处理项，回填时未就绪动作将被自动舍弃；若需逐个替换，请选择「在 Studio 中深度微调」。
                     </p>
                   ) : (
-                    <p className='text-3xs text-status-success-foreground pt-0.5'>
+                    <p className='text-label text-status-success-foreground pt-0.5'>
                       ✓ 本草稿步骤均已就绪，回填后直接作为正式步骤生效。
                     </p>
                   )}

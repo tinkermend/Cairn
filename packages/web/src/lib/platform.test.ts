@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  formatAriaShortcut,
   formatShortcut,
   getPlatform,
   isMac,
@@ -37,5 +38,11 @@ describe('platform 跨平台探测与快捷键格式化', () => {
 
     setMockPlatformForTesting('linux')
     expect(formatShortcut('mod+j')).toBe('Ctrl+J')
+  })
+
+  it('无障碍快捷键提示与组合键保持一致', () => {
+    expect(formatAriaShortcut('mod+k')).toBe('Meta+K Control+K')
+    expect(formatAriaShortcut('mod+shift+p')).toBe('Meta+Shift+P Control+Shift+P')
+    expect(formatAriaShortcut('alt+up')).toBe('Alt+ArrowUp')
   })
 })

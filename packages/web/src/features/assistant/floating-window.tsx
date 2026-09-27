@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type HTMLAttributes } from 'react'
 import { createPortal } from 'react-dom'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { AssistantPanel } from './panel'
 
 const WIDTH = 400
@@ -110,7 +111,8 @@ export function AssistantFloatingWindow({
       drag.current = null
       // The launcher remounts in the same commit as the window closes.
       queueMicrotask(() => {
-        if (assistantWindow?.isConnected) return
+        // 切换为停靠栏时浮窗虽卸载，助手仍然打开；由新面板接管焦点。
+        if (assistantWindow?.isConnected || useAssistantStore.getState().open) return
         const opener = openerRef.current
         if (opener?.isConnected && opener !== document.body)
           opener.focus({ preventScroll: true })

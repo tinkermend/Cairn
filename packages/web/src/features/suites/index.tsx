@@ -317,7 +317,7 @@ export function SuitesPage() {
                               </Badge>
                             )}
                             {item.publishedVersionNo && item.draftRevision > item.publishedVersionNo ? (
-                              <span className='text-3xs text-amber-600 dark:text-amber-400'>
+                              <span className='text-label text-status-warning-foreground'>
                                 有未发布草稿 (r{item.draftRevision})
                               </span>
                             ) : null}

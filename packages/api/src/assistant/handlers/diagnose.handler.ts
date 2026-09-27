@@ -22,34 +22,40 @@ export async function handleRunDiagnose(
   let runId = String(slots.runId ?? body.pageContext?.runId ?? '')
   if (!runId && (slots.findRecentFailed || /最近失败|最近一次失败/.test(body.question))) {
     const { listRuns } = await import('@cairn/db')
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-    const runsList = await listRuns(
-      db,
-      {
+    const observedAt = new Date()
+    const sevenDaysAgo = new Date(observedAt.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    let runsList: Awaited<ReturnType<typeof listRuns>>
+    try {
+      // Filter in storage before pagination. A failed run may be older than the
+      // first page of successful runs and must not be reported as absent.
+      runsList = await listRuns(db, {
         from: sevenDaysAgo,
-        limit: 20,
-      },
-      actor.id,
-    ).catch(() => ({ items: [] }))
+        status: 'FAILED',
+        targetId: body.pageContext?.targetId,
+        limit: 1,
+      }, actor.id)
+    } catch {
+      throw new DomainError('unavailable', 'RUN_LIST_UNAVAILABLE', '暂时无法读取运行记录，不能判断最近 7 天是否有失败运行')
+    }
 
-    const failedRun = runsList.items.find((r) => r.status === 'FAILED')
+    const failedRun = runsList.items[0]
     if (failedRun) {
       runId = failedRun.id
     } else {
       return {
         kind: 'diagnosis',
-        observedAt: new Date().toISOString(),
+        observedAt: observedAt.toISOString(),
         eventSeq: 1,
         focus: 'failure',
         facts: [
           {
             id: 'fact-recent-failed',
-            text: '近 7 天内当前可见范围内未发现处于 FAILED、TIMED_OUT 或 ERROR 的失败运行（已排除用户主动取消的运行）',
+            text: '近 7 天内当前可见的业务运行中未发现状态为 FAILED 的记录（不含地图作业；不代表业务结果断言全部通过）',
             citations: [],
           },
         ],
         hypotheses: [],
-        missingInformation: ['近 7 天内无异常运行记录'],
+        missingInformation: [],
         missingReasons: [],
         nextActions: [
           {

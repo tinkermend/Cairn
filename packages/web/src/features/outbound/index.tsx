@@ -343,7 +343,7 @@ function OutboundRecords({
                   setSearch(e.target.value)
                   page.reset()
                 }}
-                className='h-8 pl-8 text-xs'
+                className='h-8 pl-8 text-label'
               />
             </div>
             <Select value={type || 'all'} onValueChange={handleTypeChange}>
@@ -485,7 +485,7 @@ function OutboundRecords({
                         </p>
                         <div className='mt-0.5 flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
                           <span
-                            className='inline-flex items-center rounded border border-border-divider bg-muted/60 px-1 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-muted cursor-pointer select-all'
+                            className='inline-flex items-center rounded border border-border-divider bg-muted/60 px-1 py-0.5 font-mono text-label text-muted-foreground hover:bg-muted cursor-pointer select-all'
                             title={`完整事件编号：${event.id}（点击复制）`}
                             onClick={(e) => {
                               e.stopPropagation()
@@ -499,7 +499,7 @@ function OutboundRecords({
                             <Link
                               to='/runs/$runId'
                               params={{ runId: event.runId }}
-                              className='inline-flex items-center rounded border border-border-divider bg-muted/40 px-1 py-0.5 font-mono text-[11px] text-primary hover:underline'
+                              className='inline-flex items-center rounded border border-border-divider bg-muted/40 px-1 py-0.5 font-mono text-label text-primary hover:underline'
                               onClick={(e) => e.stopPropagation()}
                               title={`查看运行详情：${event.runId}`}
                             >
@@ -663,7 +663,7 @@ function OutboundDetail({ id }: { id: string }) {
                 </h3>
                 <div className='mt-1 flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
                   <span>触发时间：{new Date(event.occurredAt).toLocaleString()} · {stateLabels[event.state]}</span>
-                  <span className='inline-flex items-center gap-1 font-mono text-[11px]'>
+                  <span className='inline-flex items-center gap-1 font-mono text-label'>
                     <span>事件编号：</span>
                     <span
                       className='rounded border border-border-divider bg-muted/60 px-1.5 py-0.5 hover:bg-muted cursor-pointer select-all text-text-primary'
@@ -778,7 +778,7 @@ function OutboundDetail({ id }: { id: string }) {
                     {d.closedAt ? ' · 已结案' : ''}
                   </StatusBadge>
                 </div>
-                <div className='flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground'>
+                <div className='flex items-center gap-1.5 font-mono text-label text-muted-foreground'>
                   <span>投递编号：</span>
                   <span
                     className='rounded border border-border-divider bg-muted/60 px-1.5 py-0.5 hover:bg-muted cursor-pointer select-all text-text-primary'

@@ -8,6 +8,7 @@ import { fetchMapSummary, publishMapRelease } from '@/lib/map-api'
 import { fetchTarget } from '@/lib/targets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Main } from '@/components/layout/main'
@@ -79,6 +80,12 @@ export function TargetMapPage() {
   const targetQuery = useQuery({
     queryKey: ['target', targetId],
     queryFn: () => fetchTarget(targetId),
+  })
+
+  useBreadcrumb({
+    entityId: targetId,
+    parentTitle: targetQuery.data?.name,
+    title: targetQuery.data?.name,
   })
 
   const summaryQuery = useQuery({

@@ -111,7 +111,7 @@ export function RunOutputCard({ output, runStatus, outcomeStatus, onFocusEvidenc
                 <span className='text-label text-muted-foreground truncate' title={key}>
                   {key}
                 </span>
-                <span className='mt-1 text-lg font-bold font-mono text-foreground'>
+                <span className='mt-1 text-section font-bold font-mono text-foreground'>
                   {typeof val === 'boolean' ? (val ? '是' : '否') : String(val)}
                 </span>
               </div>
@@ -146,7 +146,7 @@ export function RunOutputCard({ output, runStatus, outcomeStatus, onFocusEvidenc
                         <button
                           type='button'
                           onClick={() => onFocusStep?.(finding.stepOrdinal!)}
-                          className='rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground hover:text-foreground'
+                          className='rounded bg-muted px-1.5 py-0.5 text-label font-mono text-muted-foreground hover:text-foreground'
                         >
                           第 {finding.stepOrdinal + 1} 步
                         </button>
@@ -166,7 +166,7 @@ export function RunOutputCard({ output, runStatus, outcomeStatus, onFocusEvidenc
                       <Button
                         variant='outline'
                         size='sm'
-                        className='h-7 text-xs gap-1'
+                        className='h-7 text-label gap-1'
                         onClick={() => onFocusEvidence?.(finding.evidenceId!)}
                       >
                         <Camera className='size-3.5' />

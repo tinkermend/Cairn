@@ -4,7 +4,11 @@ import { render, type RenderResult } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { PERMISSIONS, SYSTEM_ROLE_DEFINITIONS } from '@cairn/shared'
 import { SearchProvider } from '@/context/search-provider'
+import { Search } from '@/components/search'
+import { formatShortcut } from '@/lib/platform'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
+import { useKeybindingsStore } from '@/stores/keybindings-store'
 
 const COMMAND_MENU_PLACEHOLDER = '搜索场景、运行、目标或页面'
 
@@ -29,11 +33,11 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 
 type ShortcutModifier = 'Control' | 'Meta'
 
-async function renderWithSearchProvider() {
+async function renderWithSearchProvider(children: React.ReactNode = null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return await render(
     <QueryClientProvider client={client}>
-      <SearchProvider>{null}</SearchProvider>
+      <SearchProvider>{children}</SearchProvider>
     </QueryClientProvider>
   )
 }
@@ -79,6 +83,15 @@ describe('SearchProvider and CommandMenu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useAuthStore.getState().auth.reset()
+    useKeybindingsStore.getState().resetAll()
+    useAssistantStore.setState({
+      open: false,
+      busy: false,
+      question: '',
+      activeQuote: null,
+      capabilities: null,
+      error: null,
+    })
     mocks.fetchScenarios.mockResolvedValue({ items: [] })
     mocks.fetchRuns.mockResolvedValue({ items: [] })
     mocks.fetchTargets.mockResolvedValue({ items: [] })
@@ -123,6 +136,24 @@ describe('SearchProvider and CommandMenu', () => {
         .toBeInTheDocument()
     }
   )
+
+  it('自定义快捷键即时更新监听、按钮提示和无障碍声明，旧组合键失效', async () => {
+    const screen = await renderWithSearchProvider(<Search />)
+    const trigger = screen.getByRole('button', { name: '搜索或跳转' })
+
+    await expect.element(trigger).toHaveAttribute('aria-keyshortcuts', 'Meta+K Control+K')
+    expect(trigger.element().textContent).toContain(formatShortcut('mod+k'))
+
+    expect(useKeybindingsStore.getState().setCustomKey('palette.open', 'ctrl+shift+p').ok).toBe(true)
+    await expect.element(trigger).toHaveAttribute('aria-keyshortcuts', 'Meta+Shift+P Control+Shift+P')
+    expect(trigger.element().textContent).toContain(formatShortcut('mod+shift+p'))
+
+    await userEvent.keyboard('{Control>}k{/Control}')
+    await expect.element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)).not.toBeInTheDocument()
+
+    await userEvent.keyboard('{Control>}{Shift>}p{/Shift}{/Control}')
+    await expect.element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)).toBeInTheDocument()
+  })
 
   it('navigates to a top-level route and closes the palette when a nav item is selected', async () => {
     signIn([...PERMISSIONS])
@@ -270,5 +301,95 @@ describe('SearchProvider and CommandMenu', () => {
     await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '订单')
     await vi.waitFor(() => expect(mocks.fetchScenarios).toHaveBeenCalledTimes(1))
     expect(mocks.fetchRuns).not.toHaveBeenCalled()
+  })
+
+  it('用户具备 ai:assist 且输入非空时显示「问识途助手：<内容>」，且不显示无结果空态', async () => {
+    signIn(['ai:assist'])
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '如何编写重试步骤')
+    const item = screen.getByRole('option', { name: /问识途助手：如何编写重试步骤/ })
+    await expect.element(item).toBeInTheDocument()
+    expect(screen.getByText('没有叫这个名字的页面、场景、运行或目标。').elements()).toHaveLength(0)
+  })
+
+  it('用户无 ai:assist 权限时不显示问助手入口', async () => {
+    signIn([])
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '如何编写重试步骤')
+    expect(screen.getByRole('option', { name: /问识途助手/ }).elements()).toHaveLength(0)
+    await expect.element(screen.getByText('没有叫这个名字的页面、场景、运行或目标。')).toBeInTheDocument()
+  })
+
+  it('助手忙碌、有草稿、有引用或模型停用时，问助手项保留但禁用并说明原因', async () => {
+    signIn(['ai:assist'])
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+
+    // 1. 助手忙碌
+    useAssistantStore.setState({ busy: true })
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '测试问题')
+    let item = screen.getByRole('option', { name: /问识途助手：测试问题/ })
+    await expect.element(item).toBeInTheDocument()
+    expect(item.element().getAttribute('aria-disabled')).toBe('true')
+    expect(item.element().textContent).toContain('助手正在回复中')
+
+    // 2. 有未发送草稿
+    useAssistantStore.setState({ busy: false, question: '已存草稿' })
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '新问题')
+    item = screen.getByRole('option', { name: /问识途助手：新问题/ })
+    expect(item.element().getAttribute('aria-disabled')).toBe('true')
+    expect(item.element().textContent).toContain('助手输入框有未发送的草稿')
+
+    // 3. 有待处理引用
+    useAssistantStore.setState({
+      busy: false,
+      question: '',
+      activeQuote: {
+        type: 'custom',
+        targetId: 's1',
+        title: '引用文本',
+        summary: '引用文本',
+      },
+    })
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '引用问题')
+    item = screen.getByRole('option', { name: /问识途助手：引用问题/ })
+    expect(item.element().getAttribute('aria-disabled')).toBe('true')
+    expect(item.element().textContent).toContain('助手有待处理的引用内容')
+
+    // 4. 模型停用
+    useAssistantStore.setState({
+      busy: false,
+      question: '',
+      activeQuote: null,
+      capabilities: { modelEnabled: false, items: [] },
+    })
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '停用问题')
+    item = screen.getByRole('option', { name: /问识途助手：停用问题/ })
+    expect(item.element().getAttribute('aria-disabled')).toBe('true')
+    expect(item.element().textContent).toContain('平台 AI 尚未启用')
+  })
+
+  it('可执行时点击问助手项：关闭命令菜单，打开助手填入问题并调用 submit', async () => {
+    signIn(['ai:assist'])
+    const submitSpy = vi.fn().mockResolvedValue(undefined)
+    useAssistantStore.setState({
+      submit: submitSpy,
+    })
+
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '帮我分析步骤错误')
+    const item = screen.getByRole('option', { name: /问识途助手：帮我分析步骤错误/ })
+    await userEvent.click(item)
+
+    // 命令菜单已关闭
+    await expect.element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)).not.toBeInTheDocument()
+    // 助手已打开且问题已填入
+    expect(useAssistantStore.getState().open).toBe(true)
+    expect(useAssistantStore.getState().question).toBe('帮我分析步骤错误')
+    // 显式调用了一次 submit
+    expect(submitSpy).toHaveBeenCalledTimes(1)
   })
 })

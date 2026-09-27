@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { CommandMenu } from '@/components/command-menu'
+import { serializeKeyboardEvent, useKeybindingsStore } from '@/stores/keybindings-store'
 
 type SearchContextType = {
   open: boolean
@@ -14,17 +15,18 @@ type SearchProviderProps = {
 
 export function SearchProvider({ children }: SearchProviderProps) {
   const [open, setOpen] = useState(false)
+  const openKey = useKeybindingsStore((state) => state.getEffectiveKey('palette.open'))
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+      if (!e.repeat && serializeKeyboardEvent(e) === openKey) {
         e.preventDefault()
         setOpen((open) => !open)
       }
     }
     document.addEventListener('keydown', down)
     return () => document.removeEventListener('keydown', down)
-  }, [])
+  }, [openKey])
 
   return (
     <SearchContext value={{ open, setOpen }}>

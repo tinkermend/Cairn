@@ -1,40 +1,39 @@
-import { useAuthStore } from '@/stores/auth-store'
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
+  useSidebar,
 } from '@/components/ui/sidebar'
-import { ApiStatus } from './api-status'
 import { AppTitle } from './app-title'
-import { sidebarData } from './data/sidebar-data'
+import { persistentNavGroups, systemNavGroups } from './data/sidebar-data'
 import { NavGroup } from './nav-group'
-import { NavUser } from './nav-user'
-import { SidebarAssistantTrigger } from './sidebar-assistant-trigger'
+import { SystemMenu } from './system-menu'
 
 export function AppSidebar() {
-  const user = useAuthStore((s) => s.auth.user)
+  const { isMobile } = useSidebar()
+
   return (
-    <Sidebar collapsible='none' variant='sidebar'>
+    <Sidebar collapsible='icon' variant='sidebar'>
       <SidebarHeader>
         <AppTitle />
       </SidebarHeader>
       <SidebarContent>
-        {sidebarData.navGroups.map((props) => (
+        {persistentNavGroups.map((props) => (
           <NavGroup key={props.title} {...props} />
         ))}
+        {/* 移动端抽屉内按权限直接展示管理组，不再额外渲染系统与管理弹出触发器 */}
+        {isMobile
+          ? systemNavGroups.map((props) => (
+              <NavGroup key={props.title} {...props} />
+            ))
+          : null}
       </SidebarContent>
-      <SidebarFooter>
-        <SidebarAssistantTrigger />
-        <ApiStatus />
-        <NavUser
-          user={{
-            name: user?.displayName ?? sidebarData.user.name,
-            email: user?.email ?? sidebarData.user.email,
-            avatar: user?.avatar ?? sidebarData.user.avatar,
-          }}
-        />
-      </SidebarFooter>
+      {!isMobile ? (
+        <SidebarFooter>
+          <SystemMenu />
+        </SidebarFooter>
+      ) : null}
     </Sidebar>
   )
 }

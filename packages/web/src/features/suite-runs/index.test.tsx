@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { SuiteRunListResponse, SuiteRunSummaryDto } from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,7 +28,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => navigateMock,
-    Link: ({ children, to, search, onClick, ...props }: any) => {
+    Link: ({ children, to, search, onClick, ...props }: Omit<ComponentProps<'a'>, 'href'> & {
+      to: string
+      search?: Record<string, string>
+    }) => {
       const searchStr = search ? '?' + new URLSearchParams(search).toString() : ''
       return (
         <a
@@ -53,9 +57,11 @@ function summary(overrides: Partial<SuiteRunSummaryDto> = {}): SuiteRunSummaryDt
     targetId: 'tgt-44444444-4444-4444-8444-444444444444',
     status: 'COMPLETED',
     verdict: 'all_pass',
-    stopReason: null,
-    concurrencyLimit: 2,
+    maxConcurrency: 2,
     failurePolicy: 'continue',
+    evidenceStatus: 'COMPLETE',
+    cancelRequested: false,
+    deadlineAt: '2026-09-27T02:00:00.000Z',
     startedAt: '2026-09-27T01:00:00.000Z',
     finishedAt: '2026-09-27T01:05:00.000Z',
     wallClockMs: 300000,

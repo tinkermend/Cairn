@@ -181,7 +181,7 @@ export function GeneralizationPanel({
     <div className='flex flex-col gap-5'>
       {/* 顶部意图目标上下文条 */}
       <div className='flex items-center justify-between rounded-lg border border-border-card bg-muted/30 px-3.5 py-2.5 shadow-sm'>
-        <div className='flex items-center gap-2.5 text-sm'>
+        <div className='flex items-center gap-2.5 text-body'>
           {selectedStepId ? (
             <>
               <Target className='size-4 text-primary shrink-0' />
@@ -206,7 +206,7 @@ export function GeneralizationPanel({
             variant='ghost'
             size='sm'
             onClick={onClearSelection}
-            className='h-7 gap-1 text-xs text-muted-foreground hover:text-foreground'
+            className='h-7 gap-1 text-label text-muted-foreground hover:text-foreground'
           >
             <X className='size-3.5' />
             清除锚定（转为整份草稿）
@@ -223,7 +223,7 @@ export function GeneralizationPanel({
               <CardTitle className='text-body font-semibold text-foreground'>规则类快捷泛化</CardTitle>
             </div>
             {isLocked ? (
-              <Badge variant='outline' className='text-xs border-amber-500/40 text-amber-600'>
+              <Badge variant='outline' className='border-status-warning-accent/40 text-label text-status-warning-foreground'>
                 已回填锁定
               </Badge>
             ) : null}
@@ -240,7 +240,7 @@ export function GeneralizationPanel({
             onClick={() => void handleQuickAction('relax_timeout')}
             className='gap-1.5'
           >
-            {submittingAction === 'relax_timeout' ? <Loader2 className='size-3.5 animate-spin' /> : <Clock className='size-3.5 text-blue-500' />}
+            {submittingAction === 'relax_timeout' ? <Loader2 className='size-3.5 animate-spin' /> : <Clock className='size-3.5 text-primary' />}
             放宽等待调参
           </Button>
 
@@ -251,7 +251,7 @@ export function GeneralizationPanel({
             onClick={() => void handleQuickAction('parameterize')}
             className='gap-1.5'
           >
-            {submittingAction === 'parameterize' ? <Loader2 className='size-3.5 animate-spin' /> : <SlidersHorizontal className='size-3.5 text-emerald-500' />}
+            {submittingAction === 'parameterize' ? <Loader2 className='size-3.5 animate-spin' /> : <SlidersHorizontal className='size-3.5 text-primary' />}
             脱敏值参数化
           </Button>
 
@@ -262,7 +262,7 @@ export function GeneralizationPanel({
             onClick={() => void handleQuickAction('expect_outcome')}
             className='gap-1.5'
           >
-            {submittingAction === 'expect_outcome' ? <Loader2 className='size-3.5 animate-spin' /> : <CheckCircle2 className='size-3.5 text-indigo-500' />}
+            {submittingAction === 'expect_outcome' ? <Loader2 className='size-3.5 animate-spin' /> : <CheckCircle2 className='size-3.5 text-primary' />}
             期待成功条件
           </Button>
 
@@ -273,7 +273,7 @@ export function GeneralizationPanel({
             onClick={() => void handleQuickAction('clean_login')}
             className='gap-1.5'
           >
-            {submittingAction === 'clean_login' ? <Loader2 className='size-3.5 animate-spin' /> : <KeyRound className='size-3.5 text-amber-500' />}
+            {submittingAction === 'clean_login' ? <Loader2 className='size-3.5 animate-spin' /> : <KeyRound className='size-3.5 text-primary' />}
             清洗登录凭据
           </Button>
 
@@ -284,7 +284,7 @@ export function GeneralizationPanel({
             onClick={() => void handleQuickAction('clean_misfires')}
             className='gap-1.5'
           >
-            {submittingAction === 'clean_misfires' ? <Loader2 className='size-3.5 animate-spin' /> : <Eraser className='size-3.5 text-rose-500' />}
+            {submittingAction === 'clean_misfires' ? <Loader2 className='size-3.5 animate-spin' /> : <Eraser className='size-3.5 text-primary' />}
             误触清洗
           </Button>
 
@@ -295,7 +295,7 @@ export function GeneralizationPanel({
             onClick={() => void handleQuickAction('extract')}
             className='gap-1.5'
           >
-            {submittingAction === 'extract' ? <Loader2 className='size-3.5 animate-spin' /> : <Database className='size-3.5 text-purple-500' />}
+            {submittingAction === 'extract' ? <Loader2 className='size-3.5 animate-spin' /> : <Database className='size-3.5 text-primary' />}
             关联数据集样本
           </Button>
         </CardContent>
@@ -315,14 +315,14 @@ export function GeneralizationPanel({
         <CardContent className='flex flex-col gap-3 pt-0'>
           {/* 澄清与拦截引导卡片 */}
           {lastClarification ? (
-            <div className='flex items-start justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-foreground shadow-sm'>
+            <div className='flex items-start justify-between gap-3 rounded-md border border-status-warning-accent/40 bg-status-warning-background p-3 text-body text-foreground shadow-sm'>
               <div className='flex items-start gap-2.5'>
-                <ShieldAlert className='size-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0' />
+                <ShieldAlert className='size-4 text-status-warning-foreground mt-0.5 shrink-0' />
                 <div className='flex flex-col gap-0.5'>
-                  <span className='font-semibold text-amber-700 dark:text-amber-400'>
+                  <span className='font-semibold text-status-warning-foreground'>
                     泛化意图拦截与澄清引导
                   </span>
-                  <span className='text-muted-foreground text-xs leading-relaxed'>
+                  <span className='text-muted-foreground text-label leading-relaxed'>
                     {lastClarification.message}
                   </span>
                 </div>
@@ -368,7 +368,7 @@ export function GeneralizationPanel({
 
           {/* 推荐正例与常见负例 Pills */}
           <div className='flex flex-col gap-2 pt-1 border-t border-border-card/40'>
-            <div className='flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground'>
+            <div className='flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
               <span className='flex items-center gap-1 font-medium text-foreground mr-1'>
                 <HelpCircle className='size-3 text-primary' />
                 推荐正例:
@@ -386,15 +386,15 @@ export function GeneralizationPanel({
                   onClick={() => {
                     setIntentInput(pill)
                   }}
-                  className='rounded-md border border-border-card bg-muted/40 px-2 py-0.5 text-xs hover:border-primary/50 hover:bg-primary/5 transition-colors disabled:opacity-50'
+                  className='rounded-md border border-border-card bg-muted/40 px-2 py-0.5 text-label hover:border-primary/50 hover:bg-primary/5 transition-colors disabled:opacity-50'
                 >
                   {pill}
                 </button>
               ))}
             </div>
 
-            <div className='flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground'>
-              <span className='flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 mr-1'>
+            <div className='flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
+              <span className='flex items-center gap-1 font-medium text-status-warning-foreground mr-1'>
                 <AlertCircle className='size-3' />
                 边界防呆体验 (负例):
               </span>
@@ -412,7 +412,7 @@ export function GeneralizationPanel({
                   onClick={() => {
                     setIntentInput(pill)
                   }}
-                  className='rounded-md border border-amber-500/20 bg-amber-500/5 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400/90 hover:border-amber-500/40 hover:bg-amber-500/10 transition-colors disabled:opacity-50'
+                  className='rounded-md border border-status-warning-accent/20 bg-status-warning-background px-2 py-0.5 text-label text-status-warning-foreground hover:border-status-warning-accent/40 hover:bg-status-warning-background/70 transition-colors disabled:opacity-50'
                 >
                   {pill}
                 </button>
@@ -449,15 +449,15 @@ export function GeneralizationPanel({
                   key={round.roundId}
                   className={`flex flex-col gap-3 rounded-lg border p-4 shadow-card transition-colors ${
                     status === 'proposed'
-                      ? 'border-amber-500/50 bg-amber-500/5'
+                      ? 'border-status-warning-accent/50 bg-status-warning-background'
                       : status === 'accepted'
-                      ? 'border-emerald-500/40 bg-card'
+                      ? 'border-status-success-accent/40 bg-card'
                       : 'border-border-card bg-muted/20 opacity-75'
                   }`}
                 >
                   <div className='flex flex-wrap items-center justify-between gap-2'>
                     <div className='flex items-center gap-2'>
-                      <span className='flex size-5 items-center justify-center rounded bg-muted font-mono text-xs font-semibold text-muted-foreground'>
+                      <span className='flex size-5 items-center justify-center rounded bg-muted font-mono text-label font-semibold text-muted-foreground'>
                         R{rIndex + 1}
                       </span>
                       <span className='font-medium text-foreground'>
@@ -467,11 +467,11 @@ export function GeneralizationPanel({
 
                     <div className='flex items-center gap-2'>
                       {status === 'proposed' ? (
-                        <Badge variant='outline' className='border-amber-500 text-amber-600 dark:text-amber-400'>
+                        <Badge variant='outline' className='border-status-warning-accent text-status-warning-foreground'>
                           待审查
                         </Badge>
                       ) : status === 'accepted' ? (
-                        <Badge variant='outline' className='border-emerald-500 text-emerald-600 dark:text-emerald-400'>
+                        <Badge variant='outline' className='border-status-success-accent text-status-success-foreground'>
                           已采纳
                         </Badge>
                       ) : status === 'rejected' ? (
@@ -487,7 +487,7 @@ export function GeneralizationPanel({
                   </div>
 
                   {/* 差异概述 */}
-                  <div className='flex flex-wrap gap-2 text-xs text-muted-foreground'>
+                  <div className='flex flex-wrap gap-2 text-label text-muted-foreground'>
                     {opsCount > 0 ? (
                       <span className='rounded bg-muted/60 px-2 py-0.5'>
                         {opsCount} 项操作 ({round.operations.map((o) => o.kind).join(', ')})
@@ -502,7 +502,7 @@ export function GeneralizationPanel({
 
                   {/* 差异卡片详情展示 */}
                   {round.operations.length > 0 ? (
-                    <div className='space-y-1.5 rounded-md border border-border-card/40 bg-background/50 p-2.5 text-xs font-mono'>
+                    <div className='space-y-1.5 rounded-md border border-border-card/40 bg-background/50 p-2.5 text-label font-mono'>
                       {round.operations.map((op, oIdx) => (
                         <div key={oIdx} className='flex items-center gap-2 text-muted-foreground'>
                           <span className='font-semibold text-primary'>[{op.kind}]</span>
@@ -532,7 +532,7 @@ export function GeneralizationPanel({
                             size='sm'
                             disabled={isOperating}
                             onClick={() => void handleRejectRound(round.roundId)}
-                            className='gap-1 text-xs'
+                            className='gap-1 text-label'
                           >
                             <XCircle className='size-3.5 text-destructive' />
                             拒绝
@@ -541,7 +541,7 @@ export function GeneralizationPanel({
                             size='sm'
                             disabled={isOperating}
                             onClick={() => void handleAcceptRound(round.roundId)}
-                            className='gap-1 text-xs'
+                            className='gap-1 text-label'
                           >
                             {isOperating ? <Loader2 className='size-3.5 animate-spin' /> : <CheckCircle2 className='size-3.5' />}
                             采纳变动
@@ -553,7 +553,7 @@ export function GeneralizationPanel({
                           size='sm'
                           disabled={isOperating}
                           onClick={() => void handleRevertRound(round.roundId)}
-                          className='gap-1 text-xs text-muted-foreground hover:text-foreground'
+                          className='gap-1 text-label text-muted-foreground hover:text-foreground'
                         >
                           {isOperating ? <Loader2 className='size-3.5 animate-spin' /> : <RotateCcw className='size-3.5' />}
                           撤销此轮变动

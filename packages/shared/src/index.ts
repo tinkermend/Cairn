@@ -5,6 +5,18 @@ export {
   type HealthResponse,
   type WorkerNodeHealthNode,
   type WorkerNodeHealthResponse,
+  platformHealthStatusSchema,
+  changeHintHealthStatusSchema,
+  platformHealthItemSchema,
+  platformHealthWorkerItemSchema,
+  platformHealthChangeHintItemSchema,
+  platformHealthResponseSchema,
+  type PlatformHealthStatus,
+  type ChangeHintHealthStatus,
+  type PlatformHealthItem,
+  type PlatformHealthWorkerItem,
+  type PlatformHealthChangeHintItem,
+  type PlatformHealthResponse,
 } from './health.js'
 export {
   MONITOR_LAYERS,

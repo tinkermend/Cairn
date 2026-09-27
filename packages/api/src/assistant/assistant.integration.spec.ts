@@ -21,6 +21,7 @@ import {
   getScenario,
   newId,
   RbacStore,
+  saveScenarioDraft,
   TargetsStore,
 } from '@cairn/db'
 import { openIsolatedDb } from '@cairn/db/testing'
@@ -310,6 +311,73 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     expect(turn.result.kind).toBe('explanation')
     expect(turn.result.summary).toContain('巡检')
     current = owner
+  })
+
+  it('默认解释 V2 草稿保留 MUST 成功条件，显式发布版不混入草稿条件', async () => {
+    const click: Step = {
+      id: newId(),
+      name: '点击提交',
+      type: 'click',
+      effectType: 'SIDE_EFFECT',
+      input: { target: { framePath: [], candidates: [{ by: 'label', value: '提交' }] } },
+    }
+    const scenario = await createScenarioWithVersion(db, {
+      targetId: (await getScenario(db, scenarioId)).targetId,
+      name: '提交订单',
+      steps: [click],
+      actor: owner,
+    })
+    const saved = await saveScenarioDraft(db, scenario.id, {
+      revision: 1,
+      document: {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [],
+        nodes: [{
+          kind: 'step',
+          step: click,
+          outcomes: [{
+            id: newId(),
+            scope: 'step',
+            meaning: '提交后出现订单成功提示',
+            severity: 'MUST',
+            onViolation: 'halt',
+            provenance: 'manual',
+            rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+          }],
+        }],
+      },
+      actor: owner,
+    })
+    expect(saved.draft?.revision).toBe(2)
+
+    const submit = async (clientTurnId: string, pageContext: Record<string, unknown>) => {
+      const response = await request(app.getHttpServer())
+        .post(`/assistant/conversations/${conversationId}/turns`)
+        .send({
+          clientTurnId,
+          question: '这个场景怎么判断提交成功？',
+          capabilityHint: 'scenario.explain',
+          pageContext: { page: 'studio', scenarioId: scenario.id, ...pageContext },
+        })
+        .expect(202)
+      return waitForTurn(conversationId, response.body.turnId)
+    }
+
+    const draft = await submit(`outcome-draft-${crypto.randomUUID()}`, {})
+    expect(draft.result.kind).toBe('explanation')
+    expect(draft.result.summary).toContain('草稿（修订版本 2）')
+    expect(draft.result.summary).toContain('MUST「提交后出现订单成功提示」')
+    expect(draft.result.diagnostics.map((item: { code: string }) => item.code)).not.toContain('SCENARIO_NO_OUTCOME')
+    expect(JSON.stringify(draft.result)).not.toMatch(/没有成功条件|没有断言/)
+
+    const published = await submit(`outcome-published-${crypto.randomUUID()}`, {
+      versionId: scenario.published!.versionId,
+    })
+    expect(published.result.kind).toBe('explanation')
+    expect(published.result.summary).toContain('已发布版本 1')
+    expect(published.result.summary).not.toContain('提交后出现订单成功提示')
+    expect(published.result.diagnostics.map((item: { code: string }) => item.code)).toContain('SCENARIO_NO_OUTCOME')
   })
 
   it('提问“添加步骤在页面哪里”时精准返回 in_page_guidance 而非全量目标菜单', async () => {

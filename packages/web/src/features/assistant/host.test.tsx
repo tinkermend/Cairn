@@ -5,8 +5,10 @@ import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { useAuthStore } from '@/stores/auth-store'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { createAssistantConversation, fetchAssistantCapabilities } from '@/lib/assistant-api'
 import { AssistantHost } from './host'
+import { HeaderAssistantTrigger } from './header-assistant-trigger'
 
 const { navigate } = vi.hoisted(() => ({
   navigate: vi.fn(async () => undefined),
@@ -481,5 +483,97 @@ describe('AssistantHost', () => {
     await expect
       .element(page.getByRole('button', { name: '发送', exact: true }))
       .toBeDisabled()
+  })
+
+  it('覆盖式停靠助手获得初始焦点、约束 Tab，Escape 和遮罩关闭后回到入口', async () => {
+    await page.viewport(390, 844)
+    useAssistantStore.setState({ mode: 'docked', dockWidth: 400 })
+    const screen = await render(
+      <>
+        <button type='button'>页面操作</button>
+        <AssistantHost />
+      </>
+    )
+    const opener = screen.getByRole('button', { name: '打开识途助手' })
+    await opener.click()
+    const dialog = page.getByRole('dialog', { name: '识途助手伴随侧栏' })
+    await expect.element(dialog).toBeVisible()
+    await expect.element(dialog).toHaveAttribute('aria-modal', 'true')
+    await expect.element(page.getByRole('textbox', { name: '向助手提问' })).toHaveFocus()
+
+    const focusable = Array.from(dialog.element().querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ))
+    expect(focusable.length).toBeGreaterThan(1)
+    focusable[focusable.length - 1]!.focus()
+    await userEvent.keyboard('{Tab}')
+    expect(dialog.element().contains(document.activeElement)).toBe(true)
+    focusable[0]!.focus()
+    await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(dialog.element().contains(document.activeElement)).toBe(true)
+
+    await userEvent.keyboard('{Escape}')
+    await expect.element(dialog).not.toBeInTheDocument()
+    await expect.element(opener).toHaveFocus()
+
+    await opener.click()
+    await expect.element(dialog).toBeVisible()
+    const backdrop = document.querySelector<HTMLElement>('[data-assistant-sidebar="true"][data-state="open"]')
+    expect(backdrop).not.toBeNull()
+    await userEvent.click(backdrop!)
+    await expect.element(dialog).not.toBeInTheDocument()
+    await expect.element(opener).toHaveFocus()
+  })
+
+  it('覆盖式停靠助手随视口变宽回到非模态停靠栏时保留面板焦点', async () => {
+    await page.viewport(390, 844)
+    useAssistantStore.setState({ mode: 'docked', dockWidth: 400 })
+    await render(<AssistantHost />)
+    await page.getByRole('button', { name: '打开识途助手' }).click()
+    await expect.element(page.getByRole('dialog', { name: '识途助手伴随侧栏' })).toBeVisible()
+
+    await page.viewport(1600, 900)
+    const region = page.getByRole('region', { name: '识途助手伴随侧栏' })
+    await expect.element(region).toBeVisible()
+    await expect.element(page.getByRole('dialog', { name: '识途助手伴随侧栏' })).not.toBeInTheDocument()
+    await expect.element(page.getByRole('textbox', { name: '向助手提问' })).toHaveFocus()
+    expect(region.element().contains(document.activeElement)).toBe(true)
+  })
+
+  it('覆盖式停靠助手切换回悬浮窗时由新面板接管焦点', async () => {
+    await page.viewport(390, 844)
+    useAssistantStore.setState({ mode: 'docked', dockWidth: 400 })
+    await render(<AssistantHost />)
+    await page.getByRole('button', { name: '打开识途助手' }).click()
+    await expect.element(page.getByRole('dialog', { name: '识途助手伴随侧栏' })).toBeVisible()
+
+    await page.getByRole('button', { name: '恢复悬浮窗' }).click()
+    await expect.element(page.getByRole('dialog', { name: '识途助手' })).toBeVisible()
+    await expect.element(page.getByRole('textbox', { name: '向助手提问' })).toHaveFocus()
+    await page.getByRole('button', { name: '关闭识途助手' }).click()
+    await expect.element(page.getByRole('button', { name: '打开识途助手' })).toHaveFocus()
+  })
+
+  it('从顶栏打开浮窗再切为窄屏覆盖层，Escape 关闭后回到顶栏入口', async () => {
+    await page.viewport(1024, 768)
+    useAssistantStore.setState({ mode: 'floating', dockWidth: 400 })
+    const screen = await render(
+      <TooltipProvider>
+        <HeaderAssistantTrigger />
+        <AssistantHost showFloatingLauncher={false} />
+      </TooltipProvider>
+    )
+    const headerTrigger = screen.getByRole('button', { name: '打开识途助手' })
+    await headerTrigger.click()
+    await expect.element(page.getByRole('dialog', { name: '识途助手' })).toBeVisible()
+
+    await page.getByRole('button', { name: '停靠到右侧边栏' }).click()
+    const overlay = page.getByRole('dialog', { name: '识途助手伴随侧栏' })
+    await expect.element(overlay).toBeVisible()
+    await expect.element(page.getByRole('textbox', { name: '向助手提问' })).toHaveFocus()
+    await userEvent.keyboard('{Escape}')
+
+    await expect.element(overlay).not.toBeInTheDocument()
+    await expect.element(headerTrigger).toHaveFocus()
   })
 })

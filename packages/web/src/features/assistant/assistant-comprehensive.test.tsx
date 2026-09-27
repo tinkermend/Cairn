@@ -559,7 +559,7 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       expect(mockRollback).toHaveBeenCalledWith(proposalResult)
     })
 
-    it('流式分析只展示阶段，不公开模型原始推理文本', async () => {
+    it('思考中的时候展开展现思考过程', async () => {
       useAssistantStore.setState({
         busy: true,
         activeStage: 'generating',
@@ -567,8 +567,8 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       })
 
       await openAssistant()
-      await expect.element(page.getByText('正在生成答复…')).toBeVisible()
-      await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).not.toBeInTheDocument()
+      await expect.element(page.getByText('大模型正在思考分析…')).toBeVisible()
+      await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).toBeVisible()
     })
 
     it('反例：模糊问句触发 Clarify 澄清选项，点击选项继续分派', async () => {

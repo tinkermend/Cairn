@@ -58,6 +58,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { applyAuthoringOperations } from '@cairn/authoring'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -249,6 +250,10 @@ export function ScenarioDetailPage() {
   const query = useQuery({
     queryKey: ['scenarios', scenarioId],
     queryFn: () => fetchScenario(scenarioId),
+  })
+  useBreadcrumb({
+    entityId: scenarioId,
+    title: query.data?.name,
   })
   const capabilitiesQuery = useQuery({
     queryKey: ['scenarios', 'capabilities'],

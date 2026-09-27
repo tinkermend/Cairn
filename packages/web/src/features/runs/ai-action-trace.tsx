@@ -93,7 +93,7 @@ export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemp
           <Button
             size='sm'
             variant='outline'
-            className='h-7 gap-1 text-xs'
+            className='h-7 gap-1 text-label'
             disabled={isBlocked || !isComplete || solidifyMutation.isPending}
             title={
               isBlocked
@@ -119,14 +119,14 @@ export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemp
               <div>
                 <span className='font-medium text-foreground'>确定性草案已就绪</span>
                 {solidifyMutation.data.definitionChanged && (
-                  <span className='ml-1 text-amber-600 dark:text-amber-400'>
+                  <span className='ml-1 text-status-warning-foreground'>
                     （原步骤定义在草稿中已变更，请在导入时核对）
                   </span>
                 )}
               </div>
               <Button
                 size='sm'
-                className='h-7 text-xs'
+                className='h-7 text-label'
                 onClick={() =>
                   navigate({
                     to: '/scenarios/$scenarioId',
@@ -183,12 +183,12 @@ export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemp
                 </span>
               ) : null}
               {event.writeSignalCount > 0 ? (
-                <span className='rounded bg-amber-500/10 px-1.5 py-0.5 text-label text-amber-600 dark:text-amber-400'>
+                <span className='rounded bg-status-warning-background px-1.5 py-0.5 text-label text-status-warning-foreground'>
                   写请求 ×{event.writeSignalCount}
                 </span>
               ) : null}
               {event.binding.dataDependent ? (
-                <span className='rounded bg-amber-500/10 px-1.5 py-0.5 text-label text-amber-600 dark:text-amber-400'>
+                <span className='rounded bg-status-warning-background px-1.5 py-0.5 text-label text-status-warning-foreground'>
                   数据相关
                 </span>
               ) : null}

@@ -104,3 +104,28 @@ export function formatShortcut(
 
   return formattedParts.join('+')
 }
+
+/** 将内部快捷键 Token 转为 aria-keyshortcuts；mod 同时列出实际支持的 Meta / Control。 */
+export function formatAriaShortcut(shortcut: string): string {
+  if (!shortcut) return ''
+  const keyNames: Record<string, string> = {
+    alt: 'Alt',
+    ctrl: 'Control',
+    shift: 'Shift',
+    enter: 'Enter',
+    space: 'Space',
+    backspace: 'Backspace',
+    escape: 'Escape',
+    up: 'ArrowUp',
+    down: 'ArrowDown',
+    left: 'ArrowLeft',
+    right: 'ArrowRight',
+  }
+  const parts = shortcut.split('+').map((part) => part.trim().toLowerCase())
+  const variants = parts.includes('mod')
+    ? ['Meta', 'Control'].map((modifier) =>
+        parts.map((part) => (part === 'mod' ? modifier : keyNames[part] ?? part.toUpperCase()))
+      )
+    : [parts.map((part) => keyNames[part] ?? part.toUpperCase())]
+  return variants.map((variant) => variant.join('+')).join(' ')
+}

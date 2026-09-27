@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type HTMLAttributes } from 'react'
+import { useEffect, useRef, useState, type HTMLAttributes } from 'react'
 import type {
   AssistantCapabilityId,
   AssistantCapabilitiesResponse,
   AssistantPageContext,
+  AssistantStage,
 } from '@cairn/shared'
 import {
   AlertTriangle,
@@ -17,11 +18,10 @@ import {
   SquarePen,
   X,
 } from 'lucide-react'
+import { useCan } from '@/hooks/use-permissions'
 import { toast } from 'sonner'
 import { useNavigate } from '@tanstack/react-router'
 import { useAssistantStore, type AssistantBoundContext } from '@/stores/assistant-store'
-import { resolveContextRecommendations } from './recommendation-engine'
-import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
@@ -33,7 +33,7 @@ import { HistoryDrawer } from './history-drawer'
 import { ThinkingProcessBlock } from './components/thinking-process'
 
 function contextLabel(context: AssistantPageContext | null): string {
-  if (!context) return '帮你理解场景、分析运行、找到功能入口'
+  if (!context) return '全局上下文 · 识途通用助理'
   if (context.page === 'run' && context.runId)
     return `当前运行 · #${context.runId.slice(0, 8)}`
   if (context.page === 'studio' && context.scenarioId) {
@@ -43,98 +43,54 @@ function contextLabel(context: AssistantPageContext | null): string {
   }
   if (context.page === 'target' && context.targetId)
     return '当前目标'
-  return '结合当前页面，为你提供帮助'
+  return '当前页面'
 }
 
 function ContextCapsule({
   boundContext,
-  pageContext,
   capabilities,
   onChipClick,
 }: {
   boundContext: AssistantBoundContext | null
-  pageContext: AssistantPageContext | null
   capabilities: AssistantCapabilitiesResponse | null
   onChipClick: (question: string, capabilityHint?: AssistantCapabilityId) => void
 }) {
   const canAssist = useCan('ai:assist')
   const canWrite = useCan('workflow:write')
-  const canReadTarget = useCan('target:read')
-  const canReadSchedule = useCan('schedule:read')
-  const canReadRun = useCan('run:read')
 
-  const isGlobal = !boundContext && !pageContext
-  const toneDot =
-    boundContext?.statusTone === 'error'
-      ? 'bg-status-error-foreground'
-      : boundContext?.statusTone === 'success'
-        ? 'bg-status-success-foreground'
-        : boundContext?.statusTone === 'warning'
-          ? 'bg-status-warning-foreground'
-          : 'bg-status-info-foreground'
+  // 仅在存在实体绑定且有实质性业务信息时才展示次级胶囊：
+  // 1. 存在具体实体 ID (entityId)
+  // 2. 或处于报错诊断状态 (statusTone === 'error')
+  // 3. 或存在未保存本地草稿 (isDirty)
+  // 4. 或带有专属操作推荐 Chips
+  // 普通列表页无实体聚焦的通用描述（如“运行记录与执行历史列表”）不作为次级胶囊展示，避免重复废话
+  const hasSubstantiveDetail =
+    Boolean(boundContext?.entityId) ||
+    Boolean(boundContext?.isDirty) ||
+    boundContext?.statusTone === 'error' ||
+    Boolean(boundContext?.chips && boundContext.chips.length > 0)
 
-  const statusLabel =
-    boundContext?.statusLabel ?? (pageContext ? contextLabel(pageContext) : '全局上下文 · 识途通用助理')
-  const summaryText =
-    boundContext?.summaryText ??
-    (isGlobal ? '可以诊断运行、解释场景，或查找功能入口' : null)
+  if (!boundContext || !hasSubstantiveDetail) {
+    return null
+  }
 
-  const chips = useMemo(() => {
-    if (!capabilities?.modelEnabled || !canAssist) return []
-    if (boundContext?.chips && boundContext.chips.length > 0) {
-      const availableIds = new Set(
-        capabilities.items.filter((item) => item.available).map((item) => item.id),
-      )
-      return boundContext.chips.filter((chip) => {
-        if (chip.capabilityHint && !availableIds.has(chip.capabilityHint)) return false
-        if (chip.capabilityHint === 'scenario.propose-step' && !canWrite) return false
-        return true
-      })
-    }
-    return resolveContextRecommendations({
-      boundContext,
-      pageContext,
-      capabilities,
-      permissions: { canAssist, canWrite, canReadTarget, canReadSchedule, canReadRun },
-    })
-  }, [boundContext, pageContext, capabilities, canAssist, canWrite, canReadTarget, canReadSchedule, canReadRun])
+  const chips = (boundContext.chips ?? []).filter((chip) => {
+    if (chip.capabilityHint === 'scenario.propose-step' && !canWrite) return false
+    return true
+  })
 
   return (
     <div
       role='region'
-      aria-label='上下文感知状态'
-      data-testid='context-capsule'
+      aria-label='上下文详情与操作'
       className='shrink-0 border-b border-border-default bg-surface-subtle px-4 py-2.5 space-y-2'
     >
-      <div className='flex items-center gap-2'>
-        <span className={cn('size-2 rounded-full shrink-0', toneDot)} aria-hidden='true' />
-        <span className='text-label font-medium text-text-primary truncate'>
-          {statusLabel}
-        </span>
-        {boundContext?.isDirty ? (
-          <span
-            data-testid='dirty-draft-badge'
-            className='inline-flex items-center gap-1 rounded bg-status-warning-subtle text-status-warning-foreground border border-status-warning-border px-1.5 py-0.5 text-small font-medium shrink-0'
-          >
-            <AlertTriangle className='size-3 shrink-0' aria-hidden='true' />
-            存在未保存草稿
-          </span>
-        ) : null}
-        {boundContext?.entityId ? (
-          <span
-            className='text-label text-text-muted ms-auto font-mono opacity-60 hover:opacity-100 transition-opacity'
-            title={`内部实体 ID: ${boundContext.entityId}`}
-          >
-            #{boundContext.entityId.slice(0, 8)}
-          </span>
-        ) : null}
-      </div>
-      {summaryText ? (
+      {boundContext.summaryText ? (
         <p className='text-label text-text-secondary line-clamp-2 leading-relaxed'>
-          {summaryText}
+          {boundContext.summaryText}
         </p>
       ) : null}
-      {chips.length > 0 ? (
+      {chips.length > 0 && capabilities?.modelEnabled && canAssist ? (
         <div className='flex flex-wrap gap-1.5 pt-0.5'>
           {chips.map((chip) => (
             <button
@@ -170,6 +126,8 @@ export function AssistantPanel({
   const navigate = useNavigate()
   const activeStage = useAssistantStore((state) => state.activeStage)
   const activeQueuePosition = useAssistantStore((state) => state.activeQueuePosition)
+  const activeTurnId = useAssistantStore((state) => state.activeTurnId)
+  const thinkingText = useAssistantStore((state) => state.thinkingText)
   const pageContext = useAssistantStore((state) => state.pageContext)
   const capabilities = useAssistantStore((state) => state.capabilities)
   const adoptHandler = useAssistantStore((state) => state.adoptHandler)
@@ -210,7 +168,7 @@ export function AssistantPanel({
     if (conversation) conversation.scrollTop = conversation.scrollHeight
   }, [turns, busy])
 
-  const handleChipClick = (q: string, capabilityHint?: AssistantCapabilityId) => {
+  const handlePromptSelect = (q: string, capabilityHint?: AssistantCapabilityId) => {
     if (!capabilities?.modelEnabled) return
     if (!question.trim()) {
       openPanel({
@@ -223,6 +181,15 @@ export function AssistantPanel({
       setQuestion(`${question}\n${q}`.trim())
     }
   }
+
+  const isGlobal = !effectiveBoundContext && !pageContext
+  const isErrorTone = effectiveBoundContext?.statusTone === 'error'
+  const dotColor = isErrorTone ? 'bg-status-error-foreground' : 'bg-status-success-accent'
+  const pingColor = isErrorTone ? 'bg-status-error-foreground' : 'bg-status-success-accent/70'
+
+  const statusLabel =
+    effectiveBoundContext?.statusLabel ??
+    (pageContext ? contextLabel(pageContext) : '全局上下文 · 识途通用助理')
 
   return (
     <section className='@container relative flex h-full min-h-0 w-full flex-col bg-surface-card text-body'>
@@ -257,12 +224,49 @@ export function AssistantPanel({
               />
             ) : null}
           </h2>
-          <p
+          <div
             id='assistant-window-description'
-            className='text-label text-text-muted truncate'
+            data-testid='context-capsule'
+            className='flex items-center gap-1.5 min-w-0'
           >
-            {contextLabel(pageContext)}
-          </p>
+            <span
+              className='relative flex size-2 shrink-0 items-center justify-center'
+              aria-hidden='true'
+            >
+              <span
+                className={cn(
+                  'absolute inline-flex size-full animate-subtle-ping rounded-full',
+                  pingColor,
+                )}
+              />
+              <span className={cn('relative inline-flex size-1.5 rounded-full', dotColor)} />
+            </span>
+            <span className='text-label font-medium text-text-secondary truncate'>
+              {statusLabel}
+            </span>
+            {isGlobal ? (
+              <span className='text-label text-text-muted hidden sm:inline truncate font-normal'>
+                · 帮你理解场景、分析运行、找到功能入口
+              </span>
+            ) : null}
+            {boundContext?.isDirty ? (
+              <span
+                data-testid='dirty-draft-badge'
+                className='inline-flex items-center gap-1 rounded bg-status-warning-subtle text-status-warning-foreground border border-status-warning-border px-1.5 py-0.5 text-small font-medium shrink-0'
+              >
+                <AlertTriangle className='size-2.5 shrink-0' aria-hidden='true' />
+                存在未保存草稿
+              </span>
+            ) : null}
+            {boundContext?.entityId ? (
+              <span
+                className='text-label text-text-muted ms-auto font-mono opacity-60 hover:opacity-100 transition-opacity shrink-0'
+                title={`内部实体 ID: ${boundContext.entityId}`}
+              >
+                #{boundContext.entityId.slice(0, 8)}
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className='flex items-center gap-1'>
           <Button
@@ -321,12 +325,11 @@ export function AssistantPanel({
         </div>
       </header>
 
-      {/* 深度上下文感知状态胶囊 */}
+      {/* 仅在具体业务实体绑定 (boundContext) 且含有错误/诊断或实体摘要时渲染 */}
       <ContextCapsule
-        boundContext={effectiveBoundContext}
-        pageContext={pageContext}
+        boundContext={boundContext}
         capabilities={capabilities}
-        onChipClick={handleChipClick}
+        onChipClick={handlePromptSelect}
       />
 
       <div
@@ -339,14 +342,7 @@ export function AssistantPanel({
             pageContext={pageContext}
             boundContext={effectiveBoundContext}
             capabilities={capabilities}
-            onSelectPrompt={(q, capabilityHint) => {
-              openPanel({
-                question: q,
-                capabilityHint,
-                pageContext: pageContext ?? undefined,
-              })
-              void submit()
-            }}
+            onSelectPrompt={handlePromptSelect}
           />
         ) : null}
         {turns.length === 0 && !busy && !capabilities && (
@@ -368,137 +364,161 @@ export function AssistantPanel({
           {turns
             .slice()
             .reverse()
-            .map((turn) => (
-              <article key={turn.id} className='space-y-3.5'>
-                <div className='flex justify-end'>
-                  <p className='max-w-[85%] rounded-2xl rounded-tr-xs bg-primary-100 px-3.5 py-2.5 text-body text-text-primary shadow-2xs whitespace-pre-wrap leading-relaxed'>
-                    <span className='sr-only'>你：</span>
-                    {turn.question}
-                  </p>
-                </div>
-                <div className='space-y-2'>
-                  <p className='text-label font-medium text-text-muted'>
-                    识途助手
-                  </p>
-                  {turn.thinkingDurationMs ? (
-                    <ThinkingProcessBlock
-                      thinkingDurationMs={turn.thinkingDurationMs}
-                      isLive={false}
-                    />
-                  ) : null}
-                  {turn.result ? (
-                    <AssistantResultView
-                      result={turn.result}
-                      adopting={adopting}
-                      onNavigate={onClose}
-                      onPreviewStep={
-                        turn.result.kind === 'authoring_proposal' ||
-                        boundContext?.scenarioId ||
-                        pageContext?.scenarioId
-                          ? (stepId) => {
-                              const targetScenarioId =
-                                (turn.result?.kind === 'authoring_proposal'
-                                  ? turn.result.scenarioId
-                                  : undefined) ??
-                                boundContext?.scenarioId ??
-                                pageContext?.scenarioId
-                              if (targetScenarioId && pageContext?.page !== 'studio') {
-                                navigate({
-                                  to: '/scenarios/$scenarioId',
-                                  params: { scenarioId: targetScenarioId },
-                                  search: { action: 'inspect-step', step_id: stepId },
+            .map((turn) => {
+              const isCurrentTurnLive =
+                (turn.id === activeTurnId && busy) ||
+                (busy && (turn.status === 'RUNNING' || turn.status === 'QUEUED'))
+
+              return (
+                <article key={turn.id} className='space-y-3.5'>
+                  <div className='flex justify-end'>
+                    <p className='max-w-[85%] rounded-2xl rounded-tr-xs bg-primary-100 px-3.5 py-2.5 text-body text-text-primary shadow-2xs whitespace-pre-wrap leading-relaxed'>
+                      <span className='sr-only'>你：</span>
+                      {turn.question}
+                    </p>
+                  </div>
+                  <div className='space-y-2'>
+                    <p data-testid='turn-assistant-author' className='text-label font-medium text-text-muted'>
+                      识途助手
+                    </p>
+                    {isCurrentTurnLive ? (
+                      <ThinkingProcessBlock
+                        stage={activeStage ?? (turn.stage as AssistantStage | 'queued')}
+                        queuePosition={activeQueuePosition ?? turn.queuePosition}
+                        thinkingText={thinkingText || turn.thinkingText}
+                        isLive={true}
+                        onCancel={() => void cancel()}
+                      />
+                    ) : (
+                      <>
+                        {turn.thinkingDurationMs || turn.thinkingText ? (
+                          <ThinkingProcessBlock
+                            thinkingText={turn.thinkingText}
+                            thinkingDurationMs={turn.thinkingDurationMs}
+                            isLive={false}
+                          />
+                        ) : null}
+                        {turn.result ? (
+                          <AssistantResultView
+                            result={turn.result}
+                            adopting={adopting}
+                            onNavigate={onClose}
+                            onPreviewStep={
+                              turn.result.kind === 'authoring_proposal' ||
+                              boundContext?.scenarioId ||
+                              pageContext?.scenarioId
+                                ? (stepId) => {
+                                    const targetScenarioId =
+                                      (turn.result?.kind === 'authoring_proposal'
+                                        ? turn.result.scenarioId
+                                        : undefined) ??
+                                      boundContext?.scenarioId ??
+                                      pageContext?.scenarioId
+                                    if (targetScenarioId && pageContext?.page !== 'studio') {
+                                      navigate({
+                                        to: '/scenarios/$scenarioId',
+                                        params: { scenarioId: targetScenarioId },
+                                        search: { action: 'inspect-step', step_id: stepId },
+                                      })
+                                    } else {
+                                      setPreviewStepId(stepId)
+                                    }
+                                  }
+                                : undefined
+                            }
+                            isAdopted={
+                              (turn.result.kind === 'authoring_proposal' &&
+                                lastAdoptedProposalId === turn.result.proposalId) ||
+                              (turn.result.kind === 'proposal' &&
+                                lastAdoptedProposalId === turn.result.stepId)
+                            }
+                            onClarify={(optionId, option) => {
+                              if (option?.kind === 'scenario') {
+                                openPanel({
+                                  question: option?.label ?? optionId,
+                                  pageContext: pageContext ?? undefined,
                                 })
+                                void submit({ selectedOptionId: optionId, replyToTurnId: turn.id })
                               } else {
-                                setPreviewStepId(stepId)
+                                openPanel({
+                                  question: turn.question,
+                                  capabilityHint: optionId as AssistantCapabilityId,
+                                  pageContext: pageContext ?? undefined,
+                                })
+                                void submit({ selectedOptionId: optionId, replyToTurnId: turn.id })
                               }
+                            }}
+                            onCancelTask={() => {
+                              void cancelCurrentTask(turn.id)
+                            }}
+                            onNextPage={() => {
+                              openPanel({
+                                question: '下一页',
+                                capabilityHint: 'scenario.discover',
+                                pageContext: pageContext ?? undefined,
+                              })
+                              void submit({ replyToTurnId: turn.id })
+                            }}
+                            onAdopt={
+                              turn.result.kind === 'authoring_proposal' || turn.result.kind === 'proposal'
+                                ? async (proposal) => {
+                                    if (!adoptHandler) {
+                                      toast.error('请先打开对应场景工作区再采纳')
+                                      return
+                                    }
+                                    setAdopting(true)
+                                    try {
+                                      const adopted = await adoptHandler(proposal)
+                                      if (adopted.ok) {
+                                        const proposalId =
+                                          'proposalId' in proposal ? proposal.proposalId : proposal.stepId
+                                        setLastAdopted({ proposalId, digest: adopted.digest ?? '' })
+                                        toast.success('已放入本地草稿，尚未保存')
+                                      } else {
+                                        toast.error(adopted.reason || '采纳失败')
+                                      }
+                                    } finally {
+                                      setAdopting(false)
+                                    }
+                                  }
+                                : undefined
                             }
-                          : undefined
-                      }
-                      isAdopted={
-                        (turn.result.kind === 'authoring_proposal' &&
-                          lastAdoptedProposalId === turn.result.proposalId) ||
-                        (turn.result.kind === 'proposal' &&
-                          lastAdoptedProposalId === turn.result.stepId)
-                      }
-                      onClarify={(optionId, option) => {
-                        if (option?.kind === 'scenario') {
-                          openPanel({
-                            question: option?.label ?? optionId,
-                            pageContext: pageContext ?? undefined,
-                          })
-                          void submit({ selectedOptionId: optionId, replyToTurnId: turn.id })
-                        } else {
-                          openPanel({
-                            question: turn.question,
-                            capabilityHint: optionId as AssistantCapabilityId,
-                            pageContext: pageContext ?? undefined,
-                          })
-                          void submit({ selectedOptionId: optionId, replyToTurnId: turn.id })
-                        }
-                      }}
-                      onCancelTask={() => {
-                        void cancelCurrentTask(turn.id)
-                      }}
-                      onNextPage={() => {
-                        openPanel({
-                          question: '下一页',
-                          capabilityHint: 'scenario.discover',
-                          pageContext: pageContext ?? undefined,
-                        })
-                        void submit({ replyToTurnId: turn.id })
-                      }}
-                      onAdopt={
-                        turn.result.kind === 'authoring_proposal' || turn.result.kind === 'proposal'
-                          ? async (proposal) => {
-                              if (!adoptHandler) {
-                                toast.error('请先打开对应场景工作区再采纳')
-                                return
-                              }
-                              setAdopting(true)
-                              try {
-                                const adopted = await adoptHandler(proposal)
-                                if (adopted.ok) {
-                                  const proposalId =
-                                    'proposalId' in proposal ? proposal.proposalId : proposal.stepId
-                                  setLastAdopted({ proposalId, digest: adopted.digest ?? '' })
-                                  toast.success('已放入本地草稿，尚未保存')
-                                } else {
-                                  toast.error(adopted.reason || '采纳失败')
-                                }
-                              } finally {
-                                setAdopting(false)
-                              }
+                            onRollback={
+                              (turn.result.kind === 'authoring_proposal' ||
+                                turn.result.kind === 'proposal') &&
+                              rollbackHandler
+                                ? async (proposal) => {
+                                    const res = await rollbackHandler(proposal)
+                                    if (res.ok) {
+                                      setLastAdopted(null)
+                                      toast.success('已撤销本次采纳')
+                                    } else {
+                                      toast.error(res.reason || '撤销失败')
+                                    }
+                                  }
+                                : undefined
                             }
-                          : undefined
-                      }
-                      onRollback={
-                        (turn.result.kind === 'authoring_proposal' ||
-                          turn.result.kind === 'proposal') &&
-                        rollbackHandler
-                          ? async (proposal) => {
-                              const res = await rollbackHandler(proposal)
-                              if (res.ok) {
-                                setLastAdopted(null)
-                                toast.success('已撤销本次采纳')
-                              } else {
-                                toast.error(res.reason || '撤销失败')
-                              }
-                            }
-                          : undefined
-                      }
-                    />
-                  ) : null}
-                </div>
-              </article>
-            ))}
-          {busy ? (
+                          />
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+          {busy &&
+          !turns.some(
+            (turn) =>
+              turn.id === activeTurnId || turn.status === 'RUNNING' || turn.status === 'QUEUED',
+          ) ? (
             <div className='space-y-2'>
-              <p className='text-label font-medium text-text-muted'>
+              <p data-testid='turn-assistant-author' className='text-label font-medium text-text-muted'>
                 识途助手
               </p>
               <ThinkingProcessBlock
                 stage={activeStage}
                 queuePosition={activeQueuePosition}
+                thinkingText={thinkingText}
                 isLive={true}
                 onCancel={() => void cancel()}
               />

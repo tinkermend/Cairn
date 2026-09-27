@@ -2,12 +2,14 @@ import {
   type AssistantExplanation,
   type AssistantResult,
   type ScenarioDocument,
+  type ScenarioAuthoringDocumentV2,
   authoringSteps,
   isAuthoringDocumentV2,
+  normalizeAuthoringDocument,
   parseScenarioDocument,
   scenarioFactsForModel,
 } from '@cairn/shared'
-import { compileForAssistant } from '@cairn/authoring'
+import { compileScenarioDocument, deriveOutcomeManifest } from '@cairn/authoring'
 import { DomainError, getScenario, loadScenarioVersion } from '@cairn/db'
 import type { AssistantCapabilityHandlerContext } from '../registry'
 import { buildAuthoringSlice } from '../context-assembler'
@@ -16,13 +18,24 @@ import { requireVisibleTarget } from './common'
 
 function requireFlatDocument(document: unknown): ScenarioDocument {
   if (isAuthoringDocumentV2(document)) {
+    const authoring = normalizeAuthoringDocument(document)
     return parseScenarioDocument({
-      schemaVersion: document.schemaVersion,
-      inputs: document.inputs,
-      steps: authoringSteps(document),
+      schemaVersion: authoring.schemaVersion,
+      inputs: authoring.inputs,
+      steps: authoringSteps(authoring),
+      ...(authoring.outputs ? { outputs: authoring.outputs } : {}),
+      ...(authoring.resolution ? { resolution: authoring.resolution } : {}),
+      ...(authoring.locatorPlan ? { locatorPlan: authoring.locatorPlan } : {}),
+      ...(authoring.locatorProtocol ? { locatorProtocol: authoring.locatorProtocol } : {}),
     })
   }
   return parseScenarioDocument(document)
+}
+
+const MISSING_OUTCOME_CLAIM = /(?:没有|尚未|未|无|缺少|不存在|未配置|未设置)[^。；，]{0,10}(?:成功条件|结果条件|断言)/
+
+function withoutFalseOutcomeClaim(text: string | undefined, hasOutcomes: boolean): string | undefined {
+  return hasOutcomes && text && MISSING_OUTCOME_CLAIM.test(text) ? undefined : text
 }
 
 export async function handleScenarioExplain(
@@ -40,22 +53,40 @@ export async function handleScenarioExplain(
   await requireVisibleTarget(actor, detail.targetId, targets, db)
 
   let document: ScenarioDocument | null = null
+  let authoringDocument: ScenarioAuthoringDocumentV2 | null = null
+  let versionNote: string | null = null
   if (slots.draftRevision != null) {
     const revision = Number(slots.draftRevision)
     if (!detail.draft || detail.draft.revision !== revision) {
       throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新解释')
     }
     document = requireFlatDocument(detail.draft.document)
+    if (isAuthoringDocumentV2(detail.draft.document)) {
+      authoringDocument = normalizeAuthoringDocument(detail.draft.document)
+    }
+    versionNote = `草稿（修订版本 ${detail.draft.revision}）`
   } else if (typeof slots.versionId === 'string' && slots.versionId) {
     const loaded = await loadScenarioVersion(db, detail.id, slots.versionId)
     document = loaded.version.definition
+    if (loaded.version.authoringDocument) {
+      authoringDocument = normalizeAuthoringDocument(loaded.version.authoringDocument)
+    }
+    versionNote = loaded.version.kind === 'published' ? `已发布版本 ${loaded.version.versionNo}` : '试跑版本'
   }
 
   if (!document) {
     if (detail.draft) {
       document = requireFlatDocument(detail.draft.document)
+      if (isAuthoringDocumentV2(detail.draft.document)) {
+        authoringDocument = normalizeAuthoringDocument(detail.draft.document)
+      }
+      versionNote = `草稿（修订版本 ${detail.draft.revision}）`
     } else if (detail.published) {
       document = requireFlatDocument(detail.published.definition)
+      if (detail.published.authoringDocument) {
+        authoringDocument = normalizeAuthoringDocument(detail.published.authoringDocument)
+      }
+      versionNote = `已发布版本 ${detail.published.versionNo}`
     }
   }
 
@@ -83,11 +114,22 @@ export async function handleScenarioExplain(
     workingDoc = slice.slicedDocument
   }
 
-  const compile = compileForAssistant(workingDoc)
+  const stepIds = new Set(workingDoc.steps.map((item) => item.id))
+  const outcomeManifest = deriveOutcomeManifest({ authoringDocument, definition: document })
+  const outcomes = outcomeManifest?.entries.filter(
+    (item) => item.scope === 'scenario' || stepIds.has(item.sourceStepId ?? item.stepId),
+  ) ?? []
+  const compile = compileScenarioDocument(workingDoc, {
+    mode: 'release',
+    outcomeManifest: { entries: outcomes },
+  })
   const step = stepId ? workingDoc.steps.find((item) => item.id === stepId) : undefined
 
-  const versionNote = detail.draft ? `草稿（修订版本 ${detail.draft.revision}）` : '已发布版本'
   let summary = `场景「${detail.name}」共 ${workingDoc.steps.length} 步，绑定目标 ${detail.targetId}。本轮解释的是已保存${versionNote}。`
+  if (outcomes.length > 0) {
+    const listed = outcomes.slice(0, 3).map((item) => `${item.severity}「${item.meaning}」`).join('、')
+    summary += ` 已定义 ${outcomes.length} 个成功条件：${listed}${outcomes.length > 3 ? `等（另有 ${outcomes.length - 3} 个）` : ''}。`
+  }
   let stepSummary = step ? `当前步骤「${step.name}」类型为 ${step.type}。` : undefined
 
   if (session) {
@@ -95,11 +137,23 @@ export async function handleScenarioExplain(
     const polished = await generateExplanationText(
       session,
       question,
-      scenarioFactsForModel(workingDoc, stepId),
+      {
+        ...scenarioFactsForModel(workingDoc, stepId),
+        successConditions: outcomes.map((item) => ({
+          meaning: item.meaning,
+          severity: item.severity,
+          scope: item.scope,
+          sourceStepId: item.sourceStepId ?? item.stepId,
+          ruleKind: item.rule.kind,
+          ...(item.rule.kind === 'deterministic' ? { expect: item.rule.expect } : {}),
+        })),
+      },
       signal,
     )
-    if (polished.summary) summary = polished.summary
-    if (polished.stepSummary) stepSummary = polished.stepSummary
+    const polishedSummary = withoutFalseOutcomeClaim(polished.summary, outcomes.length > 0)
+    const polishedStepSummary = withoutFalseOutcomeClaim(polished.stepSummary, outcomes.length > 0)
+    if (polishedSummary) summary = `${summary} ${polishedSummary}`.slice(0, 2048)
+    if (stepSummary && polishedStepSummary) stepSummary = `${stepSummary} ${polishedStepSummary}`.slice(0, 1024)
   }
 
   return {

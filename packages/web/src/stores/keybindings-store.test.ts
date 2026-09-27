@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   useKeybindingsStore,
+  normalizeKeybinding,
   serializeKeyboardEvent,
   validateKeybinding,
   STORAGE_KEY,
@@ -34,6 +35,15 @@ describe('keybindings-store', () => {
         shiftKey: true,
       })
       expect(serializeKeyboardEvent(event)).toBe('mod+shift+k')
+    })
+
+    it('Ctrl 与 Cmd 同时按下不误触发单一 mod 快捷键', () => {
+      const event = new KeyboardEvent('keydown', {
+        code: 'KeyK',
+        ctrlKey: true,
+        metaKey: true,
+      })
+      expect(serializeKeyboardEvent(event)).toBeNull()
     })
 
     it('应正确处理 Alt 修饰键 (alt+enter)', () => {
@@ -111,6 +121,20 @@ describe('keybindings-store', () => {
       }
     })
 
+    it('Ctrl/Cmd 别名与 mod 按同一键位做黑名单和冲突检查', () => {
+      expect(normalizeKeybinding('Ctrl+Shift+P')).toBe('mod+shift+p')
+      expect(normalizeKeybinding('alt+mod+p')).toBe('mod+alt+p')
+      expect(validateKeybinding('ctrl+w', 'assistant.toggle', currentBindings).ok).toBe(false)
+      const conflict = validateKeybinding('ctrl+k', 'assistant.toggle', currentBindings)
+      expect(conflict.ok).toBe(false)
+      if (!conflict.ok) expect(conflict.reason).toContain('冲突')
+    })
+
+    it('不接受无法由键盘事件序列化的自定义键位', () => {
+      expect(validateKeybinding('ctrl+foo', 'assistant.toggle', currentBindings).ok).toBe(false)
+      expect(validateKeybinding('mod+shift', 'assistant.toggle', currentBindings).ok).toBe(false)
+    })
+
     it('允许自身键位保持或合法新键位', () => {
       const same = validateKeybinding('mod+j', 'assistant.toggle', currentBindings)
       expect(same.ok).toBe(true)
@@ -137,6 +161,13 @@ describe('keybindings-store', () => {
 
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
       expect(stored['assistant.toggle']).toBe('mod+alt+j')
+    })
+
+    it('保存 Ctrl 别名时规范化为可执行的 mod 键位', () => {
+      const store = useKeybindingsStore.getState()
+      expect(store.setCustomKey('palette.open', 'ctrl+shift+p').ok).toBe(true)
+      expect(store.getEffectiveKey('palette.open')).toBe('mod+shift+p')
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')['palette.open']).toBe('mod+shift+p')
     })
 
     it('若修改违规应失败且不影响原值', () => {

@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import type {
-  ScenarioAuthoringDocumentV2,
-  RecordingGeneralizationDto,
-  OutcomeContract,
+import {
+  authoringNodeId,
+  type ScenarioAuthoringDocumentV2,
+  type RecordingGeneralizationDto,
+  type OutcomeContract,
 } from '@cairn/shared'
 import {
   Check,
@@ -18,7 +19,6 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { authoringNodeId } from '@cairn/shared'
 
 type Props = {
   candidateDocument?: ScenarioAuthoringDocumentV2
@@ -109,7 +109,7 @@ export function CandidateScenarioPreview({
                   >
                     <span className='font-semibold text-primary'>{input.key}</span>
                     <span className='text-muted-foreground'>({input.label})</span>
-                    {input.type ? <span className='text-xs text-muted-foreground/70'>:{input.type}</span> : null}
+                    {input.type ? <span className='text-label text-muted-foreground/70'>:{input.type}</span> : null}
                   </Badge>
                 ))}
               </div>
@@ -142,15 +142,15 @@ export function CandidateScenarioPreview({
                 >
                   <div className='flex flex-wrap items-center justify-between gap-2'>
                     <div className='flex items-center gap-2'>
-                      <span className='flex size-5 items-center justify-center rounded bg-muted text-xs font-mono font-medium text-muted-foreground'>
+                      <span className='flex size-5 items-center justify-center rounded bg-muted text-label font-mono font-medium text-muted-foreground'>
                         {index + 1}
                       </span>
                       <span className='font-medium text-foreground'>{step.name}</span>
-                      <Badge variant='secondary' className='text-xs font-mono'>
+                      <Badge variant='secondary' className='text-label font-mono'>
                         {step.type}
                       </Badge>
                       {step.effectType === 'SIDE_EFFECT' ? (
-                        <Badge variant='outline' className='text-xs border-amber-500/30 text-amber-600 dark:text-amber-400'>
+                        <Badge variant='outline' className='border-status-warning-accent/30 text-label text-status-warning-foreground'>
                           副作用
                         </Badge>
                       ) : null}
@@ -170,12 +170,12 @@ export function CandidateScenarioPreview({
                       {outcomes.map((oc, ocIdx) => (
                         <div
                           key={oc.id ?? ocIdx}
-                          className='flex items-center gap-1.5 rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400'
+                          className='flex items-center gap-1.5 rounded bg-status-success-background px-2 py-0.5 text-label text-status-success-foreground'
                         >
                           <ShieldCheck className='size-3.5' />
                           <span className='font-semibold'>[{oc.severity}]</span>
                           <span>{oc.meaning}</span>
-                          <span className='text-[10px] text-muted-foreground'>({oc.provenance})</span>
+                          <span className='text-label text-muted-foreground'>({oc.provenance})</span>
                         </div>
                       ))}
                     </div>

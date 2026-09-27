@@ -61,7 +61,16 @@ export function AssistantHost({
             }
           />
         ) : (
-          <AssistantDockSidebar open={open} onClose={closePanel} />
+          <AssistantDockSidebar
+            open={open}
+            onClose={closePanel}
+            onReturnFocus={() => {
+              const headerTrigger = document.querySelector<HTMLButtonElement>(
+                '[data-assistant-trigger="true"]'
+              )
+              ;(headerTrigger ?? launcherRef.current)?.focus({ preventScroll: true })
+            }}
+          />
         )}
       </div>
     </Can>

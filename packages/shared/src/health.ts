@@ -35,3 +35,44 @@ export const workerNodeHealthResponseSchema = healthResponseSchema.extend({
   node: workerNodeHealthNodeSchema,
 })
 export type WorkerNodeHealthResponse = z.infer<typeof workerNodeHealthResponseSchema>
+
+export const platformHealthStatusSchema = z.enum(['healthy', 'degraded', 'critical', 'unknown'])
+export type PlatformHealthStatus = z.infer<typeof platformHealthStatusSchema>
+
+export const changeHintHealthStatusSchema = z.enum(['healthy', 'degraded', 'critical', 'unknown', 'unused'])
+export type ChangeHintHealthStatus = z.infer<typeof changeHintHealthStatusSchema>
+
+export const platformHealthItemSchema = z.object({
+  status: platformHealthStatusSchema,
+  code: z.string(),
+  message: z.string(),
+})
+export type PlatformHealthItem = z.infer<typeof platformHealthItemSchema>
+
+export const platformHealthWorkerItemSchema = platformHealthItemSchema.extend({
+  healthyNodes: z.number().int().nonnegative(),
+  affectedActiveRuns: z.number().int().nonnegative(),
+  affectedActiveSessions: z.number().int().nonnegative(),
+})
+export type PlatformHealthWorkerItem = z.infer<typeof platformHealthWorkerItemSchema>
+
+export const platformHealthChangeHintItemSchema = z.object({
+  status: changeHintHealthStatusSchema,
+  code: z.string(),
+  message: z.string(),
+})
+export type PlatformHealthChangeHintItem = z.infer<typeof platformHealthChangeHintItemSchema>
+
+export const platformHealthResponseSchema = z.object({
+  overall: platformHealthStatusSchema,
+  asOf: utcInstantSchema,
+  validUntil: utcInstantSchema,
+  freshForMs: z.number().nonnegative(),
+  checks: z.object({
+    api: platformHealthItemSchema,
+    database: platformHealthItemSchema,
+    worker: platformHealthWorkerItemSchema,
+    changeHint: platformHealthChangeHintItemSchema,
+  }),
+})
+export type PlatformHealthResponse = z.infer<typeof platformHealthResponseSchema>

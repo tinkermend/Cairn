@@ -334,7 +334,7 @@ export function RecordingDetailPage() {
                   <Sparkles className='size-3.5 text-primary' />
                   AI 意图泛化
                   {genData?.rounds.length ? (
-                    <span className='ml-1 rounded-full bg-primary/10 px-1.5 py-0.2 text-[10px] font-medium text-primary'>
+                    <span className='ml-1 rounded-full bg-primary/10 px-1.5 py-0.2 text-label font-medium text-primary'>
                       {genData.rounds.length}
                     </span>
                   ) : null}
@@ -343,7 +343,7 @@ export function RecordingDetailPage() {
                   <FileCode2 className='size-3.5' />
                   候选场景预览
                   {candidateDoc?.nodes.length !== undefined ? (
-                    <span className='ml-1 rounded-full bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground'>
+                    <span className='ml-1 rounded-full bg-muted px-1.5 py-0.2 text-label text-muted-foreground'>
                       {candidateDoc.nodes.length} 步
                     </span>
                   ) : null}

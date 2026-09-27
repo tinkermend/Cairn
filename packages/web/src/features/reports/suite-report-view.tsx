@@ -159,7 +159,7 @@ export function SuiteReportView({
           <p className='text-label text-muted-foreground'>业务检查得分</p>
           <div className='my-3 flex items-baseline gap-2'>
             <span
-              className={`text-5xl font-extrabold tracking-tight ${
+              className={`text-stat font-extrabold tracking-tight ${
                 !scoreAvailable
                   ? 'text-muted-foreground'
                   : summaryBlock.healthScore! >= 90
@@ -176,7 +176,7 @@ export function SuiteReportView({
             {scoreAvailable ? <span className='text-label text-muted-foreground'>/ 100</span> : null}
           </div>
           <Badge
-            className={`px-3 py-0.5 text-xs font-semibold ${
+            className={`px-3 py-0.5 text-label font-semibold ${
               !scoreAvailable
                 ? 'bg-muted text-muted-foreground border-border'
                 : summaryBlock.healthGrade === 'EXCELLENT'
@@ -196,28 +196,28 @@ export function SuiteReportView({
         <div className='flex flex-col justify-between gap-4 rounded-lg border border-border-card bg-card p-6 shadow-card sm:col-span-8'>
           <div className='grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6'>
             <div className='rounded-md border border-border/50 bg-muted/40 p-3'>
-              <p className='text-xs text-muted-foreground'>总巡检项</p>
-              <p className='text-xl font-bold'>{summaryBlock.totalCount}</p>
+              <p className='text-label text-muted-foreground'>总巡检项</p>
+              <p className='text-section font-bold'>{summaryBlock.totalCount}</p>
             </div>
             <div className='rounded-md border border-success/30 bg-success/10 p-3'>
-              <p className='text-xs text-success'>正常模块</p>
-              <p className='text-xl font-bold text-success'>{summaryBlock.normalCount}</p>
+              <p className='text-label text-success'>正常模块</p>
+              <p className='text-section font-bold text-success'>{summaryBlock.normalCount}</p>
             </div>
             <div className='rounded-md border border-warning/30 bg-warning/10 p-3'>
-              <p className='text-xs text-warning'>警告模块</p>
-              <p className='text-xl font-bold text-warning'>{summaryBlock.warningCount}</p>
+              <p className='text-label text-warning'>警告模块</p>
+              <p className='text-section font-bold text-warning'>{summaryBlock.warningCount}</p>
             </div>
             <div className='rounded-md border border-destructive/30 bg-destructive/10 p-3'>
-              <p className='text-xs text-destructive'>异常模块</p>
-              <p className='text-xl font-bold text-destructive'>{summaryBlock.anomalousCount}</p>
+              <p className='text-label text-destructive'>异常模块</p>
+              <p className='text-section font-bold text-destructive'>{summaryBlock.anomalousCount}</p>
             </div>
             <div className='rounded-md border border-border/50 bg-muted/40 p-3'>
-              <p className='text-xs text-muted-foreground'>未判定模块</p>
-              <p className='text-xl font-bold text-muted-foreground'>{summaryBlock.undeterminedCount}</p>
+              <p className='text-label text-muted-foreground'>未判定模块</p>
+              <p className='text-section font-bold text-muted-foreground'>{summaryBlock.undeterminedCount}</p>
             </div>
             <div className='rounded-md border border-border/50 bg-muted/40 p-3'>
-              <p className='text-xs text-muted-foreground'>跳过模块</p>
-              <p className='text-xl font-bold text-muted-foreground'>{summaryBlock.skippedCount}</p>
+              <p className='text-label text-muted-foreground'>跳过模块</p>
+              <p className='text-section font-bold text-muted-foreground'>{summaryBlock.skippedCount}</p>
             </div>
           </div>
 
@@ -252,7 +252,7 @@ export function SuiteReportView({
             <Button
               variant={filter === 'ALL' ? 'secondary' : 'ghost'}
               size='sm'
-              className='h-7 text-xs'
+              className='h-7 text-label'
               onClick={() => setFilter('ALL')}
             >
               全部 ({summaryBlock.gridRows.length})
@@ -260,7 +260,7 @@ export function SuiteReportView({
             <Button
               variant={filter === 'ANOMALOUS' ? 'secondary' : 'ghost'}
               size='sm'
-              className='h-7 text-xs text-destructive'
+              className='h-7 text-label text-destructive'
               onClick={() => setFilter('ANOMALOUS')}
             >
               仅看异常 ({summaryBlock.anomalousCount})
@@ -268,7 +268,7 @@ export function SuiteReportView({
             <Button
               variant={filter === 'WARNING' ? 'secondary' : 'ghost'}
               size='sm'
-              className='h-7 text-xs text-warning'
+              className='h-7 text-label text-warning'
               onClick={() => setFilter('WARNING')}
             >
               仅看警告 ({summaryBlock.warningCount})
@@ -276,7 +276,7 @@ export function SuiteReportView({
             <Button
               variant={filter === 'NORMAL' ? 'secondary' : 'ghost'}
               size='sm'
-              className='h-7 text-xs text-success'
+              className='h-7 text-label text-success'
               onClick={() => setFilter('NORMAL')}
             >
               仅看正常 ({summaryBlock.normalCount})
@@ -284,7 +284,7 @@ export function SuiteReportView({
             <Button
               variant={filter === 'UNDETERMINED' ? 'secondary' : 'ghost'}
               size='sm'
-              className='h-7 text-xs'
+              className='h-7 text-label'
               onClick={() => setFilter('UNDETERMINED')}
             >
               仅看未判定 ({summaryBlock.undeterminedCount})
@@ -309,15 +309,15 @@ export function SuiteReportView({
               const dataRowEntries = Object.entries(row.dataRow ?? {})
               return (
                 <TableRow key={row.memberId}>
-                  <TableCell className='text-center font-mono text-xs text-muted-foreground'>
+                  <TableCell className='text-center font-mono text-label text-muted-foreground'>
                     {row.ordinal + 1}
                   </TableCell>
                   <TableCell>
                     <div className='font-medium text-foreground'>{row.scenarioName}</div>
-                    <div className='text-xs text-muted-foreground'>{row.memberId}</div>
+                    <div className='text-label text-muted-foreground'>{row.memberId}</div>
                   </TableCell>
                   <TableCell>
-                    <div className='text-sm text-foreground'>{row.displayName}</div>
+                    <div className='text-body text-foreground'>{row.displayName}</div>
                   </TableCell>
                   <TableCell>
                     <Badge
@@ -339,7 +339,7 @@ export function SuiteReportView({
                       {metricsEntries.map(([k, v]) => (
                         <span
                           key={k}
-                          className='inline-flex items-center rounded border border-border bg-muted/60 px-1.5 py-0.5 text-xs'
+                          className='inline-flex items-center rounded border border-border bg-muted/60 px-1.5 py-0.5 text-label'
                         >
                           <span className='font-mono text-muted-foreground mr-1'>{k}:</span>
                           <span className='font-semibold'>{String(v)}</span>
@@ -348,21 +348,21 @@ export function SuiteReportView({
                       {dataRowEntries.map(([k, v]) => (
                         <span
                           key={k}
-                          className='inline-flex items-center rounded border border-info/30 bg-info/10 px-1.5 py-0.5 text-xs text-info'
+                          className='inline-flex items-center rounded border border-info/30 bg-info/10 px-1.5 py-0.5 text-label text-info'
                         >
                           <span className='mr-1'>{k}:</span>
                           <span>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
                         </span>
                       ))}
                       {metricsEntries.length === 0 && dataRowEntries.length === 0 ? (
-                        <span className='text-xs text-muted-foreground'>-</span>
+                        <span className='text-label text-muted-foreground'>-</span>
                       ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div className='text-sm text-foreground'>{row.summary || '-'}</div>
+                    <div className='text-body text-foreground'>{row.summary || '-'}</div>
                     {row.durationMs != null ? (
-                      <div className='mt-0.5 text-xs text-muted-foreground'>
+                      <div className='mt-0.5 text-label text-muted-foreground'>
                         耗时：{(row.durationMs / 1000).toFixed(1)}s
                       </div>
                     ) : null}
@@ -394,10 +394,10 @@ export function SuiteReportView({
                   <div className='space-y-2'>
                     <div className='flex items-start justify-between gap-2'>
                       <div>
-                        <span className='text-xs font-medium text-muted-foreground'>
+                        <span className='text-label font-medium text-muted-foreground'>
                           {finding.displayName}
                         </span>
-                        <h4 className='text-sm font-semibold text-foreground'>{finding.title}</h4>
+                        <h4 className='text-body font-semibold text-foreground'>{finding.title}</h4>
                       </div>
                       <Badge
                         className={
@@ -410,7 +410,7 @@ export function SuiteReportView({
                       </Badge>
                     </div>
                     {finding.detail ? (
-                      <p className='text-xs text-muted-foreground'>{finding.detail}</p>
+                      <p className='text-label text-muted-foreground'>{finding.detail}</p>
                     ) : null}
                   </div>
 
@@ -423,7 +423,7 @@ export function SuiteReportView({
                       />
                       <button
                         type='button'
-                        className='absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100 text-white gap-1.5 text-xs font-medium'
+                        className='absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100 text-white gap-1.5 text-label font-medium'
                         onClick={() => {
                           setActiveLightbox({
                             imageUrl: evidenceUrl,
@@ -450,15 +450,15 @@ export function SuiteReportView({
         <details className='group'>
           <summary className='flex cursor-pointer items-center justify-between font-medium text-foreground'>
             <span>【L3: 技术明细与执行追溯】(点击展开原子执行步骤与 Attempt 流水)</span>
-            <span className='text-xs text-muted-foreground group-open:hidden'>展开</span>
-            <span className='text-xs text-muted-foreground hidden group-open:inline'>收起</span>
+            <span className='text-label text-muted-foreground group-open:hidden'>展开</span>
+            <span className='text-label text-muted-foreground hidden group-open:inline'>收起</span>
           </summary>
           <div className='mt-4 space-y-4 border-t border-border-divider pt-4'>
             {document.sections
               .flatMap((s) => s.blocks)
               .filter((b) => b.type === 'result')
               .map((_, idx) => (
-                <div key={idx} className='text-xs text-muted-foreground'>
+                <div key={idx} className='text-label text-muted-foreground'>
                   <p>详细步骤与证据流水已归档至系统报告快照。如需深入调试步骤 Attempt，请访问单场景详情。</p>
                 </div>
               ))}
@@ -483,7 +483,7 @@ export function SuiteReportView({
             ) : null}
           </div>
           <div className='flex items-center justify-between pt-2'>
-            <p className='text-xs text-muted-foreground'>{activeLightbox?.caption}</p>
+            <p className='text-label text-muted-foreground'>{activeLightbox?.caption}</p>
             <div className='flex items-center gap-1'>
               <Button
                 variant='outline'

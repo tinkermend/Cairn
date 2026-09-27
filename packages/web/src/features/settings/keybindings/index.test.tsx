@@ -123,6 +123,22 @@ describe('SettingsKeybindings (快捷键偏好设置页)', () => {
     await expect.element(saveBtn).toBeDisabled()
   })
 
+  it('关闭错误录制后改为编辑另一命令，录制状态从该命令当前键位重新开始', async () => {
+    await render(<SettingsKeybindings />)
+    await page.getByTestId('edit-shortcut-assistant.toggle').click()
+    const captureArea = page.getByTestId('shortcut-capture-area')
+    captureArea.element().dispatchEvent(new KeyboardEvent('keydown', {
+      code: 'KeyW', metaKey: true, bubbles: true, cancelable: true,
+    }))
+    await expect.element(page.getByTestId('shortcut-error-msg')).toBeVisible()
+    await page.getByRole('button', { name: '取消' }).click()
+
+    await page.getByTestId('edit-shortcut-palette.open').click()
+    await expect.element(page.getByTestId('shortcut-capture-area').getByText('⌘K')).toBeVisible()
+    await expect.element(page.getByTestId('shortcut-error-msg')).not.toBeInTheDocument()
+    await expect.element(page.getByTestId('save-shortcut-btn')).toBeDisabled()
+  })
+
   it('支持单项快捷键恢复默认和全部一键重置', async () => {
     useKeybindingsStore.getState().setCustomKey('assistant.toggle', 'mod+shift+j')
     useKeybindingsStore.getState().setCustomKey('scenario.save', 'mod+shift+s')

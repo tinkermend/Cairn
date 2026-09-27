@@ -53,7 +53,7 @@ export function MediaViewport({
   return (
     <div
       aria-label='伴随媒体视口'
-      className='rounded-lg border border-border-card bg-card shadow-card overflow-hidden shrink-0 transition-all'
+      className='rounded-lg border border-border-card bg-card shadow-card overflow-hidden shrink-0'
     >
       {/* 媒体视口可折叠工具条 */}
       <div className='flex items-center justify-between border-b border-border-divider bg-surface-header px-3 py-1.5 text-label'>

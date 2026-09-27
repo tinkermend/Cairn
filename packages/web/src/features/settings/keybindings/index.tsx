@@ -55,7 +55,7 @@ export function SettingsKeybindings() {
       <div className='space-y-6' data-testid='settings-keybindings-page'>
         {/* 顶部平台自适应提示与全局重置 */}
         <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 p-3'>
-          <div className='flex items-center gap-2 text-xs text-muted-foreground'>
+          <div className='flex items-center gap-2 text-label text-muted-foreground'>
             <Monitor className='size-4 text-primary' />
             <span>
               已根据当前系统自动适配键帽：
@@ -68,7 +68,7 @@ export function SettingsKeybindings() {
               variant='outline'
               size='sm'
               onClick={handleResetAll}
-              className='h-7 text-xs text-muted-foreground hover:text-foreground'
+              className='h-7 text-label text-muted-foreground hover:text-foreground'
               data-testid='reset-all-shortcuts-btn'
             >
               <RotateCcw className='mr-1.5 size-3.5' />
@@ -81,7 +81,7 @@ export function SettingsKeybindings() {
         <div className='space-y-3'>
           <div className='flex items-center gap-2'>
             <Sparkles className='size-4 text-primary' />
-            <h4 className='text-sm font-semibold tracking-tight text-foreground'>
+            <h4 className='text-section font-semibold text-foreground'>
               全局操作
             </h4>
           </div>
@@ -96,11 +96,11 @@ export function SettingsKeybindings() {
                   data-testid={`keybinding-row-${cmd.id}`}
                 >
                   <div className='flex items-center gap-2'>
-                    <span className='text-sm font-medium text-foreground'>
+                    <span className='text-body font-medium text-foreground'>
                       {cmd.label}
                     </span>
                     {customized ? (
-                      <Badge variant='outline' className='text-[10px] px-1.5 py-0 border-status-info text-status-info'>
+                      <Badge variant='outline' className='border-status-info-accent/40 px-1.5 py-0 text-label text-status-info-foreground'>
                         已自定义
                       </Badge>
                     ) : null}
@@ -126,7 +126,7 @@ export function SettingsKeybindings() {
                       variant='outline'
                       size='sm'
                       onClick={() => handleOpenEdit(cmd)}
-                      className='h-8 px-2.5 text-xs'
+                      className='h-8 px-2.5 text-label'
                       data-testid={`edit-shortcut-${cmd.id}`}
                     >
                       <Pencil className='mr-1 size-3' />
@@ -141,7 +141,7 @@ export function SettingsKeybindings() {
 
         {/* 分组 2: 场景 Studio 操作 */}
         <div className='space-y-3'>
-          <h4 className='text-sm font-semibold tracking-tight text-foreground'>
+          <h4 className='text-section font-semibold text-foreground'>
             场景编排 Studio
           </h4>
           <div className='rounded-lg border divide-y divide-border/60 overflow-hidden'>
@@ -155,11 +155,11 @@ export function SettingsKeybindings() {
                   data-testid={`keybinding-row-${cmd.id}`}
                 >
                   <div className='flex items-center gap-2'>
-                    <span className='text-sm font-medium text-foreground'>
+                    <span className='text-body font-medium text-foreground'>
                       {cmd.label}
                     </span>
                     {customized ? (
-                      <Badge variant='outline' className='text-[10px] px-1.5 py-0 border-status-info text-status-info'>
+                      <Badge variant='outline' className='border-status-info-accent/40 px-1.5 py-0 text-label text-status-info-foreground'>
                         已自定义
                       </Badge>
                     ) : null}
@@ -185,7 +185,7 @@ export function SettingsKeybindings() {
                       variant='outline'
                       size='sm'
                       onClick={() => handleOpenEdit(cmd)}
-                      className='h-8 px-2.5 text-xs'
+                      className='h-8 px-2.5 text-label'
                       data-testid={`edit-shortcut-${cmd.id}`}
                     >
                       <Pencil className='mr-1 size-3' />

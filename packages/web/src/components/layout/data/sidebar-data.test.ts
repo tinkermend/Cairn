@@ -7,7 +7,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import type { AuthUser } from '@/stores/auth-store'
 import { filterNavItems } from '@/lib/rbac'
-import { personalSettingsGroup, personalSettingsNav, sidebarData } from './sidebar-data'
+import { persistentNavGroups, personalSettingsGroup, personalSettingsNav, sidebarData, systemNavGroups } from './sidebar-data'
 
 type CapabilityGroup = keyof typeof CAPABILITY_GROUP_LABELS
 
@@ -23,12 +23,19 @@ function visibleTitles(group: CapabilityGroup, subject: AuthUser) {
 }
 
 describe('侧栏导航', () => {
-  it('编写、运行、目标与管理分别组织，个人设置移到账户菜单', () => {
+  it('编写、运行、目标、运维与管理分别组织，个人设置移到账户菜单', () => {
     expect(sidebarData.navGroups.map((group) => group.title)).toEqual([
       '', '编写', '运行', '目标', '运维', '管理',
     ])
     expect(sidebarData.navGroups.flatMap((group) => group.items).some((item) => item.title === '个人设置')).toBe(false)
     expect(personalSettingsNav.items.map((item) => item.title)).toEqual(['个人资料', '修改密码'])
+  })
+
+  it('运维三项留在常驻导航，系统弹层只收管理项且导航无重复', () => {
+    expect(persistentNavGroups.map((group) => group.title)).toEqual(['', '编写', '运行', '目标', '运维'])
+    expect(persistentNavGroups[4]?.items.map((item) => item.title)).toEqual(['监控', '执行节点', '消息推送'])
+    expect(systemNavGroups.map((group) => group.title)).toEqual(['管理'])
+    expect([...persistentNavGroups, ...systemNavGroups]).toEqual(sidebarData.navGroups)
   })
 
   it('角色能力预览与实际导航逐组一致，包括个人设置', () => {

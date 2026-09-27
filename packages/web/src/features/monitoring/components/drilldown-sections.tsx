@@ -100,7 +100,7 @@ export function WorkersSection({
                         <div className="hidden sm:block h-1.5 w-16 overflow-hidden rounded-full bg-muted">
                           <div
                             className={cn(
-                              'h-full rounded-full transition-all duration-300',
+                              'h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none',
                               ratio >= 0.8 ? 'bg-status-warning' : 'bg-primary'
                             )}
                             style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }}
@@ -263,15 +263,15 @@ export function ProfilesSection() {
               </div>
               <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 <div
-                  className="bg-status-success transition-all duration-300"
+                  className="bg-status-success transition-[width] duration-300 motion-reduce:transition-none"
                   style={{ width: `${items.length > 0 ? (present / items.length) * 100 : 0}%` }}
                 />
                 <div
-                  className="bg-muted-foreground/40 transition-all duration-300"
+                  className="bg-muted-foreground/40 transition-[width] duration-300 motion-reduce:transition-none"
                   style={{ width: `${items.length > 0 ? (absent / items.length) * 100 : 0}%` }}
                 />
                 <div
-                  className="bg-status-warning transition-all duration-300"
+                  className="bg-status-warning transition-[width] duration-300 motion-reduce:transition-none"
                   style={{ width: `${items.length > 0 ? Math.min(100, (pending / items.length) * 100) : 0}%` }}
                 />
               </div>
@@ -365,7 +365,7 @@ function NodeStorageCard({ node }: { node?: MonitorProfileNodeItem }) {
         </div>
         <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
           <div
-            className="bg-primary transition-all duration-300"
+            className="bg-primary transition-[width] duration-300 motion-reduce:transition-none"
             style={{ width: `${isUsedKnown && isFreeKnown ? Math.round(usageRatio * 100) : 0}%` }}
           />
         </div>

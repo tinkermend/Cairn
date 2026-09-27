@@ -234,13 +234,13 @@ export function ScheduleDetailDialog({
                         </Button>
                       ) : null}
                       {action ? (
-                        <Button variant='outline' size='sm' className='h-6 px-2 text-xs ml-auto text-primary' asChild>
+                        <Button variant='outline' size='sm' className='h-6 px-2 text-label ml-auto text-primary' asChild>
                           <a href={action.href}>{action.label}</a>
                         </Button>
                       ) : null}
                     </div>
                     {item.admissionStatus === 'SKIPPED' && meta?.explanation ? (
-                      <p className='text-xs text-muted-foreground leading-normal'>{meta.explanation}</p>
+                      <p className='text-label text-muted-foreground leading-normal'>{meta.explanation}</p>
                     ) : null}
                   </li>
                 )

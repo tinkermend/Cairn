@@ -18,7 +18,13 @@ type AuthenticatedLayoutProps = {
 }
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
-  const defaultOpen = getCookie('sidebar_state') !== 'false'
+  const cookieVal = getCookie('sidebar_state')
+  const defaultOpen =
+    cookieVal !== null && cookieVal !== undefined && cookieVal !== ''
+      ? cookieVal === 'true'
+      : typeof window !== 'undefined'
+        ? window.innerWidth >= 1366
+        : true
   const auth = useAuthStore(s => s.auth.user)
   const setRouteContext = useAssistantStore((s) => s.setRouteContext)
   const pathname = useRouterState({
@@ -42,6 +48,9 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
             // Set content container, so we can use container queries
             '@container/content',
             'min-w-0',
+
+            // 顶栏半透明叠在这里，底色须与内容画布一致
+            'bg-surface-page',
 
             // If layout is fixed, set the height
             // to 100svh to prevent overflow
