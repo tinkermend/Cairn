@@ -9,10 +9,9 @@ import {
   Play,
   Save,
   Settings,
-  Sparkles,
+  Zap,
 } from 'lucide-react'
 import type {
-  AssistantCapabilityId,
   ScenarioDetailDto,
   TargetDto,
 } from '@cairn/shared'
@@ -47,12 +46,12 @@ export type StudioToolbarProps = {
   unpublishedDraft: boolean
   compileOk: boolean | undefined
   canReadTarget: boolean
-  canAssist: boolean
-  canPropose: boolean
   canRecord: boolean
   canDelete: boolean
   disabled: boolean
   isScenarioView?: boolean
+  pendingImportDraftId?: string | null
+  onPreviewImportDraft?: () => void
   onSave: () => void
   onPublish: () => void
   onStartTrial: () => void
@@ -62,7 +61,6 @@ export type StudioToolbarProps = {
   onRename?: (newName: string) => Promise<boolean | void> | void
   onToggleStatus: () => void
   onOpenRemove: () => void
-  onOpenAssistant: (question: string, hint: AssistantCapabilityId) => void
   onOpenSettings?: () => void
   onLeave: (e: React.MouseEvent) => void
 }
@@ -83,12 +81,12 @@ export function StudioToolbar({
   unpublishedDraft,
   compileOk,
   canReadTarget,
-  canAssist,
-  canPropose,
   canRecord,
   canDelete,
   disabled,
   isScenarioView = false,
+  pendingImportDraftId,
+  onPreviewImportDraft,
   onSave,
   onPublish,
   onStartTrial,
@@ -98,7 +96,6 @@ export function StudioToolbar({
   onRename,
   onToggleStatus,
   onOpenRemove,
-  onOpenAssistant,
   onOpenSettings,
   onLeave,
 }: StudioToolbarProps) {
@@ -179,9 +176,9 @@ export function StudioToolbar({
   }, [])
 
   // 自适应响应式断点：
-  // 1. 展开快捷按钮门槛：需容纳返回+标题+胶囊(~640px) + 核心操作(~320px) + 4个次要按钮(~360px) ≈ 1320px
+  // 1. 展开快捷按钮门槛：需容纳返回+标题+胶囊(~640px) + 核心操作(~320px) + 2个次要按钮(~180px) ≈ 1140px
   // 挂载知识助手后容器通常被压缩至 800px~1250px，自动收起快捷操作至「更多」
-  const showExpandedShortcuts = containerWidth >= 1320
+  const showExpandedShortcuts = containerWidth >= 1140
   // 2. 胶囊静态说明文字（"目标系统"、"已发布"、"草稿"）
   const showDetailedPill = containerWidth >= 1050
   // 3. 返回按钮文字（过窄时仅留图标）
@@ -336,30 +333,6 @@ export function StudioToolbar({
                   结果通知
                 </Link>
               </Button>
-
-              {canAssist && canReadTarget ? (
-                <Button
-                  size='sm'
-                  variant='outline'
-                  onClick={() => onOpenAssistant(
-                    isScenarioView ? '解释整套业务流程与全局契约' : '解释当前步骤',
-                    'scenario.explain'
-                  )}
-                >
-                  <Sparkles className='size-3.5 text-ai-foreground mr-1' />
-                  {isScenarioView ? '解释场景' : '解释步骤'}
-                </Button>
-              ) : null}
-
-              {canPropose ? (
-                <Button
-                  size='sm'
-                  variant='outline'
-                  onClick={() => onOpenAssistant('把这条指令写清楚', 'scenario.propose-step')}
-                >
-                  修改建议
-                </Button>
-              ) : null}
             </>
           ) : null}
 
@@ -372,6 +345,7 @@ export function StudioToolbar({
                 className={cn(isScenarioView && 'border-primary/40 bg-primary/10 text-primary font-medium shadow-xs')}
                 onClick={onOpenSettings}
                 title='整个场景配置'
+                data-testid='toolbar-scenario-config'
               >
                 <Settings className='size-3.5 mr-1' />
                 场景配置
@@ -383,11 +357,27 @@ export function StudioToolbar({
                 className={cn('size-8', isScenarioView && 'border-primary/40 bg-primary/10 text-primary')}
                 onClick={onOpenSettings}
                 title='整个场景配置'
-                aria-label='整个场景配置'
+                aria-label='场景配置'
+                data-testid='toolbar-scenario-config'
               >
                 <Settings className='size-3.5' />
               </Button>
             )
+          ) : null}
+
+          {/* 待导入录制草稿高亮入口：吸收进顶栏，高度固定锁死 */}
+          {pendingImportDraftId && canRecord && onPreviewImportDraft ? (
+            <Button
+              size='sm'
+              variant='outline'
+              className='h-8 border-primary/50 bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary font-medium shadow-xs shrink-0'
+              onClick={onPreviewImportDraft}
+              title='检测到录制草稿，点击预览并转换为操作步骤'
+              data-testid='toolbar-import-draft-btn'
+            >
+              <Zap className='size-3.5 mr-1 text-primary' />
+              {containerWidth >= 800 ? <span>导入录制草稿</span> : <span>导入草稿</span>}
+            </Button>
           ) : null}
 
           {/* 核心主动作（各分辨率均保持可达） */}
@@ -432,9 +422,15 @@ export function StudioToolbar({
           {/* 更多下拉菜单（挂载助手/笔记本/窄屏下承接次要操作，大屏承接高级操作） */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size='sm' variant='outline'>
+              <Button size='sm' variant='outline' className='relative'>
                 更多
                 <ChevronDown className='size-3.5 ml-1' />
+                {pendingImportDraftId ? (
+                  <span
+                    className='absolute -top-1 -right-1 size-2 rounded-full bg-primary ring-2 ring-card'
+                    data-testid='toolbar-more-badge'
+                  />
+                ) : null}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align='end' className='w-48'>
@@ -462,25 +458,6 @@ export function StudioToolbar({
                       结果通知
                     </Link>
                   </DropdownMenuItem>
-                  {canAssist && canReadTarget ? (
-                    <DropdownMenuItem
-                      onClick={() => onOpenAssistant(
-                        isScenarioView ? '解释整套业务流程与全局契约' : '解释当前步骤',
-                        'scenario.explain'
-                      )}
-                    >
-                      <Sparkles className='mr-2 size-3.5 text-ai-foreground' />
-                      {isScenarioView ? '解释场景全局' : '解释当前步骤'}
-                    </DropdownMenuItem>
-                  ) : null}
-                  {canPropose ? (
-                    <DropdownMenuItem
-                      onClick={() => onOpenAssistant('把这条指令写清楚', 'scenario.propose-step')}
-                    >
-                      <Sparkles className='mr-2 size-3.5 text-ai-foreground' />
-                      修改建议
-                    </DropdownMenuItem>
-                  ) : null}
                   <DropdownMenuSeparator />
                 </>
               ) : null}
@@ -501,8 +478,21 @@ export function StudioToolbar({
                 运行已发布版本
               </DropdownMenuItem>
               {canRecord ? (
-                <DropdownMenuItem disabled={disabled} onClick={onOpenImport}>
-                  导入已有录制
+                <DropdownMenuItem
+                  disabled={disabled}
+                  onClick={pendingImportDraftId && onPreviewImportDraft ? onPreviewImportDraft : onOpenImport}
+                  className='flex items-center justify-between'
+                  data-testid='toolbar-more-import-item'
+                >
+                  <span className='flex items-center'>
+                    <Zap className='mr-2 size-3.5 text-primary' />
+                    导入已有录制
+                  </span>
+                  {pendingImportDraftId ? (
+                    <span className='ml-2 rounded bg-primary/15 px-1.5 py-0.5 text-label font-medium text-primary leading-none'>
+                      待导入
+                    </span>
+                  ) : null}
                 </DropdownMenuItem>
               ) : null}
               {canWrite ? (

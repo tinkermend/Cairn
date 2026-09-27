@@ -18,6 +18,7 @@ import {
   createRunWithSnapshot,
   createScenarioWithVersion,
   getOrCreatePlatformConfig,
+  getScenario,
   newId,
   RbacStore,
   TargetsStore,
@@ -331,5 +332,51 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     expect(turn.result.directAnswer).toContain('【+ 添加步骤】')
     expect(turn.result).not.toHaveProperty('items')
     expect(JSON.stringify(turn.result)).not.toContain('目标系统')
+  })
+
+  it('Studio 正例：选中单步时解释当前步骤，返回 stepSummary 且关联步骤类型与名称', async () => {
+    current = owner
+    const step = ((await getScenario(db, scenarioId)).draft?.document as any)?.steps?.[0]
+    expect(step).toBeDefined()
+    const sub = await request(app.getHttpServer())
+      .post(`/assistant/conversations/${conversationId}/turns`)
+      .send({
+        clientTurnId: `step-explain-pos-${crypto.randomUUID()}`,
+        question: '请解释当前步骤的作用',
+        capabilityHint: 'scenario.explain',
+        pageContext: {
+          page: 'studio',
+          scenarioId,
+          draftRevision: 1,
+          stepId: step.id,
+        },
+      })
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result.kind).toBe('explanation')
+    expect(turn.result.stepSummary).toContain('回显')
+    expect(turn.result.stepSummary).toContain('echo')
+  })
+
+  it('Studio 反例：选中不存在的 stepId 时平滑降级为场景级解释，stepSummary 不臆造虚构事实', async () => {
+    current = owner
+    const sub = await request(app.getHttpServer())
+      .post(`/assistant/conversations/${conversationId}/turns`)
+      .send({
+        clientTurnId: `step-explain-neg-${crypto.randomUUID()}`,
+        question: '请解释当前步骤的作用',
+        capabilityHint: 'scenario.explain',
+        pageContext: {
+          page: 'studio',
+          scenarioId,
+          draftRevision: 1,
+          stepId: crypto.randomUUID(),
+        },
+      })
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result.kind).toBe('explanation')
+    expect(turn.result.stepSummary).toBeUndefined()
+    expect(turn.result.summary).toContain('巡检')
   })
 })

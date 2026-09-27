@@ -19,6 +19,7 @@ import { z } from 'zod'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 import { retrieveHelpSnippets, type HelpSnippetResult } from '../help/catalog.js'
 import { requireVisibleTarget } from './common.js'
+import { extractStepStructureFacts } from './step-structure-facts.js'
 
 const MAX_FACT_CHARS = 12_000
 
@@ -41,6 +42,7 @@ export async function handleKnowledgeAnswer(
 
   const pageContext = normalizeAssistantPageContext(body.pageContext)
   const allowedCitations = new Set<string>()
+  const helpCitations = new Set<string>()
   const factItems: FactItem[] = []
   const missingList: AssistantKnowledgeAnswerMissing[] = []
   const nextActions: AssistantNextAction[] = []
@@ -54,6 +56,7 @@ export async function handleKnowledgeAnswer(
 
   for (const snippet of helpSnippets) {
     allowedCitations.add(snippet.id)
+    helpCitations.add(snippet.id)
     factItems.push({
       citation: snippet.id,
       label: `官方帮助 [${snippet.title}]`,
@@ -222,21 +225,24 @@ export async function handleKnowledgeAnswer(
           })
         }
 
-        // CQ-06: 场景步骤定义（Studio 问“这个步骤做什么”）
+        // CQ-06: 场景步骤结构化事实解析引擎 (Step Structure Fact Extractor)
         const targetStepId = String(
           pageContext?.stepId ||
             (pageContext?.view?.selectedRef?.kind === 'step' ? pageContext.view.selectedRef.id : ''),
         )
-        if (targetStepId && scenario.steps) {
-          const step = scenario.steps.find((s) => s.id === targetStepId)
-          if (step) {
-            const stepCitation = `step:${step.id}`
-            allowedCitations.add(stepCitation)
-            factItems.push({
-              citation: stepCitation,
-              label: `场景步骤定义 (${step.name})`,
-              fact: `步骤ID: ${step.id}, 步骤名: ${step.name}, 步骤类型: ${step.type}`,
+        if (targetStepId) {
+          const stepFactsResult = extractStepStructureFacts(scenario, targetStepId)
+          if (!stepFactsResult.found) {
+            missingList.push({
+              key: `step:${targetStepId}`,
+              reason: 'step_not_found',
+              description: `选中的步骤 ID「${targetStepId}」在当前场景中不存在`,
             })
+          } else {
+            for (const item of stepFactsResult.facts) {
+              allowedCitations.add(item.citation)
+              factItems.push(item)
+            }
           }
         }
       } catch {
@@ -574,12 +580,21 @@ export async function handleKnowledgeAnswer(
           })
         }
       } else {
-        // observed 或 human_confirmed 必须拥有至少一个合法引用
-        if (validCitations.length > 0) {
+        // 官方帮助与实体观测不能仅凭合法引用键互相冒充。
+        const sourceMatches = c.factKind === 'human_confirmed'
+          ? validCitations.every((citation) => helpCitations.has(citation))
+          : validCitations.every((citation) => !helpCitations.has(citation))
+        if (validCitations.length > 0 && sourceMatches) {
           validatedClaims.push({
             factKind: c.factKind,
             text: c.text,
             citations: validCitations,
+          })
+        } else if (validCitations.length > 0) {
+          validatedMissing.push({
+            key: 'source_kind_mismatch',
+            reason: 'citation_source_mismatch',
+            description: '回答中的事实类型与引用来源不一致，已略去该结论',
           })
         }
       }
@@ -592,7 +607,7 @@ export async function handleKnowledgeAnswer(
     summary = '无法基于已知事实生成完整解答，以下为相关的已确认知识事实：'
     for (const fact of boundedFacts.slice(0, 3)) {
       validatedClaims.push({
-        factKind: 'human_confirmed',
+        factKind: helpCitations.has(fact.citation) ? 'human_confirmed' : 'observed',
         text: `${fact.label}: ${fact.fact.slice(0, 200)}`,
         citations: [fact.citation],
       })

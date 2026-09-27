@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
@@ -30,6 +30,8 @@ import { Label } from '@/components/ui/label'
 import { DebugHoldBar } from './debug-hold-bar'
 import { resolveRunEvidenceFocus } from './evidence-focus'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
+import { useAssistantStore } from '@/stores/assistant-store'
+import { resolveContextRecommendations } from '@/features/assistant/recommendation-engine'
 import { AlertTriangle, LayoutDashboard, Search, Video } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { RunCreateDialog } from './create-dialog'
@@ -53,6 +55,10 @@ export function RunDetailPage() {
   const [removing, setRemoving] = useState(false)
   const canDelete = useCan('run:delete')
   const canCancel = useCan('run:cancel')
+  const canAssist = useCan('ai:assist')
+  const canWrite = useCan('workflow:write')
+  const canReadTarget = useCan('target:read')
+  const capabilities = useAssistantStore((s) => s.capabilities)
   const evidenceItems = evidence?.items ?? []
   // 过滤出真正的运行前错误（调度/校验崩溃），常规视频与日志不视为前置错误
   const preRunErrors = evidenceItems.filter((e) => !e.stepRunId && !e.attemptId && e.type === 'error')
@@ -67,6 +73,43 @@ export function RunDetailPage() {
 
   const selectedStep = run?.stepRuns.find((s) => s.id === currentStepRunId)
   const selectedStepId = selectedStep?.stepId
+  const selectedStepFailed = selectedStep?.status === 'FAILED'
+
+  const isFailed = run?.status === 'FAILED' || run?.outcomeStatus === 'FAILED'
+  const isSucceeded = run?.status === 'SUCCEEDED'
+  const statusTone: 'error' | 'success' | 'info' = isFailed ? 'error' : isSucceeded ? 'success' : 'info'
+
+  const runChips = useMemo(() => {
+    return resolveContextRecommendations({
+      boundContext: {
+        page: 'run',
+        runId,
+        selectedStepId,
+        selectedStepFailed,
+        statusTone,
+      },
+      pageContext: {
+        page: 'run',
+        runId,
+        stepId: selectedStepId,
+      },
+      capabilities,
+      permissions: {
+        canAssist,
+        canWrite,
+        canReadTarget,
+      },
+    })
+  }, [
+    runId,
+    selectedStepId,
+    selectedStepFailed,
+    statusTone,
+    capabilities,
+    canAssist,
+    canWrite,
+    canReadTarget,
+  ])
 
   useAssistantContextBinding(
     run
@@ -75,6 +118,10 @@ export function RunDetailPage() {
           runId,
           targetId: run.targetId,
           scenarioId: run.scenarioId,
+          selectedStepId,
+          selectedStepFailed,
+          statusTone,
+          chips: runChips,
           statusLabel: selectedStep
             ? `当前步骤 · 第 ${selectedStep.ordinal + 1} 步 · ${selectedStep.name}`
             : `当前运行 · ${run.scenarioName || '运行'} #${run.id.slice(0, 8)}`,
@@ -82,11 +129,11 @@ export function RunDetailPage() {
           summaryText: selectedStep
             ? `已聚焦步骤「${selectedStep.name}」（状态：${selectedStep.status}），可向助手询问错误原因或请求诊断。`
             : `运行「${run.scenarioName || '运行'}」（状态：${run.status}），可进行全链路失败分析与结果复盘。`,
-          ...(selectedStepId ? { selectedStepId } : {}),
         }
       : {
           page: 'run',
           runId,
+          chips: runChips,
           statusLabel: '当前运行 · 加载中...',
           statusSummary: '加载中...',
         }

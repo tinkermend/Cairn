@@ -78,6 +78,7 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
+import { resolveContextRecommendations } from '@/features/assistant/recommendation-engine'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -256,6 +257,8 @@ export function ScenarioDetailPage() {
   const canReadTarget = useCan('target:read')
   const canWrite = useCan('workflow:write')
   const canDelete = useCan('workflow:delete')
+  const canAssist = useCan('ai:assist')
+  const capabilities = useAssistantStore((state) => state.capabilities)
   const registerAdoptHandler = useAssistantStore((state) => state.registerAdoptHandler)
   const registerRollbackHandler = useAssistantStore((state) => state.registerRollbackHandler)
   const setLastAdopted = useAssistantStore((state) => state.setLastAdopted)
@@ -317,6 +320,44 @@ export function ScenarioDetailPage() {
     }
   }, [flowgram, draft.candidate, navigate, scenarioId])
 
+  const hasCssSelector = Boolean(
+    (draft.selected?.input as any)?.target?.candidates?.some(
+      (c: any) => c.by === 'css',
+    ),
+  )
+
+  const studioChips = useMemo(() => {
+    return resolveContextRecommendations({
+      boundContext: {
+        page: 'studio',
+        scenarioId,
+        selectedStepId: draft.selected?.id,
+        hasCssSelector,
+        isDirty: draft.dirty,
+      },
+      pageContext: {
+        page: 'studio',
+        scenarioId,
+        stepId: draft.selected?.id,
+      },
+      capabilities,
+      permissions: {
+        canAssist,
+        canWrite,
+        canReadTarget,
+      },
+    })
+  }, [
+    scenarioId,
+    draft.selected?.id,
+    hasCssSelector,
+    draft.dirty,
+    capabilities,
+    canAssist,
+    canWrite,
+    canReadTarget,
+  ])
+
   useAssistantContextBinding(
     scenario
       ? {
@@ -324,6 +365,8 @@ export function ScenarioDetailPage() {
           scenarioId,
           targetId: scenario.targetId,
           selectedStepId: draft.selected?.id,
+          hasCssSelector,
+          chips: studioChips,
           statusLabel: draft.selected
             ? `当前步骤 · ${(() => {
                 const steps = authoringSteps(draft.v2Document)
@@ -346,6 +389,7 @@ export function ScenarioDetailPage() {
       : {
           page: 'studio',
           scenarioId,
+          chips: studioChips,
           statusLabel: '当前场景 · 加载中...',
           statusSummary: '加载中...',
         }

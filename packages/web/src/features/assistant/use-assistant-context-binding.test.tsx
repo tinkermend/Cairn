@@ -67,4 +67,63 @@ describe('useAssistantContextBinding & ownerToken anti-race guard (CQ-02)', () =
     expect(useAssistantStore.getState().boundContext?.scenarioId).toBe('sc-2222')
     expect(useAssistantStore.getState().pageContext?.page).toBe('studio')
   })
+
+  it('M2: 实时上下文切换：在单步聚焦与草稿修改状态更新时，boundContext 与 chips 实时自愈同步', async () => {
+    function DynamicStudioApp() {
+      const [selectedStepId, setSelectedStepId] = useState<string | undefined>(undefined)
+      const [isDirty, setIsDirty] = useState(false)
+
+      useAssistantContextBinding({
+        page: 'studio',
+        scenarioId: 'sc-test',
+        selectedStepId,
+        isDirty,
+        chips: selectedStepId
+          ? [
+              {
+                id: 'studio-step-propose',
+                label: '✏️ 修改建议',
+                question: '请对当前选中的步骤给出编写与配置优化建议。',
+                capabilityHint: 'scenario.propose-step',
+              },
+            ]
+          : [
+              {
+                id: 'studio-scenario-explain',
+                label: '💡 解释场景全貌',
+                question: '请解释当前场景的业务流程。',
+                capabilityHint: 'scenario.explain',
+              },
+            ],
+      })
+
+      return (
+        <div>
+          <button type='button' onClick={() => setSelectedStepId('step-100')}>
+            Select Step 100
+          </button>
+          <button type='button' onClick={() => setIsDirty(true)}>
+            Mark Dirty
+          </button>
+        </div>
+      )
+    }
+
+    const screen = await render(<DynamicStudioApp />)
+
+    // 初始：全局场景态，推荐解释场景
+    expect(useAssistantStore.getState().boundContext?.selectedStepId).toBeUndefined()
+    expect(useAssistantStore.getState().boundContext?.chips?.[0].label).toBe('💡 解释场景全貌')
+
+    // 切换单步聚焦
+    await screen.getByRole('button', { name: 'Select Step 100' }).click()
+    expect(useAssistantStore.getState().boundContext?.selectedStepId).toBe('step-100')
+    expect(useAssistantStore.getState().boundContext?.chips?.[0].label).toBe('✏️ 修改建议')
+    expect(useAssistantStore.getState().pageContext?.stepId).toBe('step-100')
+
+    // 标记草稿为脏
+    await screen.getByRole('button', { name: 'Mark Dirty' }).click()
+    expect(useAssistantStore.getState().boundContext?.isDirty).toBe(true)
+    expect(useAssistantStore.getState().pageContext?.draft?.isDirty).toBe(true)
+  })
 })

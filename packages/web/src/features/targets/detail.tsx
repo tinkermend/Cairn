@@ -33,6 +33,7 @@ import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
 import { canOnTarget } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCursorPage } from '@/hooks/use-cursor-page'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { CursorPagination } from '@/components/data-table'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -185,6 +186,19 @@ export function TargetDetailPage() {
   const [saving, setSaving] = useState(false)
 
   const target = targetQuery.data
+  useAssistantContextBinding(
+    useMemo(() => {
+      if (!target) return null
+      return {
+        page: 'target',
+        entityId: target.id,
+        targetId: target.id,
+        statusLabel: target.status === 'active' ? '正常' : '已停用',
+        statusTone: target.status === 'active' ? 'success' : 'warning',
+        summaryText: `目标系统「${target.name}」(${target.code})`,
+      }
+    }, [target]),
+  )
   const accounts = accountsQuery.data?.items ?? []
   const accountsFiltered = Boolean(accountSearch.trim() || accountStatus !== 'all')
 

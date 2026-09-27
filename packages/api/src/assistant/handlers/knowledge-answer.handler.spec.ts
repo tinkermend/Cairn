@@ -279,7 +279,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
               citations: ['scenario:sc-1', 'step:step-invoice'],
             },
             {
-              factKind: 'human_confirmed',
+              factKind: 'observed',
               text: '当前画布存在未保存修改，依据已保存修订号 12 解答',
               citations: ['scenario:sc-1:draft_status'],
             },
@@ -498,6 +498,62 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     expect(result.claims[0].citations).toContain('dataset:ds-1')
   })
 
+  it('模型失败时把目标实体事实标为系统观测，而非官方规则', async () => {
+    const ctx = createMockContext({
+      actor: {
+        id: 'user-1',
+        name: 'Target Viewer',
+        permissions: ['ai:assist', 'target:read'],
+        targetScope: 'all',
+      },
+      question: 'zzzzzz-no-help-match',
+      body: {
+        question: 'zzzzzz-no-help-match',
+        pageContext: { page: 'target', targetId: 'tgt-1' },
+      },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: false, message: '模型暂不可用' }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.claims).toEqual(expect.arrayContaining([
+      expect.objectContaining({ factKind: 'observed', citations: ['target:tgt-1'] }),
+    ]))
+    expect(result.claims.some((claim) => claim.factKind === 'human_confirmed')).toBe(false)
+  })
+
+  it('拒绝把实体观测伪装为官方规则或把帮助文档伪装为系统观测', async () => {
+    const ctx = createMockContext({
+      actor: {
+        id: 'user-1',
+        name: 'Target Viewer',
+        permissions: ['ai:assist', 'target:read'],
+        targetScope: 'all',
+      },
+      body: {
+        question: '如何配置重试策略？',
+        pageContext: { page: 'target', targetId: 'tgt-1' },
+      },
+      session: {
+        completeJson: vi.fn().mockResolvedValue({
+          ok: true,
+          value: {
+            summary: '事实分类校验',
+            claims: [
+              { factKind: 'human_confirmed', text: '伪装的目标官方规则', citations: ['target:tgt-1'] },
+              { factKind: 'observed', text: '伪装的系统观测', citations: ['help:studio-retry'] },
+              { factKind: 'human_confirmed', text: '真实帮助规则', citations: ['help:studio-retry'] },
+              { factKind: 'observed', text: '真实目标状态', citations: ['target:tgt-1'] },
+            ],
+          },
+        }),
+      } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.claims.map((claim) => claim.text)).toEqual(['真实帮助规则', '真实目标状态'])
+    expect(result.missing.filter((item) => item.reason === 'citation_source_mismatch')).toHaveLength(2)
+  })
+
   it('filters out unsupported inferences without premises or citations into missing', async () => {
     const ctx = createMockContext({
       session: {
@@ -529,5 +585,136 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     expect(result.claims.length).toBe(1)
     expect(result.claims[0].text).toContain('具备已知事实前提的合规推论')
     expect(result.missing.some((m) => m.key === 'unsupported_inference')).toBe(true)
+  })
+
+  it('CQ-06: 细粒度结构化事实解析：生成 step:<id>:selector, step:<id>:vars, step:<id>:flow 并支持在回答中精准引用', async () => {
+    vi.mocked(getScenario).mockResolvedValue({
+      id: 'sc-complex',
+      name: '电商下单流程',
+      targetId: 'tgt-1',
+      steps: [
+        {
+          id: 'step-nav',
+          name: '打开商品页',
+          type: 'navigate',
+          input: { url: 'https://example.com/items/1' },
+          outputKey: 'itemUrl',
+        },
+        {
+          id: 'step-decide',
+          name: '检查库存状态',
+          type: 'decide',
+          input: { blockId: 'b-stock', condition: { kind: 'literal', value: true } },
+        },
+        {
+          id: 'step-fill-qty',
+          name: '填写购买数量',
+          type: 'fill',
+          input: {
+            target: {
+              candidates: [
+                { by: 'role', value: 'spinbutton' },
+                { by: 'css', value: 'input.quantity-field' },
+              ],
+              semantic: '商品详情页的购买数量输入框',
+              framePath: [],
+            },
+            from: 'itemUrl',
+          },
+          outputKey: 'submittedQty',
+        },
+      ],
+    } as any)
+
+    const completeJsonMock = vi.fn().mockImplementation((name, schema, messages) => {
+      const userPayload = JSON.parse(messages[1].content)
+      expect(userPayload.availableCitations).toContain('step:step-fill-qty')
+      expect(userPayload.availableCitations).toContain('step:step-fill-qty:selector')
+      expect(userPayload.availableCitations).toContain('step:step-fill-qty:vars')
+      expect(userPayload.availableCitations).toContain('step:step-fill-qty:flow')
+
+      return Promise.resolve({
+        ok: true,
+        value: {
+          summary: '填写购买数量步骤具有 CSS 选择器定位和变量依赖。',
+          claims: [
+            {
+              factKind: 'observed',
+              text: '定位包含 CSS 选择器 input.quantity-field',
+              citations: ['step:step-fill-qty:selector'],
+            },
+            {
+              factKind: 'observed',
+              text: '引用了上游 itemUrl 变量，并将结果写入 submittedQty',
+              citations: ['step:step-fill-qty:vars'],
+            },
+            {
+              factKind: 'observed',
+              text: '紧邻前置分支判定步骤 检查库存状态',
+              citations: ['step:step-fill-qty:flow'],
+            },
+          ],
+        },
+      })
+    })
+
+    const ctx = createMockContext({
+      actor: {
+        id: 'user-1',
+        name: 'Workflow Author',
+        permissions: ['ai:assist', 'workflow:read', 'target:read'],
+        targetScope: 'all',
+      },
+      session: { completeJson: completeJsonMock } as any,
+      body: {
+        question: '这一步为什么这样写？它依赖哪个变量？定位是否稳健？',
+        pageContext: {
+          version: 2,
+          routeKey: 'scenarios.$scenarioId',
+          pageKind: 'studio',
+          page: 'studio',
+          scenarioId: 'sc-complex',
+          stepId: 'step-fill-qty',
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.claims).toHaveLength(3)
+    expect(result.claims.some((c) => c.citations.includes('step:step-fill-qty:selector'))).toBe(true)
+    expect(result.claims.some((c) => c.citations.includes('step:step-fill-qty:vars'))).toBe(true)
+    expect(result.claims.some((c) => c.citations.includes('step:step-fill-qty:flow'))).toBe(true)
+  })
+
+  it('CQ-06: 当选中的 stepId 在场景中不存在时，诚实登记 step_not_found 缺口', async () => {
+    vi.mocked(getScenario).mockResolvedValue({
+      id: 'sc-empty',
+      name: '空场景',
+      targetId: 'tgt-1',
+      steps: [],
+    } as any)
+
+    const ctx = createMockContext({
+      actor: {
+        id: 'user-1',
+        name: 'Workflow Author',
+        permissions: ['ai:assist', 'workflow:read', 'target:read'],
+        targetScope: 'all',
+      },
+      body: {
+        question: '这个步骤做什么？',
+        pageContext: {
+          version: 2,
+          routeKey: 'scenarios.$scenarioId',
+          pageKind: 'studio',
+          page: 'studio',
+          scenarioId: 'sc-empty',
+          stepId: 'missing-step-999',
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.missing.some((m) => m.key === 'step:missing-step-999' && m.reason === 'step_not_found')).toBe(true)
   })
 })

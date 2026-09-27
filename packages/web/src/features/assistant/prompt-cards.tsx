@@ -1,9 +1,13 @@
-import { useState, useId } from 'react'
-import type { AssistantCapabilityId, AssistantPageContext } from '@cairn/shared'
+import { useState, useId, useMemo, useEffect, useRef } from 'react'
+import {
+  normalizeAssistantPageContext,
+  type AssistantCapabilitiesResponse,
+  type AssistantCapabilityId,
+  type AssistantPageContext,
+} from '@cairn/shared'
 import {
   Compass,
   FileCode2,
-  KeyRound,
   Layers,
   ScanSearch,
   ShieldCheck,
@@ -12,8 +16,11 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { AssistantBoundContext } from '@/stores/assistant-store'
+import { resolveContextRecommendations } from './recommendation-engine'
+import { useCan } from '@/hooks/use-permissions'
 
-export type PromptCategoryKey = 'authoring' | 'diagnostics' | 'session' | 'explore'
+export type PromptCategoryKey = 'recommended' | 'authoring' | 'diagnostics' | 'session' | 'explore'
 
 export interface PromptCardItem {
   id: string
@@ -39,17 +46,17 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
     cards: [
       {
         id: 'auth-create',
-        title: '从零编排自动化流程',
-        description: '画布动作节点、参数化与成功条件配置',
-        question: '如何在场景工作室中从零编排一个自动化流程？请介绍步骤类型与最佳实践。',
-        capabilityHint: 'scenario.explain',
+        title: '找到场景编排入口',
+        description: '查看场景和编辑步骤的位置',
+        question: '在哪里打开场景编排和场景工作区？',
+        capabilityHint: 'platform.guide',
         icon: FileCode2,
       },
       {
         id: 'auth-retry',
-        title: '配置重试与失败自愈',
-        description: '提升长渲染与动态不稳定页面的执行抗扰度',
-        question: '如何在自动化步骤中配置智能重试与失败自愈策略？',
+        title: '看懂当前场景步骤',
+        description: '解释已保存的步骤及其引用关系',
+        question: '请解释当前场景的步骤和引用关系。',
         capabilityHint: 'scenario.explain',
         icon: Sparkles,
       },
@@ -62,17 +69,17 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
     cards: [
       {
         id: 'diag-rootcause',
-        title: '分析最近失败运行根因',
-        description: '结合可用运行证据排查错误并提供建议',
-        question: '帮我分析最近一次运行失败的根因，并给出具体的排查与修复建议。',
+        title: '分析当前运行',
+        description: '查看失败、等待与耗时的原因',
+        question: '请分析当前运行的状态、失败原因和相关证据。',
         capabilityHint: 'run.diagnose',
         icon: ScanSearch,
       },
       {
         id: 'diag-compare',
-        title: '对比两次运行耗时与差异',
-        description: '排查步骤耗时波动、定位漂移与执行瓶颈',
-        question: '如何对比两次运行的步骤耗时与证据差异？',
+        title: '对比两次运行',
+        description: '提供另一运行后查看步骤与耗时差异',
+        question: '我想对比当前运行与另一次运行；请先提示我指定另一运行。',
         capabilityHint: 'run.compare',
         icon: Layers,
       },
@@ -85,17 +92,17 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
     cards: [
       {
         id: 'sess-totp',
-        title: '托管 TOTP 2FA 与免登状态',
-        description: '自动化算号填入与 StorageState 资产化隔离复用',
-        question: '如何为目标系统配置 TOTP 2FA 动态口令以及 Playwright StorageState 免登凭据？',
+        title: '找到目标账号入口',
+        description: '查看目标系统账号的管理位置',
+        question: '在哪里查看和维护目标系统账号？',
         capabilityHint: 'platform.guide',
-        icon: KeyRound,
+        icon: ShieldCheck,
       },
       {
         id: 'sess-target',
-        title: '快捷创建目标与测试账号',
-        description: '深链直达并指派测试账号进行登录探活',
-        question: '如何在平台中快速新建目标系统并指派测试账号？',
+        title: '查看目标系统',
+        description: '定位目标系统列表与详情入口',
+        question: '在哪里查看目标系统及其详情？',
         capabilityHint: 'platform.guide',
         icon: ShieldCheck,
       },
@@ -108,17 +115,17 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
     cards: [
       {
         id: 'exp-arch',
-        title: '核心架构与运行模型',
-        description: '理解 Engine、Worker 与受管 Runtime 分层',
-        question: '请简要介绍识途平台的核心架构、执行分层与受管会话租约机制。',
+        title: '查看运行与复盘',
+        description: '找到运行状态、步骤和证据入口',
+        question: '在哪里查看运行状态、步骤详情和执行证据？',
         capabilityHint: 'platform.guide',
         icon: Compass,
       },
       {
         id: 'exp-guide',
-        title: '功能导览与入口速查',
-        description: '快速定位知识地图、场景集大盘与监控坞',
-        question: '请介绍平台当前的主要功能分区，以及如何高效使用它们。',
+        title: '常用功能入口',
+        description: '快速找到目标、场景和平台设置',
+        question: '请列出我可以使用的主要功能入口。',
         capabilityHint: 'platform.guide',
         icon: Layers,
       },
@@ -135,18 +142,107 @@ function getInitialCategory(pageContext: AssistantPageContext | null): PromptCat
 
 export function PromptCards({
   pageContext,
+  boundContext,
+  capabilities,
   onSelectPrompt,
 }: {
   pageContext: AssistantPageContext | null
+  boundContext?: AssistantBoundContext | null
+  capabilities?: AssistantCapabilitiesResponse | null
   onSelectPrompt: (question: string, capabilityHint?: AssistantCapabilityId) => void
 }) {
-  const [activeTab, setActiveTab] = useState<PromptCategoryKey>(() =>
-    getInitialCategory(pageContext)
-  )
-  const categoryTabsId = useId()
+  const canAssist = useCan('ai:assist')
+  const canWrite = useCan('workflow:write')
+  const canReadTarget = useCan('target:read')
 
-  const currentCategory =
-    PROMPT_CATEGORIES.find((cat) => cat.key === activeTab) ?? PROMPT_CATEGORIES[0]
+  const categoryTabsId = useId()
+  const normalizedPageContext = normalizeAssistantPageContext(pageContext)
+
+  const availableIds = capabilities
+    ? new Set(capabilities.items.filter((item) => item.available).map((item) => item.id))
+    : null
+
+  // 1. 解析当前场景推荐 (Context Recommended)
+  const recommendedChips = useMemo(() => {
+    if (!capabilities?.modelEnabled) return []
+    // 若 boundContext 中已传入带 ID 的结构化推荐 Chips（来自推荐引擎）
+    if (boundContext?.chips && boundContext.chips.length > 0 && boundContext.chips.some((c) => Boolean(c.id))) {
+      return boundContext.chips.filter((chip) => {
+        if (!chip.id) return false
+        if (chip.capabilityHint && !availableIds?.has(chip.capabilityHint)) return false
+        return true
+      })
+    }
+    // 未显式提供 chips 时，如果处于具体业务页面且拥有 ai:assist 权限，通过推荐引擎解析
+    if (boundContext && !boundContext.chips?.length && canAssist) {
+      return resolveContextRecommendations({
+        boundContext,
+        pageContext,
+        capabilities,
+        permissions: { canAssist, canWrite, canReadTarget },
+      })
+    }
+    return []
+  }, [boundContext, pageContext, capabilities, availableIds, canAssist, canWrite, canReadTarget])
+
+  const recommendedCategory = useMemo((): PromptCategory | null => {
+    if (recommendedChips.length === 0) return null
+    return {
+      key: 'recommended',
+      label: '场景推荐',
+      icon: Sparkles,
+      cards: recommendedChips.map((chip) => {
+        let icon: LucideIcon = Sparkles
+        if (chip.capabilityHint === 'scenario.propose-step') icon = FileCode2
+        else if (chip.capabilityHint === 'run.diagnose') icon = ScanSearch
+        else if (chip.capabilityHint === 'run.compare') icon = Layers
+        else if (chip.capabilityHint === 'platform.guide') icon = Compass
+
+        return {
+          id: chip.id ?? `rec-${chip.label}`,
+          title: chip.label,
+          description: chip.question,
+          question: chip.question,
+          capabilityHint: chip.capabilityHint,
+          icon,
+        }
+      }),
+    }
+  }, [recommendedChips])
+
+  const [activeTab, setActiveTab] = useState<PromptCategoryKey>(() => {
+    if (boundContext && recommendedCategory) return 'recommended'
+    return getInitialCategory(pageContext)
+  })
+
+  // 当业务页面切换选中步骤或上下文更新时，保持推荐标签激活
+  const prevContextSig = useRef('')
+  const contextSig = `${pageContext?.page}:${pageContext?.runId}:${pageContext?.scenarioId}:${boundContext?.selectedStepId}:${boundContext?.isDirty}`
+  useEffect(() => {
+    if (prevContextSig.current && prevContextSig.current !== contextSig && recommendedCategory) {
+      setActiveTab('recommended')
+    }
+    prevContextSig.current = contextSig
+  }, [contextSig, recommendedCategory])
+
+  const standardCategories = PROMPT_CATEGORIES.map((category) => ({
+    ...category,
+    cards: category.cards.filter((card) => {
+      if (card.id === 'diag-compare' && normalizedPageContext?.page !== 'run') return false
+      if (card.id === 'auth-retry' && !normalizedPageContext?.scenarioId) return false
+      if (card.id === 'diag-rootcause' && !normalizedPageContext?.runId) return false
+      return !availableIds || !card.capabilityHint || availableIds.has(card.capabilityHint)
+    }),
+  })).filter((category) => category.cards.length > 0)
+
+  const visibleCategories = [
+    ...(recommendedCategory ? [recommendedCategory] : []),
+    ...standardCategories,
+  ]
+
+  const currentCategory = visibleCategories.find((cat) => cat.key === activeTab) ?? visibleCategories[0]
+
+  if (!currentCategory) return null
 
   return (
     <div
@@ -170,8 +266,8 @@ export function PromptCards({
         aria-label='问题场景分类'
         className='flex flex-wrap items-center gap-1.5'
       >
-        {PROMPT_CATEGORIES.map((category) => {
-          const isActive = category.key === activeTab
+        {visibleCategories.map((category) => {
+          const isActive = category.key === currentCategory.key
           const Icon = category.icon
           const tabId = `${categoryTabsId}-tab-${category.key}`
           const panelId = `${categoryTabsId}-panel-${category.key}`
@@ -188,7 +284,7 @@ export function PromptCards({
                 'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-label font-medium transition-colors select-none',
                 isActive
                   ? 'bg-primary-50 text-primary-600 border border-primary-200 shadow-2xs'
-                  : 'bg-surface-subtle text-text-secondary border border-border-default hover:border-border-muted hover:text-text-primary'
+                  : 'bg-surface-subtle text-text-secondary border border-border-default hover:border-border-muted hover:text-text-primary',
               )}
             >
               <Icon className='size-3.5 shrink-0' aria-hidden='true' />
@@ -205,20 +301,14 @@ export function PromptCards({
         aria-labelledby={`${categoryTabsId}-tab-${currentCategory.key}`}
         className='grid grid-cols-1 @[420px]:grid-cols-2 gap-2.5 pt-1'
       >
-        {currentCategory.cards
-          .filter((card) => {
-            if (card.id === 'diag-compare' && pageContext?.page !== 'run') {
-              return false
-            }
-            return true
-          })
-          .map((card) => {
+        {currentCategory.cards.map((card) => {
           const CardIcon = card.icon
           return (
             <button
               key={card.id}
               type='button'
               data-testid={`prompt-card-${card.id}`}
+              aria-label={currentCategory.key === 'recommended' ? `推荐提问：${card.title}` : undefined}
               onClick={() => onSelectPrompt(card.question, card.capabilityHint)}
               className='group relative flex flex-col justify-between rounded-xl border border-border-default bg-surface-card p-3 text-start transition-colors hover:border-primary-400 hover:bg-surface-subtle hover:shadow-2xs cursor-pointer select-none'
             >

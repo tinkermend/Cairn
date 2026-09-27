@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type HTMLAttributes } from 'react'
+import { useEffect, useMemo, useRef, useState, type HTMLAttributes } from 'react'
 import type {
   AssistantCapabilityId,
+  AssistantCapabilitiesResponse,
   AssistantPageContext,
 } from '@cairn/shared'
 import {
@@ -19,6 +20,8 @@ import {
 import { toast } from 'sonner'
 import { useNavigate } from '@tanstack/react-router'
 import { useAssistantStore, type AssistantBoundContext } from '@/stores/assistant-store'
+import { resolveContextRecommendations } from './recommendation-engine'
+import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
@@ -46,12 +49,18 @@ function contextLabel(context: AssistantPageContext | null): string {
 function ContextCapsule({
   boundContext,
   pageContext,
+  capabilities,
   onChipClick,
 }: {
   boundContext: AssistantBoundContext | null
   pageContext: AssistantPageContext | null
+  capabilities: AssistantCapabilitiesResponse | null
   onChipClick: (question: string, capabilityHint?: AssistantCapabilityId) => void
 }) {
+  const canAssist = useCan('ai:assist')
+  const canWrite = useCan('workflow:write')
+  const canReadTarget = useCan('target:read')
+
   const isGlobal = !boundContext && !pageContext
   const toneDot =
     boundContext?.statusTone === 'error'
@@ -67,7 +76,26 @@ function ContextCapsule({
   const summaryText =
     boundContext?.summaryText ??
     (isGlobal ? '可以诊断运行、解释场景，或查找功能入口' : null)
-  const chips = boundContext?.chips ?? []
+
+  const chips = useMemo(() => {
+    if (!capabilities?.modelEnabled || !canAssist) return []
+    if (boundContext?.chips && boundContext.chips.length > 0) {
+      const availableIds = new Set(
+        capabilities.items.filter((item) => item.available).map((item) => item.id),
+      )
+      return boundContext.chips.filter((chip) => {
+        if (chip.capabilityHint && !availableIds.has(chip.capabilityHint)) return false
+        if (chip.capabilityHint === 'scenario.propose-step' && !canWrite) return false
+        return true
+      })
+    }
+    return resolveContextRecommendations({
+      boundContext,
+      pageContext,
+      capabilities,
+      permissions: { canAssist, canWrite, canReadTarget },
+    })
+  }, [boundContext, pageContext, capabilities, canAssist, canWrite, canReadTarget])
 
   return (
     <div
@@ -135,11 +163,11 @@ export function AssistantPanel({
   const question = useAssistantStore((state) => state.question)
   const turns = useAssistantStore((state) => state.turns)
   const busy = useAssistantStore((state) => state.busy)
+  const cancelling = useAssistantStore((state) => state.cancelling)
   const error = useAssistantStore((state) => state.error)
   const navigate = useNavigate()
   const activeStage = useAssistantStore((state) => state.activeStage)
   const activeQueuePosition = useAssistantStore((state) => state.activeQueuePosition)
-  const thinkingText = useAssistantStore((state) => state.thinkingText)
   const pageContext = useAssistantStore((state) => state.pageContext)
   const capabilities = useAssistantStore((state) => state.capabilities)
   const adoptHandler = useAssistantStore((state) => state.adoptHandler)
@@ -166,10 +194,11 @@ export function AssistantPanel({
   const loadCapabilities = useAssistantStore((state) => state.loadCapabilities)
 
   const [adopting, setAdopting] = useState(false)
+  const [capabilitiesLoadError, setCapabilitiesLoadError] = useState(false)
   const conversationRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    void loadCapabilities().catch(() => undefined)
+    void loadCapabilities().catch(() => setCapabilitiesLoadError(true))
   }, [loadCapabilities])
 
   useEffect(() => {
@@ -178,12 +207,17 @@ export function AssistantPanel({
   }, [turns, busy])
 
   const handleChipClick = (q: string, capabilityHint?: AssistantCapabilityId) => {
-    openPanel({
-      question: q,
-      capabilityHint,
-      pageContext: pageContext ?? undefined,
-    })
-    void submit()
+    if (!capabilities?.modelEnabled) return
+    if (!question.trim()) {
+      openPanel({
+        question: q,
+        capabilityHint,
+        pageContext: pageContext ?? undefined,
+      })
+      void submit()
+    } else {
+      setQuestion(`${question}\n${q}`.trim())
+    }
   }
 
   return (
@@ -248,7 +282,7 @@ export function AssistantPanel({
               historyOpen && 'bg-surface-subtle text-primary-600'
             )}
             aria-label='会话历史'
-            title='会话历史 (保留最近 5 天)'
+            title='会话历史'
             onClick={() => setHistoryOpen(!historyOpen)}
             data-testid='assistant-history-btn'
           >
@@ -287,6 +321,7 @@ export function AssistantPanel({
       <ContextCapsule
         boundContext={boundContext}
         pageContext={pageContext}
+        capabilities={capabilities}
         onChipClick={handleChipClick}
       />
 
@@ -295,9 +330,11 @@ export function AssistantPanel({
         className='flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-5 py-4'
         aria-label='助手对话'
       >
-        {turns.length === 0 && !busy ? (
+        {turns.length === 0 && !busy && capabilities?.modelEnabled ? (
           <PromptCards
             pageContext={pageContext}
+            boundContext={boundContext}
+            capabilities={capabilities}
             onSelectPrompt={(q, capabilityHint) => {
               openPanel({
                 question: q,
@@ -308,6 +345,21 @@ export function AssistantPanel({
             }}
           />
         ) : null}
+        {turns.length === 0 && !busy && !capabilities && (
+          <div className='my-auto text-center text-label text-text-muted'>
+            {capabilitiesLoadError ? (
+              <>
+                <p>助手能力暂时无法加载。</p>
+                <Button type='button' variant='ghost' size='sm' onClick={() => {
+                  setCapabilitiesLoadError(false)
+                  void loadCapabilities().catch(() => setCapabilitiesLoadError(true))
+                }}>
+                  重试
+                </Button>
+              </>
+            ) : '正在加载助手能力…'}
+          </div>
+        )}
         <div className='space-y-5 [overflow-wrap:anywhere]'>
           {turns
             .slice()
@@ -324,9 +376,8 @@ export function AssistantPanel({
                   <p className='text-label font-medium text-text-muted'>
                     识途助手
                   </p>
-                  {turn.thinkingText ? (
+                  {turn.thinkingDurationMs ? (
                     <ThinkingProcessBlock
-                      thinkingText={turn.thinkingText}
                       thinkingDurationMs={turn.thinkingDurationMs}
                       isLive={false}
                     />
@@ -336,20 +387,29 @@ export function AssistantPanel({
                       result={turn.result}
                       adopting={adopting}
                       onNavigate={onClose}
-                      onPreviewStep={(stepId) => {
-                        const targetScenarioId =
-                          (turn.result?.kind === 'proposal' ? (turn.result as any).scenarioId : undefined) ??
-                          pageContext?.scenarioId
-                        if (targetScenarioId && pageContext?.page !== 'studio') {
-                          navigate({
-                            to: '/scenarios/$scenarioId',
-                            params: { scenarioId: targetScenarioId },
-                            search: { action: 'inspect-step', step_id: stepId },
-                          } as any)
-                        } else {
-                          setPreviewStepId(stepId)
-                        }
-                      }}
+                      onPreviewStep={
+                        turn.result.kind === 'authoring_proposal' ||
+                        boundContext?.scenarioId ||
+                        pageContext?.scenarioId
+                          ? (stepId) => {
+                              const targetScenarioId =
+                                (turn.result?.kind === 'authoring_proposal'
+                                  ? turn.result.scenarioId
+                                  : undefined) ??
+                                boundContext?.scenarioId ??
+                                pageContext?.scenarioId
+                              if (targetScenarioId && pageContext?.page !== 'studio') {
+                                navigate({
+                                  to: '/scenarios/$scenarioId',
+                                  params: { scenarioId: targetScenarioId },
+                                  search: { action: 'inspect-step', step_id: stepId },
+                                })
+                              } else {
+                                setPreviewStepId(stepId)
+                              }
+                            }
+                          : undefined
+                      }
                       isAdopted={
                         (turn.result.kind === 'authoring_proposal' &&
                           lastAdoptedProposalId === turn.result.proposalId) ||
@@ -381,7 +441,7 @@ export function AssistantPanel({
                           capabilityHint: 'scenario.discover',
                           pageContext: pageContext ?? undefined,
                         })
-                        void submit()
+                        void submit({ replyToTurnId: turn.id })
                       }}
                       onAdopt={
                         turn.result.kind === 'authoring_proposal' || turn.result.kind === 'proposal'
@@ -392,7 +452,7 @@ export function AssistantPanel({
                               }
                               setAdopting(true)
                               try {
-                                const adopted = await adoptHandler(proposal as any)
+                                const adopted = await adoptHandler(proposal)
                                 if (adopted.ok) {
                                   const proposalId =
                                     'proposalId' in proposal ? proposal.proposalId : proposal.stepId
@@ -412,7 +472,7 @@ export function AssistantPanel({
                           turn.result.kind === 'proposal') &&
                         rollbackHandler
                           ? async (proposal) => {
-                              const res = await rollbackHandler(proposal as any)
+                              const res = await rollbackHandler(proposal)
                               if (res.ok) {
                                 setLastAdopted(null)
                                 toast.success('已撤销本次采纳')
@@ -433,7 +493,6 @@ export function AssistantPanel({
                 识途助手
               </p>
               <ThinkingProcessBlock
-                thinkingText={thinkingText}
                 stage={activeStage}
                 queuePosition={activeQueuePosition}
                 isLive={true}
@@ -466,6 +525,11 @@ export function AssistantPanel({
         {error ? (
           <p role='alert' className='text-label text-status-error-foreground'>
             {error}
+          </p>
+        ) : null}
+        {boundContext?.isDirty ? (
+          <p className='text-label text-status-warning-foreground'>
+            当前有未保存修改。助手会依据已保存版本回答；要分析刚才的编辑，请先保存草稿。
           </p>
         ) : null}
 
@@ -562,9 +626,11 @@ export function AssistantPanel({
                 variant='outline'
                 size='sm'
                 className='h-8 text-label px-3'
-                onClick={cancel}
+                onClick={() => void cancel()}
+                disabled={cancelling}
+                loading={cancelling}
               >
-                停止
+                {cancelling ? '正在停止' : '停止'}
               </Button>
             ) : null}
             <Button

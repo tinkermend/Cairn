@@ -74,8 +74,6 @@ function renderToolbar(containerWidth = 1000) {
           unpublishedDraft={false}
           compileOk={true}
           canReadTarget={true}
-          canAssist={true}
-          canPropose={true}
           canRecord={true}
           canDelete={true}
           disabled={false}
@@ -87,7 +85,6 @@ function renderToolbar(containerWidth = 1000) {
           onOpenRename={() => {}}
           onToggleStatus={() => {}}
           onOpenRemove={() => {}}
-          onOpenAssistant={() => {}}
           onLeave={() => {}}
         />
       </div>
@@ -119,8 +116,9 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     await moreBtn.click()
     await expect.element(screen.getByRole('menuitem', { name: '定时任务' })).toBeInTheDocument()
     await expect.element(screen.getByRole('menuitem', { name: '结果通知' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('menuitem', { name: '解释当前步骤' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('menuitem', { name: '修改建议' })).toBeInTheDocument()
+    // AI 助手快捷提问已从顶栏解耦，不再占用更多菜单
+    expect(screen.getByRole('menuitem', { name: '解释当前步骤' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('menuitem', { name: '修改建议' }).elements()).toHaveLength(0)
   })
 
   it('当容器宽度充裕（无侧边栏或超宽屏，宽 1440px）时，次要操作平铺展开为独立按钮', async () => {
@@ -131,12 +129,13 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     // 快捷按钮直接在外部工具栏平铺展开
     await expect.element(screen.getByTestId('object-schedules-btn')).toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: /结果通知/ })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: /解释步骤/ })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: /修改建议/ })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '保存草稿' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '试跑' })).toBeInTheDocument()
+    // AI 助手快捷提问已从顶栏解耦，不再占用外部工具栏
+    expect(screen.getByRole('button', { name: /解释步骤/ }).elements()).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /修改建议/ }).elements()).toHaveLength(0)
 
-    // 点击「更多」后，下拉菜单中不再重复显示这 4 个快捷操作
+    // 点击「更多」后，下拉菜单中不再重复显示平铺展开的快捷操作
     const moreBtn = screen.getByRole('button', { name: '更多' })
     await moreBtn.click()
     expect(screen.getByRole('menuitem', { name: '定时任务' }).elements()).toHaveLength(0)
@@ -171,8 +170,6 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             unpublishedDraft={false}
             compileOk={true}
             canReadTarget={true}
-            canAssist={true}
-            canPropose={true}
             canRecord={true}
             canDelete={true}
             disabled={false}
@@ -184,7 +181,6 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             onOpenRename={() => {}}
             onToggleStatus={() => {}}
             onOpenRemove={() => {}}
-            onOpenAssistant={() => {}}
             onLeave={() => {}}
           />
         </div>
@@ -227,8 +223,6 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             unpublishedDraft={false}
             compileOk={true}
             canReadTarget={true}
-            canAssist={true}
-            canPropose={true}
             canRecord={true}
             canDelete={true}
             disabled={false}
@@ -240,7 +234,6 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             onOpenRename={() => {}}
             onToggleStatus={() => {}}
             onOpenRemove={() => {}}
-            onOpenAssistant={() => {}}
             onLeave={() => {}}
           />
         </div>
@@ -278,8 +271,6 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             unpublishedDraft={false}
             compileOk={true}
             canReadTarget={true}
-            canAssist={true}
-            canPropose={true}
             canRecord={true}
             canDelete={true}
             disabled={false}
@@ -292,7 +283,6 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             onRename={onRename}
             onToggleStatus={() => {}}
             onOpenRemove={() => {}}
-            onOpenAssistant={() => {}}
             onLeave={() => {}}
           />
         </div>
@@ -312,5 +302,110 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
 
     expect(onRename).toHaveBeenCalledWith('全新的场景标题')
   })
+
+  it('当存在 pendingImportDraftId 时，Toolbar 呈现导入录制草稿高亮入口，且点击触发预览导入', async () => {
+    const onPreviewImportDraft = vi.fn()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={false}
+            hasDraftDirty={false}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            pendingImportDraftId='rec-draft-123'
+            onPreviewImportDraft={onPreviewImportDraft}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={() => {}}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>
+    )
+
+    const importDraftBtn = screen.getByTestId('toolbar-import-draft-btn')
+    await expect.element(importDraftBtn).toBeInTheDocument()
+    await expect.element(importDraftBtn).toHaveTextContent('导入录制草稿')
+
+    await importDraftBtn.click()
+    expect(onPreviewImportDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('当存在 pendingImportDraftId 时，更多按钮带有徽标提示，下拉项包含待导入状态', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={false}
+            hasDraftDirty={false}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            pendingImportDraftId='rec-draft-123'
+            onPreviewImportDraft={() => {}}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={() => {}}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>
+    )
+
+    // 更多按钮带有小圆点徽标
+    await expect.element(screen.getByTestId('toolbar-more-badge')).toBeInTheDocument()
+
+    // 点击更多按钮打开下拉菜单
+    const moreBtn = screen.getByRole('button', { name: '更多' })
+    await moreBtn.click()
+
+    // 菜单项包含「导入已有录制」及「待导入」状态
+    const importItem = screen.getByTestId('toolbar-more-import-item')
+    await expect.element(importItem).toBeInTheDocument()
+    await expect.element(importItem).toHaveTextContent('待导入')
+  })
 })
+
 

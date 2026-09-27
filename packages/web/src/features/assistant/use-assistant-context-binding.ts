@@ -16,6 +16,8 @@ function bindingSignature(context: AssistantBoundContext | null): string {
     context.scenarioId ?? null,
     context.targetId ?? null,
     context.selectedStepId ?? null,
+    Boolean(context.selectedStepFailed),
+    Boolean(context.hasCssSelector),
     context.draftRevision ?? null,
     context.versionId ?? null,
     context.statusSummary ?? null,

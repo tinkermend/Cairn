@@ -19,21 +19,9 @@ import {
   observeAssistantTurn,
   fetchAssistantCapabilities,
   fetchAssistantConversations,
+  fetchAssistantTurn,
   fetchAssistantTurns,
 } from '@/lib/assistant-api'
-
-export const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000
-
-export function filterRecentConversations(
-  items: AssistantConversation[],
-  now = Date.now()
-): AssistantConversation[] {
-  const cutoff = now - FIVE_DAYS_MS
-  return items.filter((item) => {
-    const time = new Date(item.updatedAt || item.createdAt).getTime()
-    return !Number.isNaN(time) && time >= cutoff
-  })
-}
 
 export function summarizeConversationTitle(question: string, maxLen = 30): string {
   const clean = question.replace(/\s+/g, ' ').trim()
@@ -59,6 +47,8 @@ export interface AssistantBoundContext {
   scenarioId?: string
   targetId?: string
   selectedStepId?: string
+  selectedStepFailed?: boolean
+  hasCssSelector?: boolean
   draftRevision?: number
   versionId?: string
   statusSummary?: string
@@ -67,9 +57,12 @@ export interface AssistantBoundContext {
   summaryText?: string
   isDirty?: boolean
   chips?: Array<{
+    id?: string
     label: string
     question: string
     capabilityHint?: AssistantCapabilityId
+    badge?: string
+    priority?: number
   }>
 }
 
@@ -79,6 +72,7 @@ type AssistantState = {
   turns: AssistantTurn[]
   question: string
   busy: boolean
+  cancelling: boolean
   error: string | null
   pageContext: AssistantPageContext | null
   capabilityHint?: AssistantCapabilityId
@@ -108,6 +102,9 @@ type AssistantState = {
   conversations: AssistantConversation[]
   historyOpen: boolean
   historyLoading: boolean
+  historyLoadingMore: boolean
+  historyNextCursor: string | null
+  historyError: string | null
 
   openPanel: (input?: {
     question?: string
@@ -123,7 +120,7 @@ type AssistantState = {
   registerRollbackHandler: (handler: AssistantRollbackHandler | null) => void
   loadCapabilities: () => Promise<void>
   submit: (options?: { selectedOptionId?: string; replyToTurnId?: string }) => Promise<void>
-  cancel: () => void
+  cancel: () => Promise<void>
   cancelCurrentTask: (turnId?: string) => Promise<void>
 
   setMode: (mode: AssistantWindowMode) => void
@@ -140,6 +137,7 @@ type AssistantState = {
 
   newConversation: () => void
   fetchRecentConversations: () => Promise<void>
+  fetchMoreConversations: () => Promise<void>
   switchConversation: (id: string) => Promise<void>
   setHistoryOpen: (open: boolean) => void
   deleteConversation: (id: string) => Promise<void>
@@ -147,6 +145,18 @@ type AssistantState = {
 }
 
 let activeObserverCleanup: (() => void) | null = null
+let activeReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let observationGeneration = 0
+
+function stopActiveObservation() {
+  observationGeneration += 1
+  activeObserverCleanup?.()
+  activeObserverCleanup = null
+  if (activeReconnectTimer !== null) {
+    clearTimeout(activeReconnectTimer)
+    activeReconnectTimer = null
+  }
+}
 
 const MODE_KEY = 'cairn:assistant:window_mode'
 const DOCK_WIDTH_KEY = 'cairn:assistant:dock_width'
@@ -156,7 +166,9 @@ function getSavedMode(): AssistantWindowMode {
   try {
     const saved = localStorage.getItem(MODE_KEY)
     if (saved === 'docked' || saved === 'floating') return saved
-  } catch {}
+  } catch {
+    // Storage may be unavailable in a restricted browser context.
+  }
   return 'floating'
 }
 
@@ -164,7 +176,9 @@ function getSavedDockWidth(): number {
   try {
     const saved = Number(localStorage.getItem(DOCK_WIDTH_KEY))
     if (Number.isFinite(saved) && saved >= 320 && saved <= 600) return saved
-  } catch {}
+  } catch {
+    // Storage may be unavailable in a restricted browser context.
+  }
   return DEFAULT_DOCK_WIDTH
 }
 
@@ -184,6 +198,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   turns: [],
   question: '',
   busy: false,
+  cancelling: false,
   error: null,
   pageContext: null,
   capabilityHint: undefined,
@@ -210,6 +225,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   conversations: [],
   historyOpen: false,
   historyLoading: false,
+  historyLoadingMore: false,
+  historyNextCursor: null,
+  historyError: null,
 
   openPanel: (input) =>
     set((state) => ({
@@ -242,21 +260,27 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   setMode: (mode) => {
     try {
       localStorage.setItem(MODE_KEY, mode)
-    } catch {}
+    } catch {
+      // Keep the in-memory preference when local storage is unavailable.
+    }
     set({ mode })
   },
   toggleMode: () => {
     const nextMode = get().mode === 'docked' ? 'floating' : 'docked'
     try {
       localStorage.setItem(MODE_KEY, nextMode)
-    } catch {}
+    } catch {
+      // Keep the in-memory preference when local storage is unavailable.
+    }
     set({ mode: nextMode })
   },
   setDockWidth: (dockWidth) => {
     const clamped = Math.max(320, Math.min(600, dockWidth))
     try {
       localStorage.setItem(DOCK_WIDTH_KEY, String(clamped))
-    } catch {}
+    } catch {
+      // Keep the in-memory preference when local storage is unavailable.
+    }
     set({ dockWidth: clamped })
   },
   setQuote: (activeQuote) => {
@@ -277,12 +301,20 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   },
 
   submit: async (options?: { selectedOptionId?: string; replyToTurnId?: string }) => {
-    const { question, conversationId, pageContext, capabilityHint, busy, activeQuote } = get()
+    const { question, conversationId, pageContext, capabilityHint, busy, activeQuote, capabilities } = get()
     const trimmed = question.trim()
     if (!trimmed || busy) return
+    if (capabilities?.modelEnabled === false) {
+      set({ error: '平台 AI 尚未启用，请联系管理员检查模型配置。' })
+      return
+    }
+    if (capabilityHint && capabilities && !capabilities.items.some((item) => item.id === capabilityHint && item.available)) {
+      set({ error: '当前账号无法使用这项助手功能。' })
+      return
+    }
 
-    activeObserverCleanup?.()
-    activeObserverCleanup = null
+    stopActiveObservation()
+    const generation = observationGeneration
 
     set({
       busy: true,
@@ -302,6 +334,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           title,
           question: trimmed,
         })
+        if (observationGeneration !== generation) return
         const effectiveTitle =
           conversation.title && conversation.title !== '新对话' && conversation.title !== '新会话'
             ? conversation.title
@@ -345,23 +378,19 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           : undefined
 
       // Submit turn immediately
-      const isDirty = Boolean(get().boundContext?.isDirty)
-      const effectiveQuestion = isDirty
-        ? `⚠️ 当前分析基于已保存版本；若需分析刚刚编辑的步骤，请先保存（Ctrl+S）\n\n${trimmed}`
-        : trimmed
-
       const latestTurnId = get().turns[0]?.id
       const replyToTurnId =
         options?.replyToTurnId ??
         (latestTurnId && isEntityId(latestTurnId) ? latestTurnId : undefined)
       const accepted = await createAssistantTurn(activeConversationId, {
         clientTurnId: newClientTurnId(),
-        question: effectiveQuestion,
+        question: trimmed,
         pageContext: finalPageContext,
         ...(replyToTurnId ? { replyToTurnId } : {}),
         ...(options?.selectedOptionId ? { selectedOptionId: options.selectedOptionId } : {}),
         capabilityHint,
       })
+      if (observationGeneration !== generation) return
 
       set({
         activeTurnId: accepted.turnId,
@@ -372,62 +401,105 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         capabilityHint: undefined,
       })
 
-      // Start observing via SSE
-      activeObserverCleanup = observeAssistantTurn(activeConversationId, accepted.turnId, {
-        onReady: (data) => {
-          set({ thinkingStream: data.thinkingStream })
-        },
-        onEvent: (event) => {
-          set({ activeStage: event.stage })
-        },
-        onThinking: (delta) => {
-          set((state) => ({ thinkingText: state.thinkingText + delta }))
-        },
-        onTurn: (turn) => {
-          set((state) => {
-            const turnWithThinking: AssistantTurn = {
-              ...turn,
-              thinkingText: turn.thinkingText || state.thinkingText || undefined,
-              thinkingDurationMs: turn.thinkingDurationMs ?? undefined,
-            }
-            const exists = state.turns.some((t) => t.id === turn.id)
-            const updatedTurns = exists
-              ? state.turns.map((t) => (t.id === turn.id ? turnWithThinking : t))
-              : [turnWithThinking, ...state.turns]
+      // A lost stream is reconciled against the durable turn before reconnecting.
+      // The token prevents late callbacks from changing another conversation.
+      const isCurrent = () =>
+        observationGeneration === generation &&
+        get().conversationId === activeConversationId &&
+        get().activeTurnId === accepted.turnId
+      let retryCount = 0
+      let recovering = false
 
-            const isDone = turn.status !== 'RUNNING' && turn.status !== 'QUEUED'
-            if (isDone) {
-              activeObserverCleanup?.()
-              activeObserverCleanup = null
-              return {
-                turns: updatedTurns,
+      const applyTurn = (turn: AssistantTurn) => {
+        if (!isCurrent() || turn.id !== accepted.turnId) return
+        const terminal = turn.status !== 'RUNNING' && turn.status !== 'QUEUED'
+        if (terminal) stopActiveObservation()
+        set((state) => {
+          const safeTurn: AssistantTurn = { ...turn, thinkingText: undefined }
+          const exists = state.turns.some((item) => item.id === turn.id)
+          const turns = exists
+            ? state.turns.map((item) => item.id === turn.id ? safeTurn : item)
+            : [safeTurn, ...state.turns]
+          return terminal
+            ? {
+                turns,
                 busy: false,
+                error: null,
                 activeTurnId: null,
                 activeStage: null,
                 activeQueuePosition: null,
                 thinkingText: '',
                 thinkingStream: false,
               }
-            }
-            return {
-              turns: updatedTurns,
-              activeStage: (turn.stage as AssistantStage | 'queued') ?? state.activeStage,
-              activeQueuePosition: turn.queuePosition ?? state.activeQueuePosition,
-            }
-          })
-        },
-        onError: () => {
-          // If SSE disconnected, fetch turn directly as catch-up
-          if (activeConversationId) {
-            void fetchAssistantTurns(activeConversationId, { limit: 50 }).then((history) => {
-              set({ turns: history.items, busy: false, activeTurnId: null, activeStage: null, thinkingText: '', thinkingStream: false })
-            })
+            : {
+                turns,
+                busy: true,
+                activeStage: (turn.stage as AssistantStage | 'queued') ?? state.activeStage,
+                activeQueuePosition: turn.queuePosition ?? state.activeQueuePosition,
+              }
+        })
+      }
+
+      const reconnect = () => {
+        if (!isCurrent() || activeReconnectTimer !== null) return
+        const delay = Math.min(15_000, 1_000 * 2 ** Math.min(retryCount, 4))
+        retryCount += 1
+        activeReconnectTimer = setTimeout(() => {
+          activeReconnectTimer = null
+          if (!isCurrent()) return
+          if (get().cancelling) {
+            reconnect()
+            return
           }
-        },
-      })
+          openStream()
+        }, delay)
+      }
+
+      const recoverDisconnected = () => {
+        if (!isCurrent() || recovering) return
+        recovering = true
+        activeObserverCleanup?.()
+        activeObserverCleanup = null
+        set({
+          busy: true,
+          error: '实时进度连接中断，正在读取已保存进度并重连…',
+          thinkingStream: false,
+        })
+        void fetchAssistantTurn(activeConversationId, accepted.turnId)
+          .then((turn) => {
+            if (!isCurrent()) return
+            if (!turn) throw new Error('无法读取任务状态')
+            applyTurn(turn)
+            if (isCurrent()) reconnect()
+          })
+          .catch(() => {
+            if (!isCurrent()) return
+            set({ error: '实时进度连接中断，暂时无法读取已保存进度；正在重连…' })
+            reconnect()
+          })
+          .finally(() => { recovering = false })
+      }
+
+      const openStream = () => {
+        if (!isCurrent()) return
+        const cleanup = observeAssistantTurn(activeConversationId, accepted.turnId, {
+          onReady: (data) => {
+            if (isCurrent()) set({ thinkingStream: data.thinkingStream, error: null })
+          },
+          onEvent: (event) => {
+            if (isCurrent()) set({ activeStage: event.stage })
+          },
+          onTurn: applyTurn,
+          onError: recoverDisconnected,
+        })
+        if (isCurrent() && !recovering) activeObserverCleanup = cleanup
+        else cleanup()
+      }
+
+      openStream()
     } catch (error) {
-      activeObserverCleanup?.()
-      activeObserverCleanup = null
+      if (observationGeneration !== generation) return
+      stopActiveObservation()
       set({
         busy: false,
         activeTurnId: null,
@@ -439,23 +511,34 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       })
     }
   },
-  cancel: () => {
+  cancel: async () => {
     const { conversationId, activeTurnId } = get()
-    activeObserverCleanup?.()
-    activeObserverCleanup = null
-
-    if (conversationId && activeTurnId) {
-      void cancelAssistantTurn(conversationId, activeTurnId).catch(() => undefined)
+    if (!conversationId || !activeTurnId || get().cancelling) return
+    set({ cancelling: true, error: null })
+    try {
+      await cancelAssistantTurn(conversationId, activeTurnId)
+      if (get().conversationId === conversationId && get().activeTurnId === activeTurnId) {
+        stopActiveObservation()
+        set({
+          busy: false,
+          activeTurnId: null,
+          activeStage: null,
+          activeQueuePosition: null,
+          thinkingText: '',
+          thinkingStream: false,
+        })
+      }
+      const refreshed = await fetchAssistantTurns(conversationId, { limit: 50 }).catch(() => null)
+      if (get().conversationId === conversationId && !get().activeTurnId && refreshed) {
+        set({ turns: refreshed.items.map((turn) => ({ ...turn, thinkingText: undefined })) })
+      }
+    } catch {
+      if (get().conversationId === conversationId && get().activeTurnId === activeTurnId) {
+        set({ error: '停止请求未成功，任务可能仍在运行。请重试。' })
+      }
+    } finally {
+      set({ cancelling: false })
     }
-
-    set({
-      busy: false,
-      activeTurnId: null,
-      activeStage: null,
-      activeQueuePosition: null,
-      thinkingText: '',
-      thinkingStream: false,
-    })
   },
 
   cancelCurrentTask: async (turnId?: string) => {
@@ -464,18 +547,35 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     if (conversationId && targetTurnId) {
       try {
         await cancelAssistantTurn(conversationId, targetTurnId)
-        const refreshed = await fetchAssistantTurns(conversationId, { limit: 50 })
-        set({ turns: refreshed.items, busy: false })
       } catch {
-        // ignore
+        set({ error: '取消请求未成功，请重试。' })
+        return
+      }
+      if (get().conversationId === conversationId && get().activeTurnId === targetTurnId) {
+        stopActiveObservation()
+        set({
+          busy: false,
+          activeTurnId: null,
+          activeStage: null,
+          activeQueuePosition: null,
+          thinkingText: '',
+          thinkingStream: false,
+        })
+      }
+      try {
+        const refreshed = await fetchAssistantTurns(conversationId, { limit: 50 })
+        if (get().conversationId === conversationId && !get().activeTurnId) {
+          set({ turns: refreshed.items.map((turn) => ({ ...turn, thinkingText: undefined })) })
+        }
+      } catch {
+        set({ error: '取消请求已提交，但最新状态暂时无法刷新。请稍后查看会话记录。' })
       }
     }
   },
 
   newConversation: () => {
     const { conversationId, activeTurnId, busy } = get()
-    activeObserverCleanup?.()
-    activeObserverCleanup = null
+    stopActiveObservation()
 
     if (conversationId && activeTurnId && busy) {
       void cancelAssistantTurn(conversationId, activeTurnId).catch(() => undefined)
@@ -486,6 +586,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       turns: [],
       question: '',
       busy: false,
+      cancelling: false,
       error: null,
       activeTurnId: null,
       activeStage: null,
@@ -498,19 +599,39 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   },
 
   fetchRecentConversations: async () => {
-    set({ historyLoading: true })
+    set({ historyLoading: true, historyError: null, historyNextCursor: null })
     try {
       const res = await fetchAssistantConversations({ limit: 50 })
-      const filtered = filterRecentConversations(res.items)
       const currentActiveId = get().conversationId
       const currentConv = get().conversations.find((c) => c.id === currentActiveId)
       const merged =
-        currentConv && !filtered.some((c) => c.id === currentActiveId)
-          ? [currentConv, ...filtered]
-          : filtered
-      set({ conversations: merged, historyLoading: false })
+        currentConv && !res.items.some((c) => c.id === currentActiveId)
+          ? [currentConv, ...res.items]
+          : res.items
+      set({ conversations: merged, historyLoading: false, historyNextCursor: res.nextCursor ?? null })
     } catch {
-      set({ historyLoading: false })
+      set({ historyLoading: false, historyError: '会话历史加载失败，请重试。' })
+    }
+  },
+
+  fetchMoreConversations: async () => {
+    const cursor = get().historyNextCursor
+    if (!cursor || get().historyLoadingMore) return
+    set({ historyLoadingMore: true, historyError: null })
+    try {
+      const res = await fetchAssistantConversations({ cursor, limit: 50 })
+      if (get().historyNextCursor !== cursor) return
+      set((state) => ({
+        conversations: [
+          ...state.conversations,
+          ...res.items.filter((item) => !state.conversations.some((existing) => existing.id === item.id)),
+        ],
+        historyNextCursor: res.nextCursor ?? null,
+      }))
+    } catch {
+      set({ historyError: '更多会话加载失败，请重试。' })
+    } finally {
+      set({ historyLoadingMore: false })
     }
   },
 
@@ -521,8 +642,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       return
     }
 
-    activeObserverCleanup?.()
-    activeObserverCleanup = null
+    stopActiveObservation()
 
     if (conversationId && activeTurnId && busy) {
       void cancelAssistantTurn(conversationId, activeTurnId).catch(() => undefined)
@@ -544,8 +664,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
     try {
       const turnList = await fetchAssistantTurns(id, { limit: 50 })
-      set({ turns: turnList.items, busy: false })
+      if (get().conversationId !== id) return
+      set({ turns: turnList.items.map((turn) => ({ ...turn, thinkingText: undefined })), busy: false })
     } catch (err) {
+      if (get().conversationId !== id) return
       set({
         busy: false,
         error: err instanceof ApiRequestError ? err.message : '获取会话历史失败',
@@ -566,8 +688,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const previousConversations = get().conversations
 
     if (isCurrent) {
-      activeObserverCleanup?.()
-      activeObserverCleanup = null
+      stopActiveObservation()
     }
 
     set((state) => ({
