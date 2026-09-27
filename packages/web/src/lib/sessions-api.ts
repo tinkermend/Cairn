@@ -40,7 +40,7 @@ import {
 } from '@cairn/shared'
 import { apiFetch, toQueryString } from '@/lib/api-client'
 
-export function fetchSessionOverview(query?: SessionOverviewQuery): Promise<SessionOverviewResponse> {
+export function fetchSessionOverview(query?: Partial<SessionOverviewQuery>): Promise<SessionOverviewResponse> {
   return apiFetch(
     `/api/browser-sessions/overview${toQueryString(sessionOverviewQuerySchema.parse(query ?? {}))}`,
     sessionOverviewResponseSchema,

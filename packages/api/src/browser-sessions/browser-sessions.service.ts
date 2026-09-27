@@ -18,7 +18,7 @@ import {
   getAccountSessionDetail,
   getOrCreatePlatformConfig,
   getSessionById,
-  getRun,
+  getRunSessionOwner,
   findAuthWaitLeaseForRun,
   getSessionDto,
   getSessionOperation,
@@ -82,11 +82,19 @@ export class BrowserSessionsService {
   }
 
   async overview(query: SessionOverviewQuery, actor?: RequestAccount) {
-    return listAccountSessionOverview(this.handle, query, actor?.id)
+    try {
+      return await listAccountSessionOverview(this.handle, query, actor?.id)
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
   async systemOverview(query: SessionSystemOverviewQuery, actor?: RequestAccount) {
-    return listSessionSystemOverview(this.handle, query, actor?.id)
+    try {
+      return await listSessionSystemOverview(this.handle, query, actor?.id)
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
   async get(sessionId: string) {
@@ -504,9 +512,9 @@ export class BrowserSessionsService {
   }
 
   private async resolveRunOwner(ownerId: string) {
-    const run = await getRun(this.handle, ownerId)
+    const run = await getRunSessionOwner(this.handle, ownerId)
     const lease = await findAuthWaitLeaseForRun(this.handle, ownerId)
-    const sessionId = lease?.sessionId ?? run.placement.sessionId
+    const sessionId = lease?.sessionId ?? run.sessionId
     return this.withWorker(
       sessionId ? await getSessionById(this.handle, sessionId) : null,
       run.status,

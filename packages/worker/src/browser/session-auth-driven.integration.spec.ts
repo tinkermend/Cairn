@@ -321,7 +321,7 @@ describe('认证驱动保活全链路', { timeout: 120_000 }, () => {
       protocolCapabilities: [...WORKER_TEST_PROTOCOLS, SESSION_MAINTENANCE_PROTOCOL],
     })
     await manager.reconcileOwn()
-    manager.resolveAccountCredential = async () => ({ username: 'alice', password: 'x' })
+    manager.resolveAccountSecrets = async () => ({ username: 'alice', password: 'x' })
   })
 
   afterAll(async () => {

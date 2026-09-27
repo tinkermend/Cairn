@@ -28,7 +28,7 @@ import {
   loadAccountForExecution,
   loadTargetForExecution,
   recordCaptchaLoginAttempt,
-  enqueueTakeoverNotification,
+  enqueueTakeoverOutbound,
   writeSessionStateSnapshot,
   MAX_SNAPSHOT_BYTE_SIZE,
   type WriteSessionSnapshotAuthority,
@@ -766,10 +766,22 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
         session.keepAliveUntil != null &&
         session.keepAliveUntil.getTime() > Date.now()
       if (!backgroundKeepAlive) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
-      const credential = await this.resolveAccountCredential(operation.targetAccountId)
+      let credential
+      try {
+        credential = await this.resolveAccountSecrets(operation.targetAccountId, { password: true, totp: true })
+      } catch (error) {
+        if (operation.origin === 'BACKGROUND') {
+          await abandonSessionKeepAlive(db, session.id)
+        }
+        throw error
+      }
       if (!credential) {
         await abandonSessionKeepAlive(db, session.id)
         return { ok: false, code: 'SESSION_KEEPALIVE_ABANDONED' }
+      }
+      if (!credential.password) {
+        await abandonSessionKeepAlive(db, session.id)
+        return { ok: false, code: 'AUTH_CREDENTIAL_MISSING' }
       }
       const occupied = await occupyAutoLoginBudget(db, {
         targetId: operation.targetId,
@@ -797,7 +809,7 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
           },
           liveAuth.sessionAuth,
         ),
-        credential,
+        { username: credential.username, password: credential.password, totpSecret: credential.totpSecret },
         verification.loginTimeoutMs,
       )
       const submitted = loginResult.submit !== 'not_attempted'
@@ -884,11 +896,25 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
     let submit: LoginWaitSubmitState | undefined
     let waitReason: SessionErrorCode | undefined
     if (shouldLogin && plan.action === 'auto_login') {
-      const credential = await this.resolveAccountCredential(operation.targetAccountId)
+      let credential
+      try {
+        credential = await this.resolveAccountSecrets(operation.targetAccountId, { password: true, totp: true })
+      } catch (error) {
+        if (operation.origin === 'BACKGROUND') {
+          await abandonSessionKeepAlive(db, session.id)
+        }
+        throw error
+      }
       if (!credential) {
         if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
         return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
           reason: 'SESSION_AUTH_UNSUPPORTED',
+        })
+      }
+      if (!credential.password) {
+        if (!grant) return { ok: false, code: 'AUTH_CREDENTIAL_MISSING' }
+        return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
+          reason: 'AUTH_CREDENTIAL_MISSING',
         })
       }
       const occupied = await occupyAutoLoginBudget(db, {
@@ -916,7 +942,7 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
             },
             liveAuth.sessionAuth,
           ),
-          credential,
+          { username: credential.username, password: credential.password, totpSecret: credential.totpSecret },
           verification.loginTimeoutMs,
         )
         submitted = loginResult.submit !== 'not_attempted'
@@ -1112,7 +1138,7 @@ async function enterMaintenanceAuthWait(
   })
   if (targetPolicy?.notifyOnAuthWait || (target as { notifyOnAuthWait?: boolean })?.notifyOnAuthWait) {
     const expiresAt = new Date(Date.now() + waitSeconds * 1000)
-    await enqueueTakeoverNotification(ctx.dbHandle, {
+    await enqueueTakeoverOutbound(ctx.dbHandle, {
       targetId: operation.targetId,
       targetAccountId: operation.targetAccountId,
       targetName: (target as { name?: string })?.name ?? operation.targetId,
@@ -1137,7 +1163,15 @@ async function loginLegacyMaintenance(
   | { ok: true }
   | { ok: false; code?: SessionErrorCode; submitted?: boolean; submit?: LoginWaitSubmitState }
 > {
-  const credential = await ctx.resolveAccountCredential(operation.targetAccountId)
+  let credential
+  try {
+    credential = await ctx.resolveAccountSecrets(operation.targetAccountId, { password: true, totp: true })
+  } catch (error) {
+    if (operation.origin === 'BACKGROUND') {
+      await abandonSessionKeepAlive(ctx.dbHandle, session.id)
+    }
+    throw error
+  }
   if (!credential) {
     if (operation.origin === 'BACKGROUND') {
       await abandonSessionKeepAlive(ctx.dbHandle, session.id)
@@ -1145,8 +1179,37 @@ async function loginLegacyMaintenance(
     }
     return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
   }
-  if (credential.storageState) {
-    await injectStorageState(live.handle.context, credential.storageState)
+  // 上传态读不出或注入失败都只记事件：有密码就继续走密码登录，没有密码才以上传态失败收场。
+  let storageState: unknown
+  let storageStateFailure: SessionErrorCode | undefined
+  try {
+    storageState = (await ctx.resolveAccountSecrets(operation.targetAccountId, { storageState: true }))?.storageState
+  } catch (error) {
+    if (!(error instanceof SessionLeaseError) || error.code !== 'AUTH_CREDENTIAL_UNREADABLE') throw error
+    storageStateFailure = 'AUTH_CREDENTIAL_UNREADABLE'
+  }
+  if (storageState) {
+    try {
+      await injectStorageState(live.handle.context, storageState)
+    } catch {
+      storageStateFailure = 'AUTH_STORAGE_STATE_INVALID'
+    }
+  }
+  if (storageStateFailure) {
+    await appendSessionEvent(ctx.dbHandle, {
+      key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
+      type: 'session.state_restored',
+      sessionId: session.id,
+      generation: session.generation,
+      payload: { source: 'uploaded', result: 'inject_failed', code: storageStateFailure },
+    }).catch(() => undefined)
+    if (!credential.password) {
+      if (operation.origin === 'BACKGROUND') {
+        await abandonSessionKeepAlive(ctx.dbHandle, session.id)
+      }
+      return { ok: false, code: storageStateFailure }
+    }
+  } else if (storageState) {
     try {
       await live.handle.basePage.goto(target.entryUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
       const probed = await probeAuth(live.handle, target)
@@ -1156,6 +1219,12 @@ async function loginLegacyMaintenance(
     } catch {
       // 探活未通过，平滑降级至常规登录
     }
+  }
+  if (!credential.password) {
+    if (operation.origin === 'BACKGROUND') {
+      await abandonSessionKeepAlive(ctx.dbHandle, session.id)
+    }
+    return { ok: false, code: 'AUTH_CREDENTIAL_MISSING' }
   }
   const occupied = await occupyAutoLoginBudget(ctx.dbHandle, {
     targetId: operation.targetId,
@@ -1199,7 +1268,11 @@ async function loginLegacyMaintenance(
   let ok = false
   let lastSubmit: LoginWaitSubmitState = 'not_attempted'
   for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
-    const loginResult = await attemptLoginWithCredentials(live.handle, singleAttemptTarget, credential)
+    const loginResult = await attemptLoginWithCredentials(live.handle, singleAttemptTarget, {
+      username: credential.username,
+      password: credential.password,
+      totpSecret: credential.totpSecret,
+    })
     lastSubmit = loginResult.submit
     ok = loginResult.authenticated
     if (captchaRetries) {
@@ -1362,12 +1435,13 @@ export async function persistProfileObservation(this: SessionManagerContext,
     })
   }
 
-export async function resolveAccountCredential(
-  this: SessionManagerContext, 
+export async function resolveAccountSecrets(
+  this: SessionManagerContext,
   accountId: string,
+  include: { password?: boolean; totp?: boolean; storageState?: boolean },
 ): Promise<{
   username: string
-  password: string
+  password?: string
   totpSecret?: string
   storageState?: unknown
   secretId?: string
@@ -1376,34 +1450,57 @@ export async function resolveAccountCredential(
   const materials = await resolveAccountAuthMaterials(this.dbHandle, accountId)
   if (!materials) return null
 
-  let password = ''
-  if (materials.passwordSecretId) {
+  let password: string | undefined
+  if (include.password && materials.passwordSecretId) {
     const row = await loadSecretCiphertext(this.dbHandle, materials.passwordSecretId)
-    if (row && row.provider === 'local') {
-      try {
-        password = this.secrets.decrypt(row.id, row.ciphertext)
-      } catch {}
+    if (!row) {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `密码密文记录不存在 (secretId: ${materials.passwordSecretId})`)
+    }
+    if (row.provider !== 'local') {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `密码 provider 不支持: ${row.provider} (secretId: ${materials.passwordSecretId})`)
+    }
+    try {
+      password = this.secrets.decrypt(row.id, row.ciphertext)
+    } catch {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `密码解密失败 (secretId: ${materials.passwordSecretId})`)
     }
   }
 
   let totpSecret: string | undefined
-  if (materials.totpSecretId) {
+  if (include.totp && materials.totpSecretId) {
     const row = await loadSecretCiphertext(this.dbHandle, materials.totpSecretId)
-    if (row && row.provider === 'local') {
-      try {
-        totpSecret = this.secrets.decrypt(row.id, row.ciphertext)
-      } catch {}
+    if (!row) {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `TOTP 密文记录不存在 (secretId: ${materials.totpSecretId})`)
+    }
+    if (row.provider !== 'local') {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `TOTP provider 不支持: ${row.provider} (secretId: ${materials.totpSecretId})`)
+    }
+    try {
+      totpSecret = this.secrets.decrypt(row.id, row.ciphertext)
+    } catch {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `TOTP 解密失败 (secretId: ${materials.totpSecretId})`)
     }
   }
 
   let storageState: unknown
-  if (materials.storageStateSecretId) {
+  if (include.storageState && materials.storageStateSecretId) {
     const row = await loadSecretCiphertext(this.dbHandle, materials.storageStateSecretId)
-    if (row && row.provider === 'local') {
-      try {
-        const decrypted = this.secrets.decrypt(row.id, row.ciphertext)
-        storageState = JSON.parse(decrypted)
-      } catch {}
+    if (!row) {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `StorageState 密文记录不存在 (secretId: ${materials.storageStateSecretId})`)
+    }
+    if (row.provider !== 'local') {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `StorageState provider 不支持: ${row.provider} (secretId: ${materials.storageStateSecretId})`)
+    }
+    let decrypted: string
+    try {
+      decrypted = this.secrets.decrypt(row.id, row.ciphertext)
+    } catch {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `StorageState 解密失败 (secretId: ${materials.storageStateSecretId})`)
+    }
+    try {
+      storageState = JSON.parse(decrypted)
+    } catch {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `StorageState JSON反序列化失败 (secretId: ${materials.storageStateSecretId})`)
     }
   }
 
@@ -1414,6 +1511,19 @@ export async function resolveAccountCredential(
     storageState,
     secretId: materials.passwordSecretId,
   }
+}
+
+export async function resolveAccountCredential(
+  this: SessionManagerContext, 
+  accountId: string,
+): Promise<{
+  username: string
+  password?: string
+  totpSecret?: string
+  storageState?: unknown
+  secretId?: string
+} | null> {
+  return resolveAccountSecrets.call(this, accountId, { password: true, totp: true, storageState: true })
 }
 
 export async function captureSessionSnapshot(

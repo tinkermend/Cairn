@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { groupSessionEventsByActivity, resolveSessionEvent, sessionEventLabel } from './labels'
+import {
+  ACCOUNT_SESSION_BUCKET_LABELS,
+  ACCOUNT_SESSION_STATUS_LABELS,
+  SECONDARY_FILTER_OPTIONS,
+  formatInstanceOption,
+  groupSessionEventsByActivity,
+  resolveSessionEvent,
+  sessionEventLabel,
+} from './labels'
 
 function event(
   overrides: Partial<{
@@ -242,5 +250,39 @@ describe('groupSessionEventsByActivity', () => {
       }),
     ])
     expect(group.durationText).toBe('排队 5秒 · 执行 26秒')
+  })
+
+  it('状态失联翻译为会话失联，分桶与次级选项契合', () => {
+    expect(ACCOUNT_SESSION_STATUS_LABELS.lost).toBe('会话失联')
+    expect(ACCOUNT_SESSION_BUCKET_LABELS.problem).toBe('需关注')
+    expect(ACCOUNT_SESSION_BUCKET_LABELS.ready).toBe('已就绪')
+    expect(ACCOUNT_SESSION_BUCKET_LABELS.busy).toBe('占用中')
+    expect(SECONDARY_FILTER_OPTIONS.problem.map((o) => o.value)).toEqual([
+      'needs_login',
+      'needs_check',
+      'identity_mismatch',
+      'lost',
+    ])
+    expect(SECONDARY_FILTER_OPTIONS.busy.map((o) => o.value)).toEqual(['executing', 'maintenance'])
+  })
+
+  it('formatInstanceOption 格式化实例选项，不出现第 N 台', () => {
+    expect(
+      formatInstanceOption({
+        accountSlot: 1,
+        ownerWorkerLabel: 'worker-node-1',
+        ownerWorkerId: 'w-1',
+        status: 'OPEN',
+        generation: 3,
+      }),
+    ).toBe('槽位 #1 · worker-node-1 · 已打开 · 代次 #3')
+
+    expect(
+      formatInstanceOption({
+        accountSlot: 2,
+        ownerWorkerId: 'w-2',
+        status: 'LOST',
+      }),
+    ).toBe('槽位 #2 · w-2 · 会话失联')
   })
 })

@@ -63,7 +63,7 @@ import {
 } from './session-live.js'
 import { abandonOccupancy, acquireExclusive, applyReuse, bindOccupancy, ensureAuth, ensureProfileAuth, enterWaitingForAuth, evictIfAtCapacity, finishClaimedAcquire, launchAndOpen, liveSessionIdForOwner, loadTargetAuth, recoverAuth, recoverAuthHeld, resolveLoginCredential, unbindOccupancy, waitInterruptible, withHeldOccupancy } from './session-claim.js'
 import { attachSessionAuthObserver } from './session-idle-observer.js'
-import { attachMaintenanceOperation, attachValidationOperation, completeOccupiedAuth, finishMaintenance, markMaintenanceOutcomeUnknown, markSessionLost, persistProfileObservation, resolveAccountCredential, runMaintenanceAuth, verifyOccupiedOwner } from './session-maintenance-runtime.js'
+import { attachMaintenanceOperation, attachValidationOperation, completeOccupiedAuth, finishMaintenance, markMaintenanceOutcomeUnknown, markSessionLost, persistProfileObservation, resolveAccountCredential, resolveAccountSecrets, runMaintenanceAuth, verifyOccupiedOwner } from './session-maintenance-runtime.js'
 import { settleOccupiedLanding, type SettleOccupiedLandingInput } from './landing-settle.js'
 import { acquireRunAuthControl, applyRecoveryRule, executeAuthInput, expiredAuthObservation, failInRunAuthRecovery, heartbeatRunAuthControl, inputRunAuthControl, observeInRunAuth, observeInRunAuthHeld, releaseRunAuthControl, restoreAuthGateFromCheckpoint, resumeRunAuth, verifyInRunAuth } from './session-auth-control.js'
 import { adoptPage, assertCommand, closeManagedPage, closeRunPage, ensureRunPage, execute, invalidate, pageForGrant, runManagedPage, runSurfaceCommand, startTracingForLease, stopTracingForLease, withManagedPage } from './session-command.js'
@@ -85,6 +85,8 @@ export const BROWSER_SESSION_OPTIONS = Symbol('BROWSER_SESSION_OPTIONS')
 import { SECRET_PROVIDER } from '../tokens.js'
 import { collectSurfaceExploration, type SurfaceExplorationResult } from './explore-candidate-collector.js'
 import { installExploreGuard, type ExploreGuardController, type ExploreGuardOptions } from './explore-network-guard.js'
+import { collectMapIngestSlice, type IngestSliceResult } from './map-ingest-collector.js'
+import type { MapIngestCursor, MapIngestPageSnapshot, MapIngestStep, TargetAccessPolicy } from '@cairn/shared'
 import type { TargetStateRule } from '@cairn/shared'
 export { SECRET_PROVIDER }
 export { SessionLeaseError, type BrowserSessionManagerOptions, type SessionAcquireResult } from './session-live.js'
@@ -372,6 +374,35 @@ export class BrowserSessionManager {
     })
   }
 
+  async ingestMapSlice(
+    grant: SessionGrant,
+    input: {
+      step: MapIngestStep['input']
+      targetId: string
+      targetAccountId: string
+      accessPolicy: TargetAccessPolicy
+      signal: AbortSignal
+      onProgress: (cursor: MapIngestCursor, page?: MapIngestPageSnapshot) => Promise<void>
+    },
+  ): Promise<IngestSliceResult> {
+    return this.withHeldOccupancy(grant.leaseId, grant, async () => {
+      this.guard.assertHeld(grant.leaseId, grant)
+      const page = this.pageForGrant(grant)
+      const live = this.lives.get(grant.sessionId)
+      if (!page || !live?.handle?.context) throw new Error('MAP_INGEST_PAGE_MISSING')
+      const guard = await installExploreGuard(live.handle.context, {
+        allowedOrigins: [], accessPolicy: input.accessPolicy,
+        allowInferredReadPosts: true,
+        allowedSpaHashPrefixes: input.step.allowedSpaHashPrefixes ?? ['#/'],
+      })
+      try {
+        return await collectMapIngestSlice({ ...input, page, guard })
+      } finally {
+        await guard.uninstall()
+      }
+    })
+  }
+
   async recoverAuth(
     grant: SessionGrant,
     input: {
@@ -507,12 +538,25 @@ export class BrowserSessionManager {
     accountId: string,
   ): Promise<{
     username: string
-    password: string
+    password?: string
     totpSecret?: string
     storageState?: unknown
     secretId?: string
   } | null> {
     return resolveAccountCredential.call(this, accountId)
+  }
+
+  async resolveAccountSecrets(
+    accountId: string,
+    include: { password?: boolean; totp?: boolean; storageState?: boolean },
+  ): Promise<{
+    username: string
+    password?: string
+    totpSecret?: string
+    storageState?: unknown
+    secretId?: string
+  } | null> {
+    return resolveAccountSecrets.call(this, accountId, include)
   }
 
   async renew(leaseId: string, leaseTtlSeconds?: number): Promise<'ok' | 'lost'> {

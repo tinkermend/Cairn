@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   fetchAccountSessionEvents: vi.fn(),
   fetchSessionOperation: vi.fn(),
   fetchManagedBrowser: vi.fn(),
+  fetchTarget: vi.fn(),
   acquireAuthControl: vi.fn(),
   heartbeatAuthControl: vi.fn(),
   inputAuthControl: vi.fn(),
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   resumeRunAuth: vi.fn(),
   subscribeBrowserFrames: vi.fn(),
   navigate: vi.fn(),
+  useSearch: vi.fn(() => ({}) as { view?: 'stream' | 'systems'; targetId?: string }),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -30,13 +32,19 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => mocks.navigate,
+    useSearch: () => mocks.useSearch(),
     getRouteApi: () => ({
       useParams: () => ({ targetId: TARGET_ID, accountId: 'acc-1' }),
+      useSearch: () => ({}),
     }),
     Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
   }
 })
 vi.mock('@/lib/workers-api', () => ({ disposeWorkerSession: vi.fn() }))
+vi.mock('@/lib/targets-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/targets-api')>()
+  return { ...actual, fetchTarget: mocks.fetchTarget }
+})
 vi.mock('./use-session-observation', () => ({ useSessionObservation: () => ({ connected: true, eventSeq: 1 }) }))
 vi.mock('@/lib/sessions-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/sessions-api')>()
@@ -67,6 +75,7 @@ describe('SessionsPage', () => {
     sessionStorage.clear()
     await page.viewport(1440, 900)
     signIn()
+    mocks.useSearch.mockReturnValue({})
     mocks.fetchSessionSystemOverview.mockResolvedValue({
       items: [
         {
@@ -239,6 +248,237 @@ describe('SessionsPage', () => {
     await screen.getByRole('button', { name: '按目标系统' }).click()
     await expect.element(screen.getByText('智慧运维管理平台')).toBeInTheDocument()
     await expect.element(screen.getByLabelText('系统会话筛选')).toBeInTheDocument()
+  })
+
+  it('会话流展示五大分桶 Tab 与 Worker 节点列', async () => {
+    mocks.fetchSessionOverview.mockResolvedValue({
+      items: [
+        {
+          targetId: TARGET_ID,
+          targetName: '智慧运维管理平台',
+          targetCode: 'ops-platform',
+          targetAccountId: 'acc-1',
+          accountDisplayName: '巡检账号',
+          accountUsername: 'patrol',
+          accountStatus: 'active',
+          status: 'ready',
+          retained: false,
+          sessionId: 'sess-1',
+          generation: 1,
+          instanceStatus: 'OPEN',
+          authState: 'AUTHENTICATED',
+          identityState: null,
+          observedTier: null,
+          occupyingRunId: null,
+          occupyingOperationId: null,
+          retainUntil: null,
+          lastAuthCheckedAt: null,
+          lastAuthSuccessAt: null,
+          ownerWorkerId: 'w-alpha',
+          ownerWorkerLabel: 'worker-node-alpha',
+          ownerWorkerOnline: true,
+          liveWorkerCount: 1,
+          primaryAction: 'VERIFY_AUTH',
+          liveCount: 1,
+          effectiveCap: 1,
+        },
+      ],
+      summary: {
+        total: 1,
+        available: 1,
+        ready: 1,
+        needsCheck: 0,
+        needsLogin: 0,
+        identityMismatch: 0,
+        maintenance: 0,
+        executing: 0,
+        lost: 0,
+        unprepared: 0,
+        problem: 0,
+        busy: 0,
+        retained: 0,
+      },
+      asOf: '2026-09-17T00:00:00.000Z',
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionsPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+
+    await expect.element(screen.getByRole('heading', { name: '账号会话' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '全部' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '需关注' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '已就绪' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '占用中' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '未准备' })).toBeInTheDocument()
+    await expect.element(screen.getByText('worker-node-alpha')).toBeInTheDocument()
+
+    await screen.getByRole('button', { name: '需关注', exact: true }).click()
+    expect(mocks.fetchSessionOverview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bucket: 'problem',
+      }),
+    )
+  })
+
+  it('并发账号支持展开实例子行', async () => {
+    mocks.fetchSessionOverview.mockResolvedValue({
+      items: [
+        {
+          targetId: TARGET_ID,
+          targetName: '智慧运维管理平台',
+          targetCode: 'ops-platform',
+          targetAccountId: 'acc-multi',
+          accountDisplayName: '并发账号',
+          accountUsername: 'concurrent_user',
+          accountStatus: 'active',
+          status: 'ready',
+          retained: false,
+          sessionId: 'sess-1',
+          generation: 1,
+          instanceStatus: 'OPEN',
+          authState: 'AUTHENTICATED',
+          identityState: null,
+          observedTier: null,
+          occupyingRunId: null,
+          occupyingOperationId: null,
+          retainUntil: null,
+          lastAuthCheckedAt: null,
+          lastAuthSuccessAt: null,
+          ownerWorkerId: 'w-alpha',
+          ownerWorkerLabel: 'worker-node-alpha',
+          ownerWorkerOnline: true,
+          liveWorkerCount: 1,
+          primaryAction: 'VERIFY_AUTH',
+          liveCount: 2,
+          effectiveCap: 3,
+        },
+      ],
+      summary: {
+        total: 1,
+        available: 1,
+        ready: 1,
+        needsCheck: 0,
+        needsLogin: 0,
+        identityMismatch: 0,
+        maintenance: 0,
+        executing: 0,
+        lost: 0,
+        unprepared: 0,
+        problem: 0,
+        busy: 0,
+        retained: 0,
+      },
+      asOf: '2026-09-17T00:00:00.000Z',
+    })
+    mocks.fetchAccountSession.mockResolvedValueOnce({
+      targetId: TARGET_ID,
+      targetName: '智慧运维管理平台',
+      targetAccountId: 'acc-multi',
+      accountDisplayName: '并发账号',
+      accountUsername: 'concurrent_user',
+      accountStatus: 'active',
+      hasPassword: false,
+      status: 'ready',
+      retained: false,
+      authCapability: 'LOGIN_VERIFIED',
+      expectedIdentity: null,
+      lastAuthError: null,
+      session: null,
+      instances: [
+        {
+          id: 'inst-1',
+          accountSlot: 1,
+          generation: 1,
+          status: 'OPEN',
+          ownerWorkerId: 'w-alpha',
+          ownerWorkerLabel: 'worker-node-alpha',
+          ownerWorkerOnline: true,
+          authState: 'AUTHENTICATED',
+        },
+        {
+          id: 'inst-2',
+          accountSlot: 2,
+          generation: 2,
+          status: 'OPEN',
+          ownerWorkerId: 'w-beta',
+          ownerWorkerLabel: 'worker-node-beta',
+          ownerWorkerOnline: true,
+          authState: 'AUTHENTICATED',
+        },
+      ],
+      actions: [],
+      asOf: '2026-09-17T00:00:00.000Z',
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionsPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+
+    await expect.element(screen.getByRole('button', { name: '展开实例' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '展开实例' }).click()
+    await expect.element(screen.getByText('并发会话实例 (2 个)')).toBeInTheDocument()
+    await expect.element(screen.getByText('槽位 #1')).toBeInTheDocument()
+    await expect.element(screen.getByText('槽位 #2')).toBeInTheDocument()
+  })
+
+  it('按目标系统视图支持原地展开系统账号', async () => {
+    sessionStorage.setItem('sessions-active-view', 'systems')
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionsPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+
+    await expect.element(screen.getByRole('button', { name: '展开系统账号' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '展开系统账号' }).click()
+    expect(mocks.fetchSessionOverview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetId: TARGET_ID,
+      }),
+    )
+  })
+
+  it('从旧的 /sessions/$targetId 跳转过来时，若目标系统不在当前页会自动填入搜索框定位', async () => {
+    const OTHER_TARGET_ID = '22222222-2222-4222-8222-222222222222'
+    mocks.useSearch.mockReturnValue({ view: 'systems', targetId: OTHER_TARGET_ID })
+    mocks.fetchTarget.mockResolvedValue({
+      id: OTHER_TARGET_ID,
+      name: '边缘目标系统',
+      code: 'edge-sys',
+      status: 'active',
+    })
+    // 首次列表（未按名称搜索）里没有这个目标，模拟它被翻页或旧筛选挡住的场景
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionsPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+
+    await expect.poll(() => mocks.fetchTarget).toHaveBeenCalledWith(OTHER_TARGET_ID)
+    await expect
+      .poll(() =>
+        mocks.fetchSessionSystemOverview.mock.calls.some(
+          (call) => call[0]?.search === '边缘目标系统' && call[0]?.filter === undefined,
+        ),
+      )
+      .toBe(true)
   })
 })
 

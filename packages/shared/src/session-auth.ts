@@ -925,6 +925,9 @@ const AUTH_ISSUE_LABELS: Record<string, string> = {
   AUTH_CONTROL_INVALID: '认证控制令牌已失效',
   RUN_NOT_WAITING_FOR_AUTH: '运行不在等待认证状态',
   WORKER_GENERATION_MISMATCH: '执行节点实例已发生变化',
+  AUTH_CREDENTIAL_UNREADABLE: '账号凭据无法读取，请检查主密钥或重新保存凭据',
+  AUTH_CREDENTIAL_MISSING: '账号未配置密码，无法自动登录',
+  AUTH_STORAGE_STATE_INVALID: '上传的登录态无法注入，请重新上传',
   infra: '登录核验暂时失败',
   unmatched: '当前页对不上登录规则',
   verify_failed: '登录后仍未通过核验',
@@ -943,6 +946,7 @@ export function describeAuthWaitStage(code: string | null | undefined): string {
   if (code === 'LOGIN_FORM_NOT_FOUND') return '看不到登录表单'
   if (code === 'AUTH_IDENTITY_MISMATCH') return '账号不符'
   if (code === 'credential') return '账号或密码不正确'
+  if (code === 'AUTH_CREDENTIAL_MISSING') return '未配置密码'
   if (code === 'AUTH_AUTO_LOGIN_PAUSED') return '自动登录已暂停'
   if (code === 'SESSION_AUTH_UNSUPPORTED') return '需要手工登录'
   if (code === 'SESSION_AUTH_TIMEOUT') return '登录等待超时'

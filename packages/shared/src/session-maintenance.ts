@@ -69,6 +69,7 @@ export const sessionSystemOverviewFilterSchema = z.enum(SESSION_SYSTEM_OVERVIEW_
 
 export const ACCOUNT_SESSION_BUCKETS = ['ready', 'problem', 'unprepared', 'busy'] as const
 export type AccountSessionBucket = (typeof ACCOUNT_SESSION_BUCKETS)[number]
+export type SessionOverviewBucket = AccountSessionBucket
 
 const WORST_ACCOUNT_SESSION_STATUS: readonly AccountSessionStatus[] = [
   'lost',
@@ -94,6 +95,9 @@ export const SESSION_MAINTENANCE_ERROR_CODES = [
   'SESSION_KEEPALIVE_ABANDONED',
   'AUTH_STILL_REQUIRED',
   'UNATTENDED_AUTH_TIMEOUT',
+  'AUTH_CREDENTIAL_UNREADABLE',
+  'AUTH_CREDENTIAL_MISSING',
+  'AUTH_STORAGE_STATE_INVALID',
 ] as const
 export type SessionMaintenanceErrorCode = (typeof SESSION_MAINTENANCE_ERROR_CODES)[number]
 export const sessionMaintenanceErrorCodeSchema = z.enum(SESSION_MAINTENANCE_ERROR_CODES)
@@ -111,6 +115,9 @@ export const SESSION_MAINTENANCE_ERROR_MESSAGES: Record<SessionMaintenanceErrorC
   SESSION_KEEPALIVE_ABANDONED: '认证已失效且自动登录不可用，已停止保活巡检',
   AUTH_STILL_REQUIRED: '尚未检测到登录成功，请在页面中确认并提交',
   UNATTENDED_AUTH_TIMEOUT: '生产无人值守认证等待超时，已快速熔断释放会话',
+  AUTH_CREDENTIAL_UNREADABLE: '账号凭据无法读取，请检查主密钥或重新保存凭据',
+  AUTH_CREDENTIAL_MISSING: '账号未配置密码，无法自动登录',
+  AUTH_STORAGE_STATE_INVALID: '上传的登录态无法注入，请重新上传',
 }
 
 export const SESSION_EVENT_TYPES = [
@@ -401,6 +408,9 @@ export const accountSessionOverviewItemSchema = z.strictObject({
   lastAuthCheckedAt: utcInstantSchema.nullable(),
   lastAuthSuccessAt: utcInstantSchema.nullable(),
   ownerWorkerId: z.string().min(1).nullable(),
+  ownerWorkerLabel: z.string().min(1).nullable().default(null),
+  ownerWorkerOnline: z.boolean().nullable().default(null),
+  liveWorkerCount: z.number().int().nonnegative().default(0),
   primaryAction: z.string().min(1),
   liveCount: z.number().int().nonnegative().default(0),
   effectiveCap: z.number().int().positive().default(1),
@@ -409,7 +419,18 @@ export type AccountSessionOverviewItem = z.infer<typeof accountSessionOverviewIt
 
 export const sessionOverviewQuerySchema = z.object({
   search: z.string().trim().min(1).max(128).optional(),
+  bucket: z.enum(ACCOUNT_SESSION_BUCKETS).optional(),
   filter: sessionOverviewFilterSchema.optional(),
+  // HTTP query 只允许精确的 'true' / 'false' 字符串，不能用 z.coerce.boolean()
+  // 把字符串 'false' 也强转成 true。
+  retained: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .optional()
+    .transform((value) => {
+      if (value === undefined) return undefined
+      if (typeof value === 'boolean') return value
+      return value === 'true'
+    }),
   targetId: entityIdSchema.optional(),
   cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
@@ -468,10 +489,32 @@ export const sessionOverviewResponseSchema = z.strictObject({
     lost: z.number().int().nonnegative(),
     unprepared: z.number().int().nonnegative(),
     retained: z.number().int().nonnegative(),
+    problem: z.number().int().nonnegative().default(0),
+    busy: z.number().int().nonnegative().default(0),
   }),
   asOf: utcInstantSchema,
 })
 export type SessionOverviewResponse = z.infer<typeof sessionOverviewResponseSchema>
+
+export const BUCKET_ALLOWED_FILTERS: Record<AccountSessionBucket, readonly SessionOverviewFilter[]> = {
+  ready: ['available'],
+  unprepared: ['unprepared'],
+  busy: ['executing', 'maintenance'],
+  problem: ['needs_check', 'needs_login', 'identity_mismatch', 'lost'],
+}
+
+/**
+ * `bucket` 接受 `'all'`／`undefined` 表示「未选择具体分类」（对应 UI 上的「全部」Tab
+ * 或尚未加载筛选状态），此时不设限，任意 `filter` 都视为允许。
+ */
+export function isFilterAllowedInBucket(
+  bucket: AccountSessionBucket | 'all' | undefined,
+  filter: SessionOverviewFilter,
+): boolean {
+  if (filter === 'retained') return true
+  if (!bucket || bucket === 'all') return true
+  return BUCKET_ALLOWED_FILTERS[bucket].includes(filter)
+}
 
 export const accountSessionDetailSchema = z.strictObject({
   targetId: entityIdSchema,
@@ -492,6 +535,8 @@ export const accountSessionDetailSchema = z.strictObject({
       status: z.string(),
       generation: z.number().int().positive(),
       ownerWorkerId: z.string().min(1),
+      ownerWorkerLabel: z.string().min(1).nullable().optional(),
+      ownerWorkerOnline: z.boolean().nullable().optional(),
       authState: z.string(),
       identityState: z.string().nullable(),
       observedTier: z.string().nullable(),
@@ -515,6 +560,8 @@ export const accountSessionDetailSchema = z.strictObject({
         status: z.string(),
         generation: z.number().int().positive(),
         ownerWorkerId: z.string().min(1),
+        ownerWorkerLabel: z.string().min(1).nullable().optional(),
+        ownerWorkerOnline: z.boolean().nullable().optional(),
         authState: z.string(),
         identityState: z.string().nullable(),
         observedTier: z.string().nullable(),

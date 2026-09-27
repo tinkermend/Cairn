@@ -25,15 +25,7 @@ export type SessionAcquireResult =
   | { ok: true; grant: SessionGrant }
   | { ok: false; code: SessionErrorCode; message: string; waitingForAuth?: boolean }
 
-export class SessionLeaseError extends Error {
-  readonly code: SessionErrorCode
-
-  constructor(code: SessionErrorCode, message: string) {
-    super(message)
-    this.name = 'SessionLeaseError'
-    this.code = code
-  }
-}
+export { SessionLeaseError } from './session-error.js'
 
 export type LiveHandle = {
   handle: BrowserHandle

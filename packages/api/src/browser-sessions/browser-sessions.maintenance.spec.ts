@@ -1,14 +1,18 @@
 import { EventEmitter } from 'node:events'
+import { BadRequestException } from '@nestjs/common'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import * as db from '@cairn/db'
+import { DomainError } from '@cairn/db'
 import { BrowserSessionsService } from './browser-sessions.service'
 vi.mock('@cairn/db', async (load) => ({
   ...(await load<typeof import('@cairn/db')>()),
   getSessionOperation: vi.fn(),
-  getRun: vi.fn(),
+  getRunSessionOwner: vi.fn(),
   getSessionById: vi.fn(),
   findAuthWaitLeaseForRun: vi.fn(),
   listSessionEventsAfter: vi.fn(),
+  listAccountSessionOverview: vi.fn(),
+  listSessionSystemOverview: vi.fn(),
 }))
 let service: BrowserSessionsService
 let request: ReturnType<typeof vi.fn>
@@ -30,7 +34,7 @@ it('复用 Run 的完成认证保留令牌并解析真实 Run owner', async () =
     id: 'op',
     kindParams: { reusedRunId: 'run' },
   } as never)
-  vi.mocked(db.getRun).mockResolvedValue({ id: 'run', status: 'WAITING_FOR_AUTH', placement: {} } as never)
+  vi.mocked(db.getRunSessionOwner).mockResolvedValue({ status: 'WAITING_FOR_AUTH', sessionId: null } as never)
   vi.mocked(db.findAuthWaitLeaseForRun).mockResolvedValue({ sessionId: 's' } as never)
   vi.mocked(db.getSessionById).mockResolvedValue({ id: 's', generation: 3, ownerWorkerId: 'w' } as never)
   ;(service as any).withWorker = async (session: unknown, status: string, ownerId: string) => ({
@@ -91,4 +95,26 @@ it('总览 SSE 按账号保存补读水位，撤权立即结束连接', async ()
   expect(response.writableEnded).toBe(true)
   expect(db.listSessionEventsAfter).toHaveBeenCalledTimes(1)
   controller.abort()
+})
+
+it('overview 把 db 层的 bad_request DomainError 转成 400，不让它变成裸的 500', async () => {
+  vi.mocked(db.listAccountSessionOverview).mockRejectedValueOnce(
+    new DomainError('bad_request', 'INVALID_FILTER_COMBINATION', '筛选条件与所选状态分类不匹配'),
+  )
+  await expect(service.overview({ bucket: 'ready', filter: 'needs_login' } as never)).rejects.toBeInstanceOf(
+    BadRequestException,
+  )
+})
+
+it('systemOverview 同样把 db 层的 DomainError 转成对应的 HTTP 异常', async () => {
+  vi.mocked(db.listSessionSystemOverview).mockRejectedValueOnce(
+    new DomainError('bad_request', 'SOME_CODE', '参数不合法'),
+  )
+  await expect(service.systemOverview({} as never)).rejects.toBeInstanceOf(BadRequestException)
+})
+
+it('overview 正常路径不受 try/catch 包裹影响，原样返回 db 层结果', async () => {
+  const payload = { items: [], nextCursor: null, summary: {}, asOf: '2026-09-27T00:00:00.000Z' }
+  vi.mocked(db.listAccountSessionOverview).mockResolvedValueOnce(payload as never)
+  await expect(service.overview({} as never)).resolves.toBe(payload)
 })

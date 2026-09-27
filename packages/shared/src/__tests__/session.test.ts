@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEV_CREDENTIAL_KEY, DEV_INTERNAL_AUTH_SECRET, workerEnvSchema } from '../env.js'
+import { fallbackAttribution } from '../action-module-fallback.js'
 import {
   DEFAULT_SESSION_AUTH_WAIT_SECONDS,
   DEFAULT_UNATTENDED_AUTH_TIMEOUT_SECONDS,
@@ -59,6 +60,9 @@ describe('session 词表', () => {
     expect(SESSION_ERROR_CODES).toContain('SESSION_CONCURRENCY_UNSUPPORTED')
     expect(SESSION_ERROR_CODES).toContain('LOGIN_PAGE_UNREACHABLE')
     expect(SESSION_ERROR_CODES).toContain('PLATFORM_CONFIG_UNREADABLE')
+    expect(SESSION_ERROR_CODES).toContain('AUTH_CREDENTIAL_UNREADABLE')
+    expect(SESSION_ERROR_CODES).toContain('AUTH_CREDENTIAL_MISSING')
+    expect(SESSION_ERROR_CODES).toContain('AUTH_STORAGE_STATE_INVALID')
     expect(sessionErrorCodeSchema.parse('SESSION_BUSY')).toBe('SESSION_BUSY')
     expect(() => sessionErrorCodeSchema.parse('UNKNOWN')).toThrow()
   })
@@ -66,8 +70,20 @@ describe('session 词表', () => {
   it('回交码与配置错误码互斥', () => {
     expect(isPlacementYieldCode('BROWSER_UNAVAILABLE')).toBe(true)
     expect(isPlacementYieldCode('SESSION_TARGET_MISSING')).toBe(false)
+    expect(isPlacementYieldCode('AUTH_CREDENTIAL_UNREADABLE')).toBe(false)
+    expect(isPlacementYieldCode('AUTH_CREDENTIAL_MISSING')).toBe(false)
+    expect(isPlacementYieldCode('AUTH_STORAGE_STATE_INVALID')).toBe(false)
     expect(isSessionConfigErrorCode('SESSION_POLICY_INVALID')).toBe(true)
     expect(isSessionConfigErrorCode('SESSION_BUSY')).toBe(false)
+    expect(isSessionConfigErrorCode('AUTH_CREDENTIAL_UNREADABLE')).toBe(true)
+    expect(isSessionConfigErrorCode('AUTH_STORAGE_STATE_INVALID')).toBe(true)
+    expect(isSessionConfigErrorCode('AUTH_CREDENTIAL_MISSING')).toBe(false)
+  })
+
+  it('账号凭据类失败归外部基础设施，不算模块缺陷也不触发备选实现', () => {
+    for (const code of ['AUTH_CREDENTIAL_UNREADABLE', 'AUTH_CREDENTIAL_MISSING', 'AUTH_STORAGE_STATE_INVALID']) {
+      expect(fallbackAttribution({ code, category: 'VALIDATION' })).toBe('EXTERNAL_INFRA')
+    }
   })
 })
 

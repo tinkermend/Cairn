@@ -333,7 +333,7 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
               </SelectContent>
             </Select>
             <p className='text-label text-muted-foreground'>
-              遇到需人工认证等待时，自动向已启用的通知渠道（Webhook/邮件等）发送提醒。
+              遇到需人工认证等待时，自动向已启用的推送渠道（Webhook/邮件等）发送提醒。
             </p>
             {override?.notifyOnAuthWait != null ? (
               <Button

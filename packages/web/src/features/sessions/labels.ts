@@ -6,7 +6,9 @@ import {
   type SessionOperationProgressPhase,
   type SessionOperationWaitReason,
   type SessionMaintenanceErrorCode,
+  type SessionOverviewBucket,
   type SessionOverviewFilter,
+  type SessionStatus,
   type SessionSystemOverviewFilter,
 } from '@cairn/shared'
 
@@ -28,7 +30,68 @@ export const ACCOUNT_SESSION_STATUS_LABELS: Record<AccountSessionStatus, string>
   identity_mismatch: '账号不符',
   maintenance: '维护中',
   executing: '执行中',
-  lost: '失联',
+  lost: '会话失联',
+}
+
+export type AccountSessionBucketTab = SessionOverviewBucket | 'all'
+
+export const ACCOUNT_SESSION_BUCKET_LABELS: Record<AccountSessionBucketTab, string> = {
+  all: '全部',
+  problem: '需关注',
+  ready: '已就绪',
+  busy: '占用中',
+  unprepared: '未准备',
+}
+
+export const SECONDARY_FILTER_OPTIONS: Record<
+  'problem' | 'busy',
+  Array<{ value: SessionOverviewFilter; label: string }>
+> = {
+  problem: [
+    { value: 'needs_login', label: '需要登录' },
+    { value: 'needs_check', label: '待检查' },
+    { value: 'identity_mismatch', label: '账号不符' },
+    { value: 'lost', label: '会话失联' },
+  ],
+  busy: [
+    { value: 'executing', label: '运行中' },
+    { value: 'maintenance', label: '维护中' },
+  ],
+}
+
+/**
+ * 单个会话实例（`browser_sessions` 一行）的生命周期状态文案，与
+ * `features/workers/labels.ts` 的 `SESSION_STATUS_LABELS` 保持同一套用词，
+ * 不要在别处另起一套「就绪/创建中」这样的近义词。
+ */
+export const INSTANCE_STATUS_LABELS: Record<SessionStatus, string> = {
+  CREATING: '启动中',
+  OPEN: '已打开',
+  CLOSING: '关闭中',
+  CLOSED: '已关闭',
+  LOST: '会话失联',
+}
+
+export const INSTANCE_STATUS_TONE: Record<SessionStatus, 'neutral' | 'success' | 'warning' | 'info'> = {
+  CREATING: 'info',
+  OPEN: 'success',
+  CLOSING: 'info',
+  CLOSED: 'neutral',
+  LOST: 'warning',
+}
+
+export function formatInstanceOption(instance: {
+  accountSlot: number
+  ownerWorkerLabel?: string | null
+  ownerWorkerId?: string | null
+  status: string
+  generation?: number | null
+}): string {
+  const slot = `槽位 #${instance.accountSlot}`
+  const worker = instance.ownerWorkerLabel || instance.ownerWorkerId || '未分配节点'
+  const status = INSTANCE_STATUS_LABELS[instance.status as SessionStatus] ?? instance.status
+  const gen = instance.generation ? ` · 代次 #${instance.generation}` : ''
+  return `${slot} · ${worker} · ${status}${gen}`
 }
 
 export const ACCOUNT_SESSION_STATUS_TONE: Record<
@@ -62,7 +125,7 @@ export const SESSION_FILTER_LABELS: Record<SessionOverviewFilter | 'all', string
   identity_mismatch: '账号不符',
   maintenance: '维护中',
   executing: '执行中',
-  lost: '失联',
+  lost: '会话失联',
   unprepared: '未准备',
   retained: '保留中',
 }

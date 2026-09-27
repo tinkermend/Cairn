@@ -5,11 +5,10 @@ import { page } from 'vitest/browser'
 import type { AssistantConversation, AssistantTurn } from '@cairn/shared'
 import {
   useAssistantStore,
-  filterRecentConversations,
   summarizeConversationTitle,
 } from '@/stores/assistant-store'
 import { useAuthStore } from '@/stores/auth-store'
-import { deleteAssistantConversation } from '@/lib/assistant-api'
+import { deleteAssistantConversation, fetchAssistantConversations } from '@/lib/assistant-api'
 import { AssistantHost } from './host'
 
 vi.mock('@/features/runs/use-run-observation', () => ({
@@ -74,7 +73,11 @@ const mockHistoryTurns: AssistantTurn[] = [
 
 vi.mock('@/lib/assistant-api', () => ({
   fetchAssistantCapabilities: vi.fn(async () => ({
-    items: [],
+    items: [
+      { id: 'scenario.explain', label: '场景解释', available: true, missingPermissions: [], requiredContext: [] },
+      { id: 'run.diagnose', label: '运行诊断', available: true, missingPermissions: [], requiredContext: [] },
+      { id: 'platform.guide', label: '功能导览', available: true, missingPermissions: [], requiredContext: [] },
+    ],
     modelEnabled: true,
   })),
   fetchAssistantConversations: vi.fn(async () => ({
@@ -114,7 +117,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   }
 })
 
-describe('识途助手升级（三）：新建会话、受控历史（3~5天）与分类引导卡片测试', () => {
+describe('识途助手：新建会话、可继续加载的历史与分类引导卡片', () => {
   beforeEach(() => {
     localStorage.clear()
     serverConversations = [...mockConversations]
@@ -133,6 +136,7 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       turns: [],
       question: '',
       busy: false,
+      cancelling: false,
       error: null,
       activeTurnId: null,
       activeStage: null,
@@ -150,59 +154,33 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       conversations: [],
       historyOpen: false,
       historyLoading: false,
+      historyLoadingMore: false,
+      historyNextCursor: null,
+      historyError: null,
     })
   })
 
-  describe('1. 5 天受控保留窗口算法（Pruning）', () => {
-    it('纯函数：精确保留 5 天内记录，过滤排除超期（> 5 天）记录', () => {
-      const now = 1000000000000
-      const items: AssistantConversation[] = [
-        {
-          id: 'c-1h',
-          title: '1小时前',
-          createdAt: new Date(now - 3600 * 1000).toISOString(),
-          updatedAt: new Date(now - 3600 * 1000).toISOString(),
-        },
-        {
-          id: 'c-3d',
-          title: '3天前',
-          createdAt: new Date(now - 3 * 24 * 3600 * 1000).toISOString(),
-          updatedAt: new Date(now - 3 * 24 * 3600 * 1000).toISOString(),
-        },
-        {
-          id: 'c-4.9d',
-          title: '4.9天前（临界有效）',
-          createdAt: new Date(now - 4.9 * 24 * 3600 * 1000).toISOString(),
-          updatedAt: new Date(now - 4.9 * 24 * 3600 * 1000).toISOString(),
-        },
-        {
-          id: 'c-5.1d',
-          title: '5.1天前（已超期）',
-          createdAt: new Date(now - 5.1 * 24 * 3600 * 1000).toISOString(),
-          updatedAt: new Date(now - 5.1 * 24 * 3600 * 1000).toISOString(),
-        },
-        {
-          id: 'c-30d',
-          title: '一个月前（极度超期）',
-          createdAt: new Date(now - 30 * 24 * 3600 * 1000).toISOString(),
-          updatedAt: new Date(now - 30 * 24 * 3600 * 1000).toISOString(),
-        },
-      ]
-
-      const filtered = filterRecentConversations(items, now)
-      expect(filtered.map((c) => c.id)).toEqual(['c-1h', 'c-3d', 'c-4.9d'])
-      expect(filtered.find((c) => c.id === 'c-5.1d')).toBeUndefined()
-      expect(filtered.find((c) => c.id === 'c-30d')).toBeUndefined()
-    })
-
-    it('Store：fetchRecentConversations 自动拉取并注入 5 天过滤后的会话', async () => {
+  describe('1. 服务端历史分页', () => {
+    it('展示服务端返回的更早会话，不把五天前的记录当成已归档', async () => {
       await useAssistantStore.getState().fetchRecentConversations()
       const convs = useAssistantStore.getState().conversations
       expect(convs.some((c) => c.id === 'conv-today')).toBe(true)
       expect(convs.some((c) => c.id === 'conv-yesterday')).toBe(true)
       expect(convs.some((c) => c.id === 'conv-3days')).toBe(true)
-      // 6 天前的超期会话被安全过滤
-      expect(convs.some((c) => c.id === 'conv-expired-6days')).toBe(false)
+      expect(convs.some((c) => c.id === 'conv-6days')).toBe(true)
+    })
+
+    it('用服务端游标加载下一页会话', async () => {
+      vi.mocked(fetchAssistantConversations)
+        .mockResolvedValueOnce({ items: [mockConversations[0]!], nextCursor: 'older-page' })
+        .mockResolvedValueOnce({ items: [mockConversations[3]!], nextCursor: undefined })
+
+      await useAssistantStore.getState().fetchRecentConversations()
+      expect(useAssistantStore.getState().historyNextCursor).toBe('older-page')
+      await useAssistantStore.getState().fetchMoreConversations()
+      expect(fetchAssistantConversations).toHaveBeenCalledWith({ cursor: 'older-page', limit: 50 })
+      expect(useAssistantStore.getState().conversations.map((item) => item.id)).toEqual(['conv-today', 'conv-6days'])
+      expect(useAssistantStore.getState().historyNextCursor).toBeNull()
     })
   })
 
@@ -243,10 +221,10 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
   })
 
   describe('3. 会话历史抽屉（HistoryDrawer）展开与切换', () => {
-    it('正例：展开历史抽屉，呈现时间分组（今天、昨天、近5天内），点击项目切换会话并加载轮次', async () => {
+    it('展开历史抽屉，呈现时间分组（今天、昨天、更早），点击项目切换会话并加载轮次', async () => {
       useAssistantStore.setState({
         open: true,
-        conversations: mockConversations.filter((c) => c.id !== 'conv-expired-6days'),
+        conversations: mockConversations,
       })
 
       render(<AssistantHost />)
@@ -255,12 +233,13 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       const historyBtn = page.getByTestId('assistant-history-btn')
       await historyBtn.click()
 
-      // 抽屉展开，并包含保留 5 天提示与时间分组
+      // 抽屉展示实际可读取的历史，不承诺前端没有实施的归档行为
       await expect.element(page.getByTestId('assistant-history-drawer')).toBeVisible()
-      await expect.element(page.getByText('保留最近 5 天', { exact: true })).toBeVisible()
+      await expect.element(page.getByText('按最近活动排序', { exact: true })).toBeVisible()
       await expect.element(page.getByText('今天调试的步骤超时问题')).toBeVisible()
       await expect.element(page.getByText('昨天排查的免登凭据过期')).toBeVisible()
       await expect.element(page.getByText('三天前的场景编排入门')).toBeVisible()
+      await expect.element(page.getByText('六天前的超限历史记录')).toBeVisible()
 
       // 点击“今天调试的步骤超时问题”项
       const todayItem = page.getByTestId('history-item-conv-today')
@@ -305,7 +284,7 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
 
       // 验证被删除的会话不会死灰复燃
       expect(useAssistantStore.getState().conversations).toHaveLength(0)
-      await expect.element(page.getByText('暂无最近 5 天的会话记录')).toBeVisible()
+      await expect.element(page.getByText('暂无会话记录')).toBeVisible()
     })
   })
 
@@ -324,14 +303,14 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       // 默认在“场景编排”分类
       await expect.element(page.getByRole('tab', { name: '场景编排' })).toHaveAttribute('aria-selected', 'true')
       await expect.element(page.getByTestId('prompt-card-auth-create')).toBeVisible()
-      await expect.element(page.getByText('从零编排自动化流程')).toBeVisible()
+      await expect.element(page.getByText('找到场景编排入口')).toBeVisible()
 
       // 切换到“会话与凭据”分类
       const sessionTab = page.getByRole('tab', { name: '会话与凭据' })
       await sessionTab.click()
       await expect.element(sessionTab).toHaveAttribute('aria-selected', 'true')
       await expect.element(page.getByTestId('prompt-card-sess-totp')).toBeVisible()
-      await expect.element(page.getByText('托管 TOTP 2FA 与免登状态')).toBeVisible()
+      await expect.element(page.getByText('找到目标账号入口')).toBeVisible()
 
       // 点击卡片，自动派发提问
       const totpCard = page.getByTestId('prompt-card-sess-totp')
@@ -392,7 +371,7 @@ describe('识途助手升级（三）：新建会话、受控历史（3~5天）�
       expect(conv.title).toHaveLength(30)
 
       // 打开会话历史抽屉，确认列表中显示的标题就是首问摘要
-      const historyBtn = page.getByTitle('会话历史 (保留最近 5 天)')
+      const historyBtn = page.getByTitle('会话历史')
       await historyBtn.click()
 
       await expect.element(page.getByTestId('assistant-history-drawer')).toBeVisible()

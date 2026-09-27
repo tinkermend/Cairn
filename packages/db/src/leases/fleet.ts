@@ -347,7 +347,7 @@ export async function getWorkerDetail(
   if (!worker) throw failure('not_found', { code: 'WORKER_NOT_FOUND', message: '执行节点不存在' })
   const asOf = await clockNow(db)
   const counts = await countForWorkers(db, [workerId], asOf)
-  const { browserSessions, sessionLeases } = schemaFor(db)
+  const { browserSessions, sessionLeases, targets, targetAccounts } = schemaFor(db)
   const conditions = [eq(browserSessions.ownerWorkerId, workerId), ne(browserSessions.status, 'CLOSED')]
   if (parsed.status) conditions.push(eq(browserSessions.status, parsed.status))
   if (parsed.cursor) {
@@ -383,6 +383,24 @@ export async function getWorkerDetail(
             ),
           )
   const leaseBySession = new Map(leases.map((lease) => [lease.sessionId, lease]))
+  const targetIds = Array.from(new Set(page.map((row) => row.targetId)))
+  const accountIds = Array.from(new Set(page.map((row) => row.targetAccountId)))
+  const [targetRows, accountRows] = await Promise.all([
+    targetIds.length === 0
+      ? []
+      : db
+          .select({ id: targets.id, name: targets.name })
+          .from(targets)
+          .where(inArray(targets.id, targetIds)),
+    accountIds.length === 0
+      ? []
+      : db
+          .select({ id: targetAccounts.id, displayName: targetAccounts.displayName })
+          .from(targetAccounts)
+          .where(inArray(targetAccounts.id, accountIds)),
+  ])
+  const targetMap = new Map(targetRows.map((t) => [t.id, t.name]))
+  const accountMap = new Map(accountRows.map((a) => [a.id, a.displayName]))
   const last = page.at(-1)
   return workerDetailResponseSchema.parse({
     worker: summarizeWorker({
@@ -394,7 +412,11 @@ export async function getWorkerDetail(
       canSeeEndpoint: options.canSeeEndpoint,
     }),
     sessions: {
-      items: page.map((row) => toSessionDto(row, leaseBySession.get(row.id) ?? null)),
+      items: page.map((row) => ({
+        ...toSessionDto(row, leaseBySession.get(row.id) ?? null),
+        targetName: targetMap.get(row.targetId) ?? '未知系统',
+        accountDisplayName: accountMap.get(row.targetAccountId) ?? '未知账号',
+      })),
       nextCursor:
         rows.length > parsed.limit && last
           ? Buffer.from(`${last.createdAt.toISOString()}|${last.id}`, 'utf8').toString('base64url')

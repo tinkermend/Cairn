@@ -70,7 +70,7 @@ import {
 } from './runtime'
 import { hasTargetScope, installTargetScope } from './target-scope'
 import { originAllowed } from './page-identity'
-import { emptyLive, type LiveHandle, type SessionAcquireResult, type SessionManagerContext } from './session-live.js'
+import { SessionLeaseError, emptyLive, type LiveHandle, type SessionAcquireResult, type SessionManagerContext } from './session-live.js'
 import { shouldContinueCaptchaRetry } from './captcha/login-outcome.js'
 
 async function recordAuthAttemptStarted(
@@ -480,9 +480,21 @@ export async function recoverAuthHeld(this: SessionManagerContext,
       return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
     }
     // 先备齐凭据与句柄再占预算：拿不到凭据时不该白计一次自动登录。
-    const credential = await this.resolveLoginCredential(input.snapshot)
+    let credential
+    try {
+      credential = await this.resolveLoginCredential(input.snapshot)
+    } catch (error) {
+      if (error instanceof SessionLeaseError && error.code === 'AUTH_CREDENTIAL_UNREADABLE') {
+        return { ok: false, unrecoverable: true, code: 'AUTH_CREDENTIAL_UNREADABLE', runStatus: 'FAILED' }
+      }
+      throw error
+    }
     if (!credential || !live || !target) {
       return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    // 有凭据授权但密码为空是账号配置问题，单独报出来，别和"上下文不可恢复"混在一起。
+    if (!credential.password) {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CREDENTIAL_MISSING', runStatus: 'FAILED' }
     }
     const occupied = await occupyAutoLoginBudget(this.dbHandle, {
       targetId: input.snapshot.targetId,
@@ -583,7 +595,21 @@ export async function launchAndOpen(this: SessionManagerContext,
       accountSlot: created.accountSlot ?? 1,
     }).catch(() => null)
 
-    const credential = await this.resolveAccountCredential(key.targetAccountId).catch(() => null)
+    let credential: { storageState?: unknown } | null = null
+    try {
+      credential = await this.resolveAccountSecrets(key.targetAccountId, { storageState: true })
+    } catch (error) {
+      // 只请求了 storageState，读不出说明账号确实配置了上传态：直接失败，不带着缺失的登录态启动。
+      if (!(error instanceof SessionLeaseError) || error.code !== 'AUTH_CREDENTIAL_UNREADABLE') throw error
+      await setSessionStatus(db, {
+        sessionId: created.id,
+        expectedVersion: created.version,
+        status: 'CLOSED',
+        closeReason: 'launch_failed',
+        ...this.ownerScope(),
+      }).catch(() => {})
+      return { ok: false, code: 'AUTH_CREDENTIAL_UNREADABLE', message: error.message }
+    }
     const uploadedState = credential?.storageState
 
     if (snapshotContent && !snapshotContent.stale) {
@@ -609,45 +635,96 @@ export async function launchAndOpen(this: SessionManagerContext,
     }
 
     try {
+      const doLaunch = async (stateToInject: unknown) => {
+        let h: BrowserHandle
+        let hid: string | null = null
+        if (isShared) {
+          const spreadKeys = computeTargetSpreadKeys(key.targetId, targetInfo?.entryUrl)
+          const opts = {
+            headless: this.options.headless,
+            executablePath: this.options.executablePath,
+            storageState: stateToInject,
+          }
+          const acquired = await this.hostPool.acquireContext(
+            created.id,
+            spreadKeys,
+            opts,
+            this.liveHandleCount(),
+            this.options.maxSessions,
+          )
+          h = acquired.handle
+          hid = acquired.hostId
+
+          await appendSessionEvent(db, {
+            key,
+            type: 'session.host_assigned',
+            sessionId: created.id,
+            generation: created.generation,
+            payload: {
+              hostId: hid,
+              colocated: acquired.colocated,
+              contextsCount: this.hostPool.getHost(hid)?.contexts.size ?? 1,
+            },
+          }).catch(() => undefined)
+        } else {
+          const { profileDir } = ensureProfileDir(this.options.profileRoot, key, created.accountSlot ?? 1)
+          const launch = this.launchOverride ?? launchSession
+          h = await launch(profileDir, {
+            headless: this.options.headless,
+            executablePath: this.options.executablePath,
+            storageState: stateToInject,
+          })
+        }
+        return { handle: h, hostId: hid }
+      }
+
       let handle: BrowserHandle
       let hostId: string | null = null
-
-      if (isShared) {
-        const spreadKeys = computeTargetSpreadKeys(key.targetId, targetInfo?.entryUrl)
-        const opts = {
-          headless: this.options.headless,
-          executablePath: this.options.executablePath,
-          storageState: candidateState,
+      try {
+        const launched = await doLaunch(candidateState)
+        handle = launched.handle
+        hostId = launched.hostId
+      } catch (error) {
+        if (error instanceof SessionLeaseError && error.code === 'AUTH_STORAGE_STATE_INVALID') {
+          if (candidateSource === 'uploaded') {
+            await appendSessionEvent(db, {
+              key,
+              type: 'session.state_restored',
+              sessionId: created.id,
+              generation: created.generation,
+              payload: { source: 'uploaded', result: 'inject_failed' },
+            }).catch(() => undefined)
+            if (isShared) {
+              await this.hostPool.releaseContext(created.id).catch(() => {})
+            }
+            await setSessionStatus(db, {
+              sessionId: created.id,
+              expectedVersion: created.version,
+              status: 'CLOSED',
+              closeReason: 'launch_failed',
+              ...this.ownerScope(),
+            }).catch(() => {})
+            return { ok: false, code: 'AUTH_STORAGE_STATE_INVALID', message: '上传的登录态无法注入，请重新上传' }
+          }
+          if (candidateSource === 'snapshot' || candidateSource === 'stale_snapshot') {
+            await appendSessionEvent(db, {
+              key,
+              type: 'session.state_restored',
+              sessionId: created.id,
+              generation: created.generation,
+              payload: { source: candidateSource, result: 'inject_failed' },
+            }).catch(() => undefined)
+            candidateState = undefined
+            candidateSource = null
+            const retried = await doLaunch(undefined)
+            handle = retried.handle
+            hostId = retried.hostId
+          } else {
+            throw error
+          }
+        } else {
+          throw error
         }
-        const acquired = await this.hostPool.acquireContext(
-          created.id,
-          spreadKeys,
-          opts,
-          this.liveHandleCount(),
-          this.options.maxSessions,
-        )
-        handle = acquired.handle
-        hostId = acquired.hostId
-
-        await appendSessionEvent(db, {
-          key,
-          type: 'session.host_assigned',
-          sessionId: created.id,
-          generation: created.generation,
-          payload: {
-            hostId,
-            colocated: acquired.colocated,
-            contextsCount: this.hostPool.getHost(hostId)?.contexts.size ?? 1,
-          },
-        }).catch(() => undefined)
-      } else {
-        const { profileDir } = ensureProfileDir(this.options.profileRoot, key, created.accountSlot ?? 1)
-        const launch = this.launchOverride ?? launchSession
-        handle = await launch(profileDir, {
-          headless: this.options.headless,
-          executablePath: this.options.executablePath,
-          storageState: candidateState,
-        })
       }
 
       this.lives.set(created.id, emptyLive(handle, created.id, created.generation, hostId))
@@ -719,6 +796,16 @@ export async function launchAndOpen(this: SessionManagerContext,
     } catch (error) {
       if (isShared) {
         await this.hostPool.releaseContext(created.id).catch(() => {})
+      }
+      if (error instanceof SessionLeaseError) {
+        await setSessionStatus(db, {
+          sessionId: created.id,
+          expectedVersion: created.version,
+          status: 'CLOSED',
+          closeReason: 'launch_failed',
+          ...this.ownerScope(),
+        }).catch(() => {})
+        return { ok: false, code: error.code, message: error.message }
       }
       if (error instanceof OccupancyRequiredError) {
         await setSessionStatus(db, {
@@ -882,6 +969,37 @@ export async function ensureProfileAuth(this: SessionManagerContext,
         )
         continue
       }
+      let credential
+      try {
+        credential = await this.resolveLoginCredential(run)
+      } catch (error) {
+        if (error instanceof SessionLeaseError && error.code === 'AUTH_CREDENTIAL_UNREADABLE') {
+          return { ok: false, code: error.code, message: error.message, waitingForAuth: false }
+        }
+        throw error
+      }
+      if (!credential) {
+        return this.enterWaitingForAuth(
+          session,
+          runGrant,
+          policy,
+          occupancy,
+          'SESSION_AUTH_UNSUPPORTED',
+          '无法解析登录凭据',
+          targetInfo,
+        )
+      }
+      if (!credential.password || credential.password.length === 0) {
+        return this.enterWaitingForAuth(
+          session,
+          runGrant,
+          policy,
+          occupancy,
+          'AUTH_CREDENTIAL_MISSING',
+          '账号未配置密码，无法自动登录',
+          targetInfo,
+        )
+      }
       const occupied = await occupyAutoLoginBudget(db, {
         targetId: run.targetId,
         targetAccountId: run.targetAccountId,
@@ -894,18 +1012,6 @@ export async function ensureProfileAuth(this: SessionManagerContext,
           occupancy,
           (occupied.code as SessionErrorCode) ?? 'SESSION_AUTH_UNSUPPORTED',
           occupied.message,
-          targetInfo,
-        )
-      }
-      const credential = await this.resolveLoginCredential(run)
-      if (!credential) {
-        return this.enterWaitingForAuth(
-          session,
-          runGrant,
-          policy,
-          occupancy,
-          'SESSION_AUTH_UNSUPPORTED',
-          '无法解析登录凭据',
           targetInfo,
         )
       }
@@ -1044,7 +1150,15 @@ export async function ensureAuth(this: SessionManagerContext,
     }
 
     // password + 可自动处理的验证码 → 先按手填或平台常见字段试填，失败再等人
-    const credential = await this.resolveLoginCredential(run)
+    let credential
+    try {
+      credential = await this.resolveLoginCredential(run)
+    } catch (error) {
+      if (error instanceof SessionLeaseError && error.code === 'AUTH_CREDENTIAL_UNREADABLE') {
+        return { ok: false, code: error.code, message: error.message, waitingForAuth: false }
+      }
+      throw error
+    }
     if (!credential) {
       return this.enterWaitingForAuth(
         session,
@@ -1053,6 +1167,17 @@ export async function ensureAuth(this: SessionManagerContext,
         occupancy,
         'SESSION_AUTH_UNSUPPORTED',
         '无法解析登录凭据',
+        targetInfo,
+      )
+    }
+    if (!credential.password || credential.password.length === 0) {
+      return this.enterWaitingForAuth(
+        session,
+        runGrant,
+        policy,
+        occupancy,
+        'AUTH_CREDENTIAL_MISSING',
+        '账号未配置密码，无法自动登录',
         targetInfo,
       )
     }
@@ -1342,17 +1467,24 @@ export async function resolveLoginCredential(this: SessionManagerContext,
     }
     if (!this.secrets) return null
     const grant = await resolveSnapshotCredential(this.dbHandle, run)
-    if (!grant || grant.provider !== LOCAL_SECRET_PROVIDER) return null
+    if (!grant) return null
+    if (grant.provider !== LOCAL_SECRET_PROVIDER) {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `Run 凭据 provider 不支持: ${grant.provider} (secretId: ${grant.secretId})`)
+    }
     const row = await loadSecretCiphertext(this.dbHandle, grant.secretId)
-    if (!row) return null
+    if (!row) {
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `Run 凭据密文不存在 (secretId: ${grant.secretId})`)
+    }
+    let password = ''
     try {
-      return {
-        username: grant.username,
-        password: this.secrets.decrypt(row.id, row.ciphertext),
-        secretId: grant.secretId,
-      }
+      password = this.secrets.decrypt(row.id, row.ciphertext)
     } catch {
-      return null
+      throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', `Run 凭据解密失败 (secretId: ${grant.secretId})`)
+    }
+    return {
+      username: grant.username,
+      password,
+      secretId: grant.secretId,
     }
   }
 

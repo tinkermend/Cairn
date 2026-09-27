@@ -79,12 +79,14 @@ export {
   workerHasOccupancyProtocol,
   workerHasMaintenanceProtocol,
   toSessionOperationDto,
+  listQueuedRunsForAccount,
   type OccupancyOwner,
   type ClaimSessionUseInput,
   type ClaimSessionUseResult,
   type ClaimedSessionOperation,
   type PlacementFacts,
 } from './occupancy.js'
+export { readAccountSessionCap } from './account-session-concurrency.js'
 export {
   expireQueuedSessionOperations,
   countEligibleMaintenanceWorkers,

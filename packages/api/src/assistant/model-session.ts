@@ -55,9 +55,8 @@ export function parseModelJson(text: string): unknown {
 
 export class AssistantModelSession {
   used = 0
-  private accumulatedReasoning = ''
   private thinkingStartedAt?: number
-  private thinkingEndedAt?: number
+  private thinkingDurationMs = 0
 
   constructor(
     private readonly db: DbHandle,
@@ -65,21 +64,12 @@ export class AssistantModelSession {
     private readonly access: PlatformAiAccess,
     private readonly client: PlatformModelClient,
     private readonly ownerAccountId?: string,
-    private readonly onThinkingDelta?: (delta: string) => void,
   ) {}
 
-  getReasoningInfo(): { reasoningText?: string; durationMs?: number } {
-    const text = this.accumulatedReasoning.trim()
-    const durationMs =
-      this.thinkingStartedAt && this.thinkingEndedAt
-        ? this.thinkingEndedAt - this.thinkingStartedAt
-        : this.thinkingStartedAt
-          ? Date.now() - this.thinkingStartedAt
-          : undefined
-    return {
-      reasoningText: text || undefined,
-      durationMs,
-    }
+  getReasoningInfo(): { durationMs?: number } {
+    const durationMs = this.thinkingDurationMs +
+      (this.thinkingStartedAt ? Date.now() - this.thinkingStartedAt : 0)
+    return { durationMs: durationMs > 0 ? durationMs : undefined }
   }
 
   remainingMs() {
@@ -147,18 +137,16 @@ export class AssistantModelSession {
         timeoutMs: this.remainingMs(),
         json: true,
         signal,
-        onThinkingDelta: (delta) => {
+        onThinkingDelta: () => {
           if (!this.thinkingStartedAt) this.thinkingStartedAt = Date.now()
-          this.accumulatedReasoning += delta
-          this.onThinkingDelta?.(delta)
         },
       })
-      if (result.reasoningText && !this.accumulatedReasoning.includes(result.reasoningText)) {
-        if (!this.thinkingStartedAt) this.thinkingStartedAt = started
-        this.accumulatedReasoning += (this.accumulatedReasoning ? '\n' : '') + result.reasoningText
+      if (result.reasoningText && !this.thinkingStartedAt) {
+        this.thinkingStartedAt = started
       }
-      if (this.thinkingStartedAt && !this.thinkingEndedAt) {
-        this.thinkingEndedAt = Date.now()
+      if (this.thinkingStartedAt) {
+        this.thinkingDurationMs += Date.now() - this.thinkingStartedAt
+        this.thinkingStartedAt = undefined
       }
       await recordPlatformAiCall(this.db, {
         turnId: this.turnId,
@@ -174,6 +162,10 @@ export class AssistantModelSession {
       })
       return { ok: true, text: result.text }
     } catch (error) {
+      if (this.thinkingStartedAt) {
+        this.thinkingDurationMs += Date.now() - this.thinkingStartedAt
+        this.thinkingStartedAt = undefined
+      }
       const errMsg = error instanceof Error ? error.message : '模型调用失败'
       const isTimeout = errMsg.toLowerCase().includes('timeout') || errMsg.toLowerCase().includes('deadline')
       const code: 'MODEL_TIMEOUT' | 'MODEL_UNAVAILABLE' = isTimeout ? 'MODEL_TIMEOUT' : 'MODEL_UNAVAILABLE'
@@ -492,6 +484,12 @@ export async function generateScenarioAuthoringProposal(
 - ai_action: input 仅限 instruction
 - ai_extract: input 仅限 instruction, schema；可设置 outputKey
 - ai_assert: input 仅限 instruction
+
+【目标知识地图】
+- 用户上下文中的 targetKnowledge 提供已观测页面、菜单路径、元素定位与资产引用；优先使用与意图匹配且定位稳定的元素。
+- 只有元素的 assetRef 为非空时，才可在 input.target.assetRef 中引用它；同时复制该元素的 locator 到 input.target 的 framePath/candidates。
+- 不得编造页面 URL、assetRef 或定位候选；无匹配证据时返回 clarify。
+- unsafeAction 标记只说明该按钮可能有副作用，不得将对应步骤声明为 READ_ONLY。
 
 【单轮规模硬约束】
 - 单次提议最多包含 4 项操作，其中最多 2 项新增步骤。

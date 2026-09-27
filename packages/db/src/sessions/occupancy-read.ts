@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm'
 import {
   FACTORY_PLATFORM_CONFIG,
   SESSION_MAINTENANCE_PROTOCOL,
@@ -189,3 +189,29 @@ export async function hasQueuedSessionCreateOperation(db: Db): Promise<boolean> 
     .limit(1)
   return row !== undefined
 }
+
+/** 查询属于指定账号且处于排队等待中的运行（QUEUED 或 WAITING_FOR_AUTH），按创建时间升序取前 N 条 */
+export async function listQueuedRunsForAccount(
+  db: Db,
+  accountId: string,
+  limit = 5,
+): Promise<Array<{ id: string; status: string; createdAt: Date }>> {
+  const { runs } = schemaFor(db)
+  return db
+    .select({
+      id: runs.id,
+      status: runs.status,
+      createdAt: runs.createdAt,
+    })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.targetAccountId, accountId),
+        inArray(runs.status, ['QUEUED', 'WAITING_FOR_AUTH']),
+        isNull(runs.deletedAt),
+      ),
+    )
+    .orderBy(asc(runs.createdAt), asc(runs.id))
+    .limit(limit)
+}
+

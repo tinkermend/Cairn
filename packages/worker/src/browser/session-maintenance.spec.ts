@@ -15,7 +15,7 @@ import {
   getSessionOperation,
   getSessionById,
 } from '@cairn/db'
-import { BrowserSessionManager } from './session-manager'
+import { BrowserSessionManager, SessionLeaseError } from './session-manager'
 import { createBrowserPort } from './port'
 import { currentOccupancyGrant, attemptLoginCredentials, attemptLoginWithCredentials, loginWithCredentials, probeAuth } from './runtime'
 import { verifyAuthProfile } from './session-auth'
@@ -104,7 +104,7 @@ beforeEach(() => {
   )
   manager.assertMaintenanceLive = vi.fn(async () => ({ origin: 'USER' }))
   manager.persistProfileObservation = vi.fn(async () => {})
-  manager.resolveAccountCredential = vi.fn(async () => ({ username: 'alice', password: 'fixture' }))
+  manager.resolveAccountSecrets = vi.fn(async () => ({ username: 'alice', password: 'fixture' }))
   vi.mocked(verifyAuthProfile).mockResolvedValue({
     observation: { authState: 'AUTHENTICATED', identityState: 'MATCH' },
   } as any)
@@ -119,15 +119,39 @@ it.each([
   vi.mocked(loadTargetForExecution).mockResolvedValue({ id: 't', entryUrl: 'https://example.com', authMethod: 'password', captchaMode: 'none', ...target } as any)
   vi.mocked(verifyAuthProfile).mockResolvedValue({ observation: { authState, identityState } } as any)
   expect(await manager.runMaintenanceAuth({ id: 's' }, { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' }, null, 'ensure')).toMatchObject({ ok: false })
-  expect(manager.resolveAccountCredential).not.toHaveBeenCalled()
+  expect(manager.resolveAccountSecrets).not.toHaveBeenCalled()
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
 })
 
 it('无可用凭据不消耗自动登录额度', async () => {
   vi.mocked(verifyAuthProfile).mockResolvedValue({ observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' } } as any)
-  manager.resolveAccountCredential.mockResolvedValue(null)
+  manager.resolveAccountSecrets.mockResolvedValue(null)
   await manager.runMaintenanceAuth({ id: 's' }, { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' }, null, 'ensure')
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+})
+
+it('凭据解密失败冒泡抛出 AUTH_CREDENTIAL_UNREADABLE 且不消耗自动登录额度', async () => {
+  vi.mocked(verifyAuthProfile).mockResolvedValue({ observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' } } as any)
+  manager.resolveAccountSecrets.mockRejectedValue(new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', '密文损坏'))
+  await expect(
+    manager.runMaintenanceAuth({ id: 's' }, { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' }, null, 'ensure'),
+  ).rejects.toMatchObject({ code: 'AUTH_CREDENTIAL_UNREADABLE' })
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+  expect(attemptLoginCredentials).not.toHaveBeenCalled()
+})
+
+it('未配置密码时 LOGIN 返回 AUTH_CREDENTIAL_MISSING 且不消耗自动登录额度', async () => {
+  vi.mocked(verifyAuthProfile).mockResolvedValue({ observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' } } as any)
+  manager.resolveAccountSecrets.mockResolvedValue({ username: 'u', password: '' } as any)
+  const result = await manager.runMaintenanceAuth(
+    { id: 's' },
+    { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+    null,
+    'ensure',
+  )
+  expect(result).toEqual({ ok: false, code: 'AUTH_CREDENTIAL_MISSING' })
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+  expect(attemptLoginCredentials).not.toHaveBeenCalled()
 })
 it('verify_slides 核验通过应完成续登，不占用人工认证', async () => {
   const result = await manager.runMaintenanceAuth(
@@ -218,7 +242,7 @@ it('LOGIN_VERIFIED 探测未唯一匹配时仍先自动登录', async () => {
     'ensure',
   )
   expect(result).toEqual({ ok: true })
-  expect(manager.resolveAccountCredential).toHaveBeenCalled()
+  expect(manager.resolveAccountSecrets).toHaveBeenCalled()
   expect(occupyAutoLoginBudget).toHaveBeenCalled()
   expect(attemptLoginCredentials).toHaveBeenCalled()
   expect(appendSessionEvent).toHaveBeenCalledWith(
@@ -250,7 +274,7 @@ it('LOGIN_VERIFIED 准备/登录时核验基础设施未知仍去登录页提交
     'ensure',
   )
   expect(result).toEqual({ ok: true })
-  expect(manager.resolveAccountCredential).toHaveBeenCalled()
+  expect(manager.resolveAccountSecrets).toHaveBeenCalled()
   expect(occupyAutoLoginBudget).toHaveBeenCalled()
   expect(attemptLoginCredentials).toHaveBeenCalled()
   expect(appendSessionEvent).toHaveBeenCalledWith(
@@ -271,7 +295,7 @@ it('IDENTITY_VERIFIED 核验未知时准备会话仍不提交密码', async () =
       'ensure',
     ),
   ).toMatchObject({ ok: false })
-  expect(manager.resolveAccountCredential).not.toHaveBeenCalled()
+  expect(manager.resolveAccountSecrets).not.toHaveBeenCalled()
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
 })
 
@@ -335,6 +359,54 @@ it('后台 AUTH_DRIVEN VERIFY 在预算暂停时放弃保活', async () => {
   expect(abandonSessionKeepAlive).toHaveBeenCalledWith({}, 's')
 })
 
+it('后台 AUTH_DRIVEN VERIFY 凭据解密失败时放弃保活且抛出 AUTH_CREDENTIAL_UNREADABLE', async () => {
+  const { abandonSessionKeepAlive } = await import('@cairn/db')
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' },
+  } as any)
+  manager.resolveAccountSecrets = vi.fn(async () => {
+    throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', '密文损坏')
+  })
+  await expect(
+    manager.runMaintenanceAuth(
+      {
+        id: 's',
+        reclaimMode: 'AUTH_DRIVEN',
+        keepAliveUntil: new Date(Date.now() + 60_000),
+      },
+      { id: 'op', kind: 'VERIFY_AUTH', targetId: 't', targetAccountId: 'a', origin: 'BACKGROUND' },
+      null,
+      'verify',
+    ),
+  ).rejects.toMatchObject({ code: 'AUTH_CREDENTIAL_UNREADABLE' })
+  expect(abandonSessionKeepAlive).toHaveBeenCalledWith({}, 's')
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+})
+
+it('后台 AUTH_DRIVEN VERIFY 未配置密码时放弃保活且返回 AUTH_CREDENTIAL_MISSING', async () => {
+  const { abandonSessionKeepAlive } = await import('@cairn/db')
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' },
+  } as any)
+  manager.resolveAccountSecrets = vi.fn(async () => ({
+    username: 'u',
+    password: '',
+  }))
+  const result = await manager.runMaintenanceAuth(
+    {
+      id: 's',
+      reclaimMode: 'AUTH_DRIVEN',
+      keepAliveUntil: new Date(Date.now() + 60_000),
+    },
+    { id: 'op', kind: 'VERIFY_AUTH', targetId: 't', targetAccountId: 'a', origin: 'BACKGROUND' },
+    null,
+    'verify',
+  )
+  expect(result).toEqual({ ok: false, code: 'AUTH_CREDENTIAL_MISSING' })
+  expect(abandonSessionKeepAlive).toHaveBeenCalledWith({}, 's')
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+})
+
 it('后台 AUTH_DRIVEN VERIFY 自动重登成功', async () => {
   const { occupyAutoLoginBudget } = await import('@cairn/db')
   vi.mocked(verifyAuthProfile)
@@ -382,6 +454,51 @@ it('LEGACY 未指定登录框时仍按启发式尝试自动登录', async () => 
   )
   expect(result).toEqual({ ok: true })
   expect(attemptLoginWithCredentials).toHaveBeenCalled()
+})
+
+it('LEGACY 上传态读不出时记事件并继续密码登录；无密码时以上传态失败收场', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'LEGACY' } as any)
+  vi.mocked(probeAuth).mockResolvedValue('EXPIRED')
+  vi.mocked(attemptLoginWithCredentials).mockResolvedValue({ authenticated: true, submit: 'authenticated' })
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true, platformRevision: 1 } as any)
+  vi.mocked(loadTargetForExecution).mockResolvedValue({
+    id: 't',
+    entryUrl: 'https://example.com',
+    loginUrl: 'https://example.com/login',
+    authMethod: 'password',
+    captchaMode: 'none',
+    loginFields: null,
+  } as any)
+  const secrets = (password: string | undefined) =>
+    vi.fn(async (_id: string, include: { storageState?: boolean }) => {
+      if (include.storageState) throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', '上传态损坏')
+      return { username: 'alice', password }
+    })
+  const run = () =>
+    manager.runMaintenanceAuth(
+      { id: 's', targetId: 't', targetAccountId: 'a', generation: 1, authState: 'UNKNOWN' },
+      { id: 'op', kind: 'PREPARE', targetId: 't', targetAccountId: 'a' },
+      null,
+      'ensure',
+    )
+
+  manager.resolveAccountSecrets = secrets('fixture')
+  expect(await run()).toEqual({ ok: true })
+  expect(attemptLoginWithCredentials).toHaveBeenCalled()
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      type: 'session.state_restored',
+      payload: expect.objectContaining({ result: 'inject_failed', code: 'AUTH_CREDENTIAL_UNREADABLE' }),
+    }),
+  )
+
+  vi.mocked(attemptLoginWithCredentials).mockClear()
+  vi.mocked(occupyAutoLoginBudget).mockClear()
+  manager.resolveAccountSecrets = secrets(undefined)
+  expect(await run()).toMatchObject({ ok: false, code: 'AUTH_CREDENTIAL_UNREADABLE' })
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+  expect(attemptLoginWithCredentials).not.toHaveBeenCalled()
 })
 
 it('LEGACY 无画像时 LOGIN 先 probe 再自动登录', async () => {
@@ -657,7 +774,7 @@ it('LOGIN 加 grant 时验证码路径转入 AUTH_WAIT，不取凭据', async ()
     expect.anything(),
     expect.objectContaining({ lastAuthError: 'SESSION_AUTH_UNSUPPORTED' }),
   )
-  expect(manager.resolveAccountCredential).not.toHaveBeenCalled()
+  expect(manager.resolveAccountSecrets).not.toHaveBeenCalled()
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
 })
 

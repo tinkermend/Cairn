@@ -36,6 +36,7 @@ import {
 } from '@/lib/sessions-api'
 import { disposeWorkerSession } from '@/lib/workers-api'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { Main } from '@/components/layout/main'
@@ -68,6 +69,7 @@ import {
   describeOperationProgress,
   describeOperationWait,
   describeSessionOperationError,
+  formatInstanceOption,
   operationWaitNeedsAttention,
   groupSessionEventsByActivity,
   resolveSessionEvent,
@@ -349,6 +351,29 @@ export function SessionWorkbenchView({
 
   const selected = instances.find((item) => item.id === selectedSessionId) ?? instances[0] ?? null
 
+  useAssistantContextBinding(
+    useMemo(() => {
+      if (!targetId || !accountId) return null
+      const data = detail.data
+      const statusLabel = data ? ACCOUNT_SESSION_STATUS_LABELS[data.status] : '账号会话'
+      const statusTone = data ? ACCOUNT_SESSION_STATUS_TONE[data.status] : 'neutral'
+      const summaryText = data
+        ? `目标系统「${data.targetName}」账号「${data.accountDisplayName || data.accountUsername}」`
+        : '目标系统账号受管会话详情'
+
+      return {
+        page: 'session',
+        targetId,
+        targetAccountId: accountId,
+        sessionId: selected?.id ?? selectedSessionId ?? undefined,
+        entityId: selected?.id ?? selectedSessionId ?? accountId,
+        statusLabel,
+        statusTone,
+        summaryText,
+      }
+    }, [targetId, accountId, selected?.id, selectedSessionId, detail.data]),
+  )
+
   const cancel = useMutation({
     mutationFn: () => cancelSessionOperation(operationId!),
     onSuccess: () => {
@@ -571,8 +596,8 @@ export function SessionWorkbenchView({
         <PageHeader
           parent={
             <Link
-              to="/sessions/$targetId"
-              params={{ targetId }}
+              to="/sessions"
+              search={{ view: 'systems', targetId }}
               className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
             >
               <ArrowLeft className="size-4" />
@@ -637,30 +662,52 @@ export function SessionWorkbenchView({
                   ) : null}
                   {instances.length > 1 ? (
                     <Select value={selected?.id} onValueChange={setSelectedSessionId}>
-                      <SelectTrigger aria-label="选择会话" className="h-8 w-40">
+                      <SelectTrigger aria-label="选择会话" className="h-8 min-w-[200px] w-auto">
                         <SelectValue placeholder="选择会话" />
                       </SelectTrigger>
                       <SelectContent>
-                        {instances.map((item, index) => (
+                        {instances.map((item) => (
                           <SelectItem key={item.id} value={item.id}>
-                            第 {index + 1} 台 · {item.status === 'OPEN' ? '已打开' : item.status === 'LOST' ? '失联' : item.status}
+                            {formatInstanceOption({
+                              accountSlot: item.accountSlot ?? 1,
+                              ownerWorkerLabel: item.ownerWorkerLabel,
+                              ownerWorkerId: item.ownerWorkerId,
+                              status: item.status,
+                              generation: item.generation,
+                            })}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   ) : null}
                   <span className="hidden h-4 w-px bg-border sm:inline-block" />
-                  <span className="inline-flex items-center gap-1 text-label text-muted-foreground">
-                    <span>
-                      节点:{' '}
-                      {selected
-                        ? `${selected.ownerWorkerId} · 实例 #${selected.generation}${
-                            selected.isolation === 'SHARED' && selected.hostId
-                              ? ` · 宿主 ${selected.hostId.slice(0, 8)}`
-                              : ''
-                          }`
-                        : '—'}
-                    </span>
+                  <span className="inline-flex items-center gap-1.5 text-label text-muted-foreground">
+                    <span>节点:</span>
+                    {selected ? (
+                      <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                        <span
+                          className={`size-2 rounded-full ${
+                            selected.ownerWorkerOnline
+                              ? 'bg-status-success-foreground'
+                              : 'bg-muted-foreground/40'
+                          }`}
+                          title={selected.ownerWorkerOnline ? 'Worker 在线' : 'Worker 离线'}
+                        />
+                        <Link
+                          className="hover:text-primary hover:underline"
+                          to="/workers/$workerId"
+                          params={{ workerId: selected.ownerWorkerId }}
+                        >
+                          {selected.ownerWorkerLabel || selected.ownerWorkerId}
+                        </Link>
+                        <span>· 实例 #{selected.generation}</span>
+                        {selected.isolation === 'SHARED' && selected.hostId ? (
+                          <span>· 宿主 {selected.hostId.slice(0, 8)}</span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
                     {selected ? (
                       <Tooltip>
                         <TooltipTrigger asChild>

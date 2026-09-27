@@ -901,7 +901,7 @@ async function markMapJobRunning(tx: Db, jobId: string): Promise<void> {
   const now = await clockNow(tx)
   await tx
     .update(mapJobs)
-    .set({ jobStatus: 'running', updatedAt: now })
+    .set({ jobStatus: 'running', stopReason: null, updatedAt: now })
     .where(and(eq(mapJobs.id, jobId), inArray(mapJobs.jobStatus, ['queued', 'running'])))
 }
 

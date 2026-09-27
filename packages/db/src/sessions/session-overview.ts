@@ -6,9 +6,11 @@ import {
   deriveAuthCapability,
   deriveAccountSessionStatus,
   effectiveAccountSessionCap,
+  isFilterAllowedInBucket,
   matchesOverviewFilter,
   matchesSystemOverviewFilter,
   worstAccountSessionStatus,
+  type AccountSessionBucket,
   type AccountSessionOverviewItem,
   type AccountSessionStatus,
   type SessionOverviewFilter,
@@ -21,7 +23,7 @@ import {
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { clockNow, databaseNow, schemaFor } from '../native.js'
-import { notFound } from '../runs/errors.js'
+import { badRequest, notFound } from '../runs/errors.js'
 import { readRetentionConfig } from './session-retention.js'
 import { parseTargetSessionPolicyOverride } from './session-policy.js'
 import { readAccountSessionCap } from './account-session-concurrency.js'
@@ -525,6 +527,8 @@ function emptyAccountSummary() {
     lost: 0,
     unprepared: 0,
     retained: 0,
+    problem: 0,
+    busy: 0,
   }
 }
 
@@ -543,6 +547,9 @@ function bumpAccountSummary(
   if (status === 'lost') summary.lost += 1
   if (status === 'unprepared') summary.unprepared += 1
   if (retained) summary.retained += 1
+  const bucket = accountSessionBucket(status)
+  if (bucket === 'problem') summary.problem += 1
+  if (bucket === 'busy') summary.busy += 1
 }
 
 function isRetained(facts: OccupancyFacts, now: Date) {
@@ -568,8 +575,21 @@ function primaryAction(status: AccountSessionStatus): string {
   return 'VERIFY_AUTH'
 }
 
-function toAccountOverviewItem(account: OverviewAccountRow, facts: OccupancyFacts, now: Date): AccountSessionOverviewItem {
+function toAccountOverviewItem(
+  account: OverviewAccountRow,
+  facts: OccupancyFacts,
+  now: Date,
+  workerMap?: Map<string, { label: string; online: boolean }>,
+): AccountSessionOverviewItem {
   const status = statusFromFacts(facts)
+  const mainWorkerId = facts.live?.ownerWorkerId ?? null
+  const mainWorker = mainWorkerId && workerMap ? workerMap.get(mainWorkerId) : null
+  const liveWorkerIds = new Set<string>()
+  for (const inst of facts.instances) {
+    if (inst.session.ownerWorkerId) liveWorkerIds.add(inst.session.ownerWorkerId)
+  }
+  if (facts.live?.ownerWorkerId) liveWorkerIds.add(facts.live.ownerWorkerId)
+
   return {
     targetId: account.targetId,
     targetName: account.targetName,
@@ -590,11 +610,71 @@ function toAccountOverviewItem(account: OverviewAccountRow, facts: OccupancyFact
     retainUntil: facts.live?.retainUntil?.toISOString() ?? null,
     lastAuthCheckedAt: facts.live?.lastAuthCheckedAt?.toISOString() ?? null,
     lastAuthSuccessAt: facts.live?.lastAuthSuccessAt?.toISOString() ?? null,
-    ownerWorkerId: facts.live?.ownerWorkerId ?? null,
+    ownerWorkerId: mainWorkerId,
+    ownerWorkerLabel: mainWorker?.label ?? mainWorkerId,
+    // null 只表示「没有宿主节点」；有宿主但节点记录缺失/心跳过期，与详情接口
+    // （:1137、:1160）保持一致口径，都算离线（false），不要和「没有节点」混在一起。
+    ownerWorkerOnline: mainWorkerId ? (mainWorker?.online ?? false) : null,
+    liveWorkerCount: liveWorkerIds.size,
     primaryAction: primaryAction(status),
     liveCount: facts.instances.length,
     effectiveCap: capFromAccount(account),
   }
+}
+
+async function loadWorkerMapForAccounts(
+  db: Db,
+  accounts: OverviewAccountRow[],
+  factsByAccount: Map<string, OccupancyFacts>,
+  now: Date,
+): Promise<Map<string, { label: string; online: boolean }>> {
+  const workerIds = new Set<string>()
+  for (const account of accounts) {
+    const facts = factsByAccount.get(accountFactKey(account.targetId, account.targetAccountId))
+    if (facts?.live?.ownerWorkerId) workerIds.add(facts.live.ownerWorkerId)
+    if (facts?.instances) {
+      for (const inst of facts.instances) {
+        if (inst.session.ownerWorkerId) workerIds.add(inst.session.ownerWorkerId)
+      }
+    }
+  }
+  if (workerIds.size === 0) return new Map()
+  const { workers } = schemaFor(db)
+  const rows = await db
+    .select({ id: workers.id, hostname: workers.hostname, heartbeatExpiresAt: workers.heartbeatExpiresAt })
+    .from(workers)
+    .where(inArray(workers.id, Array.from(workerIds)))
+  return new Map(
+    rows.map((w) => [
+      w.id,
+      {
+        label: w.hostname || w.id,
+        online: Boolean(w.heartbeatExpiresAt && w.heartbeatExpiresAt.getTime() > now.getTime()),
+      },
+    ]),
+  )
+}
+
+function matchesOverviewFilters(
+  status: AccountSessionStatus,
+  retained: boolean,
+  criteria: {
+    bucket?: AccountSessionBucket
+    filter?: SessionOverviewFilter
+    retained?: boolean
+  },
+): boolean {
+  if (criteria.retained && !retained) return false
+  if (criteria.filter === 'retained' && !retained) return false
+  if (criteria.bucket && accountSessionBucket(status) !== criteria.bucket) return false
+  if (criteria.filter && criteria.filter !== 'retained') {
+    if (criteria.filter === 'available') {
+      if (status !== 'ready') return false
+    } else if (status !== criteria.filter) {
+      return false
+    }
+  }
+  return true
 }
 
 function addAccountToSystem(
@@ -676,7 +756,9 @@ export async function listAccountSessionOverview(
   db: Db,
   input: {
     search?: string
+    bucket?: AccountSessionBucket
     filter?: SessionOverviewFilter
+    retained?: boolean
     targetId?: string
     cursor?: string
     limit?: number
@@ -690,7 +772,15 @@ export async function listAccountSessionOverview(
   const scoped = Boolean(input.targetId)
   const now = await clockNow(db)
 
-  if (input.filter) {
+  if (input.bucket && input.filter) {
+    if (!isFilterAllowedInBucket(input.bucket, input.filter)) {
+      throw badRequest('INVALID_FILTER_COMBINATION', '筛选条件与所选状态分类不匹配')
+    }
+  }
+
+  const hasFilter = Boolean(input.filter || input.bucket || input.retained)
+
+  if (hasFilter) {
     const accounts = await loadOverviewAccounts(db, {
       targetIds,
       targetId: input.targetId,
@@ -701,20 +791,32 @@ export async function listAccountSessionOverview(
       accounts.map((account) => ({ targetId: account.targetId, targetAccountId: account.targetAccountId })),
     )
     const summary = loadAccountSummary(accounts, factsByAccount, now)
-    const items = accounts
+    const matchingAccounts = accounts
       .filter((account) => !scoped || !input.search || accountNameMatches(account, input.search))
-      .map((account) =>
-        toAccountOverviewItem(
-          account,
-          factsByAccount.get(accountFactKey(account.targetId, account.targetAccountId)) ?? emptyOccupancy(),
-          now,
-        ),
-      )
-      .filter((item) => matchesOverviewFilter(item.status, item.retained, input.filter))
-    const page = items.slice(offset, offset + limit)
+      .filter((account) => {
+        const facts = factsByAccount.get(accountFactKey(account.targetId, account.targetAccountId)) ?? emptyOccupancy()
+        const status = statusFromFacts(facts)
+        const retained = isRetained(facts, now)
+        return matchesOverviewFilters(status, retained, {
+          bucket: input.bucket,
+          filter: input.filter,
+          retained: input.retained,
+        })
+      })
+
+    const pageSlice = matchingAccounts.slice(offset, offset + limit)
+    const workerMap = await loadWorkerMapForAccounts(db, pageSlice, factsByAccount, now)
+    const page = pageSlice.map((account) =>
+      toAccountOverviewItem(
+        account,
+        factsByAccount.get(accountFactKey(account.targetId, account.targetAccountId)) ?? emptyOccupancy(),
+        now,
+        workerMap,
+      ),
+    )
     return {
       items: page,
-      nextCursor: nextOffsetCursor(offset, limit, offset + limit < items.length),
+      nextCursor: nextOffsetCursor(offset, limit, offset + limit < matchingAccounts.length),
       summary,
       asOf: now.toISOString(),
     }
@@ -739,11 +841,14 @@ export async function listAccountSessionOverview(
     limit: limit + 1,
   })
   const hasMore = itemRows.length > limit
-  const page = itemRows.slice(0, limit).map((account) =>
+  const pageSlice = itemRows.slice(0, limit)
+  const workerMap = await loadWorkerMapForAccounts(db, pageSlice, factsByAccount, now)
+  const page = pageSlice.map((account) =>
     toAccountOverviewItem(
       account,
       factsByAccount.get(accountFactKey(account.targetId, account.targetAccountId)) ?? emptyOccupancy(),
       now,
+      workerMap,
     ),
   )
   return {
@@ -943,24 +1048,50 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
       ),
     )
     .limit(1)
+  const workerIds = new Set<string>()
+  if (facts.live?.ownerWorkerId) workerIds.add(facts.live.ownerWorkerId)
+  for (const inst of facts.instances) {
+    if (inst.session.ownerWorkerId) workerIds.add(inst.session.ownerWorkerId)
+  }
+  let workerMap = new Map<string, { label: string; online: boolean }>()
   let quotaUsed = 0
   let quotaLimit = 0
-  if (facts.live) {
-    const [worker] = await db.select().from(workers).where(eq(workers.id, facts.live.ownerWorkerId)).limit(1)
-    const { retention } = await readRetentionConfig(db)
-    quotaLimit = retentionQuota(worker?.maxSessions ?? 0, retention.reservedFreeSlotsPerWorker)
-    const { browserSessions } = schemaFor(db)
-    const rows = await db
-      .select({ id: browserSessions.id })
-      .from(browserSessions)
-      .where(
-        and(
-          eq(browserSessions.ownerWorkerId, facts.live.ownerWorkerId),
-          inArray(browserSessions.status, ['CREATING', 'OPEN']),
-          sql`${browserSessions.retainUntil} > ${databaseNow(db)}`,
-        ),
-      )
-    quotaUsed = rows.length
+  if (workerIds.size > 0) {
+    const workerRows = await db
+      .select({
+        id: workers.id,
+        hostname: workers.hostname,
+        heartbeatExpiresAt: workers.heartbeatExpiresAt,
+        maxSessions: workers.maxSessions,
+      })
+      .from(workers)
+      .where(inArray(workers.id, Array.from(workerIds)))
+    workerMap = new Map(
+      workerRows.map((w) => [
+        w.id,
+        {
+          label: w.hostname || w.id,
+          online: Boolean(w.heartbeatExpiresAt && w.heartbeatExpiresAt.getTime() > now.getTime()),
+        },
+      ]),
+    )
+    if (facts.live) {
+      const liveWorker = workerRows.find((w) => w.id === facts.live!.ownerWorkerId)
+      const { retention } = await readRetentionConfig(db)
+      quotaLimit = retentionQuota(liveWorker?.maxSessions ?? 0, retention.reservedFreeSlotsPerWorker)
+      const { browserSessions } = schemaFor(db)
+      const rows = await db
+        .select({ id: browserSessions.id })
+        .from(browserSessions)
+        .where(
+          and(
+            eq(browserSessions.ownerWorkerId, facts.live.ownerWorkerId),
+            inArray(browserSessions.status, ['CREATING', 'OPEN']),
+            sql`${browserSessions.retainUntil} > ${databaseNow(db)}`,
+          ),
+        )
+      quotaUsed = rows.length
+    }
   }
   let lastAuthError = facts.live?.lastAuthError ?? null
   if (!lastAuthError) {
@@ -1004,6 +1135,8 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
             status: facts.live.status,
             generation: facts.live.generation,
             ownerWorkerId: facts.live.ownerWorkerId,
+            ownerWorkerLabel: workerMap.get(facts.live.ownerWorkerId)?.label ?? facts.live.ownerWorkerId,
+            ownerWorkerOnline: workerMap.get(facts.live.ownerWorkerId)?.online ?? false,
             authState: facts.live.authState,
             identityState: facts.live.identityState,
             observedTier: facts.live.observedTier,
@@ -1025,6 +1158,8 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
       status: item.session.status,
       generation: item.session.generation,
       ownerWorkerId: item.session.ownerWorkerId,
+      ownerWorkerLabel: workerMap.get(item.session.ownerWorkerId)?.label ?? item.session.ownerWorkerId,
+      ownerWorkerOnline: workerMap.get(item.session.ownerWorkerId)?.online ?? false,
       authState: item.session.authState,
       identityState: item.session.identityState,
       observedTier: item.session.observedTier,

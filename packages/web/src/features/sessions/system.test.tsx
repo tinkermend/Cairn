@@ -5,7 +5,8 @@ import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { useAuthStore } from '@/stores/auth-store'
 import { ThemeProvider } from '@/context/theme-provider'
-import { SessionSystemPage } from './system'
+import { SystemAccountsPanel } from './system-accounts-panel'
+import { Route as TargetIdRoute } from '@/routes/_authenticated/sessions/$targetId/index'
 
 const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const ACCOUNT_ID = '22222222-2222-4222-8222-222222222222'
@@ -28,8 +29,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => mocks.navigate,
+    useSearch: () => ({}),
     getRouteApi: () => ({
       useParams: () => ({ targetId: TARGET_ID }),
+      useSearch: () => ({}),
     }),
     Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
   }
@@ -38,6 +41,7 @@ vi.mock('./use-session-observation', () => ({ useSessionObservation: () => ({ co
 vi.mock('@/lib/targets-api', () => ({ fetchTarget: mocks.fetchTarget }))
 vi.mock('@/lib/sessions-api', () => ({
   fetchSessionOverview: mocks.fetchSessionOverview,
+  fetchAccountSession: vi.fn().mockResolvedValue({ instances: [] }),
   requestAccountSessionOperation: mocks.requestAccountSessionOperation,
   newSessionIdempotencyKey: (kind: string) => `session-${kind}-test-key`,
 }))
@@ -84,10 +88,12 @@ function account(input: {
     lastAuthSuccessAt: null,
     ownerWorkerId: null,
     primaryAction: input.primaryAction,
+    liveCount: input.sessionId ? 1 : 0,
+    effectiveCap: 1,
   }
 }
 
-describe('SessionSystemPage', () => {
+describe('SystemAccountsPanel', () => {
   beforeEach(async () => {
     vi.resetAllMocks()
     sessionStorage.clear()
@@ -141,6 +147,7 @@ describe('SessionSystemPage', () => {
       summary: {
         total: 4,
         available: 1,
+        ready: 1,
         needsCheck: 0,
         needsLogin: 0,
         identityMismatch: 0,
@@ -148,6 +155,8 @@ describe('SessionSystemPage', () => {
         executing: 0,
         lost: 1,
         unprepared: 1,
+        problem: 1,
+        busy: 1,
         retained: 0,
       },
       asOf: '2026-09-17T00:00:00.000Z',
@@ -160,38 +169,37 @@ describe('SessionSystemPage', () => {
     mocks.disposeWorkerSession.mockResolvedValue({ id: LOST_SESSION_ID })
   })
 
-  it('用目标详情作标题，未准备不出现关闭，查看与处置可点', async () => {
+  it('系统展开区展示账号列表与分桶筛选，未准备不出现关闭，查看与处置可点', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const onOpenWorkbench = vi.fn()
     const screen = await render(
       <ThemeProvider>
         <QueryClientProvider client={client}>
-          <SessionSystemPage />
+          <SystemAccountsPanel targetId={TARGET_ID} targetName="演示系统" onOpenWorkbench={onOpenWorkbench} />
         </QueryClientProvider>
       </ThemeProvider>,
     )
-    await expect.element(screen.getByRole('heading', { name: '演示系统' })).toBeInTheDocument()
-    await expect.element(screen.getByText(/1 就绪 · 1 有问题 · 1 未准备 · 1 占用中/)).toBeInTheDocument()
     expect(mocks.fetchSessionOverview).toHaveBeenCalledWith({
       targetId: TARGET_ID,
       search: undefined,
+      bucket: undefined,
       filter: undefined,
-      limit: 20,
+      retained: undefined,
+      limit: 10,
       cursor: undefined,
     })
-    await expect.element(screen.getByText('尚未准备')).toBeInTheDocument()
+    await expect.element(screen.getByText('值班')).toBeInTheDocument()
+    await expect.element(screen.getByText('就绪账号')).toBeInTheDocument()
     const closeButtons = document.querySelectorAll('button')
-    const closeLabels = [...closeButtons].map((button) => button.textContent)
+    const closeLabels = [...closeButtons].map((button) => button.textContent?.trim())
     expect(closeLabels.filter((label) => label === '关闭会话')).toHaveLength(2)
     await expect.element(screen.getByRole('button', { name: '处置失联' })).toBeEnabled()
     await screen.getByRole('button', { name: '处置失联' }).click()
     expect(mocks.disposeWorkerSession).toHaveBeenCalledWith(LOST_SESSION_ID, {
-      note: '系统会话页处置失联实例',
+      note: '系统会话展开区处置失联实例',
     })
     await screen.getByRole('button', { name: '查看' }).click()
-    expect(mocks.navigate).toHaveBeenCalledWith({
-      to: '/sessions/$targetId/$accountId',
-      params: { targetId: TARGET_ID, accountId: BUSY_ID },
-    })
+    expect(onOpenWorkbench).toHaveBeenCalledWith(BUSY_ID)
     expect(document.body.textContent).not.toContain('删除')
   })
 
@@ -201,12 +209,28 @@ describe('SessionSystemPage', () => {
     const screen = await render(
       <ThemeProvider>
         <QueryClientProvider client={client}>
-          <SessionSystemPage />
+          <SystemAccountsPanel targetId={TARGET_ID} targetName="演示系统" />
         </QueryClientProvider>
       </ThemeProvider>,
     )
     await expect.element(screen.getByText('值班')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '关闭会话' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '处置失联' })).not.toBeInTheDocument()
+  })
+
+  it('访问 /sessions/$targetId 会重定向至 /sessions?view=systems&targetId=...', async () => {
+    signIn(['session:read'])
+    let redirected: any = null
+    try {
+      // @ts-expect-error invoke beforeLoad directly
+      await TargetIdRoute.options.beforeLoad({ params: { targetId: TARGET_ID } })
+    } catch (error) {
+      redirected = error
+    }
+    expect(redirected.options).toMatchObject({
+      to: '/sessions',
+      search: { view: 'systems', targetId: TARGET_ID },
+      replace: true,
+    })
   })
 })
