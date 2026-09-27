@@ -66,6 +66,8 @@ export function ResourceDeleteDialog({
   const blockers = preview?.blockers ?? []
   const hasBlockers = blockers.length > 0
   const counts = preview?.counts ?? {}
+  const isPreviewPending = Boolean(previewFn) && previewQuery.isPending
+  const isPreviewError = Boolean(previewFn) && previewQuery.isError
 
   const titles: Record<string, string> = {
     target: '删除目标系统',
@@ -77,18 +79,18 @@ export function ResourceDeleteDialog({
   }
 
   const handleConfirm = async () => {
-    if (hasBlockers) return
+    if (hasBlockers || isPreviewPending || isPreviewError) return
     setSubmitting(true)
     try {
-      const body: DeleteResourceBody | undefined = counts
+      const body: DeleteResourceBody | undefined = preview?.counts
         ? {
             expectedCounts: {
-              targetAccounts: counts.targetAccounts,
-              scenarios: counts.scenarios,
-              suites: counts.suites,
-              recordings: counts.recordings,
-              runs: counts.runs,
-              schedules: counts.schedules,
+              targetAccounts: preview.counts.targetAccounts,
+              scenarios: preview.counts.scenarios,
+              suites: preview.counts.suites,
+              recordings: preview.counts.recordings,
+              runs: preview.counts.runs,
+              schedules: preview.counts.schedules,
             },
           }
         : undefined
@@ -122,12 +124,12 @@ export function ResourceDeleteDialog({
           </AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className='space-y-4 pt-2 text-body text-text-primary'>
-              {previewQuery.isPending && previewFn ? (
+              {isPreviewPending ? (
                 <div className='flex items-center justify-center gap-2 py-6 text-muted-foreground'>
                   <Loader2 className='size-5 animate-spin' />
                   <span>正在检查资源依赖与级联范围…</span>
                 </div>
-              ) : previewQuery.isError ? (
+              ) : isPreviewError ? (
                 <div className='rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive'>
                   <div className='flex items-center gap-2 font-medium'>
                     <AlertCircle className='size-4' />
@@ -271,7 +273,7 @@ export function ResourceDeleteDialog({
           <AlertDialogCancel disabled={submitting}>取消</AlertDialogCancel>
           <Button
             variant='destructive'
-            disabled={hasBlockers || submitting || previewQuery.isPending}
+            disabled={hasBlockers || submitting || isPreviewPending || isPreviewError}
             loading={submitting}
             onClick={handleConfirm}
           >

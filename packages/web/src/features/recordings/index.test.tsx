@@ -104,4 +104,29 @@ describe('录制草稿列表', () => {
       }),
     )
   })
+
+  it('点击删除录制草稿，确认删除按钮可点击并触发删除', async () => {
+    useAuthStore.getState().auth.setUser({
+      id: 'u1',
+      displayName: '管理员',
+      email: null,
+      roles: ['admin'],
+      permissions: ['workflow:write', 'workflow:delete'],
+    })
+    mocks.deleteRecording.mockResolvedValue({ id: '66666666-6666-4666-8666-666666666666', deleted: true })
+
+    const screen = await renderPage()
+    const deleteBtn = screen.getByRole('button', { name: '删除录制 shop.example' })
+    await expect.element(deleteBtn).toBeVisible()
+    await deleteBtn.click()
+
+    await expect.element(screen.getByRole('heading', { name: '删除录制草稿' })).toBeVisible()
+    const confirmBtn = screen.getByRole('button', { name: '确认删除' })
+    await expect.element(confirmBtn).toBeVisible()
+    await expect.element(confirmBtn).toBeEnabled()
+
+    await confirmBtn.click()
+    expect(mocks.deleteRecording).toHaveBeenCalledWith('66666666-6666-4666-8666-666666666666')
+  })
 })
+

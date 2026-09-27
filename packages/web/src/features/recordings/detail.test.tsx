@@ -443,4 +443,23 @@ describe('录制草稿详情页', () => {
     await expect.element(screen.getByText('页面加载成功')).toBeVisible()
     await expect.element(screen.getByRole('button', { name: '以草稿新建场景' })).toBeVisible()
   })
+
+  it('在详情页点击删除草稿唤起弹窗且确认删除按钮可用', async () => {
+    mocks.deleteRecording.mockResolvedValue({ id: 'rec-123', deleted: true })
+
+    const screen = await renderPage()
+    const deleteBtn = screen.getByRole('button', { name: '删除' })
+    await expect.element(deleteBtn).toBeVisible()
+    await deleteBtn.click()
+
+    await expect.element(screen.getByRole('heading', { name: '删除录制草稿' })).toBeVisible()
+    const confirmBtn = screen.getByRole('button', { name: '确认删除' })
+    await expect.element(confirmBtn).toBeVisible()
+    await expect.element(confirmBtn).toBeEnabled()
+
+    await confirmBtn.click()
+    expect(mocks.deleteRecording).toHaveBeenCalledWith('rec-123')
+  })
 })
+
+
