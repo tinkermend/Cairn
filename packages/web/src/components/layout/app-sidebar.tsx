@@ -3,6 +3,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
+  SidebarRail,
   useSidebar,
 } from '@/components/ui/sidebar'
 import { AppTitle } from './app-title'
@@ -29,11 +30,10 @@ export function AppSidebar() {
             ))
           : null}
       </SidebarContent>
-      {!isMobile ? (
-        <SidebarFooter>
-          <SystemMenu />
-        </SidebarFooter>
-      ) : null}
+      <SidebarFooter>
+        <SystemMenu healthOnly={isMobile} />
+      </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   )
 }

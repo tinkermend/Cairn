@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { Slot } from '@radix-ui/react-slot'
 import { VariantProps, cva } from 'class-variance-authority'
-import { PanelLeftIcon } from 'lucide-react'
+import { PanelLeftIcon, ChevronLeft, ChevronRight } from 'lucide-react'
+import { formatShortcut } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { Button } from '@/components/ui/button'
@@ -309,32 +310,50 @@ function SidebarTrigger({
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, state, isMobile } = useSidebar()
+  const toggleKey = useKeybindingsStore((s) => s.getEffectiveKey('sidebar.toggle'))
+  const shortcutHint = formatShortcut(toggleKey)
+  const isCollapsed = state === 'collapsed'
+  const label = isCollapsed
+    ? `展开侧栏 (${shortcutHint})`
+    : `收起侧栏 (${shortcutHint})`
+
+  if (isMobile) return null
 
   return (
     <button
       data-sidebar='rail'
       data-slot='sidebar-rail'
-      aria-label='Toggle Sidebar'
-      tabIndex={-1}
+      aria-label={label}
+      tabIndex={0}
       onClick={toggleSidebar}
-      title='Toggle Sidebar'
+      title={label}
       className={cn(
-        'absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-[inset-inline,background-color] ease-linear group-data-[side=left]:-inset-e-4 group-data-[side=right]:inset-s-0 after:absolute after:inset-y-0 after:inset-s-1/2 after:w-0.5 hover:after:bg-sidebar-border sm:flex',
-        'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',
-        '[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize',
+        'group/rail absolute inset-y-0 z-30 hidden w-4 -translate-x-1/2 transition-[inset-inline,background-color] ease-linear group-data-[side=left]:-inset-e-4 group-data-[side=right]:inset-s-0 sm:flex items-center justify-center cursor-pointer',
+        'after:absolute after:inset-y-0 after:inset-s-1/2 after:w-0.5 after:transition-colors hover:after:bg-primary/80',
         'group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:start-full hover:group-data-[collapsible=offcanvas]:bg-sidebar',
         '[[data-side=left][data-collapsible=offcanvas]_&]:-inset-e-2',
         '[[data-side=right][data-collapsible=offcanvas]_&]:-inset-s-2',
-
-        // RTL support
         'rtl:translate-x-1/2',
-        'rtl:in-data-[side=left]:cursor-e-resize rtl:in-data-[side=right]:cursor-w-resize',
-        'rtl:[[data-side=left][data-state=collapsed]_&]:cursor-w-resize rtl:[[data-side=right][data-state=collapsed]_&]:cursor-e-resize',
         className
       )}
       {...props}
-    />
+    >
+      <span
+        aria-hidden='true'
+        className={cn(
+          'pointer-events-none relative z-40 flex size-5.5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs transition-[opacity,transform,color,background-color,border-color] duration-200',
+          'opacity-0 scale-75 group-hover/rail:opacity-100 group-hover/rail:scale-100 group-hover/rail:border-primary/50 group-hover/rail:text-primary group-hover/rail:bg-sidebar-accent',
+          'group-focus-visible/rail:opacity-100 group-focus-visible/rail:scale-100'
+        )}
+      >
+        {isCollapsed ? (
+          <ChevronRight className='size-3.5' />
+        ) : (
+          <ChevronLeft className='size-3.5' />
+        )}
+      </span>
+    </button>
   )
 }
 

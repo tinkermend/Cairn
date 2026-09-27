@@ -42,9 +42,13 @@ export function NavGroup({ title, items }: NavGroupProps) {
   const visibleItems = filterNavItems(items, user)
   if (visibleItems.length === 0) return null
   return (
-    <SidebarGroup>
-      {title && <SidebarGroupLabel>{title}</SidebarGroupLabel>}
-      <SidebarMenu>
+    <SidebarGroup className='py-1.5'>
+      {title && (
+        <SidebarGroupLabel className='tracking-wider text-micro font-semibold text-muted-foreground/80 uppercase mb-0.5'>
+          {title}
+        </SidebarGroupLabel>
+      )}
+      <SidebarMenu className='gap-0.5'>
         {visibleItems.map((item) => {
           const key = `${item.title}-${item.url}`
 

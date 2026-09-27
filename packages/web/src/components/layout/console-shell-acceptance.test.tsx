@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { PlatformHealthResponse } from '@cairn/shared'
 import { AuthenticatedLayout } from './authenticated-layout'
 import { useAuthStore } from '@/stores/auth-store'
 import { useAssistantStore } from '@/stores/assistant-store'
@@ -71,6 +72,7 @@ const mockHealthResponse = {
     changeHint: { status: 'healthy' as const, code: 'OK', message: '链路正常' },
   },
 }
+let healthResponse: PlatformHealthResponse = mockHealthResponse
 
 describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () => {
   let queryClient: QueryClient
@@ -78,6 +80,7 @@ describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () =
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.pathname = '/scenarios'
+    healthResponse = mockHealthResponse
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -85,7 +88,7 @@ describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () =
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
       if (url.includes('/api/platform-health')) {
-        return new Response(JSON.stringify(mockHealthResponse), {
+        return new Response(JSON.stringify(healthResponse), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })
@@ -176,8 +179,10 @@ describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () =
     await expect.element(page.getByRole('link', { name: '消息推送', exact: true })).toBeVisible()
 
     // 4. 底部系统与管理入口渲染
-    const systemTrigger = page.getByRole('button', { name: '系统与管理' })
+    const systemTrigger = page.getByRole('button', { name: /系统(与)?管理，平台状态：正常/ })
     await expect.element(systemTrigger).toBeVisible()
+    await expect.element(systemTrigger.getByText('正常')).toBeVisible()
+    expect(header?.querySelector('[aria-label^="平台健康状态"]')).toBeNull()
 
     // 5. 顶栏右侧元素可达：搜索入口、识途助手、头像及用户昵称
     await expect.element(page.getByRole('button', { name: '搜索或跳转' })).toBeVisible()
@@ -268,18 +273,118 @@ describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () =
       </QueryClientProvider>,
     )
 
-    const systemTrigger = page.getByRole('button', { name: '系统与管理' })
+    const systemTrigger = page.getByRole('button', { name: /系统(与)?管理，平台状态：正常/ })
     await systemTrigger.click()
 
     // 弹出面板展示
     const panel = page.getByRole('dialog')
     await expect.element(panel.getByText('平台运行概况')).toBeVisible()
+    await expect.element(panel.getByText('核心能力正常，3 个执行节点在服')).toBeVisible()
     await expect.element(panel.getByText('运维')).not.toBeInTheDocument()
-    await expect.element(panel.getByRole('link', { name: '监控' })).not.toBeInTheDocument()
+    await expect.element(panel.getByRole('link', { name: '监控', exact: true })).not.toBeInTheDocument()
 
     // 管理菜单包含用户管理、平台配置等
     await expect.element(panel.getByRole('link', { name: '用户管理' })).toBeVisible()
     await expect.element(panel.getByRole('link', { name: '平台配置' })).toBeVisible()
+  })
+
+  it('异常只在侧栏健康概况显示为红色，并展开具体组件和监控入口', async () => {
+    await page.viewport(1440, 900)
+    setCookie('sidebar_state', 'true')
+    healthResponse = {
+      ...mockHealthResponse,
+      overall: 'degraded',
+      checks: {
+        ...mockHealthResponse.checks,
+        api: { status: 'degraded', code: 'PARTIAL_API_LOST', message: '部分 API 实例失联（1 个离线）' },
+      },
+    }
+
+    await render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthenticatedLayout><div>内容</div></AuthenticatedLayout>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+
+    const header = document.querySelector('header')
+    expect(header?.querySelector('[aria-label^="平台健康状态"]')).toBeNull()
+    const trigger = page.getByRole('button', { name: /系统(与)?管理，平台状态：异常/ })
+    await expect.element(trigger.getByText('异常')).toBeVisible()
+    await trigger.click()
+    const panel = page.getByRole('dialog')
+    await expect.element(panel.getByText('API 服务')).toBeVisible()
+    await expect.element(panel.getByText('部分 API 实例失联（1 个离线）')).toBeVisible()
+    await expect.element(panel.getByRole('link', { name: '查看监控详情' })).toBeVisible()
+    await expect.element(panel.getByText('数据库')).not.toBeInTheDocument()
+  })
+
+  it('无管理权限也能查看健康原因，只有 monitor:read 才有监控跳转', async () => {
+    await page.viewport(1440, 900)
+    setCookie('sidebar_state', 'true')
+    healthResponse = {
+      ...mockHealthResponse,
+      overall: 'critical',
+      checks: {
+        ...mockHealthResponse.checks,
+        database: { status: 'critical', code: 'DATABASE_DOWN', message: '数据库不可用' },
+      },
+    }
+    useAuthStore.getState().auth.setUser({
+      id: 'viewer-1', displayName: '普通用户', email: null, roles: [], permissions: [],
+    })
+
+    await render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthenticatedLayout><div>内容</div></AuthenticatedLayout>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+
+    const trigger = page.getByRole('button', { name: /平台运行概况，平台状态：异常/ })
+    await expect.element(trigger).toBeVisible()
+    await trigger.click()
+    const panel = page.getByRole('dialog')
+    await expect.element(panel.getByText('数据库不可用')).toBeVisible()
+    expect(panel.getByRole('link', { name: '查看监控详情' }).elements()).toHaveLength(0)
+    expect(panel.getByRole('link', { name: '用户管理' }).elements()).toHaveLength(0)
+  })
+
+  it('仅有监控权限的用户仍可从健康概况跳转监控中心', async () => {
+    await page.viewport(1440, 900)
+    setCookie('sidebar_state', 'true')
+    healthResponse = {
+      ...mockHealthResponse,
+      overall: 'degraded',
+      checks: {
+        ...mockHealthResponse.checks,
+        worker: {
+          ...mockHealthResponse.checks.worker,
+          status: 'degraded',
+          code: 'WORKER_DEGRADED',
+          message: '部分执行节点心跳过期',
+        },
+      },
+    }
+    useAuthStore.getState().auth.setUser({
+      id: 'monitor-1', displayName: '监控员', email: null, roles: [], permissions: ['monitor:read'],
+    })
+
+    await render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthenticatedLayout><div>内容</div></AuthenticatedLayout>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+
+    await page.getByRole('button', { name: /平台运行概况，平台状态：异常/ }).click()
+    const panel = page.getByRole('dialog')
+    await expect.element(panel.getByText('部分执行节点心跳过期')).toBeVisible()
+    await expect.element(panel.getByRole('link', { name: '查看监控详情' })).toBeVisible()
+    expect(panel.getByRole('link', { name: '用户管理' }).elements()).toHaveLength(0)
   })
 
   it('1280px 视口且助手停靠宽 600px 时，自适应切为覆盖式（Overlay）避免主区不足 640px 挤压', async () => {
@@ -360,5 +465,45 @@ describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () =
     expect(drawer.element().querySelectorAll('a[href="/monitoring"]')).toHaveLength(1)
     expect(drawer.element().querySelectorAll('a[href="/workers"]')).toHaveLength(1)
     expect(drawer.element().querySelectorAll('a[href="/outbound"]')).toHaveLength(1)
+    const healthTrigger = drawer.getByRole('button', { name: /平台运行概况，平台状态：正常/ })
+    await expect.element(healthTrigger).toBeVisible()
+    await healthTrigger.click()
+    await expect.element(healthTrigger).toHaveAttribute('aria-expanded', 'true')
+    await expect.element(drawer.getByRole('region', { name: '平台运行概况明细' }).getByText('核心能力正常，3 个执行节点在服')).toBeVisible()
+  })
+
+  it('640px 移动侧栏内展开异常明细并可收起', async () => {
+    await page.viewport(640, 700)
+    healthResponse = {
+      ...mockHealthResponse,
+      overall: 'degraded',
+      checks: {
+        ...mockHealthResponse.checks,
+        api: { status: 'degraded', code: 'PARTIAL_API_LOST', message: '部分 API 实例失联 (1 个离线)' },
+      },
+    }
+
+    await render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthenticatedLayout><div>移动端内容</div></AuthenticatedLayout>
+        </TooltipProvider>
+      </QueryClientProvider>,
+    )
+
+    await page.getByRole('button', { name: '打开侧栏导航' }).click()
+    const drawer = page.getByRole('dialog', { name: '侧栏' })
+    const healthTrigger = drawer.getByRole('button', { name: /平台运行概况，平台状态：异常/ })
+    await expect.element(healthTrigger).toBeVisible()
+    await healthTrigger.click()
+    await expect.element(healthTrigger).toHaveAttribute('aria-expanded', 'true')
+    const details = drawer.getByRole('region', { name: '平台运行概况明细' })
+    await expect.element(details).toBeVisible()
+    await expect.element(details.getByText('部分 API 实例失联 (1 个离线)')).toBeVisible()
+    await expect.element(details.getByRole('link', { name: '查看监控详情' })).toBeVisible()
+
+    await healthTrigger.click()
+    await expect.element(healthTrigger).toHaveAttribute('aria-expanded', 'false')
+    await expect.element(details).not.toBeInTheDocument()
   })
 })

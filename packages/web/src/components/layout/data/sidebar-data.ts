@@ -15,6 +15,7 @@ import {
   Shield,
   SlidersHorizontal,
   UserCog,
+  UserCheck,
   Users,
   Boxes,
   Database,
@@ -86,7 +87,7 @@ export const sidebarData: SidebarData = {
       items: [
         navItem('datasets', Database),
         navItem('targets', Monitor),
-        navItem('sessions', Layers),
+        navItem('sessions', UserCheck),
       ],
     },
     {
