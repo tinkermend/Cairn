@@ -47,6 +47,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Copy,
+  Crosshair,
   Layers,
   ListOrdered,
   Monitor,
@@ -54,13 +55,11 @@ import {
   Settings,
   Sparkles,
   Undo2,
-  X,
   Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { applyAuthoringOperations } from '@cairn/authoring'
 import { ApiRequestError } from '@/lib/api-client'
-import { closeRecordingBinding } from '@/lib/recordings-api'
 import {
   deleteScenario,
   fetchRecordingImports,
@@ -79,7 +78,6 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
-import { buildDiagnosticQuote } from '@/features/assistant/quote-helper'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -120,7 +118,7 @@ import {
   STEP_TYPE_HINTS,
   unavailableStudioTypes,
 } from './step-registry'
-import { AuthoringObserveProvider } from './authoring-observe'
+import { AuthoringObserveProvider, useAuthoringObserve } from './authoring-observe'
 import { applyTargetToDraftStep, resolveHoldingDraftStepId, retryTargetForCheckpoint } from './holding-writeback'
 import { ResolutionSourceProvider } from '@/features/authoring/resolution-source'
 import { InputsEditor } from './step-editor'
@@ -157,6 +155,8 @@ import { StepPipelineRail } from './components/step-pipeline-rail'
 import { PublishDiffDrawer } from './components/publish-diff-drawer'
 import { ManagedStageScreen } from './components/managed-stage-screen'
 import { StudioInspectorHost } from './components/inspector/studio-inspector-host'
+import { ScenarioConfigWorkspace } from './components/inspector/scenario-config-workspace'
+import { DiagnosticList } from './components/inspector/diagnostic-list'
 import { SegmentedStepInspector } from './components/inspector/segmented-step-inspector'
 import { useStudioDraft } from './use-studio-draft'
 import { useScenarioLocatorHealth } from './use-scenario-locator-health'
@@ -189,6 +189,35 @@ import { ModuleExtractWizard } from './extract-wizard'
 import { ModuleReplaceDialog } from './replace-module-dialog'
 
 const FlowgramCanvas = lazy(() => import('./flowgram/canvas'))
+
+function InspectorShield({ children }: { children: React.ReactNode }) {
+  const observe = useAuthoringObserve()
+  return (
+    <div className='relative flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden'>
+      {observe.pickMode && (
+        <div className='absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/85 backdrop-blur-xs p-6 text-center select-none'>
+          <div className='max-w-xs space-y-3'>
+            <div className='size-9 rounded-full bg-primary/10 text-primary flex items-center justify-center mx-auto'>
+              <Crosshair className='size-5 animate-pulse' />
+            </div>
+            <h4 className='text-body font-semibold'>正在进行页面元素拾取</h4>
+            <p className='text-caption text-muted-foreground'>
+              请在受管画面中点击需要定位的元素。拾取期间检查器已锁定以保护当前草稿。
+            </p>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => observe.setPickMode(false)}
+            >
+              取消拾取
+            </Button>
+          </div>
+        </div>
+      )}
+      {children}
+    </div>
+  )
+}
 
 export function ScenarioDetailPage() {
   const { scenarioId } = useParams({
@@ -227,8 +256,6 @@ export function ScenarioDetailPage() {
   const canReadTarget = useCan('target:read')
   const canWrite = useCan('workflow:write')
   const canDelete = useCan('workflow:delete')
-  const canAssist = useCan('ai:assist')
-  const openAssistant = useAssistantStore((state) => state.openPanel)
   const registerAdoptHandler = useAssistantStore((state) => state.registerAdoptHandler)
   const registerRollbackHandler = useAssistantStore((state) => state.registerRollbackHandler)
   const setLastAdopted = useAssistantStore((state) => state.setLastAdopted)
@@ -358,13 +385,18 @@ export function ScenarioDetailPage() {
   const importedStepIds = importedStepsQuery.data ?? []
   const [mobilePane, setMobilePane] = useState<'steps' | 'properties' | 'page'>('steps')
   const [viewPreset, setViewPreset] = useState<StudioViewPreset>('balanced')
+  const [inspectorView, setInspectorView] = useState<'step' | 'scenario'>('step')
   const [rightTab, setRightTab] = useState<'step' | 'inputs' | 'outputs' | 'outcomes'>('step')
   const rightPanelRef = useRef<HTMLDivElement>(null)
   const [stepNavigation, setStepNavigation] = useState<{ id: string; sequence: number } | null>(null)
   const [canvasLayout, setCanvasLayout] = useState<'vertical' | 'snake'>('snake')
   const [pipOpen, setPipOpen] = useState(false)
+  const hasSteps = (draft.nodes?.length ?? 0) > 0
+  const effectiveInspectorView = !hasSteps ? 'scenario' : inspectorView
+
   function locateStep(id: string) {
     draft.setSelectedId(id)
+    setInspectorView('step')
     setRightTab('step')
     setStepNavigation((current) => ({ id, sequence: (current?.sequence ?? 0) + 1 }))
   }
@@ -376,24 +408,6 @@ export function ScenarioDetailPage() {
       if (selected?.getClientRects().length) selected.scrollIntoView({ block: 'nearest' })
     }
   }, [flowgram, mobilePane, selectedListId])
-  const [recordingBannerDismissed, setRecordingBannerDismissed] = useState(() => {
-    if (typeof window === 'undefined') return false
-    try {
-      return window.sessionStorage.getItem(`cairn:dismissed-rec-banner:${scenarioId}`) === 'true'
-    } catch {
-      return false
-    }
-  })
-  function dismissRecordingBanner() {
-    setRecordingBannerDismissed(true)
-    if (typeof window !== 'undefined') {
-      try {
-        window.sessionStorage.setItem(`cairn:dismissed-rec-banner:${scenarioId}`, 'true')
-      } catch {
-        // ignore
-      }
-    }
-  }
   useEffect(() => {
     if (draft.selectedId && rightTab === 'step') {
       rightPanelRef.current?.scrollTo({ top: 0, behavior: 'instant' })
@@ -618,15 +632,6 @@ export function ScenarioDetailPage() {
   const applyStructure = draft.applyStructure
   const selectedIndex = draft.selectedIndex
   const selectedStepId = draft.selected?.id ?? null
-  const canPropose =
-    canAssist &&
-    canWrite &&
-    canReadTarget &&
-    !draft.dirty &&
-    !draft.hasFieldDrafts &&
-    !draft.conflict &&
-    !draft.remoteStale &&
-    Boolean(scenario?.draft && document)
 
   const preAdoptSnapshotRef = useRef<any>(null)
 
@@ -810,9 +815,17 @@ export function ScenarioDetailPage() {
     toast.error('他人已更新这份草稿，请重新加载')
   }
 
-  const currentInsertAnchor: RecordingInsertAnchor = draft.selectedId
-    ? { kind: 'after', stepId: draft.selectedId }
-    : { kind: 'start' }
+  const currentInsertAnchor: RecordingInsertAnchor = useMemo(() => {
+    if (draft.selectedId) {
+      return { kind: 'after', stepId: draft.selectedId }
+    }
+    const steps = document ? authoringSteps(document) : []
+    const lastStep = steps.length > 0 ? steps[steps.length - 1] : undefined
+    if (lastStep) {
+      return { kind: 'after', stepId: lastStep.id }
+    }
+    return { kind: 'start' }
+  }, [draft.selectedId, document])
 
   function setImportSearch(next: string | undefined) {
     void navigate({
@@ -834,16 +847,6 @@ export function ScenarioDetailPage() {
     }
     setImportOpen(true)
   }, [draft.dirty, draft.hasFieldDrafts, importDraftId])
-
-  async function cancelRecording() {
-    if (!openBinding) return
-    try {
-      await closeRecordingBinding(openBinding.id)
-      await queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'recording-imports'] })
-    } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : '无法关闭录制绑定')
-    }
-  }
 
   async function save(): Promise<number | false> {
     if (!document || !draft.baseline || saving) return false
@@ -946,6 +949,7 @@ export function ScenarioDetailPage() {
     } else {
       draft.applyStructure(insertStep(document, nextStep, after), nextStep.id)
     }
+    setInspectorView('step')
     setRightTab('step')
     setMobilePane('properties')
   }
@@ -961,6 +965,7 @@ export function ScenarioDetailPage() {
       const inserted = insertNodeAfter(v2, null, blockNode)
       draft.applyStructure(inserted, blockNode.blockId)
     }
+    setInspectorView('step')
     setRightTab('step')
     setMobilePane('properties')
   }
@@ -979,6 +984,7 @@ export function ScenarioDetailPage() {
     }
     draft.applyStructure(result.document, blockId)
     setExtractIds([])
+    setInspectorView('step')
     setRightTab('step')
     setMobilePane('properties')
   }
@@ -1039,6 +1045,7 @@ export function ScenarioDetailPage() {
       const doc2 = insertNodeAfter(doc1, probeStep.id, blockNode)
       draft.applyStructure(doc2, blockNode.blockId)
     }
+    setInspectorView('step')
     setRightTab('step')
     setMobilePane('properties')
   }
@@ -1077,6 +1084,7 @@ export function ScenarioDetailPage() {
       const lastInsertedId = newSteps[newSteps.length - 1]!.id
       draft.applyStructure({ ...document, steps: currentSteps }, lastInsertedId)
     }
+    setInspectorView('step')
     setRightTab('step')
     setMobilePane('properties')
     toast.success(`已插入模版「${template.name}」（${newSteps.length} 个步骤）`)
@@ -1252,16 +1260,65 @@ export function ScenarioDetailPage() {
 
   function renderInspectorHost() {
     return (
-      <StudioInspectorHost
-        rightTab={rightTab}
-        onTabChange={(tab) => {
-          setRightTab(tab)
-          if (tab === 'step' && !draft.selected && draft.nodes.length > 0) {
-            draft.setSelectedId(nodeId(draft.nodes[0]))
-          } else if (tab !== 'step') {
-            draft.setSelectedId(null)
-          }
-        }}
+      <InspectorShield>
+        {effectiveInspectorView === 'scenario' && draft.v2Document ? (
+          <ScenarioConfigWorkspace
+            scenarioId={scenarioId}
+            targetId={scenario!.targetId}
+            document={draft.v2Document}
+            disabled={disabled}
+            compileDiagnostics={compile?.diagnostics ?? []}
+            platform={platformConfigQuery.data?.document}
+            target={target?.resolutionPolicy}
+            focusedStepIndex={hasSteps && draft.selectedIndex >= 0 ? draft.selectedIndex : undefined}
+            focusedStepName={hasSteps ? draft.selected?.name : undefined}
+            locatorHealth={locatorHealth}
+            onBatchAdopt={() => {
+              void locatorHealth.batchAdoptAll(
+                draft.baseline?.revision ?? scenario?.draft?.revision ?? 1,
+              )
+            }}
+            onSelectStep={(stepId) => {
+              draft.setSelectedId(stepId)
+              setInspectorView('step')
+              setMobilePane('properties')
+            }}
+            onReturnToSteps={() => {
+              if (!draft.selectedId && draft.nodes.length > 0) {
+                draft.setSelectedId(nodeId(draft.nodes[0]))
+              }
+              setInspectorView('step')
+              setMobilePane('properties')
+            }}
+            onUpdateInputs={draft.updateInputs}
+            onUpdateOutputs={draft.updateOutputs}
+            onUpdateScenarioOutcomes={draft.updateScenarioOutcomes}
+            onUpdateRuntimeInvariants={draft.updateRuntimeInvariants}
+            onUpdateDocument={(doc) => draft.applyStructure(doc, draft.selectedId)}
+            onSelectDiagnostic={(item) => {
+              if (item.stepId) {
+                draft.setSelectedId(item.stepId)
+                setInspectorView('step')
+              }
+              queueMicrotask(() => focusStudioField(item))
+            }}
+          />
+        ) : (
+          <StudioInspectorHost
+            showTabs={false}
+            onOpenScenarioConfig={() => {
+              setInspectorView('scenario')
+              setMobilePane('properties')
+            }}
+            rightTab={rightTab}
+            onTabChange={(tab) => {
+              setRightTab(tab)
+              if (tab === 'step' && !draft.selected && draft.nodes.length > 0) {
+                draft.setSelectedId(nodeId(draft.nodes[0]))
+              } else if (tab !== 'step') {
+                draft.setSelectedId(null)
+              }
+            }}
         stepTitle={
           rightTab === 'step'
             ? (draft.selectedNode?.kind === 'module'
@@ -1851,8 +1908,10 @@ export function ScenarioDetailPage() {
           </div>
         ) : null}
       </StudioInspectorHost>
-    )
-  }
+    )}
+  </InspectorShield>
+)
+}
 
   return (
     <>
@@ -1875,11 +1934,15 @@ export function ScenarioDetailPage() {
           unpublishedDraft={unpublishedDraft}
           compileOk={compile?.ok}
           canReadTarget={canReadTarget}
-          canAssist={canAssist}
-          canPropose={canPropose}
           canRecord={canRecord}
           canDelete={canDelete}
           disabled={disabled}
+          pendingImportDraftId={pendingImportDraftId}
+          onPreviewImportDraft={() => {
+            if (pendingImportDraftId) {
+              setImportSearch(pendingImportDraftId)
+            }
+          }}
           onSave={() => void save()}
           onPublish={() => void handleStartPublish()}
           onStartTrial={() => setTrialOpen(true)}
@@ -1925,23 +1988,11 @@ export function ScenarioDetailPage() {
               })
           }}
           onOpenRemove={() => setRemoving(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenAssistant={(question, hint) =>
-            openAssistant({
-              question,
-              capabilityHint: hint,
-              pageContext: {
-                page: 'studio',
-                scenarioId,
-                stepId: draft.selected?.id,
-                ...(scenario?.draft
-                  ? { draftRevision: scenario.draft.revision }
-                  : scenario?.latestVersionId
-                    ? { versionId: scenario.latestVersionId }
-                    : {}),
-              },
-            })
-          }
+          isScenarioView={effectiveInspectorView === 'scenario'}
+          onOpenSettings={() => {
+            setInspectorView((prev) => (prev === 'scenario' ? 'step' : 'scenario'))
+            setMobilePane('properties')
+          }}
           onLeave={(event) => {
             if (!draft.dirty) return
             event.preventDefault()
@@ -1960,7 +2011,7 @@ export function ScenarioDetailPage() {
           )
         ) : (
           <>
-            {(draft.conflict || draft.remoteStale || pendingImportDraftId || (canStartFormalRun && !canTrial && draftHasAi && !canAi && !draft.dirty && compile?.ok) || !canTrial || scenario.status === 'disabled' || target?.status === 'disabled') ? (
+            {(draft.conflict || draft.remoteStale || (canStartFormalRun && !canTrial && draftHasAi && !canAi && !draft.dirty && compile?.ok) || !canTrial || scenario.status === 'disabled' || target?.status === 'disabled') ? (
               <div className='shrink-0 border-b border-border-divider bg-surface-header px-4 py-2 space-y-2'>
                 {draft.conflict || draft.remoteStale ? (
                   <Alert variant='warning'>
@@ -1980,54 +2031,6 @@ export function ScenarioDetailPage() {
                 {!canTrial &&
                 !(canStartFormalRun && draftHasAi && !canAi && !draft.dirty && compile?.ok) ? (
                   <p className='text-label text-status-warning-foreground'>试跑不可用：{trialDisabledReason}。</p>
-                ) : null}
-                {pendingImportDraftId && !recordingBannerDismissed ? (
-                  <Alert className='border-primary/40 bg-primary/5 shadow-xs'>
-                    <AlertDescription className='flex flex-wrap items-center justify-between gap-3'>
-                      <div className='flex items-center gap-2'>
-                        <span className='text-body'>⚡</span>
-                        <span className='font-medium text-foreground text-small'>
-                          {openBinding?.recordingDraftId
-                            ? `场景「${openBinding.scenarioName}」有已上传的录制，待预览回填。`
-                            : '检测到可导入当前场景的录制草稿，可一键转换为操作步骤。'}
-                        </span>
-                      </div>
-                      <span className='flex flex-wrap items-center gap-2'>
-                        <Button
-                          size='sm'
-                          variant='outline'
-                          onClick={() => void recordingQuery.refetch()}
-                        >
-                          刷新批次
-                        </Button>
-                        {canRecord ? (
-                          <Button
-                            size='sm'
-                            variant='default'
-                            className='shadow-xs'
-                            onClick={() => setImportSearch(pendingImportDraftId)}
-                          >
-                            预览导入草稿
-                          </Button>
-                        ) : null}
-                        {canWrite && openBinding ? (
-                          <Button size='sm' variant='ghost' onClick={() => void cancelRecording()}>
-                            关闭绑定
-                          </Button>
-                        ) : null}
-                        <Button
-                          size='icon'
-                          variant='ghost'
-                          className='size-7 shrink-0 text-muted-foreground hover:text-foreground'
-                          onClick={() => dismissRecordingBanner()}
-                          aria-label='关闭提示'
-                          title='关闭提示'
-                        >
-                          <X className='size-4' />
-                        </Button>
-                      </span>
-                    </AlertDescription>
-                  </Alert>
                 ) : null}
                 {scenario.status === 'disabled' || target?.status === 'disabled' ? (
                   <Alert variant='warning'>
@@ -2469,7 +2472,7 @@ export function ScenarioDetailPage() {
                   left={
                     <StepPipelineRail
                       document={document}
-                      selectedId={draft.selectedId}
+                      selectedId={effectiveInspectorView === 'scenario' ? null : draft.selectedId}
                       selectedIndex={draft.selectedIndex}
                       holdingDraftStepId={holdingDraftStepId}
                       importedStepIds={importedStepIds}
@@ -2498,6 +2501,7 @@ export function ScenarioDetailPage() {
                       onLocateStep={locateStep}
                       onSelect={(id) => {
                         draft.setSelectedId(id)
+                        setInspectorView('step')
                         setRightTab('step')
                         setMobilePane('properties')
                       }}
@@ -2856,60 +2860,5 @@ export function ScenarioDetailPage() {
         />
       ) : null}
     </>
-  )
-}
-
-function DiagnosticList({
-  diagnostics,
-  onSelect,
-}: {
-  diagnostics: CompileDiagnostic[]
-  onSelect: (item: CompileDiagnostic) => void
-}) {
-  const setQuote = useAssistantStore((s) => s.setQuote)
-  if (diagnostics.length === 0) {
-    return <p className='text-small text-muted-foreground'>当前没有编译诊断。</p>
-  }
-  return (
-    <ul className='space-y-2' aria-label='编译诊断'>
-      {diagnostics.map((item) => (
-        <li
-          key={`${item.code}-${item.stepId ?? item.inputKey ?? 'global'}-${item.message}`}
-          className='flex items-stretch gap-1.5'
-        >
-          <button
-            type='button'
-            className={
-              item.severity === 'error'
-                ? 'flex-1 rounded-md bg-status-error-background p-3 text-left text-small text-status-error-foreground'
-                : 'flex-1 rounded-md bg-status-warning-background p-3 text-left text-small text-status-warning-foreground'
-            }
-            onClick={() => onSelect(item)}
-          >
-            {item.message}
-          </button>
-          <Button
-            type='button'
-            variant='ghost'
-            size='sm'
-            className='self-center h-8 px-2 text-label text-muted-foreground hover:text-foreground shrink-0'
-            title='引用此诊断至识途助手'
-            onClick={(e) => {
-              e.stopPropagation()
-              setQuote(
-                buildDiagnosticQuote(
-                  item.stepId ?? 'diagnostic',
-                  `诊断 [${item.code}]`,
-                  item.message,
-                  { code: item.code, severity: item.severity, stepId: item.stepId }
-                )
-              )
-            }}
-          >
-            求助
-          </Button>
-        </li>
-      ))}
-    </ul>
   )
 }

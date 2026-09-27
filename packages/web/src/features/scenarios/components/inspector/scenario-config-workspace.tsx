@@ -3,21 +3,25 @@ import type {
   CompileDiagnostic,
   OutcomeContract,
   PlatformConfigDocument,
-  RuntimeInvariantContract,
+  RuntimeInvariant,
   ScenarioAuthoringDocumentV2,
   ScenarioInputDecl,
   ScenarioOutputDecl,
   TargetResolutionPolicy,
 } from '@cairn/shared'
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileText, Layers, Settings, Sliders, Sparkles } from 'lucide-react'
+import { authoringSteps } from '@cairn/shared'
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileText, Layers, Sliders, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { InputsEditor } from '@/features/authoring/step-editor'
 import { OutcomeListEditor } from '@/features/authoring/outcome-editor'
 import { RuntimeInvariantEditor } from '@/features/authoring/invariant-editor'
+import { DiagnosticList } from './diagnostic-list'
 import { ScenarioOutputsEditor } from '../../scenario-outputs-editor'
 import { ScenarioLocatorSettings } from '../../scenario-locator-settings'
 import { ScenarioReportSettings } from '@/features/reports/profiles'
+import { ScenarioResolutionStats } from '../../resolution-stats'
+import type { ScenarioLocatorHealthResult } from '../../use-scenario-locator-health'
 import {
   collectVariableSources,
   documentContextKeysAny,
@@ -34,15 +38,19 @@ export interface ScenarioConfigWorkspaceProps {
   target?: TargetResolutionPolicy | null
   focusedStepIndex?: number
   focusedStepName?: string
+  locatorHealth?: ScenarioLocatorHealthResult
+  onBatchAdopt?: () => void
+  onSelectStep?: (stepId: string) => void
   onReturnToSteps: () => void
   onUpdateInputs: (inputs: ScenarioInputDecl[]) => void
   onUpdateOutputs: (outputs: ScenarioOutputDecl | undefined) => void
   onUpdateScenarioOutcomes: (outcomes: OutcomeContract[]) => void
-  onUpdateRuntimeInvariants: (invariants: RuntimeInvariantContract[]) => void
+  onUpdateRuntimeInvariants: (invariants: RuntimeInvariant[]) => void
   onUpdateDocument: (document: ScenarioAuthoringDocumentV2) => void
+  onSelectDiagnostic?: (item: CompileDiagnostic) => void
 }
 
-export type ScenarioPartitionKey = 'inputs' | 'outcomes' | 'outputs' | 'settings'
+export type ScenarioPartitionKey = 'inputs' | 'outcomes' | 'outputs' | 'stability' | 'settings'
 
 export function ScenarioConfigWorkspace({
   scenarioId,
@@ -54,12 +62,16 @@ export function ScenarioConfigWorkspace({
   target,
   focusedStepIndex,
   focusedStepName,
+  locatorHealth,
+  onBatchAdopt,
+  onSelectStep,
   onReturnToSteps,
   onUpdateInputs,
   onUpdateOutputs,
   onUpdateScenarioOutcomes,
   onUpdateRuntimeInvariants,
   onUpdateDocument,
+  onSelectDiagnostic,
 }: ScenarioConfigWorkspaceProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [activeTab, setActiveTab] = useState<ScenarioPartitionKey>('inputs')
@@ -69,6 +81,7 @@ export function ScenarioConfigWorkspace({
     inputs: false,
     outcomes: false,
     outputs: false,
+    stability: false,
     settings: false,
   })
 
@@ -81,9 +94,10 @@ export function ScenarioConfigWorkspace({
     if (collapsedPartitions[key]) {
       setCollapsedPartitions((prev) => ({ ...prev, [key]: false }))
     }
-    const el = scrollRef.current?.querySelector(`[data-partition="${key}"]`)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const container = scrollRef.current
+    const el = container?.querySelector<HTMLElement>(`[data-partition="${key}"]`)
+    if (container && el) {
+      container.scrollTo({ top: Math.max(0, el.offsetTop - 12), behavior: 'smooth' })
     }
   }
 
@@ -121,9 +135,10 @@ export function ScenarioConfigWorkspace({
             type='button'
             variant='outline'
             size='sm'
+            data-testid='scenario-config-back-to-step'
             onClick={onReturnToSteps}
             className='shrink-0 h-7 px-2.5 text-label gap-1 font-medium hover:bg-muted'
-            title='返回步骤检查器'
+            title={focusedStepName ? `返回步骤编辑：${focusedStepName}` : '返回步骤编辑'}
           >
             <ArrowLeft className='size-3.5' />
             <span>返回步骤编辑</span>
@@ -144,6 +159,7 @@ export function ScenarioConfigWorkspace({
           <button
             type='button'
             role='tab'
+            data-testid='scenario-config-tab-inputs'
             aria-selected={activeTab === 'inputs'}
             className={cn(
               'min-w-0 flex-auto whitespace-nowrap py-1 px-1.5 rounded-md font-medium text-caption transition-colors text-center flex items-center justify-center gap-1',
@@ -163,6 +179,7 @@ export function ScenarioConfigWorkspace({
           <button
             type='button'
             role='tab'
+            data-testid='scenario-config-tab-outcomes'
             aria-selected={activeTab === 'outcomes'}
             className={cn(
               'min-w-0 flex-auto whitespace-nowrap py-1 px-1.5 rounded-md font-medium text-caption transition-colors text-center flex items-center justify-center gap-1',
@@ -182,6 +199,7 @@ export function ScenarioConfigWorkspace({
           <button
             type='button'
             role='tab'
+            data-testid='scenario-config-tab-outputs'
             aria-selected={activeTab === 'outputs'}
             className={cn(
               'min-w-0 flex-auto whitespace-nowrap py-1 px-1.5 rounded-md font-medium text-caption transition-colors text-center flex items-center justify-center gap-1',
@@ -201,6 +219,35 @@ export function ScenarioConfigWorkspace({
           <button
             type='button'
             role='tab'
+            data-testid='scenario-config-tab-stability'
+            aria-selected={activeTab === 'stability'}
+            className={cn(
+              'min-w-0 flex-auto whitespace-nowrap py-1 px-1.5 rounded-md font-medium text-caption transition-colors text-center flex items-center justify-center gap-1',
+              activeTab === 'stability'
+                ? 'bg-card text-foreground shadow-xs'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+            onClick={() => scrollToPartition('stability')}
+          >
+            <span>定位稳定性</span>
+            {locatorHealth && locatorHealth.warningCount > 0 ? (
+              <span className='inline-flex items-center justify-center px-1.5 text-3xs font-semibold rounded-full bg-status-warning/15 text-status-warning-foreground'>
+                {locatorHealth.warningCount} 衰减
+              </span>
+            ) : locatorHealth && locatorHealth.failingCount > 0 ? (
+              <span className='inline-flex items-center justify-center px-1.5 text-3xs font-semibold rounded-full bg-status-error/15 text-status-error-foreground'>
+                {locatorHealth.failingCount} 失败
+              </span>
+            ) : locatorHealth && locatorHealth.healthyCount > 0 ? (
+              <span className='inline-flex items-center justify-center px-1.5 text-3xs font-semibold rounded-full bg-status-success/15 text-status-success-foreground'>
+                100%
+              </span>
+            ) : null}
+          </button>
+          <button
+            type='button'
+            role='tab'
+            data-testid='scenario-config-tab-settings'
             aria-selected={activeTab === 'settings'}
             className={cn(
               'min-w-0 flex-auto whitespace-nowrap py-1 px-1.5 rounded-md font-medium text-caption transition-colors text-center flex items-center justify-center gap-1',
@@ -218,7 +265,7 @@ export function ScenarioConfigWorkspace({
       {/* 滚动工作区：四大分区 */}
       <div
         ref={scrollRef}
-        className='flex-1 min-h-0 space-y-6 overflow-y-auto p-4 pb-28'
+        className='relative flex-1 min-h-0 space-y-6 overflow-y-auto p-4 pb-28'
         data-testid='scenario-workspace-scroll-area'
       >
         {/* 分区 1：运行输入 */}
@@ -325,11 +372,24 @@ export function ScenarioConfigWorkspace({
                   invariants={document.runtimeInvariants ?? []}
                   disabled={disabled}
                   allowEachStepProbe={
-                    platform?.document.runtimeInvariants.allowEachStepProbe
+                    platform?.runtimeInvariants.allowEachStepProbe
                   }
                   onChange={onUpdateRuntimeInvariants}
                 />
               </div>
+
+              {compileDiagnostics.length > 0 && (
+                <div className='pt-3 border-t border-border-divider/60 space-y-2'>
+                  <div className='flex items-center gap-1.5 text-label font-medium text-foreground'>
+                    <AlertTriangle className='size-3.5 text-status-warning' />
+                    <span>场景编译诊断 ({compileDiagnostics.length})</span>
+                  </div>
+                  <DiagnosticList
+                    diagnostics={compileDiagnostics}
+                    onSelect={onSelectDiagnostic}
+                  />
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -370,7 +430,106 @@ export function ScenarioConfigWorkspace({
           )}
         </section>
 
-        {/* 分区 4：高级设置（定位默认策略与报告配置） */}
+        {/* 分区 4：定位稳定性与自愈 */}
+        <section
+          data-partition='stability'
+          className='rounded-xl border border-border-card bg-card p-4 shadow-xs space-y-4'
+        >
+          <div className='flex items-center justify-between border-b border-border-divider/70 pb-2.5'>
+            <div className='flex items-center gap-2'>
+              <div
+                className={cn(
+                  'size-2 rounded-full shrink-0',
+                  locatorHealth?.warningCount
+                    ? 'bg-status-warning'
+                    : locatorHealth?.failingCount
+                      ? 'bg-status-error'
+                      : 'bg-status-success',
+                )}
+              />
+              <div>
+                <div className='flex items-center gap-2'>
+                  <h4 className='text-body font-semibold text-foreground'>定位稳定性 (Stability)</h4>
+                  {locatorHealth && (
+                    locatorHealth.warningCount > 0 ? (
+                      <span className='rounded bg-status-warning/15 text-status-warning-foreground px-1.5 py-0.2 text-3xs font-medium'>
+                        {locatorHealth.warningCount} 步规则衰减
+                      </span>
+                    ) : locatorHealth.failingCount > 0 ? (
+                      <span className='rounded bg-status-error/15 text-status-error-foreground px-1.5 py-0.2 text-3xs font-medium'>
+                        {locatorHealth.failingCount} 步定位失败
+                      </span>
+                    ) : locatorHealth.healthyCount > 0 ? (
+                      <span className='rounded bg-status-success/15 text-status-success-foreground px-1.5 py-0.2 text-3xs font-medium'>
+                        全部规则 100% 稳定
+                      </span>
+                    ) : null
+                  )}
+                </div>
+                <p className='text-caption text-muted-foreground'>
+                  统计历史运行中各步骤目标元素的健康度，提供视觉自愈建议与选择器稳定性报表
+                </p>
+              </div>
+            </div>
+            <button
+              type='button'
+              onClick={() => togglePartition('stability')}
+              className='text-muted-foreground hover:text-foreground p-1'
+              aria-label={collapsedPartitions.stability ? '展开定位稳定性' : '折叠定位稳定性'}
+            >
+              {collapsedPartitions.stability ? <ChevronRight className='size-4' /> : <ChevronDown className='size-4' />}
+            </button>
+          </div>
+
+          {!collapsedPartitions.stability && (
+            <div className='space-y-4'>
+              {locatorHealth && locatorHealth.candidateCount > 0 && onBatchAdopt && (
+                <div
+                  data-testid='batch-healing-banner'
+                  className='flex items-center justify-between gap-3 p-3 rounded-lg border border-primary/20 bg-primary/5'
+                >
+                  <div className='flex items-center gap-2 min-w-0'>
+                    <Sparkles className='size-4 text-primary shrink-0' />
+                    <span className='text-body font-medium truncate'>
+                      检测到 <strong>{locatorHealth.candidateCount}</strong> 个步骤有可用的定位自愈建议
+                    </span>
+                  </div>
+                  <Button
+                    size='sm'
+                    variant='default'
+                    disabled={disabled}
+                    className='shrink-0'
+                    onClick={onBatchAdopt}
+                  >
+                    <Sparkles className='size-3.5 mr-1' />
+                    一键批量自愈
+                  </Button>
+                </div>
+              )}
+
+              <ScenarioResolutionStats
+                scenarioId={scenarioId}
+                steps={authoringSteps(document)}
+                onSelectStep={onSelectStep}
+              />
+
+              {locatorHealth &&
+                locatorHealth.healthyCount === 0 &&
+                locatorHealth.warningCount === 0 &&
+                locatorHealth.failingCount === 0 &&
+                locatorHealth.candidateCount === 0 && (
+                  <div className='rounded-lg border border-border-divider/60 bg-surface-subtle/40 p-4 text-center space-y-1'>
+                    <p className='text-body font-medium text-foreground'>暂无定位运行记录</p>
+                    <p className='text-caption text-muted-foreground'>
+                      首次试跑或正式运行后，系统将在此自动记录各步骤的规则直接命中率与健康度。
+                    </p>
+                  </div>
+                )}
+            </div>
+          )}
+        </section>
+
+        {/* 分区 5：高级设置（定位默认策略与报告配置） */}
         <section
           data-partition='settings'
           className='rounded-xl border border-border-card bg-card p-4 shadow-xs space-y-4'

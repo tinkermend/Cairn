@@ -1,3 +1,5 @@
+2026-09-27--场景配置工作区补齐定位稳定性与规则自愈分区：在 ScenarioConfigWorkspace 中单列第 5 分区「定位稳定性 (Stability)」，打通顶部动态健康度徽标（100% 稳定 / N 步衰减 / 失败）与平滑滚动导航；工作区内完整挂载 ScenarioResolutionStats 与一键批量自愈横幅，打通步骤直跳联动并提供未运行空状态友好提示；前端单元测试通过，全栈服务探活 STACK_OK
+
 2026-09-27--修复可靠性事件跨目标鉴权漏洞与数据隔离：TargetScopeGuard 与 authorizeTargetRequest 补齐 incidentId/targetIncidentId 目标反查并将 reliability 纳入目标级权限校验；listIncidents 接入 scopedTargetFilter 强制过滤非授权目标事件（消除原缺省 1=1 全表泄露）；mergeIncidents 增加跨目标冲突断言；补充跨目标 404（防枚举）与列表范围隔离自动化测试，18 项 HTTP 接口测试与 11 项 DB 领域测试全绿通过
 
 2026-09-27--报告 AI 辅助解读端到端仿真测试验收与防覆盖防御强化：落地 E2E 仿真测试链路（Template A 单场景对账与 Template B 场景集巡检），通过 Playwright Headless 验证无外部依赖纯自包含 HTML 离线渲染与交互；强化 RA02 防覆盖防御机制（用户手动定制 Revision 时阻止滞后 AI 篡位并抛出 AI_ELEVATION_SUPERSEDED，重试平滑迁移基准）；支持按 stepId/stepRunId 双向合法引用并修复数据库可移植性；全量测试与全库检查 100% 通过
