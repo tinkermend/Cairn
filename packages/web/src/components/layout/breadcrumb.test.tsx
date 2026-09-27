@@ -5,9 +5,10 @@ import { page } from 'vitest/browser'
 import { AppBreadcrumb } from './breadcrumb'
 import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
 import { useAuthStore } from '@/stores/auth-store'
+import { usePageHeadingStore } from '@/stores/page-heading-store'
 
 let mockPathname = '/'
-let mockSearch = {}
+const mockSearch = {}
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ to, children, ...props }: any) => (
@@ -49,21 +50,34 @@ describe('AppBreadcrumb', () => {
     await expect.element(page.getByText('总览', { exact: true })).toBeVisible()
   })
 
-  it('一级菜单展示「分组 / 菜单」', async () => {
+  it('一级菜单只显示菜单名作为页面标题，不重复侧栏分组', async () => {
     mockPathname = '/scenarios'
     await render(<AppBreadcrumb />)
-    await expect.element(page.getByText('编写', { exact: true })).toBeVisible()
     await expect.element(page.getByText('场景编排', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('编写', { exact: true })).not.toBeInTheDocument()
   })
 
-  it('非菜单页面「场景集运行」展示为「运行 / 运行记录 / 场景集运行」', async () => {
+  it('一级菜单页在宽屏把页面描述作为页名下的副标题', async () => {
+    await page.viewport(1440, 900)
+    mockPathname = '/scenarios'
+    usePageHeadingStore.setState({ description: '把业务任务组织成有序步骤。' })
+    await render(<AppBreadcrumb />)
+    await expect.element(page.getByText('把业务任务组织成有序步骤。')).toBeVisible()
+    usePageHeadingStore.setState({ description: null })
+  })
+
+  it('菜单页签路由「场景集运行」按所属菜单页显示页名', async () => {
     mockPathname = '/suite-runs'
     await render(<AppBreadcrumb />)
-    await expect.element(page.getByText('运行', { exact: true })).toBeVisible()
-    const runsLink = page.getByText('运行记录', { exact: true })
-    await expect.element(runsLink).toBeVisible()
-    expect(runsLink.element()).toHaveAttribute('href', '/runs')
-    await expect.element(page.getByText('场景集运行', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('运行记录', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('场景集运行', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('审计子页按所属菜单页显示页名', async () => {
+    mockPathname = '/audit/logins'
+    await render(<AppBreadcrumb />)
+    await expect.element(page.getByText('审计日志', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('登录审计', { exact: true })).not.toBeInTheDocument()
   })
 
   it('详情页展示已注册的实体名与规范回链', async () => {

@@ -186,16 +186,10 @@ describe('Console Shell Redesign Acceptance (控制台外框全面验收)', () =
     await expect.element(accountBtn).toBeVisible()
     await expect.element(accountBtn.getByText('管理员')).toBeVisible()
 
-    // 6. 一级菜单页：静止时面包屑只留分组（大标题已给出页名），滚动越过标题后当前页才出现在顶栏
-    await expect.element(page.getByTitle('编写')).toBeVisible()
-    await expect.element(page.getByTitle('场景编排')).not.toBeVisible()
-    await expect.element(header!).toHaveAttribute('data-scrolled', 'false')
-    document.body.style.minHeight = '3000px'
-    window.scrollTo(0, 400)
-    await expect.element(header!).toHaveAttribute('data-scrolled', 'true')
-    await expect.element(page.getByTitle('场景编排')).toBeVisible()
-    window.scrollTo(0, 0)
-    document.body.style.minHeight = ''
+    // 6. 一级菜单页：顶栏直接显示页名，不再显示侧栏分组
+    const crumb = page.getByRole('navigation', { name: '面包屑导航' })
+    await expect.element(crumb.getByText('场景编排', { exact: true })).toBeVisible()
+    await expect.element(crumb.getByText('编写', { exact: true })).not.toBeInTheDocument()
   })
 
   it('桌面端侧栏折叠为 72px 图标栏，品牌区折叠按钮工作正常', async () => {

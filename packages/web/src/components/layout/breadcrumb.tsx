@@ -4,27 +4,15 @@ import { ChevronRight } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { can } from '@/lib/rbac'
 import { sidebarData } from './data/sidebar-data'
+import { findMenuItem } from './data/menu-lookup'
 import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
+import { usePageHeadingStore } from '@/stores/page-heading-store'
 import { cn } from '@/lib/utils'
 
 export interface BreadcrumbSegment {
   label: string
   href?: string
   isCurrent?: boolean
-  /** 页面自带同名大标题时，静止态不重复显示，滚动越过标题后再出现在顶栏。 */
-  revealOnScroll?: boolean
-}
-
-/** 查找一级菜单项及其所属分组名称 */
-function findMenuItem(pathname: string) {
-  for (const group of sidebarData.navGroups) {
-    for (const item of group.items) {
-      if ('url' in item && item.url === pathname) {
-        return { groupTitle: group.title, itemTitle: item.title, permission: item.permission, anyOf: item.anyOf }
-      }
-    }
-  }
-  return null
 }
 
 function checkAccess(
@@ -63,27 +51,15 @@ export function AppBreadcrumb({ className }: { className?: string }) {
       return [{ label: '总览', isCurrent: true }]
     }
 
-    // 2. 尝试精确匹配一级菜单
+    // 2. 一级菜单页：顶栏直接充当页面标题，只显示菜单名。
+    //    分组（编写、运行…）在侧栏已经可见且不可点击，这里不再重复。
     const exactMenu = findMenuItem(pathname)
     if (exactMenu) {
-      const parts: BreadcrumbSegment[] = []
-      if (exactMenu.groupTitle) {
-        parts.push({ label: exactMenu.groupTitle })
-      }
-      parts.push({ label: exactMenu.itemTitle, isCurrent: true, revealOnScroll: parts.length > 0 })
-      return parts
+      return [{ label: exactMenu.itemTitle, isCurrent: true }]
     }
 
     // 3. 显式规则处理非菜单与深层路由
-    // 3.1 场景集运行列表与详情
-    if (pathname === '/suite-runs') {
-      const canRuns = checkAccess(user, '/runs')
-      return [
-        { label: '运行' },
-        { label: '运行记录', href: canRuns ? '/runs' : undefined },
-        { label: '场景集运行', isCurrent: true },
-      ]
-    }
+    // 3.1 场景集运行详情
     const suiteRunMatch = pathname.match(/^\/suite-runs\/([^/]+)/)
     if (suiteRunMatch) {
       const id = suiteRunMatch[1]
@@ -293,24 +269,6 @@ export function AppBreadcrumb({ className }: { className?: string }) {
       ]
     }
 
-    // 3.14 审计日志子页
-    if (pathname === '/audit/operations') {
-      const canAudit = checkAccess(user, '/audit')
-      return [
-        { label: '管理' },
-        { label: '审计日志', href: canAudit ? '/audit' : undefined },
-        { label: '操作审计', isCurrent: true },
-      ]
-    }
-    if (pathname === '/audit/logins') {
-      const canAudit = checkAccess(user, '/audit')
-      return [
-        { label: '管理' },
-        { label: '审计日志', href: canAudit ? '/audit' : undefined },
-        { label: '登录审计', isCurrent: true },
-      ]
-    }
-
     // 3.15 个人设置子页
     if (pathname === '/settings') {
       return [{ label: '个人设置' }, { label: '个人资料', isCurrent: true }]
@@ -328,10 +286,13 @@ export function AppBreadcrumb({ className }: { className?: string }) {
     return [{ label: '控制台', isCurrent: true }]
   }, [pathname, search, user, entities])
 
+  const pageDescription = usePageHeadingStore((s) => s.description)
+  const showDescription = segments.length === 1 && pageDescription != null && pageDescription !== ''
+
   return (
     <nav
       aria-label='面包屑导航'
-      className={cn('flex items-center min-w-0 text-small text-muted-foreground', className)}
+      className={cn('flex min-w-0 flex-col justify-center gap-0.5 text-small text-muted-foreground', className)}
     >
       <ol className='flex items-center gap-1.5 min-w-0 overflow-hidden'>
         {segments.map((seg, idx) => {
@@ -344,8 +305,8 @@ export function AppBreadcrumb({ className }: { className?: string }) {
                 isLast && 'shrink min-w-0 font-medium text-foreground',
                 // 在极窄视口下，隐藏前面的父级以避免顶栏溢出
                 !isLast && idx < segments.length - 1 && 'hidden sm:flex',
-                // 依赖 Header 的 group/header 与 data-scrolled；窄屏无父级可见，始终保留当前页
-                seg.revealOnScroll && 'sm:group-data-[scrolled=false]/header:hidden',
+                // 只有一级（菜单页标题）时按页面标题的字号显示
+                isLast && segments.length === 1 && 'text-section leading-5 font-semibold',
               )}
             >
               {idx > 0 ? (
@@ -379,6 +340,15 @@ export function AppBreadcrumb({ className }: { className?: string }) {
           )
         })}
       </ol>
+      {showDescription ? (
+        // 菜单页副标题：与页名同一组，一行放不下时截断，悬停看全文
+        <p
+          className='hidden min-w-0 truncate text-small leading-4 lg:block'
+          title={typeof pageDescription === 'string' ? pageDescription : undefined}
+        >
+          {pageDescription}
+        </p>
+      ) : null}
     </nav>
   )
 }
