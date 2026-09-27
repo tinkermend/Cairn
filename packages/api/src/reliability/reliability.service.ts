@@ -39,8 +39,8 @@ export class ReliabilityService {
     return getReliabilityOverview(this.database, targetId).catch(rethrowDomain)
   }
 
-  listIncidents(query: ReliabilityIncidentListQuery) {
-    return listIncidents(this.database, query).catch(rethrowDomain)
+  listIncidents(query: ReliabilityIncidentListQuery, actorId?: string) {
+    return listIncidents(this.database, query, actorId).catch(rethrowDomain)
   }
 
   getIncidentDetail(incidentId: string) {

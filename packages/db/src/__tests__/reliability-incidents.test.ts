@@ -13,6 +13,7 @@ import {
   splitIncidents,
   updateIncidentStatus,
 } from '../reliability/incidents.js'
+import { authorizeTargetRequest } from '../console/target-authorization.js'
 import { RELIABILITY_ERROR_CODES } from '@cairn/shared'
 
 describe.each(DRIVERS)('%s reliability incident triage domain operations', (driver) => {
@@ -197,5 +198,73 @@ describe.each(DRIVERS)('%s reliability incident triage domain operations', (driv
         expectedRevision: 999, // wrong revision
       }),
     ).rejects.toThrow('事件版本冲突，请刷新后重试')
+  })
+
+  it('rejects cross-target incident merging with INCIDENT_TARGET_MISMATCH', async () => {
+    const t = schemaFor(handle.db)
+    const targetBId = newId()
+    await handle.db.insert(t.targets).values({
+      id: targetBId,
+      code: `target-b-${newId().replace(/-/g, '').slice(0, 12)}`,
+      name: '目标B',
+      entryUrl: 'https://example.com/b',
+      status: 'active',
+      sessionPolicy: { maxLifetimeSeconds: 3600, idleTimeoutSeconds: 300, maxTotalSessions: 5, accountStrategy: 'exclusive' },
+      resolutionPolicy: { timeoutMs: 5000, retryLimit: 2, fallbackPriority: ['map', 'ai'] },
+    })
+
+    const now = new Date()
+    const incidentBId = newId()
+    await handle.db.insert(t.reliabilityIncidents).values({
+      id: incidentBId,
+      targetId: targetBId,
+      groupingKey: `gk-${incidentBId}`,
+      scopeDigest: `target:${targetBId}`,
+      severity: 'P3',
+      status: 'DETECTED',
+      memberCount: 1,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      title: '目标B事件',
+      summary: 'Summary of 目标B事件',
+      evidenceScores: { supportingScore: 50, counterScore: 10, supportingFactors: ['回退'], counterFactors: [] },
+      revision: 1,
+    })
+
+    const sourceId = await createTestIncident('源事件', ['m-1'])
+
+    await expect(
+      mergeIncidents(handle.db, {
+        sourceIncidentIds: [sourceId],
+        targetIncidentId: incidentBId,
+      }),
+    ).rejects.toMatchObject({
+      code: RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH,
+    })
+  })
+
+  it('authorizeTargetRequest validates targetId via incidentId and enforces target permission', async () => {
+    const testIncidentId = await createTestIncident('受保护事件', ['s-1'])
+
+    // With an unauthorized actorId
+    const unauthorizedActorId = newId()
+    await expect(
+      authorizeTargetRequest(handle.db, unauthorizedActorId, {
+        incidentId: testIncidentId,
+        permissions: ['reliability:read'],
+      }),
+    ).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+  })
+
+  it('listIncidents filters out incidents from targets outside caller scope', async () => {
+    // When actorId has no role grants, listIncidents returns 0 items
+    const unauthorizedActorId = newId()
+    const { items, total } = await listIncidents(handle.db, {}, unauthorizedActorId)
+    expect(items).toHaveLength(0)
+    expect(total).toBe(0)
+
+    // Unscoped caller (e.g. system background job) gets items
+    const unscoped = await listIncidents(handle.db, {})
+    expect(unscoped.total).toBeGreaterThan(0)
   })
 })

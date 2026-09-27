@@ -7,12 +7,28 @@ import { PERMISSIONS, type ReliabilityIncidentDto } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
+import { TargetScopeGuard } from '../rbac/target-scope.guard'
+import { DB_HANDLE } from '../db/db.module'
 import { listenForSupertest } from '../__tests__/http-app'
 import { TargetReliabilityController, ReliabilityAssetsController, ReliabilityIncidentsController, ReliabilityUpgradeJobsController } from './reliability.controller'
 import { ReliabilityService } from './reliability.service'
 
 const targetId = '11111111-1111-4111-8111-111111111111'
 const incidentId = '22222222-2222-4222-8222-222222222222'
+const foreignIncidentId = '99999999-9999-4999-8999-999999999999'
+
+vi.mock('@cairn/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cairn/db')>()
+  return {
+    ...actual,
+    authorizeTargetRequest: vi.fn(async (_db, _actorId, input) => {
+      if (input.incidentId === foreignIncidentId || input.targetIncidentId === foreignIncidentId) {
+        throw new actual.DomainError('not_found', 'TARGET_NOT_FOUND', '目标不存在或无权访问')
+      }
+      return undefined
+    }),
+  }
+})
 
 const mockIncident: ReliabilityIncidentDto = {
   id: incidentId,
@@ -205,15 +221,21 @@ describe('Reliability HTTP Endpoints', () => {
       ],
       providers: [
         { provide: ReliabilityService, useValue: service },
+        { provide: DB_HANDLE, useValue: {} },
         { provide: APP_GUARD, useClass: StaticAuthGuard },
         { provide: APP_GUARD, useClass: PermissionsGuard },
+        { provide: APP_GUARD, useClass: TargetScopeGuard },
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
         Reflector,
       ],
     }).compile()
 
     app = moduleRef.createNestApplication()
-    app.useGlobalGuards(new StaticAuthGuard(), new PermissionsGuard(new Reflector()))
+    app.useGlobalGuards(
+      new StaticAuthGuard(),
+      new PermissionsGuard(new Reflector()),
+      new TargetScopeGuard({} as any, new Reflector()),
+    )
     app.useGlobalFilters(new AllExceptionsFilter())
     await listenForSupertest(app)
   })
@@ -396,6 +418,41 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.status).toBe(200)
     expect(ok.body.jobId).toBe('job-1')
     expect(ok.body.status).toBe('completed')
+  })
+
+  it('GET /reliability/incidents/:foreignIncidentId rejects cross-target incident with 404 TARGET_NOT_FOUND', async () => {
+    currentAccount = viewer
+    const res = await request(app.getHttpServer()).get(`/reliability/incidents/${foreignIncidentId}`)
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('TARGET_NOT_FOUND')
+  })
+
+  it('POST /reliability/incidents/:foreignIncidentId/resolve rejects cross-target incident with 404 TARGET_NOT_FOUND', async () => {
+    currentAccount = triager
+    const res = await request(app.getHttpServer())
+      .post(`/reliability/incidents/${foreignIncidentId}/resolve`)
+      .send({ reason: '跨目标处置' })
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('TARGET_NOT_FOUND')
+  })
+
+  it('POST /reliability/incidents/:incidentId/merge rejects foreign targetIncidentId with 404 TARGET_NOT_FOUND', async () => {
+    currentAccount = triager
+    const res = await request(app.getHttpServer())
+      .post(`/reliability/incidents/${incidentId}/merge`)
+      .send({ targetIncidentId: foreignIncidentId })
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('TARGET_NOT_FOUND')
+  })
+
+  it('GET /reliability/incidents passes actor.id to service.listIncidents for scoped target filtering', async () => {
+    currentAccount = viewer
+    const res = await request(app.getHttpServer()).get('/reliability/incidents')
+    expect(res.status).toBe(200)
+    expect(service.listIncidents).toHaveBeenCalledWith(
+      expect.anything(),
+      viewer.id,
+    )
   })
 })
 

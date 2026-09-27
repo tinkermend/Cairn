@@ -65,8 +65,11 @@ export class ReliabilityIncidentsController {
 
   @Get()
   @RequirePermissions('reliability:read')
-  list(@Query(new ZodValidationPipe(reliabilityIncidentListQuerySchema)) query: ReliabilityIncidentListQuery) {
-    return this.reliability.listIncidents(query)
+  list(
+    @Query(new ZodValidationPipe(reliabilityIncidentListQuerySchema)) query: ReliabilityIncidentListQuery,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.reliability.listIncidents(query, actor.id)
   }
 
   @Get(':incidentId')

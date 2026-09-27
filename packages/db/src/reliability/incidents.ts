@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import {
   RELIABILITY_ERROR_CODES,
   type IncidentLineage,
@@ -9,6 +9,7 @@ import {
   type ReliabilitySignalDto,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
+import { scopedTargetFilter } from '../console/target-authorization.js'
 import { cursorFilter, encodeCursor } from '../cursor.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, schemaFor } from '../native.js'
@@ -29,22 +30,28 @@ export interface ListIncidentsQuery {
 export async function listIncidents(
   db: Db,
   query: ListIncidentsQuery,
+  actorId?: string,
 ): Promise<{ items: ReliabilityIncidentDto[]; nextCursor?: string | null; total: number }> {
   const { reliabilityIncidents } = schemaFor(db)
   const limit = Math.min(query.limit ?? 50, 100)
   const offset = query.offset ?? 0
 
+  const targetScope = await scopedTargetFilter(db, actorId, reliabilityIncidents.targetId, 'reliability:read')
+
   const filterConditions = [
-    query.targetId ? eq(reliabilityIncidents.targetId, query.targetId) : sql`1=1`,
-    query.status ? eq(reliabilityIncidents.status, query.status) : sql`1=1`,
-    query.severity ? eq(reliabilityIncidents.severity, query.severity) : sql`1=1`,
-    query.assetId ? sql`${reliabilityIncidents.groupingKey} LIKE ${'%' + query.assetId + '%'}` : sql`1=1`,
+    targetScope,
+    query.targetId ? eq(reliabilityIncidents.targetId, query.targetId) : undefined,
+    query.status ? eq(reliabilityIncidents.status, query.status) : undefined,
+    query.severity ? eq(reliabilityIncidents.severity, query.severity) : undefined,
+    query.assetId ? sql`${reliabilityIncidents.groupingKey} LIKE ${'%' + query.assetId + '%'}` : undefined,
     query.search
       ? sql`(${reliabilityIncidents.title} LIKE ${'%' + query.search + '%'} OR ${reliabilityIncidents.summary} LIKE ${'%' + query.search + '%'} OR ${reliabilityIncidents.groupingKey} LIKE ${'%' + query.search + '%'})`
-      : sql`1=1`,
-  ]
+      : undefined,
+  ].filter((c): c is SQL => c !== undefined)
 
-  const queryConditions = [...filterConditions]
+  const activeFilterConditions = filterConditions.length ? filterConditions : [sql`1=1`]
+
+  const queryConditions = [...activeFilterConditions]
   if (query.cursor) {
     const cFilter = cursorFilter(reliabilityIncidents.lastSeenAt, reliabilityIncidents.id, query.cursor)
     if (cFilter) queryConditions.push(cFilter)
@@ -61,7 +68,7 @@ export async function listIncidents(
   const [countRow] = await db
     .select({ count: sql<number>`count(*)` })
     .from(reliabilityIncidents)
-    .where(and(...filterConditions))
+    .where(and(...activeFilterConditions))
 
   const hasMore = rows.length > limit
   const pagedRows = hasMore ? rows.slice(0, limit) : rows
@@ -183,6 +190,9 @@ export async function mergeIncidents(
         .from(reliabilityIncidents)
         .where(eq(reliabilityIncidents.id, sourceId))
       if (!src) continue
+      if (src.targetId !== target.targetId) {
+        throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH, '不能跨目标合并可靠性事件')
+      }
 
       // Reparent members
       await tx

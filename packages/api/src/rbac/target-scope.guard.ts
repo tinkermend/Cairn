@@ -34,6 +34,8 @@ export class TargetScopeGuard implements CanActivate {
         suiteRunId: id(req.params.suiteRunId) ?? id(req.body?.suiteRunId) ?? id(req.query.suiteRunId),
         reportId: id(req.params.reportId) ?? id(req.query.reportId),
         artifactId: id(req.params.artifactId),
+        incidentId: id(req.params.incidentId),
+        targetIncidentId: id(req.body?.targetIncidentId),
         permissions,
       })
     } catch (error) { rethrowDomain(error) }

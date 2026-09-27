@@ -59,6 +59,21 @@ export function targetScopeFilter(column: AnyColumn, scope: TargetScope) {
   return scope.all ? sql`1 = 1` : scope.ids.length ? inArray(column, scope.ids) : sql`1 = 0`
 }
 
+/** 两个目标范围的交集。任一侧不是全量时，结果只含双方都允许的目标。 */
+export function intersectTargetScopes(left: TargetScope, right: TargetScope): TargetScope {
+  if (left.all && right.all) return { all: true, ids: [] }
+  if (left.all) return { all: false, ids: [...new Set(right.ids)] }
+  if (right.all) return { all: false, ids: [...new Set(left.ids)] }
+  const allow = new Set(right.ids)
+  return { all: false, ids: [...new Set(left.ids.filter((id) => allow.has(id)))] }
+}
+
+/** 运行读取可见目标：target:read 与 run:read 的交集。 */
+export async function runReadScope(db: Db, actorId: string): Promise<TargetScope> {
+  const rows = await loadAccountGrants(db, actorId)
+  return intersectTargetScopes(scopeFromGrants(rows, 'target:read'), scopeFromGrants(rows, 'run:read'))
+}
+
 export async function scopedTargetFilter(db: Db, actorId: string | undefined, column: AnyColumn, permission: string) {
   if (!actorId) return undefined
   const rows = await loadAccountGrants(db, actorId)
@@ -98,10 +113,10 @@ export async function assertScopeAdministrator(db: Db, accountId: string) {
 }
 
 export async function authorizeTargetRequest(db: Db, actorId: string, input: {
-  targetId?: string; sessionId?: string; operationId?: string; runId?: string; scenarioId?: string; scheduleId?: string; evidenceId?: string; moduleId?: string; suiteId?: string; suiteRunId?: string; reportId?: string; artifactId?: string; permissions: string[];
+  targetId?: string; sessionId?: string; operationId?: string; runId?: string; scenarioId?: string; scheduleId?: string; evidenceId?: string; moduleId?: string; suiteId?: string; suiteRunId?: string; reportId?: string; artifactId?: string; incidentId?: string; targetIncidentId?: string; permissions: string[];
 }) {
   const targetIds: Array<string | null | undefined> = [input.targetId]
-  const { browserSessions, sessionOperations, runs, scenarios, schedules, evidences, actionModules, scenarioSuites, suiteRuns, reports, artifacts } = schemaFor(db)
+  const { browserSessions, sessionOperations, runs, scenarios, schedules, evidences, actionModules, scenarioSuites, suiteRuns, reports, artifacts, reliabilityIncidents } = schemaFor(db)
   if (input.sessionId) targetIds.push((await db.select({ id: browserSessions.targetId }).from(browserSessions).where(eq(browserSessions.id, input.sessionId)).limit(1))[0]?.id)
   if (input.operationId) targetIds.push((await db.select({ id: sessionOperations.targetId }).from(sessionOperations).where(eq(sessionOperations.id, input.operationId)).limit(1))[0]?.id)
   if (input.runId) targetIds.push((await db.select({ id: runs.targetId }).from(runs).where(eq(runs.id, input.runId)).limit(1))[0]?.id)
@@ -115,9 +130,11 @@ export async function authorizeTargetRequest(db: Db, actorId: string, input: {
   if (input.suiteRunId) targetIds.push((await db.select({ id: suiteRuns.targetId }).from(suiteRuns).where(eq(suiteRuns.id, input.suiteRunId)).limit(1))[0]?.id)
   if (input.reportId) targetIds.push((await db.select({ id: reports.targetId }).from(reports).where(eq(reports.id, input.reportId)).limit(1))[0]?.id)
   if (input.artifactId) targetIds.push((await db.select({ id: artifacts.targetId }).from(artifacts).where(eq(artifacts.id, input.artifactId)).limit(1))[0]?.id)
+  if (input.incidentId) targetIds.push((await db.select({ id: reliabilityIncidents.targetId }).from(reliabilityIncidents).where(eq(reliabilityIncidents.id, input.incidentId)).limit(1))[0]?.id)
+  if (input.targetIncidentId) targetIds.push((await db.select({ id: reliabilityIncidents.targetId }).from(reliabilityIncidents).where(eq(reliabilityIncidents.id, input.targetIncidentId)).limit(1))[0]?.id)
   for (const targetId of new Set(targetIds.filter((id): id is string => !!id))) {
     await assertTargetPermission(db, actorId, targetId)
-    for (const permission of input.permissions.filter((permission) => /^(target|session|credential|run|workflow|map|schedule|module|notification|suite|report|dataset|batch):/.test(permission))) {
+    for (const permission of input.permissions.filter((permission) => /^(target|session|credential|run|workflow|map|schedule|module|notification|suite|report|dataset|batch|reliability):/.test(permission))) {
       await assertTargetPermission(db, actorId, targetId, permission)
     }
   }
