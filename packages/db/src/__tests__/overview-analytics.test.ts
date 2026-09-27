@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { runReadScope } from '../console/target-authorization.js'
 import {
   createRunWithSnapshot,
   createScenarioWithVersion,
@@ -10,6 +11,8 @@ import {
   newId,
   eq,
 } from '../test-entry.js'
+
+const fleetScope = { all: true, ids: [] as string[] }
 
 const testStep: Step = {
   id: '00000000-0000-4000-8000-000000000099',
@@ -51,7 +54,7 @@ describe.each(DRIVERS)('%s 总览多维分析聚合', { timeout: 30_000 }, (driv
   })
 
   it('空数据下返回合规的 0 值与连续时序桶', async () => {
-    const res = await readOverviewAnalytics(handle.db, { range: '7d' })
+    const res = await readOverviewAnalytics(handle.db, { range: '7d' }, fleetScope)
     expect(res.range).toBe('7d')
     expect(res.summary.totalRuns).toBe(0)
     expect(res.summary.succeededRuns).toBe(0)
@@ -136,7 +139,7 @@ describe.each(DRIVERS)('%s 总览多维分析聚合', { timeout: 30_000 }, (driv
       })
       .where(eq(runs.id, run3.detail.id))
 
-    const res = await readOverviewAnalytics(handle.db, { range: '24h' })
+    const res = await readOverviewAnalytics(handle.db, { range: '24h' }, fleetScope)
     expect(res.range).toBe('24h')
     expect(res.summary.totalRuns).toBeGreaterThanOrEqual(3)
     expect(res.summary.succeededRuns).toBeGreaterThanOrEqual(2)
@@ -155,5 +158,93 @@ describe.each(DRIVERS)('%s 总览多维分析聚合', { timeout: 30_000 }, (driv
     const troubledA = res.troubledScenarios.find((s) => s.scenarioId === scenarioA.id)
     expect(troubledA).toBeDefined()
     expect(troubledA?.failCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('省略 targetId 时只聚合 target:read 与 run:read 的交集', async () => {
+    const visibleTarget = newId()
+    const hiddenTarget = newId()
+    const { consoleAccounts, targets, consoleRoles, consoleRolePermissions, consoleAccountRoles } = schemaFor(handle.db)
+
+    async function account(name: string) {
+      const id = newId()
+      await handle.db.insert(consoleAccounts).values({
+        id,
+        displayName: name,
+        email: `${name}-${id}@example.com`,
+        status: 'active',
+      })
+      return id
+    }
+
+    async function grant(accountId: string, permission: string, mode: 'selected' | 'all', ids: string[]) {
+      const roleId = newId()
+      await handle.db.insert(consoleRoles).values({ id: roleId, key: `overview-${roleId}`, name: permission })
+      await handle.db.insert(consoleRolePermissions).values({ consoleRoleId: roleId, permission })
+      await handle.db.insert(consoleAccountRoles).values({
+        consoleAccountId: accountId,
+        consoleRoleId: roleId,
+        targetScopeMode: mode,
+        targetScopeIds: ids,
+      })
+    }
+
+    await handle.db.insert(targets).values([
+      { id: visibleTarget, code: `visible-${visibleTarget.slice(0, 8)}`, name: '可见目标', entryUrl: 'https://visible.example' },
+      { id: hiddenTarget, code: `hidden-${hiddenTarget.slice(0, 8)}`, name: '隐藏目标', entryUrl: 'https://hidden.example' },
+    ])
+    const before = await readOverviewAnalytics(handle.db, { range: '24h' }, fleetScope)
+
+    const visibleScenario = await createScenarioWithVersion(handle.db, {
+      targetId: visibleTarget,
+      name: `可见场景-${visibleTarget.slice(0, 8)}`,
+      steps: [testStep],
+      actor: { id: actorId },
+    })
+    const hiddenScenario = await createScenarioWithVersion(handle.db, {
+      targetId: hiddenTarget,
+      name: `隐藏场景-${hiddenTarget.slice(0, 8)}`,
+      steps: [testStep],
+      actor: { id: actorId },
+    })
+    await createRunWithSnapshot(handle.db, {
+      targetId: visibleTarget,
+      scenarioId: visibleScenario.id,
+      scenarioVersionId: visibleScenario.versionId,
+      actor: { id: actorId },
+    })
+    await createRunWithSnapshot(handle.db, {
+      targetId: hiddenTarget,
+      scenarioId: hiddenScenario.id,
+      scenarioVersionId: hiddenScenario.versionId,
+      actor: { id: actorId },
+    })
+
+    const reader = await account('reader')
+    await grant(reader, 'target:read', 'selected', [visibleTarget])
+    await grant(reader, 'run:read', 'selected', [visibleTarget, hiddenTarget])
+    const scope = await runReadScope(handle.db, reader)
+    expect(scope.all).toBe(false)
+    expect([...scope.ids].sort()).toEqual([visibleTarget].sort())
+
+    const scoped = await readOverviewAnalytics(handle.db, { range: '24h' }, scope)
+    expect(scoped.summary.totalRuns).toBe(1)
+    expect(scoped.topScenarios.map((item) => item.scenarioId)).toEqual([visibleScenario.id])
+    expect(JSON.stringify(scoped)).not.toContain(hiddenTarget)
+    expect(JSON.stringify(scoped)).not.toContain(hiddenScenario.id)
+
+    const peeked = await readOverviewAnalytics(handle.db, { range: '24h', targetId: hiddenTarget }, scope)
+    expect(peeked.summary.totalRuns).toBe(0)
+    expect(peeked.topScenarios).toEqual([])
+
+    const stranger = await account('stranger')
+    const empty = await runReadScope(handle.db, stranger)
+    expect(empty).toEqual({ all: false, ids: [] })
+    const none = await readOverviewAnalytics(handle.db, { range: '24h' }, empty)
+    expect(none.summary.totalRuns).toBe(0)
+    expect(none.topScenarios).toEqual([])
+
+    const fleet = await readOverviewAnalytics(handle.db, { range: '24h' }, fleetScope)
+    expect(fleet.summary.totalRuns).toBe(before.summary.totalRuns + 2)
+    expect(JSON.stringify(fleet)).toContain(hiddenScenario.id)
   })
 })

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import { PermissionsGuard } from '../rbac/permissions.guard'
 import { DB_HANDLE } from '../db/db.module'
+import { readOverviewAnalytics, runReadScope } from '@cairn/db'
 import { OverviewController } from './overview.controller'
 import { OverviewService } from './overview.service'
 
@@ -48,6 +49,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
   return {
     ...actual,
     readOverviewAnalytics: vi.fn(async () => mockOverviewResponse),
+    runReadScope: vi.fn(async () => ({ all: true, ids: [] as string[] })),
   }
 })
 
@@ -109,6 +111,12 @@ describe('OverviewController HTTP', () => {
     expect(res.body.summary.totalRuns).toBe(50)
     expect(res.body.summary.successRate).toBe(0.96)
     expect(res.body.outcomes.passed).toBe(45)
+    expect(vi.mocked(runReadScope)).toHaveBeenCalledWith(expect.anything(), 'test-user')
+    expect(vi.mocked(readOverviewAnalytics)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ range: '7d' }),
+      { all: true, ids: [] },
+    )
   })
 
   it('400 传递非法时间范围参数拒绝', async () => {

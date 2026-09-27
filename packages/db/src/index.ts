@@ -80,6 +80,8 @@ export const assertTargetPermission = operation(
   targetAuthorization.assertTargetPermission,
 );
 export const targetScopeFor = operation(targetAuthorization.targetScopeFor);
+export const runReadScope = operation(targetAuthorization.runReadScope);
+export type { TargetScope } from "./console/target-authorization.js";
 export const authorizeTargetRequest = operation(
   targetAuthorization.authorizeTargetRequest,
 );

@@ -6,11 +6,13 @@ import {
   type ScenarioRankingItem,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
+import { targetScopeFilter, type TargetScope } from '../console/target-authorization.js'
 import { clockNow, schemaFor } from '../native.js'
 
 export async function readOverviewAnalytics(
   db: Db,
   query: OverviewAnalyticsQueryParsed,
+  scope: TargetScope,
 ): Promise<OverviewAnalyticsResponse> {
   const asOf = await clockNow(db)
   const range = query.range ?? '7d'
@@ -24,52 +26,60 @@ export async function readOverviewAnalytics(
 
   const { runs, scenarios, targets } = schemaFor(db)
 
-  // 1. 查询当前窗口运行记录
-  const conditions = [
-    sql`${runs.createdAt} >= ${since}`,
-    sql`${runs.createdAt} <= ${asOf}`,
-    isNull(runs.deletedAt),
-  ]
-  if (query.targetId) {
-    conditions.push(eq(runs.targetId, query.targetId))
-  }
+  // 可见范围为空，或指定了范围外的目标：不读 runs。
+  const outsideScope =
+    !scope.all &&
+    (scope.ids.length === 0 || (query.targetId !== undefined && !scope.ids.includes(query.targetId)))
+  const scopePredicate = targetScopeFilter(runs.targetId, scope)
+  const targetPredicate = query.targetId ? eq(runs.targetId, query.targetId) : undefined
 
-  const [currentRuns, prevTotals] = await Promise.all([
-    db
-      .select({
-        id: runs.id,
-        scenarioId: runs.scenarioId,
-        targetId: runs.targetId,
-        status: runs.status,
-        outcomeStatus: runs.outcomeStatus,
-        executionOrigin: runs.executionOrigin,
-        serviceCallerId: runs.serviceCallerId,
-        createdByConsoleAccountId: runs.createdByConsoleAccountId,
-        createdAt: runs.createdAt,
-        startedAt: runs.startedAt,
-        finishedAt: runs.finishedAt,
-      })
-      .from(runs)
-      .where(and(...conditions))
-      .orderBy(desc(runs.createdAt))
-      .limit(10000),
+  // 1. 当前窗口与上一周期。无 targetId 时用可见目标收窄，不全表扫描。
+  const [currentRuns, prevTotals] = outsideScope
+    ? [[], [{ total: 0, succeeded: 0 }]]
+    : await Promise.all([
+        db
+          .select({
+            id: runs.id,
+            scenarioId: runs.scenarioId,
+            targetId: runs.targetId,
+            status: runs.status,
+            outcomeStatus: runs.outcomeStatus,
+            executionOrigin: runs.executionOrigin,
+            serviceCallerId: runs.serviceCallerId,
+            createdByConsoleAccountId: runs.createdByConsoleAccountId,
+            createdAt: runs.createdAt,
+            startedAt: runs.startedAt,
+            finishedAt: runs.finishedAt,
+          })
+          .from(runs)
+          .where(
+            and(
+              sql`${runs.createdAt} >= ${since}`,
+              sql`${runs.createdAt} <= ${asOf}`,
+              isNull(runs.deletedAt),
+              scopePredicate,
+              targetPredicate,
+            ),
+          )
+          .orderBy(desc(runs.createdAt))
+          .limit(10000),
 
-    // 2. 查询上一周期总量与成功数用于环比
-    db
-      .select({
-        total: sql<number>`count(*)`,
-        succeeded: sql<number>`sum(case when UPPER(${runs.status}) = 'SUCCEEDED' then 1 else 0 end)`,
-      })
-      .from(runs)
-      .where(
-        and(
-          sql`${runs.createdAt} >= ${prevSince}`,
-          sql`${runs.createdAt} < ${since}`,
-          isNull(runs.deletedAt),
-          query.targetId ? eq(runs.targetId, query.targetId) : undefined,
-        ),
-      ),
-  ])
+        db
+          .select({
+            total: sql<number>`count(*)`,
+            succeeded: sql<number>`sum(case when UPPER(${runs.status}) = 'SUCCEEDED' then 1 else 0 end)`,
+          })
+          .from(runs)
+          .where(
+            and(
+              sql`${runs.createdAt} >= ${prevSince}`,
+              sql`${runs.createdAt} < ${since}`,
+              isNull(runs.deletedAt),
+              scopePredicate,
+              targetPredicate,
+            ),
+          ),
+      ])
 
   // 3. 构建连续无断层的时序桶
   const bucketMap = new Map<
