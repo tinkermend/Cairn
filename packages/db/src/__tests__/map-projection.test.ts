@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import {
   MAP_ASSETS_PROTOCOL,
   MAP_IDENTITY_RULE_VERSION,
+  mapListQuerySchema,
   mapObservationSchema,
   type MapFactCaller,
   type MapObservation,
@@ -18,11 +19,14 @@ import {
   ensureMapProjection,
   expireMapFactContents,
   getMapRelease,
+  getMapSummary,
   listMapProjectionWork,
   loadMapProjectionState,
   loadMapProjectionWorkingSet,
   loadMapQueryView,
   mapProjectionTestHooks,
+  promoteMapProjection,
+  promoteReadyMapProjections,
   sealMapRelease,
   startMapProjectionRebuild,
   type NativeHandle as DbHandle,
@@ -286,6 +290,54 @@ describe.each(DRIVERS)('%s 地图投影与封存', { timeout: 60_000 }, (driver)
     expect(state.cursor).toBe(0)
     const current = await ensureMapProjection(handle.db, targetId)
     expect(current.id).not.toBe(shadow.id)
+  })
+
+  it('就绪重建先追平新事实，再原子切换；不完整重建不能替换当前投影', async () => {
+    const targetId = await freshTarget()
+    await seedObservation(targetId)
+    const original = await ensureMapProjection(handle.db, targetId)
+    const shadow = await startMapProjectionRebuild(handle.db, { targetId })
+    expect(shadow.sourceWatermark).toBe(1)
+    await seedObservation(targetId)
+    await expect(promoteMapProjection(handle.db, { targetId, projectionId: shadow.id }))
+      .rejects.toMatchObject({ code: 'MAP_PROJECTION_STALE' })
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: shadow.id, expectedCursor: 0, expectedRevision: 0,
+      plan: emptyPlan(1),
+    })
+    expect((await loadMapProjectionState(handle.db, shadow.id)).status).toBe('ready')
+    expect((await listMapProjectionWork(handle.db, { limit: 32 }))
+      .some(item => item.projectionId === shadow.id && item.committedSeq === 2)).toBe(true)
+    expect(await promoteReadyMapProjections(handle.db)).toBe(0)
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: shadow.id, expectedCursor: 1, expectedRevision: 1,
+      plan: emptyPlan(2),
+    })
+    expect(await promoteReadyMapProjections(handle.db)).toBe(1)
+    expect((await ensureMapProjection(handle.db, targetId)).id).toBe(shadow.id)
+    expect((await loadMapProjectionState(handle.db, original.id)).status).toBe('superseded')
+    const release = await sealMapRelease(handle.db, {
+      targetId, projectionId: shadow.id, expectedProjectionRevision: 2,
+      policyVersion: 'map-assets@1', commandKey: `seal:catchup:${shadow.id}`, actorId,
+    })
+    expect(release.sourceWatermark).toBe(2)
+    const incomplete = await startMapProjectionRebuild(handle.db, { targetId })
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: incomplete.id, expectedCursor: 0, expectedRevision: 0,
+      plan: emptyPlan(2, { rebuildCompleteness: 'partial' }),
+    })
+    expect(await promoteReadyMapProjections(handle.db)).toBe(0)
+    expect((await ensureMapProjection(handle.db, targetId)).id).toBe(shadow.id)
+    const summary = await getMapSummary(handle.db, targetId, mapListQuerySchema.parse({}))
+    expect(summary.rebuildStatus).toBe('ready')
+    expect(summary.rebuildCompleteness).toBe('partial')
+    const replacement = await startMapProjectionRebuild(handle.db, { targetId })
+    expect(replacement.id).not.toBe(incomplete.id)
+    expect((await loadMapProjectionState(handle.db, incomplete.id)).status).toBe('superseded')
+    await expect(commitMapProjectionBatch(handle.db, {
+      projectionId: incomplete.id, expectedCursor: 2, expectedRevision: 1,
+      plan: emptyPlan(2),
+    })).rejects.toMatchObject({ code: 'MAP_PROJECTION_STALE' })
   })
 
   it('OMC12 封存中断无半 release，同键幂等，跨 Target 拒绝', async () => {

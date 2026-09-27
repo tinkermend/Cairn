@@ -21,11 +21,20 @@ import { sha256Hex } from '../runs/digest.js'
 import { mapCommandIdempotencyConflict, mapRevisionConflict } from './errors.js'
 import { requireLiveTarget } from './view.js'
 
-function policyFromRules(rules: TargetAccessPolicy['rules'], policyVersion: number): TargetAccessPolicy {
+function policyFromRules(
+  rules: TargetAccessPolicy['rules'],
+  policyVersion: number,
+  readOnlyRequests: TargetAccessPolicy['readOnlyRequests'] = [],
+  verifiedNonContentRequests: NonNullable<TargetAccessPolicy['verifiedNonContentRequests']> = [],
+  postReadMode: 'balanced' | null = null,
+): TargetAccessPolicy {
   return targetAccessPolicySchema.parse({
     schemaVersion: 1,
     policyVersion,
     rules,
+    readOnlyRequests,
+    ...(postReadMode === 'balanced' ? { postReadMode } : {}),
+    ...(verifiedNonContentRequests.length ? { verifiedNonContentRequests } : {}),
   })
 }
 
@@ -50,7 +59,8 @@ export async function getTargetAccessPolicy(db: Db, targetId: string): Promise<T
   return targetAccessPolicyDtoSchema.parse({
     targetId,
     revision: row.revision,
-    policy: policyFromRules(row.rulesJson, row.policyVersion),
+    policy: policyFromRules(row.rulesJson, row.policyVersion, row.readOnlyRequestsJson,
+      row.verifiedNonContentRequestsJson, row.postReadMode),
     seeded: false,
     resourceLoadsUnrestricted: true,
     updatedAt: row.updatedAt.toISOString(),
@@ -91,7 +101,8 @@ export async function ensureFrozenAccessPolicyTx(
     // 冲突意味着行已存在；读不到只可能是它在两步之间被删，这是真错误，不能拿自己算的值顶替。
     if (!existing) throw new Error(`目标 ${input.targetId} 的访问策略在并发创建后读不到`)
   }
-  const policy = policyFromRules(existing.rulesJson, existing.policyVersion)
+  const policy = policyFromRules(existing.rulesJson, existing.policyVersion, existing.readOnlyRequestsJson,
+    existing.verifiedNonContentRequestsJson, existing.postReadMode)
   return {
     frozen: frozenTargetAccessPolicySchema.parse({
       revision: existing.revision,
@@ -127,12 +138,17 @@ export async function updateTargetAccessPolicy(
     if (expected !== parsed.expectedRevision) mapRevisionConflict('目标授权修订已变更')
     const now = await clockNow(tx)
     const nextRevision = expected + 1
-    const policy = policyFromRules(parsed.rules, nextRevision)
+    const policy = policyFromRules(parsed.rules, nextRevision, parsed.readOnlyRequests ?? current?.readOnlyRequestsJson ?? [],
+      parsed.verifiedNonContentRequests ?? current?.verifiedNonContentRequestsJson ?? [],
+      parsed.postReadMode === undefined ? current?.postReadMode ?? null : parsed.postReadMode === 'balanced' ? 'balanced' : null)
     const digest = digestAccessPolicy(policy)
     const values = {
       policySchemaVersion: policy.schemaVersion,
       policyVersion: policy.policyVersion,
       rulesJson: policy.rules,
+      readOnlyRequestsJson: policy.readOnlyRequests,
+      postReadMode: policy.postReadMode ?? null,
+      verifiedNonContentRequestsJson: policy.verifiedNonContentRequests ?? [],
       policyDigest: digest,
       revision: nextRevision,
       updatedBy: actor.id,

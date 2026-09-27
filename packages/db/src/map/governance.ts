@@ -113,7 +113,7 @@ export async function getMapSummary(db: Db, targetId: string, query: MapListQuer
     projectionStatus: view.kind === 'release' ? 'ready' : view.status ?? 'missing',
     rebuildStatus: rebuilding?.status,
     rebuildProjectionId: rebuilding?.id,
-    rebuildCompleteness: view.rebuildCompleteness ?? undefined,
+    rebuildCompleteness: rebuilding?.rebuildCompleteness ?? view.rebuildCompleteness ?? undefined,
     pageCount: counts.pageCount,
     objectCount: counts.objectCount,
     conflictCount: Number(conflictRow?.n ?? 0),

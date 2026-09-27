@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import {
   mapAssetDetailSchema,
   mapAssetListResponseSchema,
@@ -24,7 +25,18 @@ import {
   mapConsumptionPolicyUpdateBodySchema,
   mapJobPolicyDtoSchema,
   mapJobPolicyUpdateBodySchema,
+  targetStateRuleDtoSchema,
+  targetStateRuleQueryParamsUpdateBodySchema,
   mapJobDtoSchema,
+  mapIngestCreateBodySchema,
+  mapIngestJobListResponseSchema,
+  mapIngestSurfaceResponseSchema,
+  mapJobCreateResponseSchema,
+  mapMenuEntryCreateBodySchema,
+  mapMenuEntryUpdateBodySchema,
+  mapMenuEntryArchiveBodySchema,
+  mapMenuEntryReorderBodySchema,
+  mapMenuEntryDtoSchema,
   mapSummaryResponseSchema,
   mapAtlasPagesResponseSchema,
   createTerminologyBodySchema,
@@ -61,7 +73,19 @@ import {
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyDto,
   type MapJobPolicyUpdateBody,
+  type TargetStateRuleDto,
+  type TargetStateRuleQueryParamsUpdateBody,
   type MapJobDto,
+  type MapIngestCreateBody,
+  type MapIngestJobListQuery,
+  type MapIngestJobListResponse,
+  type MapIngestSurfaceResponse,
+  type MapJobCreateResponse,
+  type MapMenuEntryCreateBody,
+  type MapMenuEntryUpdateBody,
+  type MapMenuEntryArchiveBody,
+  type MapMenuEntryReorderBody,
+  type MapMenuEntryDto,
   type MapSummaryResponse,
   type CreateTerminologyBody,
   type RetireTerminologyBody,
@@ -115,6 +139,11 @@ export function fetchMapAtlasPages(
     params.set('expectedGovernanceRevision', String(query.expectedGovernanceRevision))
   const qs = params.toString()
   return apiFetch(`/api/targets/${targetId}/map/atlas/pages${qs ? `?${qs}` : ''}`, mapAtlasPagesResponseSchema)
+}
+
+export function fetchMapIngestSurface(targetId: string, targetAccountId?: string): Promise<MapIngestSurfaceResponse> {
+  const query = targetAccountId ? `?targetAccountId=${encodeURIComponent(targetAccountId)}` : ''
+  return apiFetch(`/api/targets/${targetId}/map/ingest-surface${query}`, mapIngestSurfaceResponseSchema)
 }
 
 export function fetchMapChanges(targetId: string, query?: MapListQuery): Promise<MapChangeListResponse> {
@@ -250,8 +279,74 @@ export function updateMapJobPolicy(targetId: string, body: MapJobPolicyUpdateBod
   })
 }
 
+export function fetchTargetStateRule(targetId: string): Promise<TargetStateRuleDto> {
+  return apiFetch(`/api/targets/${targetId}/map/state-rule`, targetStateRuleDtoSchema)
+}
+
+export function updateTargetStateRuleQueryParams(
+  targetId: string, body: TargetStateRuleQueryParamsUpdateBody,
+): Promise<TargetStateRuleDto> {
+  return apiFetch(`/api/targets/${targetId}/map/state-rule/query-params`, targetStateRuleDtoSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(targetStateRuleQueryParamsUpdateBodySchema.parse(body)),
+  })
+}
+
 export function fetchMapJob(jobId: string): Promise<MapJobDto> {
   return apiFetch(`/api/map-jobs/${jobId}`, mapJobDtoSchema)
+}
+
+export function fetchMapMenuEntries(targetId: string): Promise<MapMenuEntryDto[]> {
+  return apiFetch(`/api/targets/${targetId}/map/entries`, z.strictObject({ items: mapMenuEntryDtoSchema.array() }))
+    .then(response => response.items)
+}
+
+export function createMapMenuEntry(targetId: string, body: MapMenuEntryCreateBody): Promise<MapMenuEntryDto> {
+  return apiFetch(`/api/targets/${targetId}/map/entries`, mapMenuEntryDtoSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapMenuEntryCreateBodySchema.parse(body)),
+  })
+}
+
+export function updateMapMenuEntry(targetId: string, entryId: string, body: MapMenuEntryUpdateBody): Promise<MapMenuEntryDto> {
+  return apiFetch(`/api/targets/${targetId}/map/entries/${entryId}/update`, mapMenuEntryDtoSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapMenuEntryUpdateBodySchema.parse(body)),
+  })
+}
+
+export function archiveMapMenuEntry(targetId: string, entryId: string, body: MapMenuEntryArchiveBody): Promise<MapMenuEntryDto> {
+  return apiFetch(`/api/targets/${targetId}/map/entries/${entryId}/archive`, mapMenuEntryDtoSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapMenuEntryArchiveBodySchema.parse(body)),
+  })
+}
+
+export function reorderMapMenuEntries(targetId: string, body: MapMenuEntryReorderBody): Promise<{ items: MapMenuEntryDto[] }> {
+  return apiFetch(`/api/targets/${targetId}/map/entries/reorder`, z.strictObject({ items: mapMenuEntryDtoSchema.array() }), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapMenuEntryReorderBodySchema.parse(body)),
+  })
+}
+
+export function createMapIngestion(targetId: string, body: MapIngestCreateBody): Promise<MapJobCreateResponse> {
+  return apiFetch(`/api/targets/${targetId}/map/ingestions`, mapJobCreateResponseSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapIngestCreateBodySchema.parse(body)),
+  })
+}
+
+export function fetchMapIngestions(targetId: string, query?: Partial<MapIngestJobListQuery>): Promise<MapIngestJobListResponse> {
+  return apiFetch(`/api/targets/${targetId}/map/ingestions${toQueryString(query)}`, mapIngestJobListResponseSchema)
+}
+
+export function fetchMapIngestion(targetId: string, jobId: string): Promise<MapJobDto> {
+  return apiFetch(`/api/targets/${targetId}/map/ingestions/${jobId}`, mapJobDtoSchema)
+}
+
+export function cancelMapIngestion(targetId: string, jobId: string): Promise<MapJobDto> {
+  return apiFetch(`/api/targets/${targetId}/map/ingestions/${jobId}/cancel`, mapJobDtoSchema, { method: 'POST' })
 }
 
 export function cancelMapJob(jobId: string): Promise<MapJobDto> {

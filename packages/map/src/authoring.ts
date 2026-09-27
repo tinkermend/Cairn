@@ -1,6 +1,7 @@
 import { compileScenarioDocument } from '@cairn/authoring'
 import {
   MAX_SCENARIO_STEPS,
+  mapAssetRefKey,
   scenarioDocumentSchema,
   type KnowledgeDiagnostic,
   type KnowledgeDiff,
@@ -12,6 +13,7 @@ import {
   type MapConditionSnapshot,
   type ScenarioDocument,
   type Step,
+  type TargetKnowledgeContext,
 } from '@cairn/shared'
 
 export type TerminologyMatchInput = {
@@ -48,6 +50,7 @@ export type KnowledgeComposeInput = {
   terms: readonly TerminologyMatchInput[]
   modules: readonly PublishedModuleKnowledge[]
   mapAssets: readonly { assetRef: MapAssetRef; name?: string }[]
+  targetKnowledge?: TargetKnowledgeContext
   selectedTermIds?: readonly string[]
   selectedModuleVersionIds?: readonly string[]
   mapReleaseId?: string
@@ -263,6 +266,28 @@ function bindingsFromTerm(
     }))
 }
 
+function bindingsFromTargetKnowledge(input: KnowledgeComposeInput, steps: readonly Step[]): KnowledgeSuggestedBinding[] {
+  if (!input.targetKnowledge) return []
+  const elements = input.targetKnowledge.pages.flatMap(page => page.views.flatMap(view => view.elements))
+  const available = new Map(input.mapAssets.map(asset => [mapAssetRefKey(asset.assetRef), asset.assetRef]))
+  const bindings: KnowledgeSuggestedBinding[] = []
+  for (const step of steps) {
+    const stepInput = step.input as Record<string, unknown>
+    const target = stepInput.target && typeof stepInput.target === 'object'
+      ? stepInput.target as { assetRef?: unknown; candidates?: unknown } : undefined
+    if (!target || typeof target.assetRef !== 'string' || !Array.isArray(target.candidates)) continue
+    const ref = available.get(target.assetRef)
+    if (!ref) continue
+    const matching = elements.filter(element => element.assetRef === target.assetRef && !element.unsafeAction)
+    const candidateKeys = new Set(target.candidates.filter(candidate => candidate && typeof candidate === 'object')
+      .map(candidate => JSON.stringify(candidate)))
+    if (!matching.some(element => element.locator.candidates.some(candidate => candidateKeys.has(JSON.stringify(candidate))))) continue
+    bindings.push({ stepId: step.id, assetRef: ref })
+    if (bindings.length >= 16) break
+  }
+  return bindings
+}
+
 export function composeKnowledgeSuggestion(input: KnowledgeComposeInput): KnowledgeComposeResult {
   const question = redactKnowledgeQuestion(input.question)
   const diagnostics: KnowledgeDiagnostic[] = []
@@ -467,6 +492,8 @@ export function composeKnowledgeSuggestion(input: KnowledgeComposeInput): Knowle
   const suggestedBindings = term
     ? bindingsFromTerm(term, firstCopied?.id, input.targetId).filter(binding => input.mapAssets.some(asset => Object.entries(binding.assetRef).every(([key, value]) => (asset.assetRef as Record<string, unknown>)[key] === value)))
     : []
+  const knowledgeBindings = bindingsFromTargetKnowledge(input, copied)
+    .filter(binding => !suggestedBindings.some(existing => existing.stepId === binding.stepId))
 
   return {
     status: 'proposed',
@@ -478,6 +505,6 @@ export function composeKnowledgeSuggestion(input: KnowledgeComposeInput): Knowle
     unknowns,
     termCandidates: selectedTerms.slice(0, 16).map(termCandidate),
     suggestedModules,
-    suggestedBindings: suggestedBindings.length === 1 ? suggestedBindings : [],
+    suggestedBindings: [...(suggestedBindings.length === 1 ? suggestedBindings : []), ...knowledgeBindings].slice(0, 16),
   }
 }

@@ -1,3 +1,14 @@
+import type { MapSummaryResponse } from '@cairn/shared'
+
+export const MAP_PROJECTION_STATUS_LABELS: Record<MapSummaryResponse['projectionStatus'], string> = {
+  missing: '未生成',
+  active: '当前生效',
+  shadow: '重建中',
+  ready: '重建完成待切换',
+  failed: '处理失败',
+  superseded: '已被替换',
+}
+
 export const MAP_LIFECYCLE_LABELS: Record<string, string> = {
   DISCOVERED: '已发现',
   OBSERVED: '已观察',

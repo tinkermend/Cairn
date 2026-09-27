@@ -9,6 +9,7 @@ import {
   runListQuerySchema,
   seedTargetAccessRules,
   targetAccessPolicyUpdateBodySchema,
+  targetAccessPolicySchema,
 } from '../index.js'
 
 describe('地图作业契约', () => {
@@ -73,6 +74,23 @@ describe('地图作业契约', () => {
         rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/orders' }],
       }).rules[0]?.pathPrefix,
     ).toBe('/orders')
+  })
+
+  it('非页面数据例外必须有精确请求身份和核实依据，空规则保持旧策略形状', () => {
+    const base = { schemaVersion: 1, policyVersion: 1,
+      rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow' }] }
+    expect(targetAccessPolicySchema.parse(base).verifiedNonContentRequests).toBeUndefined()
+    const rule = { method: 'POST', resourceType: 'xhr', origin: 'https://metrics.example',
+      pathPattern: '/collect', evidence: '已核对前端调用，仅上报访问统计，不驱动页面内容' }
+    expect(targetAccessPolicySchema.parse({ ...base, verifiedNonContentRequests: [rule] })
+      .verifiedNonContentRequests).toEqual([rule])
+    for (const invalid of [
+      { ...rule, origin: 'https://metrics.example/other' },
+      { ...rule, pathPattern: '/collect?kind=page' },
+      { ...rule, pathPattern: '/collect/*' },
+      { ...rule, resourceType: 'document' },
+      { ...rule, evidence: '猜测' },
+    ]) expect(targetAccessPolicySchema.safeParse({ ...base, verifiedNonContentRequests: [invalid] }).success).toBe(false)
   })
 
   it('地图作业证据策略关闭截图与录像', () => {

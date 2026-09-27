@@ -10,13 +10,13 @@ export class MapJobsController {
 
   @Get(':jobId')
   @RequirePermissions('target:read', 'map:read')
-  getJob(@Param('jobId') jobId: string) {
-    return this.maps.getJob(jobId)
+  getJob(@Param('jobId') jobId: string, @CurrentAccount() account: RequestAccount) {
+    return this.maps.getJob(jobId, account)
   }
 
   @Post(':jobId/cancel')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('map:maintain')
+  @RequirePermissions('target:read', 'map:maintain', 'map:read')
   cancelJob(@Param('jobId') jobId: string, @CurrentAccount() account: RequestAccount) {
     return this.maps.cancelJob(jobId, account)
   }

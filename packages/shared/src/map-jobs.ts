@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { isPublishedAccessPathPrefix, originsForAccessPurposes as originsFromPolicy } from './access-scope.js'
 import { originsFromTargetUrls } from './origin.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
+import { mapIngestProgressSchema, mapIngestScopeSchema, mapIngestSummarySchema, mapMenuEntrySchema } from './map-ingest.js'
 
 export const MAP_JOBS_PROTOCOL = 'map-jobs@1' as const
 export const MAP_JOBS_CONSUMER_VERSION = MAP_JOBS_PROTOCOL
@@ -51,6 +52,10 @@ const originSchema = z
       return false
     }
   }, 'origin 须为 http(s) 且不含凭据')
+const exactOriginSchema = originSchema.refine((value) => {
+  const url = new URL(value)
+  return url.pathname === '/' && !url.search && !url.hash
+}, 'origin 不得包含路径、query 或 hash')
 
 export const targetAccessRuleSchema = z.strictObject({
   origin: originSchema,
@@ -64,6 +69,22 @@ export const targetAccessPolicySchema = z.strictObject({
   schemaVersion: z.literal(TARGET_ACCESS_POLICY_SCHEMA_VERSION),
   policyVersion: z.number().int().min(1),
   rules: z.array(targetAccessRuleSchema).max(64),
+  readOnlyRequests: z.array(z.strictObject({
+    method: z.literal('POST'),
+    origin: originSchema,
+    pathPattern: z.string().min(1).max(512).refine(isPublishedAccessPathPrefix, '只读请求路径须为明确的路径前缀'),
+  })).max(32).default([]),
+  /** Optional risk appetite for map ingestion. Absence preserves the existing explicit-rule behavior and digest. */
+  postReadMode: z.literal('balanced').optional(),
+  /** Blocked POSTs proven independent of the captured business surface. Never grants network access. */
+  verifiedNonContentRequests: z.array(z.strictObject({
+    method: z.literal('POST'),
+    resourceType: z.enum(['xhr', 'fetch']),
+    origin: exactOriginSchema,
+    pathPattern: z.string().min(1).max(512).refine(
+      value => isPublishedAccessPathPrefix(value) && !value.includes('*'), '非内容请求路径须为明确的精确路径'),
+    evidence: z.string().trim().min(12).max(512),
+  })).max(32).optional(),
 })
 export type TargetAccessPolicy = z.infer<typeof targetAccessPolicySchema>
 
@@ -89,6 +110,9 @@ export const targetAccessPolicyUpdateBodySchema = z
     expectedRevision: z.number().int().min(0),
     idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/),
     rules: z.array(targetAccessRuleSchema).min(1).max(64),
+    readOnlyRequests: targetAccessPolicySchema.shape.readOnlyRequests.optional(),
+    postReadMode: z.enum(['explicit', 'balanced']).optional(),
+    verifiedNonContentRequests: targetAccessPolicySchema.shape.verifiedNonContentRequests,
     reason: z.string().trim().min(1).max(512),
   })
   .superRefine((value, ctx) => {
@@ -109,6 +133,15 @@ export const mapJobPolicySchema = z.strictObject({
   policyVersion: z.number().int().min(1),
   manualJobsEnabled: z.boolean(),
   sliceWorkSeconds: z.number().int().min(5).max(20).default(20),
+  ingestMaxDepth: z.number().int().min(1).max(5).default(3),
+  ingestMaxPagesPerEntry: z.number().int().min(1).max(100).default(30),
+  ingestMaxPagesPerJob: z.number().int().min(1).max(500).default(200),
+  ingestMaxJobSeconds: z.number().int().min(60).max(3600).default(1800),
+  ingestNavTimeoutSeconds: z.number().int().min(1).max(30).default(15),
+  ingestSettleTimeoutSeconds: z.number().int().min(1).max(10).default(5),
+  ingestPageBudgetSeconds: z.number().int().min(5).max(60).default(25),
+  ingestMaxViewsPerPage: z.number().int().min(1).max(20).default(8),
+  ingestMaxOptionReadsPerPage: z.number().int().min(0).max(30).default(10),
 })
 export type MapJobPolicy = z.infer<typeof mapJobPolicySchema>
 
@@ -130,6 +163,15 @@ export const mapJobPolicyUpdateBodySchema = z.strictObject({
   expectedRevision: z.number().int().min(0),
   idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/),
   manualJobsEnabled: z.boolean(),
+  ingestMaxDepth: mapJobPolicySchema.shape.ingestMaxDepth.optional(),
+  ingestMaxPagesPerEntry: mapJobPolicySchema.shape.ingestMaxPagesPerEntry.optional(),
+  ingestMaxPagesPerJob: mapJobPolicySchema.shape.ingestMaxPagesPerJob.optional(),
+  ingestMaxJobSeconds: mapJobPolicySchema.shape.ingestMaxJobSeconds.optional(),
+  ingestNavTimeoutSeconds: mapJobPolicySchema.shape.ingestNavTimeoutSeconds.optional(),
+  ingestSettleTimeoutSeconds: mapJobPolicySchema.shape.ingestSettleTimeoutSeconds.optional(),
+  ingestPageBudgetSeconds: mapJobPolicySchema.shape.ingestPageBudgetSeconds.optional(),
+  ingestMaxViewsPerPage: mapJobPolicySchema.shape.ingestMaxViewsPerPage.optional(),
+  ingestMaxOptionReadsPerPage: mapJobPolicySchema.shape.ingestMaxOptionReadsPerPage.optional(),
   reason: z.string().trim().min(1).max(512),
 })
 export type MapJobPolicyUpdateBody = z.infer<typeof mapJobPolicyUpdateBodySchema>
@@ -145,6 +187,11 @@ export const frozenMapJobSchema = z.strictObject({
   startBefore: utcInstantSchema.optional(),
   source: z.enum(['manual', 'scheduled']).default('manual'),
   occurrenceId: entityIdSchema.optional(),
+  ingest: z.strictObject({
+    scope: mapIngestScopeSchema,
+    entries: z.array(mapMenuEntrySchema).max(64),
+    accessPolicyRevision: z.number().int().min(0),
+  }).optional(),
 })
 export type FrozenMapJob = z.infer<typeof frozenMapJobSchema>
 
@@ -165,11 +212,22 @@ export const mapJobDtoSchema = z.strictObject({
   stopReason: mapJobStopReasonSchema.nullable(),
   revision: z.number().int().min(1),
   remainingBudgetSeconds: z.number().int().min(0),
+  scope: mapIngestScopeSchema.optional(),
+  ingestProgress: mapIngestProgressSchema.optional(),
+  ingestSummary: mapIngestSummarySchema.nullable().optional(),
+  releaseId: entityIdSchema.nullable(),
+  updatedAt: utcInstantSchema.optional(),
   firstRunId: entityIdSchema.optional(),
   slices: z.array(mapJobSliceDtoSchema),
   createdAt: utcInstantSchema,
 })
 export type MapJobDto = z.infer<typeof mapJobDtoSchema>
+
+export const mapIngestJobListResponseSchema = z.strictObject({
+  items: z.array(mapJobDtoSchema),
+  nextCursor: entityIdSchema.optional(),
+})
+export type MapIngestJobListResponse = z.infer<typeof mapIngestJobListResponseSchema>
 
 export const mapJobCreateResponseSchema = z.strictObject({
   job: mapJobDtoSchema,

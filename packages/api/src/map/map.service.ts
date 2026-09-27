@@ -25,7 +25,18 @@ import {
   updateMapConsumptionPolicy,
   getMapJobPolicy,
   updateMapJobPolicy,
+  getTargetStateRuleConfig,
+  updateTargetStateRuleQueryParams,
   getMapJob,
+  listMapIngestJobs,
+  createMapIngestJob,
+  listMapMenuEntries,
+  createMapMenuEntry,
+  updateMapMenuEntry,
+  archiveMapMenuEntry,
+  reorderMapMenuEntries,
+  getTargetKnowledgeContext,
+  getMapIngestSurface,
   cancelMapJob,
   previewMapGovernance,
   publishMapRelease,
@@ -73,6 +84,14 @@ import {
   type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
+  type TargetStateRuleQueryParamsUpdateBody,
+  type MapIngestCreateBody,
+  type MapIngestJobListQuery,
+  type TargetKnowledgeContextQuery,
+  type MapMenuEntryCreateBody,
+  type MapMenuEntryUpdateBody,
+  type MapMenuEntryArchiveBody,
+  type MapMenuEntryReorderBody,
   type CreateTerminologyBody,
   type RetireTerminologyBody,
   type TerminologyListQuery,
@@ -384,12 +403,69 @@ export class MapService {
     return updateMapJobPolicy(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
   }
 
-  getJob(jobId: string) {
-    return getMapJob(this.database, jobId).catch(rethrowDomain)
+  stateRule(targetId: string) {
+    return getTargetStateRuleConfig(this.database, targetId).catch(rethrowDomain)
+  }
+
+  updateStateRuleQueryParams(targetId: string, body: TargetStateRuleQueryParamsUpdateBody, account: RequestAccount) {
+    return updateTargetStateRuleQueryParams(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  menuEntries(targetId: string) {
+    return listMapMenuEntries(this.database, targetId).catch(rethrowDomain)
+  }
+
+  createMenuEntry(targetId: string, body: MapMenuEntryCreateBody, account: RequestAccount) {
+    return createMapMenuEntry(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  updateMenuEntry(targetId: string, entryId: string, body: MapMenuEntryUpdateBody, account: RequestAccount) {
+    return updateMapMenuEntry(this.database, targetId, entryId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  archiveMenuEntry(targetId: string, entryId: string, body: MapMenuEntryArchiveBody, account: RequestAccount) {
+    return archiveMapMenuEntry(this.database, targetId, entryId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  reorderMenuEntries(targetId: string, body: MapMenuEntryReorderBody, account: RequestAccount) {
+    return reorderMapMenuEntries(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  ingestions(targetId: string, query: MapIngestJobListQuery) {
+    return listMapIngestJobs(this.database, targetId, query).catch(rethrowDomain)
+  }
+
+  createIngestion(targetId: string, body: MapIngestCreateBody, account: RequestAccount) {
+    return createMapIngestJob(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  async ingestion(targetId: string, jobId: string) {
+    try {
+      const job = await getMapJob(this.database, jobId)
+      if (job.targetId !== targetId) throw notFound('MAP_JOB_NOT_FOUND', '采集作业不存在')
+      return job
+    } catch (error) { rethrowDomain(error) }
+  }
+
+  async cancelIngestion(targetId: string, jobId: string, account: RequestAccount) {
+    await this.ingestion(targetId, jobId)
+    return cancelMapJob(this.database, jobId, this.actor(account), account.id).catch(rethrowDomain)
+  }
+
+  knowledgeContext(targetId: string, query: TargetKnowledgeContextQuery) {
+    return getTargetKnowledgeContext(this.database, targetId, query).catch(rethrowDomain)
+  }
+
+  ingestSurface(targetId: string, query: import('@cairn/shared').MapIngestSurfaceQuery) {
+    return getMapIngestSurface(this.database, targetId, query).catch(rethrowDomain)
+  }
+
+  getJob(jobId: string, account: RequestAccount) {
+    return getMapJob(this.database, jobId, account.id).catch(rethrowDomain)
   }
 
   cancelJob(jobId: string, account: RequestAccount) {
-    return cancelMapJob(this.database, jobId, this.actor(account)).catch(rethrowDomain)
+    return cancelMapJob(this.database, jobId, this.actor(account), account.id).catch(rethrowDomain)
   }
 
   async runClues(targetId: string, runId: string) {

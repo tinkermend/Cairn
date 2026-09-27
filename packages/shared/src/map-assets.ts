@@ -148,6 +148,7 @@ export type MapIdentityCommand = z.infer<typeof mapIdentityCommandSchema>
 
 export const mapDescriptorFeaturesSchema = z.strictObject({
   locators: targetDescriptorSchema.optional(),
+  fingerprint: z.string().min(8).max(128).optional(),
   semanticName: z.string().trim().min(1).max(128).optional(),
   role: z.string().trim().min(1).max(64).optional(),
   testId: z.string().trim().min(1).max(128).optional(),

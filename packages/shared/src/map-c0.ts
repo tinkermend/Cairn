@@ -136,6 +136,7 @@ export const MAP_SOURCE_TYPES = [
   'probe',
   'refresh',
   'ai_explore',
+  'map_ingest',
   'imported_metadata',
 ] as const
 export type MapSourceType = (typeof MAP_SOURCE_TYPES)[number]
@@ -146,6 +147,7 @@ export const MAP_RUN_SOURCE_TYPES = [
   'probe',
   'refresh',
   'ai_explore',
+  'map_ingest',
 ] as const
 export type MapRunSourceType = (typeof MAP_RUN_SOURCE_TYPES)[number]
 

@@ -46,6 +46,10 @@ export const mapReleaseManifestSchema = z.strictObject({
   sourceWatermark: z.number().int().nonnegative().max(1_000_000_000),
   identityRevision: z.number().int().nonnegative().max(1_000_000_000),
   projectionRevision: z.number().int().nonnegative().max(1_000_000_000),
+  source: z.literal('map_ingest').optional(),
+  jobId: entityIdSchema.optional(),
+  /** Risk count from the triggering ingest job, not from every historical fact in this projection. */
+  sourceJobInferredReadPostCount: z.number().int().nonnegative().optional(),
   items: z.array(mapReleaseItemSchema).max(10_000),
 })
 export type MapReleaseManifest = z.infer<typeof mapReleaseManifestSchema>
@@ -69,6 +73,8 @@ export const mapSealReleaseInputSchema = z.strictObject({
   policyVersion: policyVersionSchema,
   commandKey: technicalKeySchema,
   actorId: entityIdSchema,
+  source: z.literal('map_ingest').optional(),
+  jobId: entityIdSchema.optional(),
   selectedAssetKeys: z.array(technicalKeySchema).max(10_000).optional(),
   lifecycleOverrides: z
     .array(

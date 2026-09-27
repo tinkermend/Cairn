@@ -19,6 +19,8 @@ import { StatusBadge } from '@/components/status-badge'
 import { MapAssetsPane } from './assets-pane'
 import { ConsumptionPolicyCard } from './consumption-policy'
 import { MapSummaryBanner } from './summary-banner'
+import { MapIngestControls } from './ingest-controls'
+import { MAP_PROJECTION_STATUS_LABELS } from './labels'
 
 const route = getRouteApi('/_authenticated/targets/$targetId/map/')
 
@@ -162,7 +164,7 @@ export function TargetMapPage() {
                           : 'warning'
                     }
                   >
-                    投影：{summary.projectionStatus}
+                    投影：{MAP_PROJECTION_STATUS_LABELS[summary.projectionStatus]}
                   </StatusBadge>
                 </>
               ) : null}
@@ -202,6 +204,7 @@ export function TargetMapPage() {
           />
         ) : (
           <>
+            <MapIngestControls targetId={targetId} targetName={targetQuery.data?.name ?? '目标系统'} />
             <MapSummaryBanner summary={summary} />
             <Tabs
               value={activeTab}

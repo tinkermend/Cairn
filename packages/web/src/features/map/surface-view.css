@@ -1,0 +1,12 @@
+.ingest-island {
+  background: radial-gradient(circle at 15% 10%, var(--surface-subtle, #eaf4f0), transparent 56%), var(--card);
+}
+
+@keyframes ingest-page-arrived {
+  0% { box-shadow: inset 0 0 0 2px var(--primary); }
+  100% { box-shadow: inset 0 0 0 0 transparent; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ingest-page-node--changed { animation: ingest-page-arrived 2s ease-out 1; }
+}

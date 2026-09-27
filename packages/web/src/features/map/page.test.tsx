@@ -12,10 +12,13 @@ const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const mocks = vi.hoisted(() => ({
   fetchTarget: vi.fn(),
   fetchTargetAccounts: vi.fn(),
+  fetchTargetAccessPolicy: vi.fn(),
+  updateTargetAccessPolicy: vi.fn(),
   fetchMapSummary: vi.fn(),
   fetchMapObjects: vi.fn(),
   fetchMapPages: vi.fn(),
   fetchMapAtlasPages: vi.fn(),
+  fetchMapIngestSurface: vi.fn(),
   fetchMapObject: vi.fn(),
   fetchMapChanges: vi.fn(),
   fetchMapImpacts: vi.fn(),
@@ -30,12 +33,28 @@ const mocks = vi.hoisted(() => ({
   previewMapGovernance: vi.fn(),
   publishMapRelease: vi.fn(),
   submitMapGovernance: vi.fn(),
+  fetchMapMenuEntries: vi.fn(),
+  fetchMapJobPolicy: vi.fn(),
+  fetchMapIngestions: vi.fn(),
+  fetchTargetStateRule: vi.fn(),
+  createMapMenuEntry: vi.fn(),
+  createMapIngestion: vi.fn(),
 }))
 
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: mocks.fetchTarget,
   fetchTargets: vi.fn(async () => ({ items: [] })),
   fetchTargetAccounts: mocks.fetchTargetAccounts,
+  fetchTargetAccessPolicy: mocks.fetchTargetAccessPolicy,
+  updateTargetAccessPolicy: mocks.updateTargetAccessPolicy,
+}))
+vi.mock('@/lib/sessions-api', () => ({
+  fetchSessionOverview: vi.fn(async () => ({
+    items: [], nextCursor: undefined, summary: {
+      total: 0, available: 0, needsCheck: 0, needsLogin: 0, identityMismatch: 0,
+      maintenance: 0, executing: 0, lost: 0, unprepared: 0, retained: 0,
+    }, asOf: '2026-09-27T00:00:00.000Z',
+  })),
 }))
 vi.mock('@/lib/map-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/map-api')>()
@@ -106,6 +125,28 @@ describe('目标知识页', () => {
       id: TARGET_ID,
       name: '演示商城',
       code: 'shop',
+    })
+    mocks.fetchMapMenuEntries.mockResolvedValue([])
+    mocks.fetchMapIngestSurface.mockResolvedValue({ targetId: TARGET_ID, targetAccountId: null,
+      sourceJobId: null, truncated: false, pages: [] })
+    mocks.fetchMapIngestions.mockResolvedValue({ items: [] })
+    mocks.fetchTargetStateRule.mockResolvedValue({ targetId: TARGET_ID, revision: 0,
+      rule: { schemaVersion: 1, ruleVersion: 1, routeMatches: [], readyAssertion: {},
+        variants: [], allowedSpaHashPrefixes: ['#/'], ignoreQueryParams: [] },
+      updatedAt: '1970-01-01T00:00:00.000Z' })
+    mocks.fetchMapJobPolicy.mockResolvedValue({
+      targetId: TARGET_ID, revision: 0,
+      policy: { schemaVersion: 1, policyVersion: 1, manualJobsEnabled: false,
+        sliceWorkSeconds: 20, ingestMaxDepth: 3, ingestMaxPagesPerEntry: 30,
+        ingestMaxPagesPerJob: 200, ingestMaxJobSeconds: 1800, ingestNavTimeoutSeconds: 15,
+        ingestSettleTimeoutSeconds: 5, ingestPageBudgetSeconds: 25,
+        ingestMaxViewsPerPage: 8, ingestMaxOptionReadsPerPage: 10 },
+      updatedAt: '2026-09-27T00:00:00.000Z',
+    })
+    mocks.fetchTargetAccessPolicy.mockResolvedValue({
+      targetId: TARGET_ID, revision: 0, seeded: true, resourceLoadsUnrestricted: true,
+      policy: { schemaVersion: 1, policyVersion: 1, rules: [], readOnlyRequests: [] },
+      updatedAt: '2026-09-27T00:00:00.000Z',
     })
     mocks.fetchMapSummary.mockResolvedValue({
       view: {
@@ -235,6 +276,7 @@ describe('目标知识页', () => {
   it('OMD02 中文桌面实现显示适用未知项，不以可信徽标概括', async () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('查看知识')).toBeVisible()
+    await expect.element(screen.getByText('投影：当前生效')).toBeVisible()
     await expect.element(screen.getByText('保存', { exact: true })).toBeVisible()
     await expect.element(screen.getByText(/workspace/)).toBeVisible()
     await expect
@@ -243,6 +285,48 @@ describe('目标知识页', () => {
     await page.screenshot({
       path: '../../../../../.run/omd-review/desktop.png',
     })
+  })
+
+  it('可从空菜单状态配置一级菜单，并以只读到达目标提交', async () => {
+    signIn(['target:read', 'map:read', 'map:maintain'])
+    mocks.createMapMenuEntry.mockResolvedValue({})
+    const screen = await renderPage()
+    await screen.getByRole('button', { name: '采集配置' }).click()
+    await expect.element(screen.getByText(/尚无一级菜单/)).toBeVisible()
+    await screen.getByRole('button', { name: '手动添加' }).click()
+    await screen.getByLabelText('菜单名称').fill('API 令牌')
+    await screen.getByLabelText('入口 URL（可选）').fill('https://shop.example/tokens')
+    await screen.getByLabelText('菜单文字').fill('API 令牌')
+    await screen.getByRole('button', { name: '保存菜单' }).click()
+    await expect.poll(() => mocks.createMapMenuEntry.mock.calls.length).toBe(1)
+    expect(mocks.createMapMenuEntry).toHaveBeenCalledWith(TARGET_ID, expect.objectContaining({
+      name: 'API 令牌', url: 'https://shop.example/tokens',
+      menuAnchor: { label: 'API 令牌' },
+      arrivalTarget: expect.objectContaining({ candidates: expect.arrayContaining([
+        expect.objectContaining({ by: 'role', value: 'heading', name: 'API 令牌' }),
+      ]) }),
+    }))
+  })
+
+  it('窄屏采集配置面板可打开并显示只读规则入口', async () => {
+    await page.viewport(390, 844)
+    const screen = await renderPage()
+    await screen.getByRole('button', { name: '采集配置' }).click()
+    await expect.element(screen.getByText('只读 POST 请求')).toBeVisible()
+    await expect.element(screen.getByText(/尚未配置；默认阻断非 GraphQL POST/)).toBeVisible()
+  })
+
+  it('完成作业仍显示已核实但被拦截的请求计数', async () => {
+    mocks.fetchMapIngestions.mockResolvedValue({ items: [{
+      jobStatus: 'completed', updatedAt: '2026-09-27T00:00:00.000Z', slices: [],
+      ingestSummary: { outcome: 'complete', entries: 1, pages: 1, elements: 2,
+        partialPages: 0, resultCounts: { collected: 1 }, blockedPostPaths: [],
+        blockedImpactCounts: { unclassified: 0, unreadable_ping: 1, verified_non_content_rule: 2 },
+        changes: [], changesTruncated: false, durationSeconds: 10, slices: 1 },
+    }] })
+    const screen = await renderPage()
+    await screen.getByRole('button', { name: '采集配置' }).click()
+    await expect.element(screen.getByText(/2 次已核实的非页面数据请求被拦截/)).toBeVisible()
   })
 
   it('OMD10 投影失败时保留说明且不伪装成无知识', async () => {

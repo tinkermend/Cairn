@@ -23,8 +23,14 @@ export function MapSummaryBanner({
           <AlertDescription>
             {summary.rebuildStatus === 'failed'
               ? '新投影重建失败。'
-              : '新投影重建中。'}
-            当前显示旧投影，完成后请刷新知识。
+              : summary.rebuildStatus === 'ready'
+                ? summary.rebuildCompleteness === 'partial'
+                  ? '新投影证据不完整，尚未切换。'
+                  : summary.rebuildCompleteness === 'unknown'
+                    ? '新投影完整性未确认，尚未切换。'
+                    : '新投影已完成重建，等待切换。'
+                : '新投影重建中。'}
+            当前显示旧投影。
           </AlertDescription>
         </Alert>
       ) : null}
@@ -36,7 +42,7 @@ export function MapSummaryBanner({
         </Alert>
       ) : null}
       {summary?.projectionStatus === 'shadow' ||
-      summary?.rebuildCompleteness === 'partial' ? (
+      (!summary?.rebuildStatus && summary?.rebuildCompleteness === 'partial') ? (
         <Alert>
           <AlertDescription>
             {summary.projectionStatus === 'shadow'

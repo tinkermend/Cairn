@@ -13,9 +13,27 @@ import {
   mapConsumptionEligibilityGrantBodySchema,
   mapConsumptionPolicyUpdateBodySchema,
   mapJobPolicyUpdateBodySchema,
+  targetStateRuleQueryParamsUpdateBodySchema,
+  mapMenuEntryCreateBodySchema,
+  mapMenuEntryUpdateBodySchema,
+  mapMenuEntryArchiveBodySchema,
+  mapMenuEntryReorderBodySchema,
+  mapIngestCreateBodySchema,
+  mapIngestJobListQuerySchema,
+  mapIngestSurfaceQuerySchema,
+  targetKnowledgeContextQuerySchema,
   type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
+  type TargetStateRuleQueryParamsUpdateBody,
+  type MapMenuEntryCreateBody,
+  type MapMenuEntryUpdateBody,
+  type MapMenuEntryArchiveBody,
+  type MapMenuEntryReorderBody,
+  type MapIngestCreateBody,
+  type MapIngestJobListQuery,
+  type MapIngestSurfaceQuery,
+  type TargetKnowledgeContextQuery,
   createTerminologyBodySchema,
   retireTerminologyBodySchema,
   terminologyListQuerySchema,
@@ -281,6 +299,128 @@ export class MapController {
     @CurrentAccount() account: RequestAccount,
   ) {
     return this.maps.updateJobPolicy(targetId, body, account)
+  }
+
+  @Get('state-rule')
+  @RequirePermissions('target:read', 'map:read')
+  stateRule(@Param('targetId') targetId: string) {
+    return this.maps.stateRule(targetId)
+  }
+
+  @Post('state-rule/query-params')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain')
+  updateStateRuleQueryParams(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(targetStateRuleQueryParamsUpdateBodySchema)) body: TargetStateRuleQueryParamsUpdateBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.updateStateRuleQueryParams(targetId, body, account)
+  }
+
+  @Get('entries')
+  @RequirePermissions('target:read', 'map:read')
+  menuEntries(@Param('targetId') targetId: string) {
+    return this.maps.menuEntries(targetId)
+  }
+
+  @Post('entries')
+  @RequirePermissions('map:maintain')
+  createMenuEntry(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(mapMenuEntryCreateBodySchema)) body: MapMenuEntryCreateBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.createMenuEntry(targetId, body, account)
+  }
+
+  @Post('entries/reorder')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain')
+  reorderMenuEntries(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(mapMenuEntryReorderBodySchema)) body: MapMenuEntryReorderBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.reorderMenuEntries(targetId, body, account)
+  }
+
+  @Post('entries/:entryId/update')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain')
+  updateMenuEntry(
+    @Param('targetId') targetId: string,
+    @Param('entryId') entryId: string,
+    @Body(new ZodValidationPipe(mapMenuEntryUpdateBodySchema)) body: MapMenuEntryUpdateBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.updateMenuEntry(targetId, entryId, body, account)
+  }
+
+  @Post('entries/:entryId/archive')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain')
+  archiveMenuEntry(
+    @Param('targetId') targetId: string,
+    @Param('entryId') entryId: string,
+    @Body(new ZodValidationPipe(mapMenuEntryArchiveBodySchema)) body: MapMenuEntryArchiveBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.archiveMenuEntry(targetId, entryId, body, account)
+  }
+
+  @Get('ingestions')
+  @RequirePermissions('target:read', 'map:read')
+  ingestions(
+    @Param('targetId') targetId: string,
+    @Query(new ZodValidationPipe(mapIngestJobListQuerySchema)) query: MapIngestJobListQuery,
+  ) {
+    return this.maps.ingestions(targetId, query)
+  }
+
+  @Get('ingest-surface')
+  @RequirePermissions('target:read', 'map:read')
+  ingestSurface(
+    @Param('targetId') targetId: string,
+    @Query(new ZodValidationPipe(mapIngestSurfaceQuerySchema)) query: MapIngestSurfaceQuery,
+  ) {
+    return this.maps.ingestSurface(targetId, query)
+  }
+
+  @Post('ingestions')
+  @RequirePermissions('map:maintain')
+  createIngestion(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(mapIngestCreateBodySchema)) body: MapIngestCreateBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.createIngestion(targetId, body, account)
+  }
+
+  @Get('ingestions/:jobId')
+  @RequirePermissions('target:read', 'map:read')
+  ingestion(@Param('targetId') targetId: string, @Param('jobId') jobId: string) {
+    return this.maps.ingestion(targetId, jobId)
+  }
+
+  @Post('ingestions/:jobId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain', 'map:read')
+  cancelIngestion(
+    @Param('targetId') targetId: string,
+    @Param('jobId') jobId: string,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.cancelIngestion(targetId, jobId, account)
+  }
+
+  @Get('knowledge-context')
+  @RequirePermissions('target:read', 'map:read')
+  knowledgeContext(
+    @Param('targetId') targetId: string,
+    @Query(new ZodValidationPipe(targetKnowledgeContextQuerySchema)) query: TargetKnowledgeContextQuery,
+  ) {
+    return this.maps.knowledgeContext(targetId, query)
   }
 
   @Get('runs/:runId/clues')

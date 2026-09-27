@@ -15,6 +15,7 @@ import {
   type MapProjectionPlan,
   type MapProjectionState,
   type MapVerification,
+  type TargetDescriptor,
 } from '@cairn/shared'
 import { evaluateCondition } from './conditions.js'
 import {
@@ -62,11 +63,30 @@ export function projectionWorkingSetHints(facts: readonly MapFactPageItem[]): Pr
   }
 }
 
-const INVENTORY_ROLES = new Set(['menuitem', 'link', 'button', 'heading', 'tab', 'treeitem'])
+/** Keep a whole-fact prefix within the projection plan's object limit. */
+export function projectionFactPrefix(facts: readonly MapFactPageItem[]): MapFactPageItem[] {
+  const selected: MapFactPageItem[] = []
+  // Leave room for identity collisions and other plan entries. A single
+  // inventory fact is capped at 80 elements by inventoryItemsFromObservation.
+  const budget = Math.floor(MAP_PROJECTION_PLAN_OBJECT_MAX * 0.75)
+  let estimatedObjects = 0
+  for (const fact of facts) {
+    const cost = fact.type === 'observation' ? 1 + inventoryItemsFromObservation(fact.observation).length : 1
+    if (selected.length && estimatedObjects + cost > budget) break
+    selected.push(fact)
+    estimatedObjects += cost
+  }
+  return selected
+}
+
+const INVENTORY_ROLES = new Set([
+  'menuitem', 'link', 'button', 'heading', 'tab', 'treeitem',
+  'textbox', 'combobox', 'select', 'textarea', 'input', 'columnheader', 'checkbox', 'radio',
+])
 const INVENTORY_REGION = 'control'
 const INVENTORY_ITEM_CAP = 80
 
-type InventoryItem = { role: string; name: string }
+type InventoryItem = { role: string; name: string; locator?: TargetDescriptor; fingerprint?: string }
 
 function clip(value: string, max: number): string {
   const trimmed = value.trim()
@@ -87,10 +107,14 @@ export function inventoryItemsFromObservation(observation: MapObservation): Inve
     const role = typeof (raw as { role?: unknown }).role === 'string' ? clip((raw as { role: string }).role, 64) : ''
     const name = typeof (raw as { name?: unknown }).name === 'string' ? clip((raw as { name: string }).name, 128) : ''
     if (!role || !name || !INVENTORY_ROLES.has(role)) continue
+    const locatorResult = targetDescriptorSchema.safeParse((raw as { locator?: unknown }).locator)
+    const locator = locatorResult.success ? locatorResult.data : undefined
+    const fingerprint = typeof (raw as { fingerprint?: unknown }).fingerprint === 'string'
+      ? (raw as { fingerprint: string }).fingerprint : undefined
     const key = `${role}:${name}`
     if (seen.has(key)) continue
     seen.add(key)
-    items.push({ role, name })
+    items.push({ role, name, ...(locator ? { locator } : {}), ...(fingerprint ? { fingerprint } : {}) })
     if (items.length >= INVENTORY_ITEM_CAP) break
   }
   return items
@@ -106,6 +130,11 @@ function observationFromInventory(observation: MapObservation, item: InventoryIt
         { name: 'label', value: item.name },
         { name: 'name', value: item.name },
       ],
+    },
+    structuralSummary: {
+      nodeCount: 1, truncated: false,
+      features: { kind: 'inventory-element', ...(item.locator ? { locator: item.locator } : {}),
+        ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}) },
     },
   }
 }
@@ -132,6 +161,12 @@ function objectAllocationFromObservation(observation: MapObservation, pageAlloca
 }
 
 function locatorsFromObservation(observation: MapObservation) {
+  const features = observation.structuralSummary.features
+  if (features && typeof features === 'object' && !Array.isArray(features)
+    && (features as { kind?: unknown }).kind === 'inventory-element') {
+    const parsed = targetDescriptorSchema.safeParse((features as { locator?: unknown }).locator)
+    if (parsed.success) return parsed.data
+  }
   const clues = cluesFromObservation(observation)
   const candidates: Array<{ by: 'testId' | 'role' | 'text'; value: string; name?: string }> = []
   if (clues.testId) candidates.push({ by: 'testId', value: clip(clues.testId, 512) })
@@ -148,8 +183,14 @@ function locatorsFromObservation(observation: MapObservation) {
 
 function featuresFromObservation(observation: MapObservation): MapDescriptorFeatures {
   const clues = cluesFromObservation(observation)
+  const structural = observation.structuralSummary.features
+  const fingerprint = structural && typeof structural === 'object' && !Array.isArray(structural)
+    && (structural as { kind?: unknown }).kind === 'inventory-element'
+    && typeof (structural as { fingerprint?: unknown }).fingerprint === 'string'
+    ? (structural as { fingerprint: string }).fingerprint : undefined
   return {
     locators: locatorsFromObservation(observation),
+    ...(fingerprint ? { fingerprint } : {}),
     semanticName: clues.name,
     role: clues.role,
     testId: clues.testId,
@@ -330,10 +371,8 @@ export function planProjectionBatch(input: {
           aliases: input.state.aliases,
         })
         if (objectMatch.matchResult === 'AMBIGUOUS') return objectMatch
-        if (!planObjects.has(objectMatch.allocationKey) && planObjects.size >= MAP_PROJECTION_PLAN_OBJECT_MAX) {
-          completeness = 'partial'
-          return objectMatch
-        }
+        if (!planObjects.has(objectMatch.allocationKey) && planObjects.size >= MAP_PROJECTION_PLAN_OBJECT_MAX)
+          throw new Error('MAP_PROJECTION_OBJECT_BUDGET_EXCEEDED')
         planObjects.set(objectMatch.allocationKey, {
           allocationKey: objectMatch.allocationKey,
           pageAllocationKey,

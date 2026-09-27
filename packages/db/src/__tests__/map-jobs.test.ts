@@ -89,6 +89,7 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     const access = await getTargetAccessPolicy(handle.db, targetId)
     expect(access.seeded).toBe(true)
     expect(access.resourceLoadsUnrestricted).toBe(true)
+    expect(access.policy?.postReadMode).toBeUndefined()
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
       name: `正式-${newId().slice(0, 8)}`,
@@ -107,6 +108,27 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     expect(created.detail.snapshot.mapJob).toBeUndefined()
     expect(created.detail.snapshot.evidencePolicy?.screenshot).toBe('always')
     expect(created.detail.snapshot.evidencePolicy?.video).toBe('always')
+  })
+
+  it('平衡模式随目标访问策略修订冻结，恢复显式模式不改旧作业快照', async () => {
+    const { targetId } = await freshTarget()
+    const rules = [{ origin: 'https://shop.example', purpose: 'business_surface' as const, effect: 'allow' as const }]
+    const balanced = await updateTargetAccessPolicy(handle.db, targetId, {
+      expectedRevision: 0, idempotencyKey: `balanced:${targetId}`, reason: '允许受控推断查询',
+      rules, postReadMode: 'balanced',
+    }, actor())
+    expect(balanced.policy?.postReadMode).toBe('balanced')
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId, name: `平衡-${newId().slice(0, 8)}`, actor: actor(), steps: probeSteps(),
+    })
+    const created = await createRunWithSnapshot(handle.db, { scenarioId: scenario.id, actor: actor() })
+    expect(created.detail.snapshot.accessPolicy?.policy.postReadMode).toBe('balanced')
+    const explicit = await updateTargetAccessPolicy(handle.db, targetId, {
+      expectedRevision: balanced.revision, idempotencyKey: `explicit:${targetId}`, reason: '恢复显式模式',
+      rules, postReadMode: 'explicit',
+    }, actor())
+    expect(explicit.policy?.postReadMode).toBeUndefined()
+    expect(created.detail.snapshot.accessPolicy?.policy.postReadMode).toBe('balanced')
   })
 
   it('冻结 pathPrefix，路径级 deny 不掏空 allowedOrigins', async () => {
@@ -142,6 +164,29 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     expect(created.detail.snapshot.allowedOrigins).toEqual(
       expect.arrayContaining(['https://shop.example', 'https://idp.example']),
     )
+    await requestRunCancel(handle.db, created.detail.id, actor())
+  })
+
+  it('非页面数据规则随访问策略修订冻结，且不授予请求访问', async () => {
+    const { targetId } = await freshTarget()
+    const rule = { method: 'POST' as const, resourceType: 'xhr' as const,
+      origin: 'https://metrics.example', pathPattern: '/collect',
+      evidence: '已核对前端调用，仅上报访问统计，不参与页面内容' }
+    const updated = await updateTargetAccessPolicy(handle.db, targetId, {
+      expectedRevision: 0, idempotencyKey: `noncontent:${targetId}`, reason: '记录已核实的非页面请求',
+      rules: [
+        { origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow' },
+        { origin: 'https://idp.example', purpose: 'authentication', effect: 'allow' },
+      ],
+      verifiedNonContentRequests: [rule],
+    }, actor())
+    expect(updated.policy?.verifiedNonContentRequests).toEqual([rule])
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId, name: `非页面-${newId().slice(0, 8)}`, actor: actor(), steps: probeSteps(),
+    })
+    const created = await createRunWithSnapshot(handle.db, { scenarioId: scenario.id, actor: actor() })
+    expect(created.detail.snapshot.accessPolicy?.policy.verifiedNonContentRequests).toEqual([rule])
+    expect(created.detail.snapshot.allowedOrigins).not.toContain('https://metrics.example')
     await requestRunCancel(handle.db, created.detail.id, actor())
   })
 })

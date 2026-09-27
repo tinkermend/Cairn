@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listMapProjectionWork = vi.fn()
+const listUnprojectedMapTargets = vi.fn(async (): Promise<string[]> => [])
 const ensureMapProjection = vi.fn()
 const getMapProjection = vi.fn()
 const loadMapProjectionWorkingSet = vi.fn()
 const readMapFacts = vi.fn()
 const commitMapProjectionBatch = vi.fn()
 const recordMapProjectionFailure = vi.fn()
+const promoteReadyMapProjections = vi.fn(async () => 0)
+const sealCompletedMapIngestJobs = vi.fn(async () => 0)
 const projectionWorkingSetHints = vi.fn(() => ({
   pageAllocationKeys: ['page:v1:top:orders:top'],
   objectAllocationKeys: ['object:v1:n001-btn'],
@@ -15,12 +18,15 @@ const projectionWorkingSetHints = vi.fn(() => ({
 
 vi.mock('@cairn/db', () => ({
   listMapProjectionWork,
+  listUnprojectedMapTargets,
   ensureMapProjection,
   getMapProjection,
   loadMapProjectionWorkingSet,
   readMapFacts,
   commitMapProjectionBatch,
   recordMapProjectionFailure,
+  promoteReadyMapProjections,
+  sealCompletedMapIngestJobs,
   DomainError: class DomainError extends Error {
     code: string
     constructor(kind: string, code: string, message: string) {
@@ -32,6 +38,7 @@ vi.mock('@cairn/db', () => ({
 
 vi.mock('@cairn/map', () => ({
   projectionWorkingSetHints,
+  projectionFactPrefix: vi.fn((facts) => facts),
   planProjectionBatch: vi.fn(() => ({
     protocol: 'map-assets@1',
     algorithmVersion: 'map-identity@1',
@@ -49,6 +56,16 @@ vi.mock('@cairn/map', () => ({
 describe('MapProjectionService', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('首次采集提交事实后先为新目标创建投影', async () => {
+    const { advanceMapProjections } = await import('./projection.service.js')
+    const targetId = '11111111-1111-4111-8111-111111111111'
+    listUnprojectedMapTargets.mockResolvedValueOnce([targetId])
+    listMapProjectionWork.mockResolvedValueOnce([])
+    await advanceMapProjections({} as never, { limit: 1 })
+    expect(ensureMapProjection).toHaveBeenCalledWith(expect.anything(), targetId)
+    expect(ensureMapProjection.mock.invocationCallOrder[0]).toBeLessThan(listMapProjectionWork.mock.invocationCallOrder[0]!)
   })
 
   it('tick 组合 map 规划与 db 提交，不另写算法', async () => {

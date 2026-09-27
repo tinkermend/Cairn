@@ -37,7 +37,7 @@ import { mapProjectionTestHooks } from './projections.js'
 
 export async function sealMapReleaseTx(tx: Db, input: MapSealReleaseInput): Promise<MapRelease> {
   const command = mapSealReleaseInputSchema.parse(input)
-  const { mapPages, mapObjectDescriptors, mapProjectionAssets, mapProjections, mapReleaseItems, mapReleases } = schemaFor(tx)
+  const { mapJobs, mapPages, mapObjectDescriptors, mapProjectionAssets, mapProjections, mapReleaseItems, mapReleases } = schemaFor(tx)
   const [projection] = await locked(
     tx,
     tx.select().from(mapProjections).where(eq(mapProjections.id, command.projectionId)),
@@ -78,6 +78,12 @@ export async function sealMapReleaseTx(tx: Db, input: MapSealReleaseInput): Prom
   const pageById = new Map(pages.map((page) => [page.id, page]))
   if (command.selectedAssetKeys?.some(key => !assets.some(asset => asset.assetRefKey === key))) mapSealConflict('选中的资产不属于该投影')
   const descriptors = await tx.select().from(mapObjectDescriptors).where(eq(mapObjectDescriptors.targetId, command.targetId))
+  const [sourceJob] = command.source && command.jobId
+    ? await tx.select({ targetId: mapJobs.targetId, ingestSummary: mapJobs.ingestSummary }).from(mapJobs)
+      .where(eq(mapJobs.id, command.jobId)).limit(1)
+    : []
+  if (command.source && (!sourceJob || sourceJob.targetId !== command.targetId))
+    mapSealConflict('来源作业与目标不一致')
   const overrides = new Map(command.lifecycleOverrides?.map(item => [item.assetRefKey, item.lifecycle]))
   const items = selected.map((asset) => {
     const overlay = resolveAssetOverlay(overrides, { targetId: command.targetId, pageId: asset.pageId ?? undefined, objectId: asset.objectId ?? undefined, implementationKey: asset.implementationKey ?? undefined, descriptorVersion: asset.descriptorVersion ?? undefined })
@@ -109,9 +115,12 @@ export async function sealMapReleaseTx(tx: Db, input: MapSealReleaseInput): Prom
     targetId: projection.targetId,
     projectionId: projection.id,
     policyVersion: command.policyVersion,
-    sourceWatermark: projection.sourceWatermark ?? projection.cursor,
+    sourceWatermark: projection.cursor,
     identityRevision: projection.identityRevision,
     projectionRevision: projection.revision,
+    ...(command.source ? { source: command.source, jobId: command.jobId } : {}),
+    ...(sourceJob?.ingestSummary?.inferredReadPostCount
+      ? { sourceJobInferredReadPostCount: sourceJob.ingestSummary.inferredReadPostCount } : {}),
     items,
   })
   const manifestDigest = sha256Hex(canonicalJson(manifest))

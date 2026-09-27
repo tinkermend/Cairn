@@ -35,8 +35,25 @@ export const targetStateRuleSchema = z.strictObject({
     .default({}),
   variants: z.array(stateVariantRuleSchema).default([]),
   allowedSpaHashPrefixes: z.array(z.string().min(1).max(64)).default(['#/']),
+  ignoreQueryParams: z.array(z.string().min(1).max(64)).max(64).default([]),
 })
 export type TargetStateRule = z.infer<typeof targetStateRuleSchema>
+
+export const targetStateRuleDtoSchema = z.strictObject({
+  targetId: entityIdSchema,
+  revision: z.number().int().min(0),
+  rule: targetStateRuleSchema,
+  updatedAt: utcInstantSchema,
+})
+export type TargetStateRuleDto = z.infer<typeof targetStateRuleDtoSchema>
+
+export const targetStateRuleQueryParamsUpdateBodySchema = z.strictObject({
+  expectedRevision: z.number().int().min(0),
+  ignoreQueryParams: z.array(z.string().trim().min(1).max(64)).max(64)
+    .refine(items => new Set(items).size === items.length, '查询参数名称不能重复'),
+  reason: z.string().trim().min(1).max(512),
+})
+export type TargetStateRuleQueryParamsUpdateBody = z.infer<typeof targetStateRuleQueryParamsUpdateBodySchema>
 
 export function normalizeExplorationPath(rawPath: string): string {
   const trimmed = rawPath.trim()
@@ -55,11 +72,19 @@ export function buildPageKey(input: {
   const parsed = parseHttpUrl(input.url)
   const canonical = parsed ? canonicalOrigin(parsed.origin) ?? '' : ''
   const pathname = parsed ? normalizeExplorationPath(parsed.pathname) : ''
+  const ignore = new Set(input.ignoreQueryParams ?? [])
   let hashPart = ''
   if (parsed && parsed.hash && input.allowedSpaHashPrefixes) {
     for (const prefix of input.allowedSpaHashPrefixes) {
       if (parsed.hash.startsWith(prefix)) {
         hashPart = parsed.hash
+        if (ignore.size && hashPart.includes('?')) {
+          const queryStart = hashPart.indexOf('?')
+          const params = new URLSearchParams(hashPart.slice(queryStart + 1))
+          for (const key of ignore) params.delete(key)
+          const remaining = params.toString()
+          hashPart = hashPart.slice(0, queryStart) + (remaining ? '?' + remaining : '')
+        }
         break
       }
     }
@@ -67,7 +92,6 @@ export function buildPageKey(input: {
   let queryPart = ''
   if (parsed && parsed.search) {
     const searchParams = new URLSearchParams(parsed.search)
-    const ignore = new Set(input.ignoreQueryParams ?? [])
     const filtered: [string, string][] = []
     for (const [k, v] of searchParams.entries()) {
       if (!ignore.has(k)) filtered.push([k, v])
@@ -122,7 +146,7 @@ export function computeControlFingerprint(input: {
   return syncSha256(payload).slice(0, 32)
 }
 
-export const UNSAFE_ACTION_PATTERN = /(提交|保存|删除|审批|支付|发布|上传|下载|导出|注销|退出|重启|重置|停止|启动|submit|save|delete|approve|pay|publish|upload|download|export|logout|signout|write|restart|reboot|reset|stop|shutdown)/i
+export const UNSAFE_ACTION_PATTERN = /(提交|保存|删除|审批|支付|发布|上传|下载|导出|注销|退出|重启|重置|停止|启动|submit|save|delete|approve|publish|upload|download|export|logout|signout|write|restart|reboot|reset|stop|shutdown|(?:^|[^a-z])pay(?:$|[^a-z]))/i
 
 export function isUnsafeActionText(text: string): boolean {
   return UNSAFE_ACTION_PATTERN.test(text)
@@ -158,6 +182,9 @@ export function sanitizeExplorationUrl(
         break
       }
     }
+  }
+  if (allowedHash && UNSAFE_ACTION_PATTERN.test(allowedHash)) {
+    return { ok: false, reason: 'SPA 路由疑似写入或危险动作' }
   }
   const searchParams = new URLSearchParams(resolved.search)
   const SENSITIVE_QUERY = /(token|auth|sign|ticket|session|secret|key|passwd|password)/i

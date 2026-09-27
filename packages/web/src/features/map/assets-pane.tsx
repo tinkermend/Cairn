@@ -13,6 +13,7 @@ import type {
 import { Compass, Table as TableIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { AtlasView } from './archipelago/atlas-view'
+import { IngestSurfaceAtlas, IngestSurfaceList } from './surface-view'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   fetchMapChanges,
@@ -22,6 +23,8 @@ import {
   fetchMapImpacts,
   fetchMapReferences,
   fetchMapTerms,
+  fetchMapIngestSurface,
+  fetchMapMenuEntries,
   createMapTerm,
   previewMapGovernance,
   submitMapGovernance,
@@ -86,6 +89,15 @@ export function MapAssetsPane({
   const [selection, setSelected] = useState<MapAssetListItem | null>(null)
   const [reason, setReason] = useState('')
   const canReview = useCan('map:review')
+  const surfaceQuery = useQuery({
+    queryKey: ['map', targetId, 'ingest-surface'],
+    queryFn: () => fetchMapIngestSurface(targetId),
+  })
+  const menuEntriesQuery = useQuery({
+    queryKey: ['map', targetId, 'entries'],
+    queryFn: () => fetchMapMenuEntries(targetId),
+  })
+  const showIngestSurface = Boolean(surfaceQuery.data?.sourceJobId || menuEntriesQuery.data?.length)
   const filters = useMemo(
     () => ({
       search: search.trim() || undefined,
@@ -236,7 +248,7 @@ export function MapAssetsPane({
     kind === 'terms'
       ? termsQuery.isPending && !termsQuery.data
       : objectsQuery.isPending
-  if (view === 'list' && listPending) return <PageSkeleton />
+  if (view === 'list' && listPending && !surfaceQuery.data) return <PageSkeleton />
 
   return (
     <div className='space-y-4'>
@@ -270,7 +282,11 @@ export function MapAssetsPane({
       </div>
 
       {view === 'atlas' ? (
-        <AtlasView
+        surfaceQuery.isError ? <QueryErrorState description={surfaceQuery.error?.message} onRetry={() => void surfaceQuery.refetch()} />
+        : showIngestSurface && surfaceQuery.data ? <IngestSurfaceAtlas
+          surface={surfaceQuery.data} entries={menuEntriesQuery.data ?? []}
+          searchQuery={searchQuery} onSearchChange={onSearchChange ?? (() => {})}
+        /> : <AtlasView
           targetId={targetId}
           pageId={pageId}
           objectId={objectId}
@@ -281,6 +297,7 @@ export function MapAssetsPane({
         />
       ) : (
         <>
+          {showIngestSurface && surfaceQuery.data ? <IngestSurfaceList surface={surfaceQuery.data} entries={menuEntriesQuery.data ?? []} /> : null}
           {(summary?.changeCount ?? 0) + (summary?.conflictCount ?? 0) > 0 ? (
             <Card>
               <CardHeader className='pb-3'>

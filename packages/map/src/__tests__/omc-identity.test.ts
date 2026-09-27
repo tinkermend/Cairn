@@ -418,11 +418,13 @@ describe('OMC 身份与条件', () => {
     })
     const feedback = verification('locator', 'confirmed')
     feedback.observationIds = [obs.id]
-    feedback.verificationSource = {
-      ...feedback.verificationSource,
-      ruleRef: 'map-consumption-feedback',
-      sourceEventKey: 'map-consumption:decision-1',
-      sourceVersion: 'map-consumption@1',
+    if (feedback.verificationSource.kind === 'rule') {
+      feedback.verificationSource = {
+        ...feedback.verificationSource,
+        ruleRef: 'map-consumption-feedback',
+        sourceEventKey: 'map-consumption:decision-1',
+        sourceVersion: 'map-consumption@1',
+      }
     }
     const plan = planProjectionBatch({
       state: emptyState(),

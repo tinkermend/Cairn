@@ -4,12 +4,15 @@ import {
   ensureMapProjection,
   getMapProjection,
   listMapProjectionWork,
+  listUnprojectedMapTargets,
   loadMapProjectionWorkingSet,
+  promoteReadyMapProjections,
   readMapFacts,
   recordMapProjectionFailure,
+  sealCompletedMapIngestJobs,
   type DbHandle,
 } from '@cairn/db'
-import { planProjectionBatch, projectionWorkingSetHints } from '@cairn/map'
+import { planProjectionBatch, projectionFactPrefix, projectionWorkingSetHints } from '@cairn/map'
 import { MAP_PROJECTION_BATCH_MAX, type MapContentAvailability } from '@cairn/shared'
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { DB_HANDLE } from '../db/db.module'
@@ -39,6 +42,8 @@ export async function advanceMapProjections(
   handle: DbHandle,
   input: { limit?: number } = {},
 ): Promise<{ advanced: number }> {
+  const missingTargets = await listUnprojectedMapTargets(handle, { limit: input.limit ?? 4 })
+  for (const targetId of missingTargets) await ensureMapProjection(handle, targetId)
   const work = await listMapProjectionWork(handle, { limit: input.limit ?? 4 })
   let advanced = 0
   for (const item of work) {
@@ -51,7 +56,7 @@ export async function advanceMapProjections(
       throughSeq,
       limit: MAP_PROJECTION_BATCH_MAX,
     })
-    const facts = page.facts.map((fact) =>
+    const fetchedFacts = page.facts.map((fact) =>
       fact.type === 'observation'
         ? {
             type: 'observation' as const,
@@ -66,6 +71,7 @@ export async function advanceMapProjections(
             contentAvailability: fact.contentAvailability as MapContentAvailability,
           },
     )
+    const facts = projectionFactPrefix(fetchedFacts)
     const hints = projectionWorkingSetHints(facts)
     const state = await loadMapProjectionWorkingSet(handle, {
       projectionId: item.projectionId,
@@ -93,5 +99,7 @@ export async function advanceMapProjections(
       await recordMapProjectionFailure(handle, { projectionId: item.projectionId, message }).catch(() => undefined)
     }
   }
+  advanced += await promoteReadyMapProjections(handle, { limit: input.limit ?? 4 })
+  await sealCompletedMapIngestJobs(handle)
   return { advanced }
 }

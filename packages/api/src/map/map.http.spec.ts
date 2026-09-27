@@ -78,6 +78,8 @@ function mockService() {
       view: { viewRef: { kind: 'projection', projectionId: objectId, cursor: 0, revision: 0 }, identityRevision: 0, governanceRevision: 0, publicationRevision: 0, computedAt: '2026-09-16T00:00:00.000Z' },
     })),
     getObject: vi.fn(),
+    ingestSurface: vi.fn(async () => ({ targetId, targetAccountId: null, sourceJobId: null,
+      truncated: false, pages: [] })),
     match: vi.fn(),
     getFact: vi.fn(),
     listChanges: vi.fn(),
@@ -148,6 +150,11 @@ function mockService() {
       updatedAt: '1970-01-01T00:00:00.000Z',
     })),
     updateJobPolicy: vi.fn(),
+    stateRule: vi.fn(async () => ({ targetId, revision: 0,
+      rule: { ruleVersion: 1, schemaVersion: 1, routeMatches: [], readyAssertion: {}, variants: [],
+        allowedSpaHashPrefixes: ['#/'], ignoreQueryParams: [] },
+      updatedAt: '1970-01-01T00:00:00.000Z' })),
+    updateStateRuleQueryParams: vi.fn(),
     getJob: vi.fn(),
     cancelJob: vi.fn(),
     listTerms: vi.fn(async () => ({ items: [] })),
@@ -213,6 +220,14 @@ describe('地图查询 HTTP', () => {
     expect(second.body.items).toHaveLength(0)
     expect(maps.listObjects).toHaveBeenCalledWith(targetId, expect.any(Object))
     expect(maps.listObjects).toHaveBeenCalledWith(otherTargetId, expect.any(Object))
+  })
+
+  it('采集页面读模型使用目标范围与账号参数', async () => {
+    const accountId = '55555555-5555-4555-8555-555555555555'
+    const response = await request(app.getHttpServer())
+      .get(`/targets/${targetId}/map/ingest-surface?targetAccountId=${accountId}`).expect(200)
+    expect(response.body.pages).toEqual([])
+    expect(maps.ingestSurface).toHaveBeenCalledWith(targetId, { targetAccountId: accountId })
   })
 
   it('OMD11 无 workflow:read 时引用与影响不泄漏场景', async () => {
@@ -312,6 +327,12 @@ describe('地图查询 HTTP', () => {
 
   it('可读作业政策，写政策需要 map:maintain', async () => {
     await request(app.getHttpServer()).get(`/targets/${targetId}/map/job-policy`).expect(200)
+    await request(app.getHttpServer()).get(`/targets/${targetId}/map/state-rule`).expect(200)
+    await request(app.getHttpServer()).post(`/targets/${targetId}/map/state-rule/query-params`).send({
+      expectedRevision: 0, ignoreQueryParams: ['nonce'], reason: '忽略易变参数',
+    }).expect(200)
+    expect(maps.updateStateRuleQueryParams).toHaveBeenCalledWith(targetId,
+      { expectedRevision: 0, ignoreQueryParams: ['nonce'], reason: '忽略易变参数' }, admin)
     const moduleRef = await Test.createTestingModule({
       controllers: [MapController],
       providers: [
@@ -330,6 +351,9 @@ describe('地图查询 HTTP', () => {
       idempotencyKey: 'job-policy-1',
       manualJobsEnabled: true,
       reason: '开放',
+    }).expect(403)
+    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/state-rule/query-params`).send({
+      expectedRevision: 0, ignoreQueryParams: ['nonce'], reason: '无权限',
     }).expect(403)
     await limited.close()
   })
@@ -391,6 +415,7 @@ describe('地图作业 HTTP', () => {
     maps.cancelJob.mockResolvedValueOnce({ jobId: objectId, jobStatus: 'cancelled' })
     await request(app.getHttpServer()).get(`/map-jobs/${objectId}`).expect(200)
     await request(app.getHttpServer()).post(`/map-jobs/${objectId}/cancel`).expect(200)
+    expect(maps.getJob).toHaveBeenCalledWith(objectId, expect.objectContaining({ id: admin.id }))
     expect(maps.cancelJob).toHaveBeenCalledWith(objectId, expect.objectContaining({ id: admin.id }))
   })
 })

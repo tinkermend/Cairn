@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import {
   MAP_IDENTITY_RULE_VERSION,
   canonicalJson,
@@ -18,7 +18,7 @@ import { sha256Hex } from '../runs/digest.js'
 import { isUniqueViolation } from '../runs/errors.js'
 import { captureMapWatermark } from './facts.js'
 import { loadIdentityAliases } from './identities.js'
-import { mapProjectionNotFound, mapProjectionStale, mapTargetGone } from './errors.js'
+import { DomainError, mapProjectionNotFound, mapProjectionStale, mapTargetGone } from './errors.js'
 import { ensureGovernanceHead, ensurePublicationHead } from './view.js'
 
 export const MAP_ASSETS_POLICY_VERSION = 'map-assets@1' as const
@@ -105,7 +105,8 @@ export async function startMapProjectionRebuild(db: Db, input: { targetId: strin
   return atomic(db, async (tx) => {
     await ensureMapProjection(tx, input.targetId)
     const { mapProjectionHeads, mapProjections } = schemaFor(tx)
-    await locked(tx, tx.select().from(mapProjectionHeads).where(eq(mapProjectionHeads.targetId, input.targetId)))
+    const [head] = await locked(tx,
+      tx.select().from(mapProjectionHeads).where(eq(mapProjectionHeads.targetId, input.targetId)))
     const watermark = await captureMapWatermark(tx, input.targetId)
     const identityRevision = await maxIdentityRevision(tx, input.targetId)
     const [latest] = await tx
@@ -113,6 +114,10 @@ export async function startMapProjectionRebuild(db: Db, input: { targetId: strin
       .from(mapProjections)
       .where(eq(mapProjections.targetId, input.targetId))
     const now = await clockNow(tx)
+    if (head) await tx.update(mapProjections).set({ status: 'superseded', updatedAt: now })
+      .where(and(eq(mapProjections.targetId, input.targetId),
+        ne(mapProjections.id, head.currentProjectionId),
+        inArray(mapProjections.status, ['shadow', 'ready', 'failed'])))
     const [created] = await insertRows(tx, mapProjections, {
       id: newId(),
       targetId: input.targetId,
@@ -156,6 +161,10 @@ export async function listMapProjectionWork(db: Db, input: { limit?: number } = 
           or(sql`${mapProjections.cursor} < coalesce(${mapProjections.sourceWatermark}, 0)`, eq(mapProjections.cursor, 0)),
         ),
         and(
+          eq(mapProjections.status, 'ready'),
+          sql`${mapProjections.cursor} < coalesce(${mapIngestHeads.committedSeq}, 0)`,
+        ),
+        and(
           eq(mapProjections.status, 'active'),
           sql`${mapProjections.id} = ${mapProjectionHeads.currentProjectionId}`,
           sql`${mapProjections.cursor} < coalesce(${mapIngestHeads.committedSeq}, 0)`,
@@ -172,6 +181,17 @@ export async function listMapProjectionWork(db: Db, input: { limit?: number } = 
     committedSeq: Number(row.committedSeq ?? 0),
     sourceWatermark: row.sourceWatermark ?? undefined,
   }))
+}
+
+export async function listUnprojectedMapTargets(db: Db, input: { limit?: number } = {}): Promise<string[]> {
+  const { mapIngestHeads, mapProjectionHeads } = schemaFor(db)
+  const rows = await db.select({ targetId: mapIngestHeads.targetId })
+    .from(mapIngestHeads)
+    .leftJoin(mapProjectionHeads, eq(mapProjectionHeads.targetId, mapIngestHeads.targetId))
+    .where(and(gt(mapIngestHeads.committedSeq, 0), isNull(mapProjectionHeads.targetId)))
+    .orderBy(mapIngestHeads.updatedAt)
+    .limit(Math.min(input.limit ?? 8, 32))
+  return rows.map(row => row.targetId)
 }
 
 function hydrateProjectionState(input: {
@@ -503,6 +523,7 @@ export async function commitMapProjectionBatch(
     if (projection.cursor !== input.expectedCursor || projection.revision !== input.expectedRevision) {
       mapProjectionStale()
     }
+    if (!['active', 'shadow', 'ready'].includes(projection.status)) mapProjectionStale()
     const now = await clockNow(tx)
     const pages = new Map<string, string>()
     for (const page of plan.pages) {
@@ -736,39 +757,58 @@ export async function recordMapProjectionFailure(db: Db, input: { projectionId: 
 
 export async function promoteMapProjection(db: Db, input: { targetId: string; projectionId: string }) {
   return atomic(db, async (tx) => {
-    const { mapProjectionHeads, mapProjections } = schemaFor(tx)
+    const { mapIngestHeads, mapProjectionHeads, mapProjections } = schemaFor(tx)
     const [head] = await locked(
       tx,
       tx.select().from(mapProjectionHeads).where(eq(mapProjectionHeads.targetId, input.targetId)),
     )
-    const [next] = await tx.select().from(mapProjections).where(eq(mapProjections.id, input.projectionId)).limit(1)
+    const [next] = await locked(tx,
+      tx.select().from(mapProjections).where(eq(mapProjections.id, input.projectionId)).limit(1))
     if (!next || next.targetId !== input.targetId) mapProjectionNotFound()
+    const [ingestHead] = await locked(tx,
+      tx.select().from(mapIngestHeads).where(eq(mapIngestHeads.targetId, input.targetId)))
+    const [current] = head?.currentProjectionId
+      ? await tx.select().from(mapProjections).where(eq(mapProjections.id, head.currentProjectionId)).limit(1)
+      : []
+    const [latest] = await tx.select({ generation: mapProjections.generation })
+      .from(mapProjections).where(eq(mapProjections.targetId, input.targetId))
+      .orderBy(desc(mapProjections.generation)).limit(1)
+    if (!head || !current || next.id === current.id || next.status !== 'ready' || next.rebuildCompleteness !== 'complete'
+      || next.generation !== latest?.generation || next.identityRevision !== head.identityRevision
+      || next.cursor < (ingestHead?.committedSeq ?? 0) || next.cursor < current.cursor) mapProjectionStale()
     const now = await clockNow(tx)
-    if (head?.currentProjectionId && head.currentProjectionId !== next.id) {
-      await tx
-        .update(mapProjections)
-        .set({ status: 'superseded', updatedAt: now })
-        .where(eq(mapProjections.id, head.currentProjectionId))
-    }
+    await tx.update(mapProjections).set({ status: 'superseded', updatedAt: now })
+      .where(eq(mapProjections.id, current.id))
     await tx
       .update(mapProjections)
-      .set({ status: next.status === 'shadow' || next.status === 'ready' ? 'active' : next.status, updatedAt: now })
+      .set({ status: 'active', updatedAt: now })
       .where(eq(mapProjections.id, next.id))
-    if (head) {
-      await tx
-        .update(mapProjectionHeads)
-        .set({ currentProjectionId: next.id, updatedAt: now })
-        .where(eq(mapProjectionHeads.targetId, input.targetId))
-    } else {
-      await tx.insert(mapProjectionHeads).values({
-        targetId: input.targetId,
-        currentProjectionId: next.id,
-        identityRevision: next.identityRevision,
-        updatedAt: now,
-      })
-    }
+    await tx.update(mapProjectionHeads)
+      .set({ currentProjectionId: next.id, updatedAt: now })
+      .where(eq(mapProjectionHeads.targetId, input.targetId))
     return next
   })
+}
+
+/** Switch only the latest complete rebuild after it has consumed every committed fact. */
+export async function promoteReadyMapProjections(db: Db, input: { limit?: number } = {}): Promise<number> {
+  const { mapProjections } = schemaFor(db)
+  const candidates = await db.select({ id: mapProjections.id, targetId: mapProjections.targetId })
+    .from(mapProjections)
+    .where(and(eq(mapProjections.status, 'ready'), eq(mapProjections.rebuildCompleteness, 'complete')))
+    .orderBy(desc(mapProjections.generation))
+    .limit(Math.min(input.limit ?? 8, 32))
+  let promoted = 0
+  for (const candidate of candidates) {
+    try {
+      await promoteMapProjection(db, { targetId: candidate.targetId, projectionId: candidate.id })
+      promoted++
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'MAP_PROJECTION_STALE') continue
+      throw error
+    }
+  }
+  return promoted
 }
 
 export async function getMapProjection(db: Db, projectionId: string) {

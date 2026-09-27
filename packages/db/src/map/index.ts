@@ -63,10 +63,12 @@ export {
   ensureMapProjection,
   getMapProjection,
   listMapProjectionWork,
+  listUnprojectedMapTargets,
   loadMapProjectionState,
   loadMapProjectionWorkingSet,
   mapProjectionTestHooks,
   promoteMapProjection,
+  promoteReadyMapProjections,
   recordMapProjectionFailure,
   startMapProjectionRebuild,
   type MapProjectionWorkItem,
@@ -115,6 +117,8 @@ export {
   getMapJobPolicy,
   updateMapJobPolicy,
   getMapJob,
+  listMapIngestJobs,
+  createMapIngestJob,
   hasReadyMapJobWorker,
   cancelMapJob,
   completeMapJobSlice,
@@ -135,4 +139,9 @@ export {
   upsertMapScenarioBinding,
 } from './references.js'
 export { listMapAtlasPages } from './atlas.js'
+export { listMapMenuEntries, createMapMenuEntry, updateMapMenuEntry, archiveMapMenuEntry, reorderMapMenuEntries } from './menu-entries.js'
+export { commitMapIngestProgress, recordMapIngestSliceResult } from './ingest-facts.js'
+export { sealCompletedMapIngestJobs } from './ingest-release.js'
+export { getTargetKnowledgeContext } from './knowledge-context.js'
+export { getMapIngestSurface } from './ingest-surface.js'
 export * from './exploration.js'

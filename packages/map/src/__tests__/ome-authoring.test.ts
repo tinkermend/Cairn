@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RUNTIME_SCHEMA_VERSION, type Step } from '@cairn/shared'
+import { RUNTIME_SCHEMA_VERSION, mapAssetRefKey, type Step } from '@cairn/shared'
 import {
   composeKnowledgeSuggestion,
   copyModuleStepsAsIndependent,
@@ -209,6 +209,29 @@ describe('OM-E 知识编排', () => {
     expect(result.status).toBe('proposed')
     expect(result.suggestedBindings[0]?.assetRef.objectId).toBe(objectId)
     expect(JSON.stringify(result.document?.steps.at(-1))).not.toContain(objectId)
+  })
+
+  it('复制做法时依据已观测定位给出明确资产绑定建议', () => {
+    const assetRef = { targetId, objectId }
+    const assetRefKey = mapAssetRefKey(assetRef)
+    const locator = { framePath: [], candidates: [{ by: 'role' as const, value: 'button', name: '搜索' }] }
+    const result = composeKnowledgeSuggestion({
+      question: '点击搜索', targetId, draft: draft(), terms: [],
+      modules: [moduleKnowledge({ steps: [{ id: stepId, name: '点击搜索', type: 'click', effectType: 'IDEMPOTENT',
+        input: { target: { ...locator, assetRef: assetRefKey } } }] })],
+      mapAssets: [{ assetRef }], selectedModuleVersionIds: [versionId], nextId,
+      targetKnowledge: {
+        targetId, targetAccountId: '00000000-0000-4000-8000-000000000002',
+        accountSelectionAmbiguous: false, releaseId: null,
+        generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+        pages: [{ pageKey: 'tokens', menuPath: ['令牌'], title: '令牌列表', urlPattern: 'https://example.com/tokens',
+          views: [{ viewStateKey: 'tokens:base', label: 'default', elements: [{
+            assetRef: assetRefKey, category: 'action_button', name: '搜索', locator, stability: 'high',
+          }] }] }],
+      },
+    })
+    expect(result.status).toBe('proposed')
+    expect(result.suggestedBindings).toEqual([{ stepId: result.document!.steps.at(-1)!.id, assetRef }])
   })
   it('候选术语不作为已确认知识，带条件术语不能假定适用', () => {
     const base = { selectedModuleVersionIds: [versionId], question: '按订单查询', targetId, draft: draft(), modules: [moduleKnowledge()], mapAssets: [], nextId }
