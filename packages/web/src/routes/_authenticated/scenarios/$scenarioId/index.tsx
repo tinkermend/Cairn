@@ -8,6 +8,8 @@ const searchSchema = z.object({
   editor: z.enum(['flowgram']).optional().catch(undefined),
   runId: entityIdSchema.optional().catch(undefined),
   import: entityIdSchema.optional().catch(undefined),
+  importPlacement: z.enum(['start', 'after', 'replace', 'replace_sequence']).optional().catch(undefined),
+  importNodeId: entityIdSchema.optional().catch(undefined),
   action: z.enum(['inspect-step']).optional().catch(undefined),
   step_id: entityIdSchema.optional().catch(undefined),
 })

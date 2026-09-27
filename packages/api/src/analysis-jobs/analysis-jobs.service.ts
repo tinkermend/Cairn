@@ -46,12 +46,12 @@ export class AnalysisJobsService {
     )
   }
 
-  insights(jobId: string, _actorId: string) {
-    return getJobInsights(this.database, jobId).catch(rethrowDomain)
+  insights(jobId: string, actorId: string) {
+    return getJobInsights(this.database, jobId, actorId).catch(rethrowDomain)
   }
 
-  insight(jobId: string, insightId: string, _actorId: string) {
-    return getJobInsight(this.database, jobId, insightId).catch(rethrowDomain)
+  insight(jobId: string, insightId: string, actorId: string) {
+    return getJobInsight(this.database, jobId, insightId, actorId).catch(rethrowDomain)
   }
 
   async observe(jobId: string, actorId: string, req: Request, res: Response, after = 0) {

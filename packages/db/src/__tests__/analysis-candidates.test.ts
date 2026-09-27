@@ -4,7 +4,7 @@ import { authoringSteps, isAuthoringDocumentV2, scenarioDocumentDigest, scenario
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { insertRows, schemaFor } from '../native.js'
 import { newId } from '../id.js'
-import { acceptKnowledgeProposal, createScenarioWithVersion, createTerminology, getAnalysisJob, getKnowledgeProposal, getScenario, getTerminology,
+import { acceptKnowledgeProposal, createScenarioWithVersion, createTerminology, getAnalysisJob, getJobInsight, getJobInsights, getKnowledgeProposal, getScenario, getTerminology,
   listSchedules, reviewAnalysisCandidate, saveScenarioDraft, updateTerminology, validateKnowledgeSources, writeSchedule, type NativeHandle } from '../test-entry.js'
 
 describe.each(DRIVERS)('%s 分析候选人工采纳', { timeout: 60_000 }, driver => {
@@ -102,6 +102,24 @@ describe.each(DRIVERS)('%s 分析候选人工采纳', { timeout: 60_000 }, drive
     await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: viewer, consoleRoleId: roleId, targetScopeMode: 'all' })
     expect((await getAnalysisJob(handle.db, f.jobId, viewer)).analysisJobId).toBe(f.jobId)
     await expect(reviewAnalysisCandidate(handle.db, (await fixture()).candidateId, { ...body, idempotencyKey: newId() }, { kind: 'console', id: viewer })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+  })
+
+  it('洞察列表和单项按分析作业的目标范围授权', async () => {
+    const allowed = await fixture()
+    const foreign = await fixture()
+    const { consoleAccounts, consoleRoles, consoleRolePermissions, consoleAccountRoles } = schemaFor(handle.db)
+    const viewerId = newId()
+    const roleId = newId()
+    await insertRows(handle.db, consoleAccounts, { id: viewerId, email: `${viewerId}@test.invalid`, displayName: 'insight-viewer', status: 'active' })
+    await insertRows(handle.db, consoleRoles, { id: roleId, key: `insight-viewer-${roleId}`, name: '洞察只读', kind: 'custom' })
+    await handle.db.insert(consoleRolePermissions).values(['target:read', 'map:read', 'map:analyze'].map(permission => ({ consoleRoleId: roleId, permission })))
+    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: viewerId, consoleRoleId: roleId, targetScopeMode: 'selected', targetScopeIds: [allowed.targetId] })
+
+    expect((await getJobInsights(handle.db, allowed.jobId, viewerId)).targetId).toBe(allowed.targetId)
+    expect((await getJobInsight(handle.db, allowed.jobId, allowed.candidateId, viewerId)).insightId).toBe(allowed.candidateId)
+    await expect(getJobInsights(handle.db, foreign.jobId, viewerId)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    await expect(getJobInsight(handle.db, foreign.jobId, foreign.candidateId, viewerId)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    expect((await getJobInsights(handle.db, foreign.jobId)).targetId).toBe(foreign.targetId)
   })
 
   it('术语旧修订不能覆盖人工修改，失败不会消耗候选', async () => {

@@ -1,5 +1,5 @@
-import { Fragment } from 'react'
-import { Outlet } from '@tanstack/react-router'
+import { Fragment, useEffect } from 'react'
+import { Outlet, useRouterState } from '@tanstack/react-router'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
 import { SearchProvider } from '@/context/search-provider'
@@ -9,6 +9,8 @@ import { AppSidebar } from '@/components/layout/app-sidebar'
 import { SkipToMain } from '@/components/skip-to-main'
 import { AssistantHost } from '@/features/assistant/host'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
+import { resolveRouteContext } from '@/features/assistant/route-context'
 import { AuthScopeObserver } from './auth-scope-observer'
 
 type AuthenticatedLayoutProps = {
@@ -18,6 +20,16 @@ type AuthenticatedLayoutProps = {
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   const auth = useAuthStore(s => s.auth.user)
+  const setRouteContext = useAssistantStore((s) => s.setRouteContext)
+  const pathname = useRouterState({
+    select: (s) => s.location.pathname,
+  })
+
+  useEffect(() => {
+    const routeCtx = resolveRouteContext(pathname)
+    setRouteContext(routeCtx)
+  }, [pathname, setRouteContext])
+
   const scopeKey = JSON.stringify([auth?.id, auth?.permissions, auth?.targetScopes, auth?.targetScopePermissions])
   return (
     <SearchProvider>
@@ -43,7 +55,7 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
           <AppHeader />
           <Fragment key={scopeKey}>{children ?? <Outlet />}</Fragment>
         </SidebarInset>
-        <AssistantHost />
+        <AssistantHost showFloatingLauncher={false} />
       </SidebarProvider>
     </SearchProvider>
   )

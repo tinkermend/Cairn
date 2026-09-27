@@ -7,9 +7,12 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, relative, resolve, sep } from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const apiRequire = createRequire(resolve(root, 'packages/api/package.json'))
+const ts = apiRequire('typescript')
 
 function* walkFiles(dir, extensions = ['.ts', '.js', '.tsx']) {
   if (!existsSync(dir)) return
@@ -397,6 +400,68 @@ export const INVARIANT_RULES = [
       if (/\b(?:chromium\s*\.\s*launch|launchPersistentContext)\s*\(/.test(content)) {
         issues.push('Chromium 启动只允许在 browser/runtime.ts 与 browser/host-pool.ts，严禁在其它位置启动进程')
       }
+      return issues
+    },
+  },
+  {
+    id: 'INV018_API_RUN_READ_ACTOR_SCOPE',
+    articles: ['安全', '目标范围'],
+    title: 'API 读取运行详情与证据必须显式传入 actorId',
+    rationale: 'Guard 无法从所有新路由参数推断目标；DB 读取必须显式绑定当前账号，避免按主键读取外目标数据',
+    targetDir: 'packages/api/src',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      const guarded = new Set(['getRun', 'loadRunDetail', 'listRunEvidence', 'getEvidenceForRun', 'listRuns', 'loadRunObservation', 'getRunSessionOwner'])
+      const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const issues = []
+      const dbNamespaces = new Set()
+      const collectDbNamespaces = (node) => {
+        if (ts.isImportDeclaration(node)
+          && node.moduleSpecifier.text === '@cairn/db'
+          && node.importClause?.namedBindings
+          && ts.isNamespaceImport(node.importClause.namedBindings)) {
+          dbNamespaces.add(node.importClause.namedBindings.name.text)
+        }
+        if (ts.isVariableDeclaration(node)) {
+          const initializer = node.initializer
+          const imported = initializer && ts.isAwaitExpression(initializer) ? initializer.expression : initializer
+          if (ts.isIdentifier(node.name)
+            && imported
+            && ts.isCallExpression(imported)
+            && imported.expression.kind === ts.SyntaxKind.ImportKeyword
+            && imported.arguments[0]?.text === '@cairn/db') {
+            dbNamespaces.add(node.name.text)
+          }
+        }
+        ts.forEachChild(node, collectDbNamespaces)
+      }
+      collectDbNamespaces(source)
+      const visit = (node) => {
+        const name = ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+          ? node.expression.text
+          : ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+            && ts.isIdentifier(node.expression.expression)
+            && dbNamespaces.has(node.expression.expression.text)
+            ? node.expression.name.text
+            : undefined
+        if (ts.isCallExpression(node) && name && guarded.has(name)) {
+          // Browser session owner resolution uses session:read/session:view and a session-scoped Guard.
+          // It only uses the linked run's status and session placement, not a public run response.
+          let enclosing = node.parent
+          while (enclosing && !ts.isMethodDeclaration(enclosing)) enclosing = enclosing.parent
+          const sessionOwnerLookup = rel === 'packages/api/src/browser-sessions/browser-sessions.service.ts'
+            && name === 'getRunSessionOwner'
+            && node.getText(source) === 'getRunSessionOwner(this.handle, ownerId)'
+            && enclosing?.name?.getText(source) === 'resolveRunOwner'
+          const actor = node.arguments[2]
+          if (!sessionOwnerLookup && (name === 'getRunSessionOwner' || !actor || actor.getText(source) === 'undefined' || actor.getText(source) === 'null')) {
+            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
+            issues.push(`${name} 第 ${line} 行必须传当前 actorId；可信内部读取需单独设计并接受审查`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(source)
       return issues
     },
   },

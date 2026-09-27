@@ -10,6 +10,7 @@ import { AppTitle } from './app-title'
 import { sidebarData } from './data/sidebar-data'
 import { NavGroup } from './nav-group'
 import { NavUser } from './nav-user'
+import { SidebarAssistantTrigger } from './sidebar-assistant-trigger'
 
 export function AppSidebar() {
   const user = useAuthStore((s) => s.auth.user)
@@ -24,6 +25,7 @@ export function AppSidebar() {
         ))}
       </SidebarContent>
       <SidebarFooter>
+        <SidebarAssistantTrigger />
         <ApiStatus />
         <NavUser
           user={{

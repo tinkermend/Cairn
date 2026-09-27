@@ -109,7 +109,7 @@ export function urlAllowedByAccessRules(
 }
 
 export function originsForAccessPurposes(
-  policy: TargetAccessPolicy | null | undefined,
+  policy: Pick<TargetAccessPolicy, 'rules'> | null | undefined,
   purposes: readonly TargetAccessPurpose[],
 ): string[] {
   if (!policy) return []

@@ -16,8 +16,8 @@ export interface JobInsightsSummary {
   coverageGaps: string[]
 }
 
-export async function getJobInsights(db: Db, jobId: string): Promise<JobInsightsSummary> {
-  const job = await getAnalysisJob(db, jobId)
+export async function getJobInsights(db: Db, jobId: string, actorId?: string): Promise<JobInsightsSummary> {
+  const job = await getAnalysisJob(db, jobId, actorId)
   const result = (job.result ?? {}) as Record<string, unknown>
 
   // 1. 读取或合成结构化 KnowledgeInsight
@@ -93,8 +93,9 @@ export async function getJobInsight(
   db: Db,
   jobId: string,
   insightId: string,
+  actorId?: string,
 ): Promise<KnowledgeInsight> {
-  const summary = await getJobInsights(db, jobId)
+  const summary = await getJobInsights(db, jobId, actorId)
   const item = summary.insights.find((i) => i.insightId === insightId)
   if (!item) {
     throw notFound('INSIGHT_NOT_FOUND', `分析任务 ${jobId} 中未找到洞察 ${insightId}`)

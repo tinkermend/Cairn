@@ -62,7 +62,7 @@ import {
   platformRuntimeInvariantDefaultsSchema,
 } from './runtime-invariant.js'
 import { FACTORY_ALERTING, alertRuleSchema, credentialMaintenanceAlertingSchema } from './alerting.js'
-import { FACTORY_NOTIFICATIONS, platformNotificationsSchema } from './notifications.js'
+import { FACTORY_OUTBOUND, platformOutboundSchema } from './outbound.js'
 
 export const PLATFORM_CONFIG_SCHEMA_VERSION = 6 as const
 /** 仍能被本版本读取的最早文档版本。低于它的存量文档必须先跑数据迁移。 */
@@ -385,12 +385,12 @@ const platformConfigDocumentObjectSchema = z
       rules: z.array(alertRuleSchema).max(64),
       credentialMaintenance: credentialMaintenanceAlertingSchema.default({ enabled: false, channelIds: [] }),
     }).default({ rules: FACTORY_ALERTING.rules, credentialMaintenance: FACTORY_ALERTING.credentialMaintenance }),
-    notifications: platformNotificationsSchema.default(FACTORY_NOTIFICATIONS),
+    outbound: platformOutboundSchema.default(FACTORY_OUTBOUND),
   })
   .superRefine((document, ctx) => {
-    const ids = new Set(document.notifications.channels.map(c => c.id))
+    const ids = new Set(document.outbound.channels.map(c => c.id))
     for (const rule of document.alerting.rules) {
-      if (rule.channelIds.some(id => !ids.has(id))) ctx.addIssue({ code: 'custom', path: ['alerting', 'rules'], message: '告警引用的通知渠道不存在' })
+      if (rule.channelIds.some(id => !ids.has(id))) ctx.addIssue({ code: 'custom', path: ['alerting', 'rules'], message: '告警引用的推送渠道不存在' })
     }
     if (document.sessionAuth.verifyTimeoutMs >= document.execution.defaultTimeoutMs) {
       ctx.addIssue({
@@ -526,7 +526,7 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   moduleFallback: FACTORY_MODULE_FALLBACK,
   runtimeInvariants: FACTORY_RUNTIME_INVARIANT_DEFAULTS,
   alerting: { rules: FACTORY_ALERTING.rules, credentialMaintenance: FACTORY_ALERTING.credentialMaintenance },
-  notifications: FACTORY_NOTIFICATIONS,
+  outbound: FACTORY_OUTBOUND,
 }
 
 /**
@@ -644,6 +644,25 @@ export function upgradePlatformConfigDocument(raw: unknown): PlatformConfigDocum
         `平台配置 schemaVersion ${version} 的升级函数未把版本推进到 ${version + 1}`,
       )
     }
+  }
+  if (document.outbound == null && document.notifications != null) {
+    const { notifications, ...rest } = document
+    document = { ...rest, outbound: notifications }
+  } else if (document.notifications != null) {
+    const { notifications: _, ...rest } = document
+    document = rest
+  }
+  if (isPlainObject(document.outbound)) {
+    const outbound = { ...(document.outbound as Record<string, unknown>) }
+    if (Array.isArray(outbound.channels)) {
+      outbound.channels = outbound.channels.map((c) => {
+        if (isPlainObject(c) && (c.format as unknown) === 'cairn.notification@1') {
+          return { ...c, format: 'cairn.outbound@1' }
+        }
+        return c
+      })
+    }
+    document = { ...document, outbound }
   }
   return platformConfigDocumentSchema.parse(document)
 }

@@ -9,7 +9,11 @@ import type { JsonValue } from './wire.js'
 /** 参与 snapshot.digest 的字段。不含 runId / createdAt / digest。 */
 export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unknown> {
   return {
-    ...(snapshot.notificationPolicy ? { notificationPolicy: snapshot.notificationPolicy } : {}),
+    ...(snapshot.outboundPolicy
+      ? { outboundPolicy: snapshot.outboundPolicy }
+      : snapshot.notificationPolicy
+        ? { notificationPolicy: snapshot.notificationPolicy }
+        : {}),
     ...(snapshot.deadlineAt ? { deadlineAt: snapshot.deadlineAt } : {}),
     schemaVersion: snapshot.schemaVersion,
     targetId: snapshot.targetId,

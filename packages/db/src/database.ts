@@ -16,6 +16,13 @@ export interface Database {
   poolStats?(): PoolStats | null
 }
 const handles = new WeakMap<object, NativeHandle>()
+const consoleDatabases = new WeakSet<object>()
+
+/** Console API reads must carry an actor even when a route has no Guard-known ID. */
+export function markConsoleDatabase(database: Database): void {
+  if (!handles.has(database)) throw new Error('Unknown database handle')
+  consoleDatabases.add(database)
+}
 
 function readPoolStats(handle: NativeHandle): PoolStats | null {
   if (handle.driver !== 'postgres' || !handle.pool) return null
@@ -52,6 +59,18 @@ export function operation<A extends unknown[], R>(
   fn: (db: Db, ...args: A) => R,
 ): (database: Database, ...args: A) => R {
   return (database, ...args) => fn(connection(database), ...args)
+}
+export function consoleScopedOperation<A extends unknown[], R>(
+  fn: (db: Db, ...args: A) => R,
+  actorArgIndex: number,
+): (database: Database, ...args: A) => R {
+  const invoke = operation(fn)
+  return (database, ...args) => {
+    if (consoleDatabases.has(database) && (typeof args[actorArgIndex] !== 'string' || !args[actorArgIndex])) {
+      throw new Error(`${fn.name} requires actorId on a console database handle`)
+    }
+    return invoke(database, ...args)
+  }
 }
 /** Test entry registers native fixtures without exposing unwrapping to production. */
 export function registerFixture<T extends NativeHandle>(handle: T): T {

@@ -20,6 +20,7 @@ import {
   getSchedule,
   indexRunForAnalysis,
   listPendingScheduleAdmits,
+  listScheduleEvents,
   listScheduleOccurrences,
   materializeDueSchedules,
   previewScheduleQuery,
@@ -160,6 +161,46 @@ describe.each(DRIVERS)('%s 统一定时调度', { timeout: 60_000 }, (driver) =>
       '2026-06-15T00:50:00.000Z',
       '2026-06-15T00:55:00.000Z',
     ])
+  })
+
+  it('同一时间戳的调度事件按 seq 完整翻页，沿用原有游标', async () => {
+    const { targetId } = await freshTarget()
+    const created = await writeSchedule(handle.db, {
+      expectedRevision: 0,
+      idempotencyKey: newId(),
+      definition: {
+        timeRule: { kind: 'interval', intervalMs: 300_000, anchorUtc: '2026-06-15T00:00:00.000Z', misfire: 'coalesce' },
+        consumer: { type: 'knowledge_analysis', targetId, mode: 'map_quality' },
+      },
+    }, actor())
+    const scheduleId = created.schedule.scheduleId
+    const { scheduleEvents } = schemaFor(handle.db)
+    const at = new Date('2026-09-27T00:00:00.000Z')
+    const ids = [
+      '00000000-0000-4000-8000-000000000003',
+      '00000000-0000-4000-8000-000000000002',
+      '00000000-0000-4000-8000-000000000001',
+    ]
+    await handle.db.insert(scheduleEvents).values(ids.map((id, index) => ({
+      id,
+      scheduleId,
+      seq: index + 2,
+      eventType: 'test_event',
+      payload: {},
+      createdAt: at,
+    })))
+
+    const seen: number[] = []
+    let cursor: string | undefined
+    do {
+      const page = await listScheduleEvents(handle.db, scheduleId, { cursor, limit: 1 })
+      seen.push(...page.items.map((item) => item.seq))
+      if (seen.length === 1) {
+        expect(Buffer.from(page.nextCursor!, 'base64url').toString('utf8')).toBe(`${at.toISOString()}|${ids[2]}`)
+      }
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(seen).toEqual([4, 3, 2, 1])
   })
 
   it('场景计划固定发布版本，准入创建正式 Run', async () => {

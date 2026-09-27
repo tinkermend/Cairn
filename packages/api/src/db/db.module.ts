@@ -1,5 +1,5 @@
 import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common'
-import { createDb, type DbHandle } from '@cairn/db'
+import { createDb, markConsoleDatabase, type DbHandle } from '@cairn/db'
 import { assertReady } from '@cairn/db/admin'
 import { resolveDbEnv } from '../config/env'
 
@@ -13,7 +13,7 @@ export const DB_HANDLE = Symbol('DB_HANDLE')
       useFactory: async (): Promise<DbHandle> => {
         const env = resolveDbEnv()
         const database = createDb(env)
-        try { await assertReady(database, env); return database } catch (error) { await database.close(); throw error }
+        try { await assertReady(database, env); markConsoleDatabase(database); return database } catch (error) { await database.close(); throw error }
       },
     },
   ],

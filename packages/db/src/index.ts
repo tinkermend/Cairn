@@ -12,69 +12,91 @@ export {
 export { newId } from "./id.js";
 export type { AuditActor } from "./audit/record.js";
 export { TargetsStore } from "./console/targets.js";
-import * as notificationConfig from "./notifications/config.js";
-import * as notificationCore from "./notifications/core.js";
-import * as notificationDelivery from "./notifications/delivery.js";
-import * as notificationQuery from "./notifications/query.js";
-import * as notificationMaintenance from "./notifications/maintenance.js";
-export const importLegacyNotificationNotices = operation(
-  notificationMaintenance.importLegacyNotificationNotices,
+import * as outboundConfig from "./outbound/config.js";
+import * as outboundCore from "./outbound/core.js";
+import * as outboundDelivery from "./outbound/delivery.js";
+import * as outboundQuery from "./outbound/query.js";
+import * as outboundMaintenance from "./outbound/maintenance.js";
+export const importLegacyOutboundNotices = operation(
+  outboundMaintenance.importLegacyOutboundNotices,
 );
-export const reconcileNotificationSuppressions = operation(
-  notificationMaintenance.reconcileNotificationSuppressions,
+export const reconcileOutboundSuppressions = operation(
+  outboundMaintenance.reconcileOutboundSuppressions,
 );
-export const purgeNotificationHistory = operation(
-  notificationMaintenance.purgeNotificationHistory,
+export const purgeOutboundHistory = operation(
+  outboundMaintenance.purgeOutboundHistory,
 );
-export const writeNotificationConfig = operation(
-  notificationConfig.writeNotificationConfig,
+export const writeOutboundConfig = operation(
+  outboundConfig.writeOutboundConfig,
 );
-export const readNotificationPolicy = operation(
-  notificationConfig.readNotificationPolicy,
+export const readOutboundPolicy = operation(
+  outboundConfig.readOutboundPolicy,
 );
-export const writeNotificationPolicy = operation(
-  notificationConfig.writeNotificationPolicy,
+export const writeOutboundPolicy = operation(
+  outboundConfig.writeOutboundPolicy,
 );
-export const prepareNotificationEvents = operation(
-  notificationCore.prepareNotificationEvents,
+export const prepareOutboundEvents = operation(
+  outboundCore.prepareOutboundEvents,
 );
-export const repairNotificationIntents = operation(
-  notificationCore.repairNotificationIntents,
+export const repairOutboundIntents = operation(
+  outboundCore.repairOutboundIntents,
 );
-export const enqueueTakeoverNotification = operation(
-  notificationCore.enqueueTakeoverNotificationTx,
+export const enqueueTakeoverOutbound = operation(
+  outboundCore.enqueueTakeoverOutboundTx,
 );
-export const claimNotificationDeliveries = operation(
-  notificationDelivery.claimNotificationDeliveries,
+export const claimOutboundDeliveries = operation(
+  outboundDelivery.claimOutboundDeliveries,
 );
-export const beginNotificationSubmission = operation(
-  notificationDelivery.beginNotificationSubmission,
+export const beginOutboundSubmission = operation(
+  outboundDelivery.beginOutboundSubmission,
 );
-export const finishNotificationDelivery = operation(
-  notificationDelivery.finishNotificationDelivery,
+export const finishOutboundDelivery = operation(
+  outboundDelivery.finishOutboundDelivery,
 );
 export type {
+  OutboundClaim,
+  OutboundJob,
   NotificationClaim,
   NotificationJob,
-} from "./notifications/delivery.js";
-export const listNotificationEvents = operation(
-  notificationQuery.listNotificationEvents,
+} from "./outbound/delivery.js";
+export const listOutboundEvents = operation(
+  outboundQuery.listOutboundEvents,
 );
-export const getNotificationEvent = operation(
-  notificationQuery.getNotificationEvent,
+export const getOutboundEvent = operation(
+  outboundQuery.getOutboundEvent,
 );
-export const getNotificationChannels = operation(
-  notificationQuery.getNotificationChannels,
+export const getOutboundChannels = operation(
+  outboundQuery.getOutboundChannels,
 );
-export const createNotificationTest = operation(
-  notificationQuery.createNotificationTest,
+export const createOutboundTest = operation(
+  outboundQuery.createOutboundTest,
 );
-export const operateNotificationDelivery = operation(
-  notificationQuery.operateNotificationDelivery,
+export const operateOutboundDelivery = operation(
+  outboundQuery.operateOutboundDelivery,
 );
+
+// Backward-compatible aliases
+export const importLegacyNotificationNotices = importLegacyOutboundNotices;
+export const reconcileNotificationSuppressions = reconcileOutboundSuppressions;
+export const purgeNotificationHistory = purgeOutboundHistory;
+export const writeNotificationConfig = writeOutboundConfig;
+export const readNotificationPolicy = readOutboundPolicy;
+export const writeNotificationPolicy = writeOutboundPolicy;
+export const prepareNotificationEvents = prepareOutboundEvents;
+export const repairNotificationIntents = repairOutboundIntents;
+export const enqueueTakeoverNotification = enqueueTakeoverOutbound;
+export const claimNotificationDeliveries = claimOutboundDeliveries;
+export const beginNotificationSubmission = beginOutboundSubmission;
+export const finishNotificationDelivery = finishOutboundDelivery;
+export const listNotificationEvents = listOutboundEvents;
+export const getNotificationEvent = getOutboundEvent;
+export const getNotificationChannels = getOutboundChannels;
+export const createNotificationTest = createOutboundTest;
+export const operateNotificationDelivery = operateOutboundDelivery;
 export { RbacStore } from "./console/rbac.js";
 export type * from "./records.js";
-import { operation, nativeHandle, type Database } from "./database.js";
+import { operation, consoleScopedOperation, nativeHandle, type Database } from "./database.js";
+export { markConsoleDatabase } from './database.js'
 import * as targetAuthorization from "./console/target-authorization.js";
 export const assertTargetPermission = operation(
   targetAuthorization.assertTargetPermission,
@@ -138,14 +160,18 @@ export const failRunValidation = operation(impl0.failRunValidation);
 export const finishAttempt = operation(impl0.finishAttempt);
 export const writeRunAuthCheckpoint = operation(impl0.writeRunAuthCheckpoint);
 export const finishRunIfDrained = operation(impl0.finishRunIfDrained);
-export const getRun = operation(impl0.getRun);
+export const getRun = consoleScopedOperation(impl0.getRun, 1);
+/** Browser session owner routing may inspect status/placement without granting run:read. */
+export const getRunSessionOwner = operation(impl0.getRunSessionOwner);
 export const previewDeleteRun = operation(impl0.previewDeleteRun);
 export const deleteRun = operation(impl0.deleteRun);
 export const getRunCleanupStatus = operation(impl0.getRunCleanupStatus);
 export const retryRunCleanup = operation(impl0.retryRunCleanup);
-export const listRunEvidence = operation(impl0.listRunEvidence);
-export const listRuns = operation(impl0.listRuns);
-export const loadRunDetail = operation(impl0.loadRunDetail);
+export const listRunEvidence = consoleScopedOperation(impl0.listRunEvidence, 1);
+export const listRuns = consoleScopedOperation(impl0.listRuns, 1);
+export const loadRunFailureSummaries = operation(impl0.loadRunFailureSummaries);
+export type { RunFailureSummaryItem } from './runs/index.js';
+export const loadRunDetail = consoleScopedOperation(impl0.loadRunDetail, 1);
 export const computeRunPlacement = operation(impl0.computeRunPlacement);
 export const loadRunRow = operation(impl0.loadRunRow);
 export const loadRunControlState = operation(impl0.loadRunControlState);
@@ -393,6 +419,8 @@ export const listSessionSystemOverview = operation(
   impl2.listSessionSystemOverview,
 );
 export const getAccountSessionDetail = operation(impl2.getAccountSessionDetail);
+export const readAccountSessionCap = operation(impl2.readAccountSessionCap);
+export const listQueuedRunsForAccount = operation(impl2.listQueuedRunsForAccount);
 export const listSessionEvents = operation(impl2.listSessionEvents);
 export const listSessionEventsAfter = operation(impl2.listSessionEventsAfter);
 export const listRecentAuthEvents = operation(impl2.listRecentAuthEvents);
@@ -510,7 +538,7 @@ export type { RunVideoMediaJob, RunVideoMediaClaim } from "./objects/index.js";
 export const reserveStoredObject = operation(impl3.reserveStoredObject);
 export type { PurgeCandidate } from "./objects/index.js";
 export type { StoredObjectRecord } from "./objects/index.js";
-export const getEvidenceForRun = operation(impl3.getEvidenceForRun);
+export const getEvidenceForRun = consoleScopedOperation(impl3.getEvidenceForRun, 1);
 export const listPendingEvidence = operation(impl3.listPendingEvidence);
 export const markOrphanedRunVideoLost = operation(
   impl3.markOrphanedRunVideoLost,
@@ -692,7 +720,7 @@ export const expireRunDeadlines = operation(expireDeadlines);
 
 import * as observe from "./observe/index.js";
 export const appendRunEvents = operation(observe.appendRunEvents);
-export const loadRunObservation = operation(observe.loadRunObservation);
+export const loadRunObservation = consoleScopedOperation(observe.loadRunObservation, 1);
 export const loadRunObservationProgress = operation(observe.loadRunObservationProgress);
 export const listRunEventsAfter = operation(observe.listRunEventsAfter);
 export const loadRunEventWatermark = operation(observe.loadRunEventWatermark);
@@ -801,6 +829,7 @@ export const startMapProjectionRebuild = operation(
   mapFacts.startMapProjectionRebuild,
 );
 export const listMapProjectionWork = operation(mapFacts.listMapProjectionWork);
+export const listUnprojectedMapTargets = operation(mapFacts.listUnprojectedMapTargets);
 export const loadMapProjectionState = operation(
   mapFacts.loadMapProjectionState,
 );
@@ -814,6 +843,7 @@ export const recordMapProjectionFailure = operation(
   mapFacts.recordMapProjectionFailure,
 );
 export const promoteMapProjection = operation(mapFacts.promoteMapProjection);
+export const promoteReadyMapProjections = operation(mapFacts.promoteReadyMapProjections);
 export const getMapProjection = operation(mapFacts.getMapProjection);
 export const sealMapRelease = operation(mapFacts.sealMapRelease);
 export const getMapRelease = operation(mapFacts.getMapRelease);
@@ -906,13 +936,27 @@ export const updateTargetAccessPolicy = operation(
   mapFacts.updateTargetAccessPolicy,
 );
 export const getMapJobPolicy = operation(mapFacts.getMapJobPolicy);
+export const listMapMenuEntries = operation(mapFacts.listMapMenuEntries);
+export const createMapMenuEntry = operation(mapFacts.createMapMenuEntry);
+export const updateMapMenuEntry = operation(mapFacts.updateMapMenuEntry);
+export const archiveMapMenuEntry = operation(mapFacts.archiveMapMenuEntry);
+export const reorderMapMenuEntries = operation(mapFacts.reorderMapMenuEntries);
 export const updateMapJobPolicy = operation(mapFacts.updateMapJobPolicy);
 export const getMapJob = operation(mapFacts.getMapJob);
+export const listMapIngestJobs = operation(mapFacts.listMapIngestJobs);
+export const createMapIngestJob = operation(mapFacts.createMapIngestJob);
+export const commitMapIngestProgress = operation(mapFacts.commitMapIngestProgress);
+export const recordMapIngestSliceResult = operation(mapFacts.recordMapIngestSliceResult);
+export const sealCompletedMapIngestJobs = operation(mapFacts.sealCompletedMapIngestJobs);
+export const getTargetKnowledgeContext = operation(mapFacts.getTargetKnowledgeContext);
+export const getMapIngestSurface = operation(mapFacts.getMapIngestSurface);
 export const hasReadyMapJobWorker = operation(mapFacts.hasReadyMapJobWorker);
 export const cancelMapJob = operation(mapFacts.cancelMapJob);
 export const completeMapJobSlice = operation(mapFacts.completeMapJobSlice);
 export const hasClaimableUserRun = operation(mapFacts.hasClaimableUserRun);
 export const getTargetStateRule = operation(mapFacts.getTargetStateRule);
+export const getTargetStateRuleConfig = operation(mapFacts.getTargetStateRuleConfig);
+export const updateTargetStateRuleQueryParams = operation(mapFacts.updateTargetStateRuleQueryParams);
 export const upsertTargetStateRule = operation(mapFacts.upsertTargetStateRule);
 export const recordExploreState = operation(mapFacts.recordExploreState);
 export type { FrozenMapCandidate } from "./map/index.js";

@@ -80,12 +80,12 @@ const ORDER = [
   "reportRevisions",
   "exportJobs",
   "artifacts",
-  "scenarioNotificationPolicies",
-  "notificationControls",
-  "notificationEvents",
-  "notificationDeliveries",
-  "notificationDeliveryAttempts",
-  "notificationCommands",
+  "scenarioOutboundPolicies",
+  "outboundControls",
+  "outboundEvents",
+  "outboundDeliveries",
+  "outboundDeliveryAttempts",
+  "outboundCommands",
   "runValidationContexts",
   "moduleInvocationResults",
   "stepRuns",
@@ -233,9 +233,10 @@ function ensureStopped(options: TransferOptions): void {
     throw new Error("Stop all database writers before transfer");
 }
 function assertQuiescent(tables: DatabaseBundle["tables"]): void {
-  if (tables.notificationDeliveries?.some((r) => r.status === "sending"))
+  const deliveries = tables.outboundDeliveries ?? (tables as any).notificationDeliveries;
+  if (deliveries?.some((r: any) => r.status === "sending"))
     throw new Error(
-      "Notification submissions must settle or expire before transfer",
+      "Outbound submissions must settle or expire before transfer",
     );
   if (tables.serviceWebhookDeliveries?.some((r) => r.status === "sending"))
     throw new Error(
@@ -531,12 +532,20 @@ export async function importDatabase(
     // The migration-seeded admin (0091_bootstrap_admin_seed) is a seed fact like the
     // system roles: it is replaced by the archive's accounts, but only while untouched.
     const seedAdmin = await pristineSeedAdmin(tx, native);
+    const LEGACY_TABLE_MAP: Record<string, string> = {
+      scenarioOutboundPolicies: "scenarioNotificationPolicies",
+      outboundControls: "notificationControls",
+      outboundEvents: "notificationEvents",
+      outboundDeliveries: "notificationDeliveries",
+      outboundDeliveryAttempts: "notificationDeliveryAttempts",
+      outboundCommands: "notificationCommands",
+    };
     for (const key of ORDER.filter(
       (k) =>
         ![
           "consoleRoles",
           "consoleRolePermissions",
-          "notificationControls",
+          "outboundControls",
           ...(seedAdmin.pristine ? ACCOUNT_SEED_TABLES : []),
         ].includes(k),
     )) {
@@ -546,14 +555,14 @@ export async function importDatabase(
     const roles = await tx.select().from(native.consoleRoles);
     if (roles.some((r) => r.kind !== "system"))
       throw new Error("Import target has custom roles");
-    const controls = await tx.select().from(native.notificationControls);
+    const controls = await tx.select().from(native.outboundControls);
     if (
       controls.some(
         (r) => r.key !== "dispatch" || r.generation !== 0 || r.revoked,
       )
     )
-      throw new Error("Import target has notification authorization history");
-    await tx.delete(native.notificationControls);
+      throw new Error("Import target has outbound authorization history");
+    await tx.delete(native.outboundControls);
     if (seedAdmin.pristine) {
       // Must precede the role delete: the seed grant references console_roles
       // (ON DELETE RESTRICT). Children first: grants and identities reference the account.
@@ -568,8 +577,21 @@ export async function importDatabase(
         string,
         { columnType: string; notNull: boolean }
       >;
-      const rows = key === "reportRevisions" ? orderReportRevisions(bundle.tables[key]!) : bundle.tables[key]!;
-      for (const row of rows) {
+      const legacyKey = LEGACY_TABLE_MAP[key];
+      const sourceTable =
+        bundle.tables[key] ??
+        (legacyKey ? (bundle.tables as any)[legacyKey] : undefined) ??
+        [];
+      const rows =
+        key === "reportRevisions"
+          ? orderReportRevisions(sourceTable)
+          : sourceTable;
+      for (const rawRow of rows) {
+        const row = { ...rawRow };
+        if (key === "runs" && !("outboundExpected" in row) && "notificationExpected" in row) {
+          row.outboundExpected = (row as any).notificationExpected;
+          delete (row as any).notificationExpected;
+        }
         if (
           Object.keys(row).sort().join() !== Object.keys(columns).sort().join()
         )

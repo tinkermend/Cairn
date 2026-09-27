@@ -16,7 +16,7 @@ export const Route = createFileRoute('/_authenticated/platform-config/')({
     },
   },
   beforeLoad: ({ search }) => {
-    if (search.tab === 'alerting') throw redirect({ to: '/notifications', search: { tab: 'alerts' } })
+    if (search.tab === 'alerting') throw redirect({ to: '/outbound', search: { tab: 'alerts' } })
     const user = useAuthStore.getState().auth.user
     if (!user || !hasPermission(user.permissions, 'platform-config:read')) {
       throw redirect({ to: '/403' })

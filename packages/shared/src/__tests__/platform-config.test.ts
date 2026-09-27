@@ -452,7 +452,7 @@ describe('平台配置契约', () => {
     const parsed = platformConfigDocumentSchema.parse(legacy)
     expect(parsed.alerting).toEqual(FACTORY_PLATFORM_CONFIG.alerting)
     expect(parsed.alerting.rules.every((rule) => rule.enabled === false)).toBe(true)
-    expect(parsed.notifications.channels).toEqual([])
+    expect(parsed.outbound.channels).toEqual([])
     expect('alerting' in legacy).toBe(false)
   })
 

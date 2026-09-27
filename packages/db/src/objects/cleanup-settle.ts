@@ -88,6 +88,9 @@ export async function settleTargetCleanups(
 
     let summary: string
     if (total === 0) {
+      if (target.deletedAt && now.getTime() - target.deletedAt.getTime() > 24 * 60 * 60 * 1000) {
+        continue
+      }
       summary = `目标附件清理完成 ${target.name}（${target.code}）：无关联附件需清理`
     } else if (failed > 0) {
       summary = `目标附件清理部分失败 ${target.name}（${target.code}）：已清理 ${purged}/${total} 个对象（共 ${formatByteSize(purgedBytes)}），${failed} 个对象清理失败`
@@ -183,6 +186,9 @@ export async function settleRunCleanups(
 
     let summary: string
     if (total === 0) {
+      if (run.deletedAt && now.getTime() - run.deletedAt.getTime() > 24 * 60 * 60 * 1000) {
+        continue
+      }
       summary = `运行附件清理完成 ${run.id.slice(0, 8)}：无关联附件需清理`
     } else if (failed > 0) {
       summary = `运行附件清理部分失败 ${run.id.slice(0, 8)}：已清理 ${purged}/${total} 个对象（共 ${formatByteSize(purgedBytes)}），${failed} 个对象清理失败`

@@ -1,10 +1,9 @@
 import {
   Activity,
-  Bell,
+  Send,
   Home,
   KeyRound,
   CircleDot,
-  Laptop,
   Layers,
   ListChecks,
   Monitor,
@@ -87,7 +86,7 @@ export const sidebarData: SidebarData = {
       items: [
         navItem('datasets', Database),
         navItem('targets', Monitor),
-        navItem('sessions', Laptop),
+        navItem('sessions', Layers),
       ],
     },
     {
@@ -95,7 +94,7 @@ export const sidebarData: SidebarData = {
       items: [
         navItem('monitoring', Activity),
         navItem('workers', Server),
-        navItem('notifications', Bell),
+        navItem('outbound', Send),
       ],
     },
     {

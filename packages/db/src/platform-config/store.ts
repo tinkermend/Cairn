@@ -111,6 +111,7 @@ async function writeRevision(
     auditAction: 'platform_config.update' | 'platform_config.restore'
     summary: string
     afterWrite?: (tx: Db) => Promise<void>
+    outboundMutation?: boolean
     notificationMutation?: boolean
   },
 ): Promise<PlatformConfigCurrent> {
@@ -126,8 +127,8 @@ async function writeRevision(
     const { platformConfig, platformConfigRevisions } = schemaFor(tx)
     const [previous] = await tx.select().from(platformConfig).where(eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID)).for('update')
     if (previous) {
-      const { validateNotificationConfigChangeTx } = await import('../notifications/config.js')
-      await validateNotificationConfigChangeTx(tx, upgradePlatformConfigDocument(previous.document), document, input.actor.id, input.notificationMutation, input.source === 'restore')
+      const { validateOutboundConfigChangeTx } = await import('../outbound/config.js')
+      await validateOutboundConfigChangeTx(tx, upgradePlatformConfigDocument(previous.document), document, input.actor.id, input.outboundMutation ?? input.notificationMutation, input.source === 'restore')
     }
     const now = new Date()
     const nextRevision = input.expectedRevision + 1
@@ -183,6 +184,7 @@ export async function updatePlatformConfig(
     reason: string
     actor: AuditActor
     afterWrite?: (tx: Db) => Promise<void>
+    outboundMutation?: boolean
     notificationMutation?: boolean
   },
 ): Promise<PlatformConfigCurrent> {

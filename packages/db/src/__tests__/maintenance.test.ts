@@ -718,4 +718,85 @@ describe.each(DRIVERS)('%s 会话维护账本', { timeout: 60_000 }, (driver) =>
     const events = await listSessionEventsAfter(handle.db, { key, afterSeq: 0 })
     expect(events.map(event => event.seq)).toEqual(Array.from({ length: 8 }, (_, index) => index + 1))
   })
+
+  it('会话流支持 bucket 筛选与分类校验，并补全 Worker 标签和状态', async () => {
+    const workerId = `w-test-${newId().slice(0, 8)}`
+    const instanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 5,
+      maxSessions: 5,
+      lostAfterSeconds: 60,
+      hostname: 'worker-node-alpha',
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, SESSION_MAINTENANCE_PROTOCOL],
+    })
+    const accountId = await makeAccount('bucket-test')
+    const key = { targetId, targetAccountId: accountId }
+    const session = await requireCreatedSession(handle.db, {
+      key,
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+      generation: 1,
+      fencingToken: 1,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+    })
+    await setSessionProbe(handle.db, {
+      sessionId: session.id,
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+      health: 'HEALTHY',
+      authState: 'AUTHENTICATED',
+    })
+
+    // 成功按 bucket 筛选
+    const allRes = await listAccountSessionOverview(handle.db, {
+      targetId,
+      search: 'bucket-test',
+    })
+    const sample = allRes.items.find((i) => i.targetAccountId === accountId)
+    if (!sample) {
+      throw new Error(`account not found in allRes: count=${allRes.items.length}`)
+    }
+    if (sample.status !== 'ready') {
+      throw new Error(`account status is ${sample.status}, expected ready`)
+    }
+    const readyRes = await listAccountSessionOverview(handle.db, {
+      targetId,
+      search: 'bucket-test',
+      bucket: 'ready',
+    })
+    expect(readyRes.items.some((i) => i.targetAccountId === accountId)).toBe(true)
+    const found = readyRes.items.find((i) => i.targetAccountId === accountId)!
+    expect(found.ownerWorkerLabel).toBe('worker-node-alpha')
+    expect(found.ownerWorkerOnline).toBe(true)
+    expect(found.liveWorkerCount).toBe(1)
+    expect(readyRes.summary.problem).toBeDefined()
+    expect(readyRes.summary.busy).toBeDefined()
+
+    // 详情也带有 Worker 标签和在线状态
+    const detail = await getAccountSessionDetail(handle.db, key)
+    expect(detail.session?.ownerWorkerLabel).toBe('worker-node-alpha')
+    expect(detail.session?.ownerWorkerOnline).toBe(true)
+    expect(detail.instances[0]?.ownerWorkerLabel).toBe('worker-node-alpha')
+    expect(detail.instances[0]?.ownerWorkerOnline).toBe(true)
+
+    // 不兼容的 bucket 和 filter 组合抛出错误
+    await expect(
+      listAccountSessionOverview(handle.db, {
+        targetId,
+        bucket: 'ready',
+        filter: 'needs_login',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_FILTER_COMBINATION' })
+  })
 })

@@ -29,6 +29,7 @@ import { Route as AuthenticatedEvidenceIndexRouteImport } from './routes/_authen
 import { Route as AuthenticatedMaintenanceIndexRouteImport } from './routes/_authenticated/maintenance/index'
 import { Route as AuthenticatedMonitoringIndexRouteImport } from './routes/_authenticated/monitoring/index'
 import { Route as AuthenticatedNotificationsIndexRouteImport } from './routes/_authenticated/notifications/index'
+import { Route as AuthenticatedOutboundIndexRouteImport } from './routes/_authenticated/outbound/index'
 import { Route as AuthenticatedPlatformConfigIndexRouteImport } from './routes/_authenticated/platform-config/index'
 import { Route as AuthenticatedRecordingsIndexRouteImport } from './routes/_authenticated/recordings/index'
 import { Route as AuthenticatedRolesIndexRouteImport } from './routes/_authenticated/roles/index'
@@ -40,6 +41,7 @@ import { Route as AuthenticatedSessionsIndexRouteImport } from './routes/_authen
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
+import { Route as AuthenticatedSettingsKeybindingsRouteImport } from './routes/_authenticated/settings/keybindings'
 import { Route as AuthenticatedSuiteRunsIndexRouteImport } from './routes/_authenticated/suite-runs/index'
 import { Route as AuthenticatedSuitesIndexRouteImport } from './routes/_authenticated/suites/index'
 import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authenticated/targets/index'
@@ -173,6 +175,12 @@ const AuthenticatedNotificationsIndexRoute =
     path: '/notifications/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedOutboundIndexRoute =
+  AuthenticatedOutboundIndexRouteImport.update({
+    id: '/outbound/',
+    path: '/outbound/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedPlatformConfigIndexRoute =
   AuthenticatedPlatformConfigIndexRouteImport.update({
     id: '/platform-config/',
@@ -235,6 +243,12 @@ const AuthenticatedSettingsAppearanceRoute =
   AuthenticatedSettingsAppearanceRouteImport.update({
     id: '/appearance',
     path: '/appearance',
+    getParentRoute: () => AuthenticatedSettingsRouteRoute,
+  } as any)
+const AuthenticatedSettingsKeybindingsRoute =
+  AuthenticatedSettingsKeybindingsRouteImport.update({
+    id: '/keybindings',
+    path: '/keybindings',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
 const AuthenticatedSuiteRunsIndexRoute =
@@ -381,6 +395,7 @@ export interface FileRoutesByFullPath {
   '/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
+  '/settings/keybindings': typeof AuthenticatedSettingsKeybindingsRoute
   '/public/reports/view': typeof PublicReportsViewRoute
   '/action-modules/': typeof AuthenticatedActionModulesIndexRoute
   '/audit/': typeof AuthenticatedAuditIndexRoute
@@ -391,6 +406,7 @@ export interface FileRoutesByFullPath {
   '/maintenance/': typeof AuthenticatedMaintenanceIndexRoute
   '/monitoring/': typeof AuthenticatedMonitoringIndexRoute
   '/notifications/': typeof AuthenticatedNotificationsIndexRoute
+  '/outbound/': typeof AuthenticatedOutboundIndexRoute
   '/platform-config/': typeof AuthenticatedPlatformConfigIndexRoute
   '/recordings/': typeof AuthenticatedRecordingsIndexRoute
   '/roles/': typeof AuthenticatedRolesIndexRoute
@@ -434,6 +450,7 @@ export interface FileRoutesByTo {
   '/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
+  '/settings/keybindings': typeof AuthenticatedSettingsKeybindingsRoute
   '/public/reports/view': typeof PublicReportsViewRoute
   '/action-modules': typeof AuthenticatedActionModulesIndexRoute
   '/audit': typeof AuthenticatedAuditIndexRoute
@@ -444,6 +461,7 @@ export interface FileRoutesByTo {
   '/maintenance': typeof AuthenticatedMaintenanceIndexRoute
   '/monitoring': typeof AuthenticatedMonitoringIndexRoute
   '/notifications': typeof AuthenticatedNotificationsIndexRoute
+  '/outbound': typeof AuthenticatedOutboundIndexRoute
   '/platform-config': typeof AuthenticatedPlatformConfigIndexRoute
   '/recordings': typeof AuthenticatedRecordingsIndexRoute
   '/roles': typeof AuthenticatedRolesIndexRoute
@@ -490,6 +508,7 @@ export interface FileRoutesById {
   '/_authenticated/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
+  '/_authenticated/settings/keybindings': typeof AuthenticatedSettingsKeybindingsRoute
   '/public/reports/view': typeof PublicReportsViewRoute
   '/_authenticated/action-modules/': typeof AuthenticatedActionModulesIndexRoute
   '/_authenticated/audit/': typeof AuthenticatedAuditIndexRoute
@@ -500,6 +519,7 @@ export interface FileRoutesById {
   '/_authenticated/maintenance/': typeof AuthenticatedMaintenanceIndexRoute
   '/_authenticated/monitoring/': typeof AuthenticatedMonitoringIndexRoute
   '/_authenticated/notifications/': typeof AuthenticatedNotificationsIndexRoute
+  '/_authenticated/outbound/': typeof AuthenticatedOutboundIndexRoute
   '/_authenticated/platform-config/': typeof AuthenticatedPlatformConfigIndexRoute
   '/_authenticated/recordings/': typeof AuthenticatedRecordingsIndexRoute
   '/_authenticated/roles/': typeof AuthenticatedRolesIndexRoute
@@ -546,6 +566,7 @@ export interface FileRouteTypes {
     | '/audit/operations'
     | '/settings/account'
     | '/settings/appearance'
+    | '/settings/keybindings'
     | '/public/reports/view'
     | '/action-modules/'
     | '/audit/'
@@ -556,6 +577,7 @@ export interface FileRouteTypes {
     | '/maintenance/'
     | '/monitoring/'
     | '/notifications/'
+    | '/outbound/'
     | '/platform-config/'
     | '/recordings/'
     | '/roles/'
@@ -599,6 +621,7 @@ export interface FileRouteTypes {
     | '/audit/operations'
     | '/settings/account'
     | '/settings/appearance'
+    | '/settings/keybindings'
     | '/public/reports/view'
     | '/action-modules'
     | '/audit'
@@ -609,6 +632,7 @@ export interface FileRouteTypes {
     | '/maintenance'
     | '/monitoring'
     | '/notifications'
+    | '/outbound'
     | '/platform-config'
     | '/recordings'
     | '/roles'
@@ -654,6 +678,7 @@ export interface FileRouteTypes {
     | '/_authenticated/audit/operations'
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/appearance'
+    | '/_authenticated/settings/keybindings'
     | '/public/reports/view'
     | '/_authenticated/action-modules/'
     | '/_authenticated/audit/'
@@ -664,6 +689,7 @@ export interface FileRouteTypes {
     | '/_authenticated/maintenance/'
     | '/_authenticated/monitoring/'
     | '/_authenticated/notifications/'
+    | '/_authenticated/outbound/'
     | '/_authenticated/platform-config/'
     | '/_authenticated/recordings/'
     | '/_authenticated/roles/'
@@ -849,6 +875,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedNotificationsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/outbound/': {
+      id: '/_authenticated/outbound/'
+      path: '/outbound'
+      fullPath: '/outbound/'
+      preLoaderRoute: typeof AuthenticatedOutboundIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/platform-config/': {
       id: '/_authenticated/platform-config/'
       path: '/platform-config'
@@ -924,6 +957,13 @@ declare module '@tanstack/react-router' {
       path: '/appearance'
       fullPath: '/settings/appearance'
       preLoaderRoute: typeof AuthenticatedSettingsAppearanceRouteImport
+      parentRoute: typeof AuthenticatedSettingsRouteRoute
+    }
+    '/_authenticated/settings/keybindings': {
+      id: '/_authenticated/settings/keybindings'
+      path: '/keybindings'
+      fullPath: '/settings/keybindings'
+      preLoaderRoute: typeof AuthenticatedSettingsKeybindingsRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
     '/_authenticated/suite-runs/': {
@@ -1086,6 +1126,7 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedSettingsRouteRouteChildren {
   AuthenticatedSettingsAccountRoute: typeof AuthenticatedSettingsAccountRoute
   AuthenticatedSettingsAppearanceRoute: typeof AuthenticatedSettingsAppearanceRoute
+  AuthenticatedSettingsKeybindingsRoute: typeof AuthenticatedSettingsKeybindingsRoute
   AuthenticatedSettingsIndexRoute: typeof AuthenticatedSettingsIndexRoute
 }
 
@@ -1093,6 +1134,8 @@ const AuthenticatedSettingsRouteRouteChildren: AuthenticatedSettingsRouteRouteCh
   {
     AuthenticatedSettingsAccountRoute: AuthenticatedSettingsAccountRoute,
     AuthenticatedSettingsAppearanceRoute: AuthenticatedSettingsAppearanceRoute,
+    AuthenticatedSettingsKeybindingsRoute:
+      AuthenticatedSettingsKeybindingsRoute,
     AuthenticatedSettingsIndexRoute: AuthenticatedSettingsIndexRoute,
   }
 
@@ -1115,6 +1158,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedMaintenanceIndexRoute: typeof AuthenticatedMaintenanceIndexRoute
   AuthenticatedMonitoringIndexRoute: typeof AuthenticatedMonitoringIndexRoute
   AuthenticatedNotificationsIndexRoute: typeof AuthenticatedNotificationsIndexRoute
+  AuthenticatedOutboundIndexRoute: typeof AuthenticatedOutboundIndexRoute
   AuthenticatedPlatformConfigIndexRoute: typeof AuthenticatedPlatformConfigIndexRoute
   AuthenticatedRecordingsIndexRoute: typeof AuthenticatedRecordingsIndexRoute
   AuthenticatedRolesIndexRoute: typeof AuthenticatedRolesIndexRoute
@@ -1160,6 +1204,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedMaintenanceIndexRoute: AuthenticatedMaintenanceIndexRoute,
   AuthenticatedMonitoringIndexRoute: AuthenticatedMonitoringIndexRoute,
   AuthenticatedNotificationsIndexRoute: AuthenticatedNotificationsIndexRoute,
+  AuthenticatedOutboundIndexRoute: AuthenticatedOutboundIndexRoute,
   AuthenticatedPlatformConfigIndexRoute: AuthenticatedPlatformConfigIndexRoute,
   AuthenticatedRecordingsIndexRoute: AuthenticatedRecordingsIndexRoute,
   AuthenticatedRolesIndexRoute: AuthenticatedRolesIndexRoute,

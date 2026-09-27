@@ -5,10 +5,29 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+export type DialogVariant = 'default' | 'inspection'
+
+const DialogContext = React.createContext<{ variant: DialogVariant }>({
+  variant: 'default',
+})
+
 function Dialog({
+  variant = 'default',
+  modal,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Root>) {
-  return <DialogPrimitive.Root data-slot='dialog' {...props} />
+}: React.ComponentProps<typeof DialogPrimitive.Root> & {
+  variant?: DialogVariant
+}) {
+  const isInspection = variant === 'inspection'
+  return (
+    <DialogContext.Provider value={{ variant }}>
+      <DialogPrimitive.Root
+        data-slot='dialog'
+        modal={modal ?? (isInspection ? false : true)}
+        {...props}
+      />
+    </DialogContext.Provider>
+  )
 }
 
 function DialogTrigger({
@@ -31,13 +50,19 @@ function DialogClose({
 
 function DialogOverlay({
   className,
+  variant: propVariant,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+}: React.ComponentProps<typeof DialogPrimitive.Overlay> & {
+  variant?: DialogVariant
+}) {
+  const context = React.useContext(DialogContext)
+  const variant = propVariant ?? context.variant
   return (
     <DialogPrimitive.Overlay
       data-slot='dialog-overlay'
       className={cn(
-        'fixed inset-0 z-50 bg-scrim data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        'fixed inset-0 bg-scrim data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        variant === 'inspection' ? 'z-[35]' : 'z-50',
         className
       )}
       {...props}
@@ -49,20 +74,43 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  variant: propVariant,
   onOpenAutoFocus,
   onCloseAutoFocus,
+  onPointerDownOutside,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  variant?: DialogVariant
 }) {
+  const context = React.useContext(DialogContext)
+  const variant = propVariant ?? context.variant
+  const isInspection = variant === 'inspection'
   const returnFocus = React.useRef<HTMLElement | null>(null)
+
+  const handleOutsideInteraction = (event: any) => {
+    const originalEvent = event.detail?.originalEvent
+    const target = (originalEvent?.target ?? event.target) as HTMLElement | null
+    if (
+      target?.closest?.('[data-assistant-host]') ||
+      target?.closest?.('[data-assistant-window]') ||
+      target?.closest?.('[data-assistant-launcher]') ||
+      target?.closest?.('[data-assistant-trigger]') ||
+      target?.closest?.('[data-assistant-sidebar]')
+    ) {
+      event.preventDefault()
+    }
+  }
+
   return (
     <DialogPortal data-slot='dialog-portal'>
-      <DialogOverlay />
+      <DialogOverlay variant={variant} />
       <DialogPrimitive.Content
         data-slot='dialog-content'
         className={cn(
-          'fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl border border-border bg-card p-6 shadow-popover duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
+          'fixed top-[50%] left-[50%] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl border border-border bg-card p-6 shadow-popover duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
+          isInspection ? 'z-[35]' : 'z-50',
           className
         )}
         onOpenAutoFocus={(event) => {
@@ -83,6 +131,14 @@ function DialogContent({
             event.preventDefault()
             returnFocus.current.focus({ preventScroll: true })
           }
+        }}
+        onPointerDownOutside={(event) => {
+          if (isInspection) handleOutsideInteraction(event)
+          onPointerDownOutside?.(event)
+        }}
+        onInteractOutside={(event) => {
+          if (isInspection) handleOutsideInteraction(event)
+          onInteractOutside?.(event)
         }}
         {...props}
       >

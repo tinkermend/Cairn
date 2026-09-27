@@ -32,7 +32,7 @@ import { AnalysisJobsModule } from "./analysis-jobs/analysis-jobs.module";
 import { MonitoringModule } from "./monitoring/monitoring.module";
 import { CredentialsModule } from "./credentials/credentials.module";
 import { EvidenceModule } from "./evidence/evidence.module";
-import { NotificationsModule } from "./notifications/notifications.module";
+import { OutboundModule } from "./outbound/outbound.module";
 import { SuitesModule } from "./suites/suites.module";
 import { SuiteRunsModule } from "./suite-runs/suite-runs.module";
 import { ReportsModule } from "./reports/reports.module";
@@ -74,7 +74,7 @@ import { RepairModule } from "./repair/repair.module";
     MonitoringModule,
     CredentialsModule,
     EvidenceModule,
-    NotificationsModule,
+    OutboundModule,
     SuitesModule,
     SuiteRunsModule,
     ReportsModule,

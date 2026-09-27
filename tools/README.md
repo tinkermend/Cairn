@@ -61,10 +61,10 @@ PostgreSQL 迁移前缀必须连续且唯一，只写 PG 一份；`mysql/`、`sq
 
 集成测试跑在**真实库**上：`db` 的模型与 parity 测试各自建独立 schema（`cairn_test_*`）并在结束时删除；api 的集成测试写入开发 schema，用唯一前缀命名并在 `afterAll` 清理。
 
-### 通知一期真实闭环探针
+### 消息推送一期真实闭环探针
 
-`node tools/probe-notifications.mjs` 使用已构建的 shared／db／API／worker 包，启动隔离数据库、真实 Nest API、Vite（默认 5197，可用 `CAIRN_NOTIFICATION_PROBE_WEB_PORT` 覆盖）和仅监听回环地址的 TLS SMTP／HTTPS 接收器。它不会使用运行中应用的业务数据或真实收件人。运行前确认数据库可达、Node 支持 `tls.setDefaultCACertificates`，并已安装项目的 Playwright Chromium。
+`node tools/probe-outbound.mjs`（`node tools/probe-notifications.mjs` 保留为兼容别名）使用已构建的 shared／db／API／worker 包，启动隔离数据库、真实 Nest API、Vite（默认 5197，可用 `CAIRN_OUTBOUND_PROBE_WEB_PORT` 或 `CAIRN_NOTIFICATION_PROBE_WEB_PORT` 覆盖）和仅监听回环地址的 TLS SMTP／HTTPS 接收器。它不会使用运行中应用的业务数据或真实收件人。运行前确认数据库可达、Node 支持 `tls.setDefaultCACertificates`，并已安装项目的 Playwright Chromium。
 
-探针通过页面保存渠道、测试发送和场景订阅，核对逐收件人部分成功、DATA 后断连、人工重复风险确认、稳定消息编号、真实 Webhook HMAC、权限及 SSE 撤权；同时检查桌面、390px 和键盘路径。结果与截图写入 `.run/notifications-phase-one/`。运行证据等待使用前移 61 秒的测试时钟，不以此声称验证真实业务邮箱入箱。
+探针通过页面保存渠道、测试发送和场景订阅，核对逐收件人部分成功、DATA 后断连、人工重复风险确认、稳定消息编号、真实 Webhook HMAC（协议版本为 `cairn.outbound@1`）、权限及 SSE 撤权；同时检查桌面、390px 和键盘路径。结果与截图写入 `.run/outbound-phase-one/`。运行证据等待使用前移 61 秒的测试时钟，不以此声称验证真实业务邮箱入箱。
 
-通知契约回归：`pnpm --filter @cairn/db exec vitest run src/__tests__/notifications.test.ts src/__tests__/notification-transfer.test.ts src/__tests__/monitoring-alerts.test.ts`，只跑 PostgreSQL；跳过的 MySQL 转储项不是缺口，不必补跑。
+消息推送契约回归：`pnpm --filter @cairn/db exec vitest run src/__tests__/outbound.test.ts src/__tests__/outbound-transfer.test.ts src/__tests__/monitoring-alerts.test.ts`，只跑 PostgreSQL；跳过的 MySQL 转储项不是缺口，不必补跑。
