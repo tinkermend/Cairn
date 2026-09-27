@@ -20,6 +20,7 @@ import {
   fetchReportSourceOptions,
   deleteReport,
   previewDeleteReport,
+  retryReportAi,
 } from '@/lib/reports-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
@@ -123,6 +124,7 @@ function ReportPanelContent({
   const titleId = useId()
   const [stage, setStage] = useState<'final' | 'phase'>('final')
   const [busy, setBusy] = useState(false)
+  const [retryingAi, setRetryingAi] = useState(false)
   const formats: Array<'html'> = ['html']
   const [jobId, setJobId] = useState<string | null>(null)
   const job = useQuery({
@@ -380,6 +382,61 @@ function ReportPanelContent({
               </Button>
             </div>
           ) : null}
+          {current.aiJob && (
+            <div className='rounded-md border p-3 bg-muted/20 space-y-2' aria-live='polite'>
+              <div className='flex items-center justify-between gap-2 flex-wrap'>
+                <div className='flex items-center gap-2'>
+                  <span className='text-label font-medium text-foreground'>AI 辅助解读：</span>
+                  {current.aiJob.status === 'completed' && (
+                    <span className='rounded bg-emerald-500/10 px-2 py-0.5 text-small font-semibold text-emerald-600 dark:text-emerald-400'>
+                      已就绪 ({current.aiJob.model || '平台模型'})
+                    </span>
+                  )}
+                  {['pending', 'running'].includes(current.aiJob.status) && (
+                    <span className='rounded bg-blue-500/10 px-2 py-0.5 text-small font-semibold text-blue-600 dark:text-blue-400 animate-pulse'>
+                      正在生成中...
+                    </span>
+                  )}
+                  {current.aiJob.status === 'failed' && (
+                    <span className='rounded bg-destructive/10 px-2 py-0.5 text-small font-semibold text-destructive'>
+                      AI 总结暂未生成
+                    </span>
+                  )}
+                  {current.aiJob.status === 'skipped' && (
+                    <span className='rounded bg-muted px-2 py-0.5 text-small text-muted-foreground'>
+                      已跳过（未配置模型或策略关闭）
+                    </span>
+                  )}
+                </div>
+                {canExport && current.aiJob.status === 'failed' && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    disabled={busy || retryingAi}
+                    onClick={async () => {
+                      setRetryingAi(true)
+                      try {
+                        await retryReportAi(current.id)
+                        toast.success('已发起重试 AI 辅助解读')
+                        await queryClient.invalidateQueries({ queryKey: ['report', current.id] })
+                      } catch (err: any) {
+                        toast.error(err?.message || '重试失败')
+                      } finally {
+                        setRetryingAi(false)
+                      }
+                    }}
+                  >
+                    重试 AI 总结
+                  </Button>
+                )}
+              </div>
+              {current.aiJob.status === 'failed' && current.aiJob.error && (
+                <p className='text-small text-destructive break-words'>
+                  失败原因：{current.aiJob.error}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <p className='text-label text-muted-foreground'>还没有报告。</p>

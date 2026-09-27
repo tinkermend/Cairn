@@ -46,6 +46,7 @@ vi.mock('@/lib/reports-api', () => ({
   })),
   cancelReportJob: vi.fn(),
   retryReportJob: vi.fn(),
+  retryReportAi: vi.fn(),
   createReportBundle: vi.fn(),
   deriveMemberReport: vi.fn(),
 }))
@@ -94,14 +95,14 @@ describe('报告生成与导出', () => {
       artifactIds: [],
     })
   })
-  const setup = () =>
+  const setup = (props?: { initialReport?: any }) =>
     render(
       <QueryClientProvider
         client={
           new QueryClient({ defaultOptions: { queries: { retry: false } } })
         }
       >
-        <ReportPanel subject={subject} />
+        <ReportPanel subject={subject} initialReport={props?.initialReport} />
       </QueryClientProvider>
     )
 
@@ -141,7 +142,7 @@ describe('报告生成与导出', () => {
       })
     })
     const screen = await setup()
-    await screen.getByRole('button', { name: '导出 Word 与 PDF' }).click()
+    await screen.getByRole('button', { name: '导出 HTML 交互报告' }).click()
     await expect
       .element(screen.getByText('部分文件已交付', { exact: true }))
       .toBeVisible()
@@ -155,6 +156,31 @@ describe('报告生成与导出', () => {
       .not.toBeInTheDocument()
   })
 
+  it('展示 AI 辅助解读独立状态并在失败时提供重试入口', async () => {
+    const failedReport = {
+      ...report,
+      aiJob: {
+        id: 'ai-job-1',
+        reportId: report.id,
+        baseRevisionId: report.currentRevision.id,
+        status: 'failed' as const,
+        error: '模型网关超时 504',
+        model: 'deepseek-v3',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    }
+    mocks.list.mockResolvedValue({ items: [failedReport], nextCursor: undefined })
+    const { fetchReport } = await import('@/lib/reports-api')
+    ;(fetchReport as any).mockResolvedValue(failedReport)
+
+    const screen = await setup({ initialReport: failedReport as any })
+    await expect.element(screen.getByText('AI 总结暂未生成')).toBeVisible()
+    await expect.element(screen.getByText('失败原因：模型网关超时 504')).toBeVisible()
+    const retryBtn = screen.getByRole('button', { name: '重试 AI 总结' })
+    await expect.element(retryBtn).toBeVisible()
+  })
+
   it('只读角色不显示生成及下载入口', async () => {
     mocks.canExport = false
     mocks.list.mockResolvedValue({ items: [report], nextCursor: undefined })
@@ -163,7 +189,7 @@ describe('报告生成与导出', () => {
       .element(screen.getByText('商城巡检修订', { exact: false }).first())
       .toBeVisible()
     await expect
-      .element(screen.getByRole('button', { name: '导出 Word 与 PDF' }))
+      .element(screen.getByRole('button', { name: '导出 HTML 交互报告' }))
       .not.toBeInTheDocument()
   })
 

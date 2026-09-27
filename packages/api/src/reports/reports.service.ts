@@ -98,6 +98,7 @@ export class ReportsService {
   retryJob(id: string, key: string, account: RequestAccount) { return reporting.retryExportJob(this.database, id, key, this.actor(account)).catch(rethrowDomain) }
   profiles(query: { targetId: string; limit?: number; cursor?: string }, actorId: string) { return reporting.listReportProfiles(this.database, query, actorId).catch(rethrowDomain) }
   profile(id: string, actorId: string) { return reporting.getReportProfile(this.database, id, actorId).catch(rethrowDomain) }
+  retryAi(reportId: string, account: RequestAccount) { return reporting.retryReportAiJob(this.database, reportId, this.actor(account)).catch(rethrowDomain) }
   profileVersions(id: string, cursor: string | undefined, actorId: string) { return reporting.listReportProfileVersions(this.database, id, { cursor }, actorId).catch(rethrowDomain) }
   saveProfile(id: string | null, body: SaveReportProfileBody, account: RequestAccount) { return reporting.saveReportProfile(this.database, id, body, this.actor(account)).catch(rethrowDomain) }
   defaults(id: string, actorId: string) { return reporting.getScenarioReportDefaults(this.database, id, actorId).catch(rethrowDomain) }

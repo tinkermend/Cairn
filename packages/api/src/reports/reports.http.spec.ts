@@ -72,6 +72,7 @@ function mockService() {
     export: vi.fn(async () => ({ id: 'job', status: 'queued', artifactIds: [] })),
     deletePreview: vi.fn(async () => ({ previewToken: reportId, counts: {}, blockers: [] })),
     delete: vi.fn(async () => ({ id: reportId, deleted: true })),
+    retryAi: vi.fn(async () => report),
     artifactStream: vi.fn(async () => ({
       chunks: (async function* () { yield Buffer.from([1, 2, 3]) })(),
       byteSize: 3,
@@ -183,5 +184,17 @@ describe('Reports HTTP', () => {
     expect(service.previewMember).toHaveBeenCalled()
     await request(viewerApp.getHttpServer()).post(`/reports/${reportId}/revision-preview`)
       .send({ reason: '伪造版本', idempotencyKey: 'preview-03', config: { titleSyntaxVersion: 2 } }).expect(400)
+  })
+
+  it('POST /reports/:id/retry-ai 需要 report:export 权限', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/reports/${reportId}/retry-ai`)
+      .expect(403)
+    expect(service.retryAi).not.toHaveBeenCalled()
+
+    await request(adminApp.getHttpServer())
+      .post(`/reports/${reportId}/retry-ai`)
+      .expect(200)
+    expect(service.retryAi).toHaveBeenCalledWith(reportId, expect.anything())
   })
 })

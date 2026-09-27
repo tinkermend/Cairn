@@ -115,6 +115,7 @@ export function sanitizeReportSource(document: ReportDocument): {
     const steps = rawSteps.map((s: any) => {
       const stepId = String(s.id ?? '')
       if (stepId) validCitationIds.add(stepId)
+      if (s.stepId) validCitationIds.add(String(s.stepId))
 
       const attempts = Array.isArray(s.attempts) ? s.attempts : []
       const lastAttempt = attempts[attempts.length - 1]
@@ -282,6 +283,7 @@ export async function dispatchReportAiJobs(
   store: ObjectStore,
   input: { workerId: string; instanceId: string; signal?: AbortSignal },
   secrets?: LocalSecretProvider,
+  watchHeartbeat: (renew: () => Promise<void>) => () => void = () => () => undefined,
 ): Promise<number> {
   const jobs = await claimReportAiJobs(handle, {
     workerId: input.workerId,
@@ -296,9 +298,19 @@ export async function dispatchReportAiJobs(
       instanceId: input.instanceId,
     }
 
-    const renewInterval = setInterval(() => {
-      void renewReportAiJob(handle, grant).catch(() => undefined)
-    }, 20_000)
+    let renewing = false
+    const beat = async () => {
+      if (renewing) return
+      renewing = true
+      try {
+        await renewReportAiJob(handle, grant)
+      } catch {
+        // 心跳续租失败不抛出未捕获错误
+      } finally {
+        renewing = false
+      }
+    }
+    const stopHeartbeat = watchHeartbeat(beat)
 
     try {
       // 1. 检查平台文本 AI 配置
@@ -507,7 +519,7 @@ export async function dispatchReportAiJobs(
         error: `处理异常：${errText.slice(0, 300)}`,
       }).catch(() => undefined)
     } finally {
-      clearInterval(renewInterval)
+      stopHeartbeat()
     }
   }
 

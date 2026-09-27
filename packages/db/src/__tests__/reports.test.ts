@@ -107,7 +107,7 @@ describe.each(DRIVERS)('%s 报告快照', { timeout: 60_000 }, (driver) => {
       handle.db,
       report.id,
       report.currentRevision!.id,
-      ['docx', 'pdf'],
+      ['html'],
       { kind: 'console', id: actorId },
       `exp-${report.id}`,
     )
@@ -116,7 +116,7 @@ describe.each(DRIVERS)('%s 报告快照', { timeout: 60_000 }, (driver) => {
       handle.db,
       report.id,
       report.currentRevision!.id,
-      ['docx', 'pdf'],
+      ['html'],
       { kind: 'console', id: actorId },
       `exp-${report.id}`,
     )

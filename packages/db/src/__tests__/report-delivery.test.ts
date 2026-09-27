@@ -50,11 +50,11 @@ describe.each(DRIVERS)('%s 报告交付与恢复', (driver) => {
   async function job() {
     const runId = await run()
     const report = await createReport(handle.db, body(runId), actor())
-    const exportJob = await enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['pdf'], actor(), newId())
+    const exportJob = await enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['html'], actor(), newId())
     return { runId, report, exportJob }
   }
   async function artifact() {
-    const made = await createArtifact(handle.db, { targetId, actorId, kind: 'report_pdf', fileName: '巡检.pdf', contentType: 'application/pdf', retainUntil: new Date(Date.now() + 60_000) })
+    const made = await createArtifact(handle.db, { targetId, actorId, kind: 'report_html', fileName: '巡检.html', contentType: 'text/html; charset=utf-8', retainUntil: new Date(Date.now() + 60_000) })
     await attachArtifactBytes(handle.db, { artifactId: made.id, byteSize: 3, digest: 'sha256:test' })
     return made.id
   }
@@ -123,11 +123,12 @@ describe.each(DRIVERS)('%s 报告交付与恢复', (driver) => {
 
   it('重复导出允许重试，同键不同格式拒绝；跨 Worker 重领后旧持有者不能提交', async () => {
     const { report, exportJob } = await job()
-    const next = await enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['pdf'], actor(), newId())
+    const next = await enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['html'], actor(), newId())
     expect(next.id).not.toBe(exportJob.id)
     const key = newId()
-    await enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['pdf'], actor(), key)
-    await expect(enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['docx'], actor(), key)).rejects.toMatchObject({ code: 'EXPORT_IDEMPOTENCY_CONFLICT' })
+    await enqueueReportExport(handle.db, report.id, report.currentRevision!.id, ['html'], actor(), key)
+    const rev2 = await createReportRevision(handle.db, report.id, { reason: '测试新版本', idempotencyKey: newId() }, actor())
+    await expect(enqueueReportExport(handle.db, report.id, rev2.currentRevision!.id, ['html'], actor(), key)).rejects.toMatchObject({ code: 'EXPORT_IDEMPOTENCY_CONFLICT' })
     const w1 = await worker(), w2 = await worker()
     const [claimed] = await claimExportJobs(handle.db, w1)
     const { exportJobs } = schemaFor(handle.db)

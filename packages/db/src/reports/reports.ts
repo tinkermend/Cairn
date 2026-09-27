@@ -151,7 +151,9 @@ export async function getReport(db: Db, reportId: string, actorId?: string) {
     const { reportRevisions } = schemaFor(db)
     const [parent] = await db.select({ reportId: reportRevisions.reportId }).from(reportRevisions).where(eq(reportRevisions.id, dto.currentRevision.parentReportRevisionId)).limit(1)
     if (!parent) throw notFound('REPORT_SOURCE_NOT_FOUND', '父报告不存在')
-    await getReport(db, parent.reportId, actorId)
+    if (parent.reportId !== reportId) {
+      await getReport(db, parent.reportId, actorId)
+    }
   }
   return dto
 }
@@ -392,6 +394,7 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
         loops: (await captureLoopSummaries(db, run)) as unknown as JsonValue,
         stepRuns: run.stepRuns.map((step) => ({
           id: step.id,
+          stepId: step.stepId,
           name: step.name,
           status: step.status,
           ...(step.skipReason ? { skipReason: step.skipReason } : {}),
@@ -1771,6 +1774,7 @@ async function claimReportAiJobsTx(
       ...row,
       id: row.id,
       jobId: row.id,
+      status: 'running',
       workerId: input.workerId,
       instanceId: input.instanceId,
       holderWorkerId: input.workerId,
@@ -1875,7 +1879,7 @@ export async function createReportAiRevision(
         reportId: input.reportId,
         revisionId,
         revisionNo: nextNo,
-        parentRevisionId: null,
+        parentRevisionId: input.baseRevisionId,
       },
       generatedAt: new Date().toISOString(),
     }
@@ -1891,7 +1895,7 @@ export async function createReportAiRevision(
       templateVersion: baseRevision.templateVersion,
       renderVersion: REPORT_RENDER_VERSION,
       sourceSnapshotId: baseRevision.sourceSnapshotId,
-      parentReportRevisionId: null,
+      parentReportRevisionId: input.baseRevisionId,
       contentCompleteness: baseRevision.contentCompleteness,
       document,
       documentDigest: sha256Hex(document),
@@ -1944,6 +1948,25 @@ export async function sealReportAiRevision(
     const [revision] = await locked(tx, tx.select().from(reportRevisions).where(eq(reportRevisions.id, input.revisionId)))
     if (!revision) throw notFound('REPORT_NOT_FOUND', '修订不存在')
     if (revision.sealedAt) return true
+
+    if (revision.parentReportRevisionId) {
+      const [latestSealed] = await tx
+        .select({ id: reportRevisions.id })
+        .from(reportRevisions)
+        .where(
+          and(
+            eq(reportRevisions.reportId, revision.reportId),
+            isNotNull(reportRevisions.sealedAt),
+            ne(reportRevisions.id, revision.id),
+          ),
+        )
+        .orderBy(desc(reportRevisions.revisionNo))
+        .limit(1)
+
+      if (latestSealed && latestSealed.id !== revision.parentReportRevisionId) {
+        throw conflict('AI_ELEVATION_SUPERSEDED', '依附的程序修订已不是当前版本，AI 提升失败且不覆盖用户选择')
+      }
+    }
 
     const [artifact] = await tx
       .select()
@@ -2002,7 +2025,9 @@ export async function retryReportAiJob(
       throw conflict('REPORT_AI_JOB_COMPLETED', 'AI 辅助解读已完成，无需重试')
     }
 
+    const currentBaseId = report.currentRevision?.id ?? job.baseRevisionId
     await tx.update(reportAiJobs).set({
+      baseRevisionId: currentBaseId,
       status: 'pending',
       error: null,
       leaseUntil: null,

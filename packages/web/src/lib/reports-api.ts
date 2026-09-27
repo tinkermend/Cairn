@@ -253,3 +253,11 @@ export function createReportShareToken(reportId: string) {
     { method: 'POST' },
   )
 }
+
+export function retryReportAi(reportId: string) {
+  return apiFetch(
+    `/api/reports/${reportId}/retry-ai`,
+    reportDtoSchema,
+    post({}),
+  )
+}

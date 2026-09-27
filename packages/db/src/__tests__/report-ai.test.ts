@@ -192,12 +192,12 @@ describe.each(DRIVERS)('%s 报告 AI 异步修订与原子提升', { timeout: 60
     const rev2 = await createReportAiRevision(handle.db, {
       reportId: report.id,
       baseRevisionId: rev1Id,
-      document: aiDoc,
+      interpretation: aiDoc.aiInterpretation,
     })
     expect(rev2.revisionNo).toBe(2)
 
     // ★ 关键验证：Revision 2 刚创建但尚未 sealed，查询 currentRevision 仍然是 Revision 1！
-    const reportBeforeSealing = await getReport(handle.db, report.id, { kind: 'console', id: actorId })
+    const reportBeforeSealing = await getReport(handle.db, report.id, actorId)
     expect(reportBeforeSealing.currentRevision?.revisionNo).toBe(1)
     expect(reportBeforeSealing.currentRevision?.id).toBe(rev1Id)
 
@@ -240,7 +240,7 @@ describe.each(DRIVERS)('%s 报告 AI 异步修订与原子提升', { timeout: 60
     })
 
     // ★ 关键验证：原子提升后，currentRevision 变为 Revision 2
-    const reportAfterSealing = await getReport(handle.db, report.id, { kind: 'console', id: actorId })
+    const reportAfterSealing = await getReport(handle.db, report.id, actorId)
     expect(reportAfterSealing.currentRevision?.revisionNo).toBe(2)
     expect(reportAfterSealing.currentRevision?.id).toBe(rev2.revisionId)
     expect(reportAfterSealing.currentRevision?.sealedAt).toBeTruthy()
@@ -305,7 +305,7 @@ describe.each(DRIVERS)('%s 报告 AI 异步修订与原子提升', { timeout: 60
     })
 
     // 验证报告状态：程序版 Revision 1 完全不受损
-    const checked = await getReport(handle.db, report.id, { kind: 'console', id: actorId })
+    const checked = await getReport(handle.db, report.id, actorId)
     expect(checked.currentRevision?.revisionNo).toBe(1)
     expect(checked.currentRevision?.id).toBe(rev1Id)
     expect(checked.currentRevision?.sealedAt).toBeTruthy()
@@ -313,8 +313,120 @@ describe.each(DRIVERS)('%s 报告 AI 异步修订与原子提升', { timeout: 60
     expect(checked.aiJob?.error).toContain('模型网关超时')
 
     // RA06: 允许安全重试 AI 作业
-    const retried = await retryReportAiJob(handle.db, report.id, actorId)
-    expect(retried.status).toBe('pending')
-    expect(retried.error).toBeNull()
+    const retried = await retryReportAiJob(handle.db, report.id, { kind: 'console', id: actorId })
+    expect(retried.aiJob?.status).toBe('pending')
+    expect(retried.aiJob?.error).toBeNull()
+  })
+
+  it('RA02 深度防护: 用户期间手动创建新修订时，AI 结果不覆盖用户选择，提升被阻止', async () => {
+    const { runs, exportJobs } = schemaFor(handle.db)
+    const run = await createRunWithSnapshot(handle.db, {
+      scenarioId,
+      actor: { id: actorId },
+    })
+    await handle.db
+      .update(runs)
+      .set({
+        status: 'SUCCEEDED',
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+        outcomeStatus: 'PASS',
+        evidenceStatus: 'COMPLETE',
+      })
+      .where(eq(runs.id, run.detail.id))
+
+    // 1. 创建程序版报告 Revision 1
+    const report = await createReport(
+      handle.db,
+      {
+        subject: { kind: 'RUN', runId: run.detail.id },
+        stage: 'final',
+        scope: 'run',
+        idempotencyKey: `rpt-ai-override-${run.detail.id}`,
+      },
+      { kind: 'console', id: actorId },
+    )
+    const rev1Id = report.currentRevision!.id
+    expect(report.currentRevision?.revisionNo).toBe(1)
+
+    // 解除渲染等待
+    await handle.db
+      .update(exportJobs)
+      .set({ status: 'complete', updatedAt: new Date() })
+      .where(and(eq(exportJobs.reportRevisionId, rev1Id), eq(exportJobs.kind, 'report_render')))
+
+    // 2. 模拟 AI 作业读取了 Revision 1 并生成了 interpretation
+    const claimed = await claimReportAiJobs(handle.db, {
+      workerId,
+      instanceId,
+      leaseTtlSeconds: 60,
+      limit: 10,
+    })
+    const grant = claimed.find((g) => g.jobId === report.aiJob?.id)
+    expect(grant).toBeDefined()
+
+    // 3. 用户在此时手动创建了新修订 Revision 2！
+    const { createReportRevision } = await import('../reports/reports.js')
+    const manualRev2 = await createReportRevision(
+      handle.db,
+      report.id,
+      {
+        reason: '用户手动修改标题与补充说明',
+        stage: 'final',
+        config: { title: '用户定制版本' },
+        idempotencyKey: `manual-rev-${run.detail.id}`,
+      },
+      { kind: 'console', id: actorId },
+    )
+    // 用户手动修订封存为 Revision 2
+    expect(manualRev2.currentRevision?.revisionNo).toBe(2)
+    const rev2Id = manualRev2.currentRevision!.id
+
+    // 4. AI 此时试图完成并封存提升（基于旧的 Revision 1）
+    const aiRev = await createReportAiRevision(handle.db, {
+      reportId: report.id,
+      baseRevisionId: rev1Id,
+      interpretation: {
+        status: 'definitive',
+        model: 'deepseek-v3',
+        observation: '执行观察',
+        findings: [{ statement: '测试事实陈述', citationIds: ['00000000-0000-4000-8000-0000000000d1'] }],
+        generatedAt: new Date().toISOString(),
+      },
+    })
+    expect(aiRev.parentReportRevisionId ?? rev1Id).toBe(rev1Id)
+
+    const dummyHtml = await createArtifact(handle.db, {
+      targetId,
+      kind: 'report_html',
+      fileName: 'ai-superseded.html',
+      contentType: 'text/html; charset=utf-8',
+      retainUntil: new Date(Date.now() + 30 * 86_400_000),
+      reportRevisionId: aiRev.revisionId,
+    })
+    await attachArtifactBytes(handle.db, {
+      artifactId: dummyHtml.id,
+      byteSize: 2048,
+      digest: 'sha256:dummy-ai',
+    })
+
+    // 5. 封存提升时必须抛出冲突异常，拒绝篡位覆盖用户 Revision 2！
+    await expect(
+      sealReportAiRevision(handle.db, {
+        revisionId: aiRev.revisionId,
+        htmlArtifactId: dummyHtml.id,
+      }),
+    ).rejects.toThrow('依附的程序修订已不是当前版本，AI 提升失败且不覆盖用户选择')
+
+    // 6. 报告的当前版本牢牢保持为用户的 Revision 2
+    const currentReport = await getReport(handle.db, report.id, actorId)
+    expect(currentReport.currentRevision?.id).toBe(rev2Id)
+    expect(currentReport.currentRevision?.revisionNo).toBe(2)
+    expect(currentReport.currentRevision?.title).toContain('用户定制版本')
+
+    // 7. 用户触发授权重试，AI 作业基准自动更新为最新的 Revision 2
+    const retried = await retryReportAiJob(handle.db, report.id, { kind: 'console', id: actorId })
+    expect(retried.aiJob?.status).toBe('pending')
+    expect(retried.aiJob?.baseRevisionId).toBe(rev2Id)
   })
 })

@@ -130,7 +130,7 @@ export function sanitizeReportFileName(input: string): string {
 }
 
 export function contentDispositionAttachment(fileName: string): string {
-  const extension = fileName.match(/\.(?:html|zip)$/i)?.[0] ?? ''
+  const extension = fileName.match(/\.[a-zA-Z0-9]+$/)?.[0] ?? ''
   const safe = extension
     ? `${Array.from(sanitizeReportFileName(fileName.slice(0, -extension.length))).slice(0, 80 - extension.length).join('')}${extension}`
     : sanitizeReportFileName(fileName)

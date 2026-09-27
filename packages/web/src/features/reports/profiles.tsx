@@ -288,6 +288,7 @@ export function ScenarioReportSettings({
                   outputPolicy: {
                     autoGenerateReport: checked,
                     memberReportPolicy: defaults.data.outputPolicy?.memberReportPolicy ?? 'inherit',
+                    aiSummaryPolicy: defaults.data.outputPolicy?.aiSummaryPolicy ?? 'inherit',
                   },
                 })
                 cache.setQueryData(['scenario-report-defaults', scenarioId], result)

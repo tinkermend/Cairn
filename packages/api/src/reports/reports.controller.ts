@@ -139,6 +139,13 @@ export class ReportsController {
   delete(@Param('reportId') reportId: string, @CurrentAccount() account: RequestAccount) {
     return this.reports.delete(reportId, account)
   }
+
+  @Post(':reportId/retry-ai')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('report:export')
+  retryAi(@Param('reportId') reportId: string, @CurrentAccount() account: RequestAccount) {
+    return this.reports.retryAi(reportId, account)
+  }
 }
 
 @Controller('export-jobs')
