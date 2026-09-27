@@ -9,28 +9,28 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core'
 import type {
-  FrozenNotificationBinding,
-  FrozenNotificationPolicy,
-  NotificationPayload,
-  NotificationPolicy,
-  NotificationStatus,
+  FrozenOutboundBinding,
+  FrozenOutboundPolicy,
+  OutboundPayload,
+  OutboundPolicy,
+  OutboundStatus,
 } from '@cairn/shared'
 import { cairnSchema } from './console.js'
 
-export const scenarioNotificationPolicies = cairnSchema.table('scenario_notification_policies', {
+export const scenarioOutboundPolicies = cairnSchema.table('scenario_outbound_policies', {
   scenarioId: uuid('scenario_id').primaryKey(),
   revision: integer('revision').notNull(),
-  policy: jsonb('policy').$type<NotificationPolicy>().notNull(),
+  policy: jsonb('policy').$type<OutboundPolicy>().notNull(),
   updatedBy: uuid('updated_by').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
 })
-export const notificationControls = cairnSchema.table('notification_controls', {
+export const outboundControls = cairnSchema.table('outbound_controls', {
   key: text('key').primaryKey(),
   generation: integer('generation').notNull().default(0),
   revoked: boolean('revoked').notNull().default(false),
 })
-export const notificationEvents = cairnSchema.table(
-  'notification_events',
+export const outboundEvents = cairnSchema.table(
+  'outbound_events',
   {
     id: uuid('id').primaryKey(),
     sourceKey: text('source_key').notNull(),
@@ -42,9 +42,9 @@ export const notificationEvents = cairnSchema.table(
     sourceSequence: integer('source_sequence').notNull().default(0),
     state: text('state').$type<'waiting_result' | 'ready' | 'filtered' | 'suppressed'>().notNull(),
     reason: text('reason'),
-    policy: jsonb('policy').$type<FrozenNotificationPolicy>(),
-    bindings: jsonb('bindings').$type<FrozenNotificationBinding[]>().notNull(),
-    payload: jsonb('payload').$type<NotificationPayload>(),
+    policy: jsonb('policy').$type<FrozenOutboundPolicy>(),
+    bindings: jsonb('bindings').$type<FrozenOutboundBinding[]>().notNull(),
+    payload: jsonb('payload').$type<OutboundPayload>(),
     consoleUrl: text('console_url'),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
     observedAt: timestamp('observed_at', { withTimezone: true }),
@@ -53,26 +53,26 @@ export const notificationEvents = cairnSchema.table(
     purgedAt: timestamp('purged_at', { withTimezone: true }),
   },
   (t) => [
-    uniqueIndex('notification_events_source_idx').on(t.sourceKey),
-    index('notification_events_prepare_idx').on(t.state, t.nextPrepareAt, t.id),
-    index('notification_events_target_idx').on(t.targetId, t.occurredAt, t.id),
-    index('notification_events_run_idx').on(t.runId, t.occurredAt),
-    index('notification_events_alert_idx').on(t.alertId, t.sourceSequence),
-    index('notification_events_time_idx').on(t.occurredAt, t.id),
+    uniqueIndex('outbound_events_source_idx').on(t.sourceKey),
+    index('outbound_events_prepare_idx').on(t.state, t.nextPrepareAt, t.id),
+    index('outbound_events_target_idx').on(t.targetId, t.occurredAt, t.id),
+    index('outbound_events_run_idx').on(t.runId, t.occurredAt),
+    index('outbound_events_alert_idx').on(t.alertId, t.sourceSequence),
+    index('outbound_events_time_idx').on(t.occurredAt, t.id),
   ],
 )
-export const notificationDeliveries = cairnSchema.table(
-  'notification_deliveries',
+export const outboundDeliveries = cairnSchema.table(
+  'outbound_deliveries',
   {
     id: uuid('id').primaryKey(),
-    eventId: uuid('notification_event_id')
+    eventId: uuid('outbound_event_id')
       .notNull()
-      .references(() => notificationEvents.id, { onDelete: 'restrict' }),
+      .references(() => outboundEvents.id, { onDelete: 'restrict' }),
     channelId: uuid('channel_id').notNull(),
     recipientKey: text('recipient_key').notNull(),
     recipientLabel: text('recipient_label').notNull(),
-    binding: jsonb('binding').$type<FrozenNotificationBinding>().notNull(),
-    status: text('status').$type<NotificationStatus>().notNull(),
+    binding: jsonb('binding').$type<FrozenOutboundBinding>().notNull(),
+    status: text('status').$type<OutboundStatus>().notNull(),
     reason: text('reason'),
     automaticAttemptCount: integer('automatic_attempt_count').notNull().default(0),
     attemptNo: integer('attempt_no').notNull().default(0),
@@ -87,18 +87,18 @@ export const notificationDeliveries = cairnSchema.table(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
   },
   (t) => [
-    uniqueIndex('notification_deliveries_recipient_idx').on(t.eventId, t.channelId, t.recipientKey),
-    index('notification_deliveries_due_idx').on(t.status, t.nextAttemptAt, t.id),
-    index('notification_deliveries_expiry_idx').on(t.status, t.claimExpiresAt),
+    uniqueIndex('outbound_deliveries_recipient_idx').on(t.eventId, t.channelId, t.recipientKey),
+    index('outbound_deliveries_due_idx').on(t.status, t.nextAttemptAt, t.id),
+    index('outbound_deliveries_expiry_idx').on(t.status, t.claimExpiresAt),
   ],
 )
-export const notificationDeliveryAttempts = cairnSchema.table(
-  'notification_delivery_attempts',
+export const outboundDeliveryAttempts = cairnSchema.table(
+  'outbound_delivery_attempts',
   {
     id: uuid('id').primaryKey(),
-    deliveryId: uuid('notification_delivery_id')
+    deliveryId: uuid('outbound_delivery_id')
       .notNull()
-      .references(() => notificationDeliveries.id, { onDelete: 'restrict' }),
+      .references(() => outboundDeliveries.id, { onDelete: 'restrict' }),
     attemptNo: integer('attempt_no').notNull(),
     claimEpoch: integer('claim_epoch').notNull(),
     origin: text('origin').$type<'auto' | 'manual'>().notNull(),
@@ -106,14 +106,14 @@ export const notificationDeliveryAttempts = cairnSchema.table(
     startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
-    result: text('result').$type<NotificationStatus>(),
+    result: text('result').$type<OutboundStatus>(),
     errorCode: text('error_code'),
     responseCode: integer('response_code'),
   },
-  (t) => [uniqueIndex('notification_attempts_number_idx').on(t.deliveryId, t.attemptNo)],
+  (t) => [uniqueIndex('outbound_attempts_number_idx').on(t.deliveryId, t.attemptNo)],
 )
-export const notificationCommands = cairnSchema.table(
-  'notification_commands',
+export const outboundCommands = cairnSchema.table(
+  'outbound_commands',
   {
     id: text('command_key').primaryKey(),
     actorId: uuid('actor_id').notNull(),
@@ -123,5 +123,5 @@ export const notificationCommands = cairnSchema.table(
     resultId: uuid('result_id').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   },
-  (t) => [index('notification_commands_rate_idx').on(t.action, t.createdAt)],
+  (t) => [index('outbound_commands_rate_idx').on(t.action, t.createdAt)],
 )

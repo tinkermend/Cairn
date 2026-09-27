@@ -7,18 +7,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getCACertificates, setDefaultCACertificates } from 'node:tls'
 import { SMTPServer } from 'smtp-server'
-import type { NotificationJob } from '@cairn/db'
+import type { OutboundJob } from '@cairn/db'
 import {
-  notificationEmailText,
-  notificationWebhookBody,
-  resolveNotificationDestination,
-  sendNotificationEmail,
-  sendNotificationWebhook,
-  withNotificationDeadline,
-} from './notification-delivery'
+  outboundEmailText,
+  outboundWebhookBody,
+  resolveOutboundDestination,
+  sendOutboundEmail,
+  sendOutboundWebhook,
+  withOutboundDeadline,
+} from './outbound-delivery'
 
 const fixedDate = new Date('2026-09-19T08:00:00.000Z')
-function job(): NotificationJob {
+function job(): OutboundJob {
   return {
     deliveryId: randomUUID(),
     event: {
@@ -39,14 +39,15 @@ function job(): NotificationJob {
         summaryStage: 'evidence_pending',
       },
     },
-    delivery: { binding: { channel: { format: 'cairn.notification@1' } } },
-  } as unknown as NotificationJob
+    delivery: { binding: { channel: { format: 'cairn.outbound@1' } } },
+  } as unknown as OutboundJob
 }
-describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
+
+describe('消息推送真实 HTTPS / SMTP 协议与外部副作用', () => {
   let dir: string, key: Buffer, cert: Buffer, originalCAs: string[]
   const servers: Array<Server | SMTPServer> = []
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'cairn-notification-tls-'))
+    dir = mkdtempSync(join(tmpdir(), 'cairn-outbound-tls-'))
     execFileSync(
       'openssl',
       [
@@ -60,41 +61,47 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
         '-subj',
         '/CN=localhost',
         '-addext',
-        'subjectAltName=DNS:localhost,DNS:notification.test,IP:127.0.0.1',
+        'subjectAltName=DNS:localhost,DNS:outbound.test,IP:127.0.0.1',
         '-keyout',
         join(dir, 'key.pem'),
         '-out',
         join(dir, 'cert.pem'),
       ],
-      { stdio: 'ignore' },
+      { stdio: 'pipe' },
     )
     key = readFileSync(join(dir, 'key.pem'))
     cert = readFileSync(join(dir, 'cert.pem'))
     originalCAs = getCACertificates()
     setDefaultCACertificates([...originalCAs, cert.toString()])
   })
-  afterAll(async () => {
-    for (const server of servers)
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+  afterAll(() => {
     setDefaultCACertificates(originalCAs)
+    for (const server of servers) {
+      if ('closeAllConnections' in server) server.closeAllConnections()
+      server.close()
+    }
     rmSync(dir, { recursive: true, force: true })
   })
-  async function httpsReceiver(handler: Parameters<typeof createServer>[1]) {
+
+  it('终止信号清理监听器且不可再次触发', async () => {
+    const controller = new AbortController()
+    const work = withOutboundDeadline(new Promise(() => undefined), controller.signal)
+    controller.abort()
+    await expect(work).rejects.toMatchObject({ code: 'send_aborted' })
+  })
+
+  const addresses = [{ address: '127.0.0.1', family: 4 }]
+  async function httpsReceiver(handler: (req: any, res: any) => void) {
     const server = createServer({ key, cert }, handler)
     servers.push(server)
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const port = (server.address() as { port: number }).port
-    return { url: `https://notification.test:${port}/notify`, port }
+    return { url: `https://outbound.test:${port}/notify`, port }
   }
-  const addresses = [{ address: '127.0.0.1', family: 4 }]
-  it('无响应 DNS 等待可被停止，不占住维护任务', async () => {
-    const controller = new AbortController()
-    const work = withNotificationDeadline(new Promise(() => undefined), controller.signal)
-    controller.abort()
-    await expect(work).rejects.toMatchObject({ code: 'send_aborted' })
-  })
-  it('实际接收字节与 HMAC 一致，投递编号稳定，不发生第二次 DNS 解析', async () => {
-    const received: { body: string; signature: string; timestamp: string; delivery: string }[] = []
+
+  it('Webhook 递送验证签名、时间戳、投递 ID 及数据脱敏', async () => {
+    const received: Array<{ body: string; signature: string; timestamp: string; delivery: string }> =
+      []
     const { url } = await httpsReceiver((req, res) => {
       let body = ''
       req.on('data', (c) => {
@@ -112,9 +119,9 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       })
     })
     const j = job(),
-      body = notificationWebhookBody(j)
+      body = outboundWebhookBody(j)
     expect(
-      await sendNotificationWebhook({
+      await sendOutboundWebhook({
         url,
         addresses,
         body,
@@ -131,6 +138,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
     expect(received[0]?.delivery).toBe(j.deliveryId)
     expect(JSON.parse(body).data).not.toHaveProperty('input')
   })
+
   it('禁止公网策略中的私有/元数据地址，重定向不跟随', async () => {
     for (const url of [
       'https://127.0.0.1/n',
@@ -139,7 +147,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       'https://10.0.0.1/n',
       'http://example.com/n',
     ])
-      await expect(resolveNotificationDestination(url)).rejects.toMatchObject({
+      await expect(resolveOutboundDestination(url)).rejects.toMatchObject({
         code: 'destination_blocked',
       })
     let redirected = 0
@@ -152,7 +160,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       res.end()
     })
     expect(
-      await sendNotificationWebhook({
+      await sendOutboundWebhook({
         url: redirect.url,
         addresses,
         body: '{}',
@@ -162,6 +170,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
     ).toMatchObject({ outcome: 'failed', responseCode: 302 })
     expect(redirected).toBe(0)
   })
+
   it('HTTP 5xx 不能证明未接收；已提交后断连或超时是 unknown', async () => {
     let submissions = 0
     const failure = await httpsReceiver((req, res) => {
@@ -179,11 +188,11 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       deliveryId: randomUUID(),
       signal: AbortSignal.timeout(5000),
     }
-    expect(await sendNotificationWebhook(input)).toMatchObject({
+    expect(await sendOutboundWebhook(input)).toMatchObject({
       outcome: 'unknown',
       responseCode: 503,
     })
-    expect(await sendNotificationWebhook({ ...input, receiverDeduplicates: true })).toMatchObject({
+    expect(await sendOutboundWebhook({ ...input, receiverDeduplicates: true })).toMatchObject({
       outcome: 'retryable',
     })
     const broken = await httpsReceiver((req, res) => {
@@ -193,7 +202,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
         res.socket?.destroy()
       })
     })
-    expect(await sendNotificationWebhook({ ...input, url: broken.url })).toMatchObject({
+    expect(await sendOutboundWebhook({ ...input, url: broken.url })).toMatchObject({
       outcome: 'unknown',
     })
     const slow = await httpsReceiver((req) => {
@@ -203,11 +212,12 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       })
     })
     expect(
-      await sendNotificationWebhook({ ...input, url: slow.url, signal: AbortSignal.timeout(100) }),
+      await sendOutboundWebhook({ ...input, url: slow.url, signal: AbortSignal.timeout(100) }),
     ).toMatchObject({ outcome: 'unknown' })
     expect(submissions).toBe(4)
   })
-  it('旧告警格式保留 at，不加通知 envelope；新模板正确表达三轴', () => {
+
+  it('旧告警格式保留 at，不加推送 envelope；新模板正确表达三轴', () => {
     const j = job()
     j.delivery.binding.channel.format = 'legacy_alert@1'
     j.event.payload = {
@@ -229,13 +239,14 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
         consolePath: '/monitoring',
       },
     }
-    const body = JSON.parse(notificationWebhookBody(j))
+    const body = JSON.parse(outboundWebhookBody(j))
     expect(body.at).toBe(fixedDate.toISOString())
     expect(body).not.toHaveProperty('protocol')
     expect(body).not.toHaveProperty('occurredAt')
-    expect(notificationEmailText(job())).toContain('业务结果：未评价业务结果')
-    expect(notificationEmailText(job())).toContain('证据仍在收集中')
+    expect(outboundEmailText(job())).toContain('业务结果：未评价业务结果')
+    expect(outboundEmailText(job())).toContain('证据仍在收集中')
   })
+
   async function smtpReceiver(
     secure: boolean,
     behavior: 'accept' | 'authfail' | 'temporary' | 'permanent' | 'disconnect' = 'accept',
@@ -299,12 +310,13 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       },
     }
   }
+
   it.each([true, false])(
     'SMTP secure=%s 验证 TLS/STARTTLS、独立收件人、稳定 Message-ID 与 HTML 转义',
     async (secure) => {
       const receiver = await smtpReceiver(secure),
         j = job()
-      const result = await sendNotificationEmail({
+      const result = await sendOutboundEmail({
         smtp: receiver.smtp,
         recipient: 'a@example.test',
         job: j,
@@ -312,12 +324,12 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       })
       expect(result.outcome).toBe('accepted')
       expect(receiver.envelopes).toEqual([['a@example.test']])
-      expect(receiver.messages[0]).toContain(`Message-ID: <${j.deliveryId}@cairn.notification>`)
+      expect(receiver.messages[0]).toContain(`Message-ID: <${j.deliveryId}@cairn.outbound>`)
       expect(receiver.messages[0]).toContain('text/html')
       expect(receiver.messages[0]).not.toContain('<img src=x')
       expect(
         (
-          await sendNotificationEmail({
+          await sendOutboundEmail({
             smtp: receiver.smtp,
             recipient: 'reject@example.test',
             job: j,
@@ -328,6 +340,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       expect(receiver.messages).toHaveLength(1)
     },
   )
+
   it('SMTP 4xx / 5xx 明确拒收和认证失败不记 accepted', async () => {
     for (const [behavior, expected] of [
       ['temporary', 'retryable'],
@@ -337,7 +350,7 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       const receiver = await smtpReceiver(true, behavior)
       expect(
         (
-          await sendNotificationEmail({
+          await sendOutboundEmail({
             smtp: receiver.smtp,
             recipient: 'a@example.test',
             job: job(),
@@ -348,13 +361,14 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       expect(receiver.messages.length).toBe(behavior === 'authfail' ? 0 : 1)
     }
   })
+
   it('证书验证失败无邮件提交', async () => {
     const receiver = await smtpReceiver(true)
     setDefaultCACertificates(originalCAs)
     try {
       expect(
         (
-          await sendNotificationEmail({
+          await sendOutboundEmail({
             smtp: receiver.smtp,
             recipient: 'a@example.test',
             job: job(),
@@ -367,11 +381,12 @@ describe('通知真实 HTTPS / SMTP 协议与外部副作用', () => {
       setDefaultCACertificates([...originalCAs, cert.toString()])
     }
   })
+
   it('SMTP 已接收 DATA 但回执前断连，保留 unknown 并核对实际接收次数', async () => {
     const receiver = await smtpReceiver(false, 'disconnect')
     expect(
       (
-        await sendNotificationEmail({
+        await sendOutboundEmail({
           smtp: receiver.smtp,
           recipient: 'a@example.test',
           job: job(),

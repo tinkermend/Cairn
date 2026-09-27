@@ -2,28 +2,29 @@ import { BadRequestException, Inject, Injectable } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 import {
-  createNotificationTest,
-  getNotificationChannels,
-  getNotificationEvent,
+  createOutboundTest,
+  getOutboundChannels,
+  getOutboundEvent,
   getOrCreatePlatformConfig,
-  listNotificationEvents,
+  listOutboundEvents,
   loadSecretCiphertext,
   newId,
-  operateNotificationDelivery,
-  readNotificationPolicy,
-  writeNotificationConfig,
-  writeNotificationPolicy,
+  operateOutboundDelivery,
+  readOutboundPolicy,
+  writeOutboundConfig,
+  writeOutboundPolicy,
   type DbHandle,
 } from '@cairn/db'
 import {
   LOCAL_SECRET_PROVIDER,
+  OUTBOUND_PROTOCOL,
   hasPermission,
   isBlockedAlertWebhookUrl,
-  notificationChannelSecretSchema,
+  outboundChannelSecretSchema,
   alertWebhookSecretPayloadSchema,
-  notificationSmtpSecretSchema,
-  type NotificationChannelWrite,
-  type NotificationSmtpWrite,
+  outboundSmtpSecretSchema,
+  type OutboundChannelWrite,
+  type OutboundSmtpWrite,
 } from '@cairn/shared'
 import { AuthService } from '../auth/auth.service'
 import { rethrowDomain } from '../common/domain-error'
@@ -31,7 +32,7 @@ import { DB_HANDLE } from '../db/db.module'
 import { LocalSecretProvider } from '../secrets/local-secret-provider'
 
 @Injectable()
-export class NotificationsService {
+export class OutboundService {
   constructor(
     @Inject(DB_HANDLE) private readonly db: DbHandle,
     private readonly secrets: LocalSecretProvider,
@@ -47,32 +48,32 @@ export class NotificationsService {
     }
   }
   channels(actor: string, targetId?: string) {
-    return this.domain(() => getNotificationChannels(this.db, actor, targetId))
+    return this.domain(() => getOutboundChannels(this.db, actor, targetId))
   }
   list(actor: string, query: unknown) {
-    return this.domain(() => listNotificationEvents(this.db, actor, query))
+    return this.domain(() => listOutboundEvents(this.db, actor, query))
   }
   detail(actor: string, id: string) {
-    return this.domain(() => getNotificationEvent(this.db, actor, id))
+    return this.domain(() => getOutboundEvent(this.db, actor, id))
   }
   policy(actor: string, id: string) {
-    return this.domain(() => readNotificationPolicy(this.db, id, actor))
+    return this.domain(() => readOutboundPolicy(this.db, id, actor))
   }
   savePolicy(actor: string, id: string, body: unknown) {
-    return this.domain(() => writeNotificationPolicy(this.db, id, actor, body))
+    return this.domain(() => writeOutboundPolicy(this.db, id, actor, body))
   }
   test(actor: string, id: string, body: unknown) {
-    return this.domain(() => createNotificationTest(this.db, actor, id, body))
+    return this.domain(() => createOutboundTest(this.db, actor, id, body))
   }
   operate(actor: string, id: string, action: 'retry' | 'close', body: unknown) {
-    return this.domain(() => operateNotificationDelivery(this.db, actor, id, action, body))
+    return this.domain(() => operateOutboundDelivery(this.db, actor, id, action, body))
   }
   settings(
     actorId: string,
     body: { expectedRevision: number; reason: string; enabled: boolean; consoleBaseUrl: string },
   ) {
     return this.domain(async () => {
-      await writeNotificationConfig(this.db, {
+      await writeOutboundConfig(this.db, {
         actorId,
         ...body,
         settings: { enabled: body.enabled, consoleBaseUrl: body.consoleBaseUrl },
@@ -86,7 +87,7 @@ export class NotificationsService {
     body: { expectedRevision: number; reason: string; enabled?: boolean; revokeVersion?: number },
   ) {
     return this.domain(async () => {
-      await writeNotificationConfig(this.db, {
+      await writeOutboundConfig(this.db, {
         actorId,
         ...body,
         state: { id, enabled: body.enabled, revokeVersion: body.revokeVersion },
@@ -99,7 +100,7 @@ export class NotificationsService {
     body: { expectedRevision: number; reason: string; enabled?: boolean; revokeVersion?: number },
   ) {
     return this.domain(async () => {
-      await writeNotificationConfig(this.db, {
+      await writeOutboundConfig(this.db, {
         actorId,
         ...body,
         smtpState: { enabled: body.enabled, revokeVersion: body.revokeVersion },
@@ -115,13 +116,13 @@ export class NotificationsService {
     if (!row) throw new BadRequestException('原凭据不存在，请重新填写')
     return JSON.parse(this.secrets.decrypt(row.id, row.ciphertext)) as unknown
   }
-  saveChannel(actorId: string, body: NotificationChannelWrite) {
+  saveChannel(actorId: string, body: OutboundChannelWrite) {
     return this.domain(async () => {
       const current = await getOrCreatePlatformConfig(this.db)
-      const old = current.document.notifications.channels.find((c) => c.id === body.id)
+      const old = current.document.outbound.channels.find((c) => c.id === body.id)
       const id = old?.id ?? body.id ?? newId(),
         secretId = newId()
-      let secret: ReturnType<typeof notificationChannelSecretSchema.parse>
+      let secret: ReturnType<typeof outboundChannelSecretSchema.parse>
       let destinationUnchanged = false
       if (body.kind === 'webhook') {
         const raw = old?.kind === 'webhook' ? await this.decrypt(old.secretRef) : undefined
@@ -130,7 +131,7 @@ export class NotificationsService {
             ? alertWebhookSecretPayloadSchema.parse(raw)
             : undefined
         const previous = raw
-          ? notificationChannelSecretSchema.parse(
+          ? outboundChannelSecretSchema.parse(
               legacy ? { kind: 'webhook', url: legacy.url, token: legacy.token } : raw,
             )
           : undefined
@@ -153,11 +154,14 @@ export class NotificationsService {
           signingKey: body.signingKey === undefined ? p?.signingKey : body.signingKey || undefined,
         }
       } else {
-        if (body.format !== 'cairn.notification@1' || body.replay !== 'manual_on_unknown')
-          throw new BadRequestException('邮件使用标准通知格式，结果不明须人工处理')
+        if (
+          (body.format !== OUTBOUND_PROTOCOL && (body.format as string) !== 'cairn.notification@1') ||
+          body.replay !== 'manual_on_unknown'
+        )
+          throw new BadRequestException('邮件使用标准推送格式，结果不明须人工处理')
         const oldSecret =
           old?.kind === 'email'
-            ? notificationChannelSecretSchema.parse(await this.decrypt(old.secretRef))
+            ? outboundChannelSecretSchema.parse(await this.decrypt(old.secretRef))
             : undefined
         const previous = oldSecret?.kind === 'email' ? oldSecret.recipients : []
         const emails = body.emails ?? previous.map((r) => r.email)
@@ -174,8 +178,8 @@ export class NotificationsService {
           oldSecret && JSON.stringify(emails) === JSON.stringify(previous.map((r) => r.email)),
         )
       }
-      const parsed = notificationChannelSecretSchema.parse(secret)
-      await writeNotificationConfig(this.db, {
+      const parsed = outboundChannelSecretSchema.parse(secret)
+      await writeOutboundConfig(this.db, {
         actorId,
         expectedRevision: body.expectedRevision,
         reason: body.reason,
@@ -204,12 +208,12 @@ export class NotificationsService {
       return this.channels(actorId)
     })
   }
-  saveSmtp(actorId: string, body: NotificationSmtpWrite) {
+  saveSmtp(actorId: string, body: OutboundSmtpWrite) {
     return this.domain(async () => {
       const current = await getOrCreatePlatformConfig(this.db),
-        old = current.document.notifications.smtp
+        old = current.document.outbound.smtp
       const previous = old
-        ? notificationSmtpSecretSchema.parse(await this.decrypt(old.secretRef))
+        ? outboundSmtpSecretSchema.parse(await this.decrypt(old.secretRef))
         : undefined
       const { expectedRevision, reason, enabled, ...configuration } = body
       if (
@@ -220,12 +224,12 @@ export class NotificationsService {
           previous.port !== body.port)
       )
         throw new BadRequestException('更换 SMTP 身份时须填写密码')
-      const secret = notificationSmtpSecretSchema.parse({
+      const secret = outboundSmtpSecretSchema.parse({
         ...configuration,
         password: body.password ?? previous?.password,
       })
       const secretId = newId()
-      await writeNotificationConfig(this.db, {
+      await writeOutboundConfig(this.db, {
         actorId,
         expectedRevision,
         reason,
@@ -289,7 +293,7 @@ export class NotificationsService {
         if (
           expiresAt <= Date.now() ||
           account.status !== 'active' ||
-          !hasPermission(account.permissions, 'notification:read')
+          !hasPermission(account.permissions, 'outbound:read')
         ) {
           close()
           return

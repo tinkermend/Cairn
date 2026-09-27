@@ -3,10 +3,10 @@ import { FormProvider, useForm } from 'react-hook-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
-  DEFAULT_NOTIFICATION_POLICY,
-  notificationPolicyResponseSchema,
-  notificationPolicyWriteSchema,
-  type NotificationPolicy,
+  DEFAULT_OUTBOUND_POLICY,
+  outboundPolicyResponseSchema,
+  outboundPolicyWriteSchema,
+  type OutboundPolicy,
   type PlatformConfigDocument,
 } from '@cairn/shared'
 import {
@@ -23,10 +23,10 @@ import {
   updateMonitorAlertRules,
 } from '@/lib/monitoring-api'
 import {
-  fetchNotificationChannels,
-  fetchNotificationPolicy,
-  postNotification,
-} from '@/lib/notifications-api'
+  fetchOutboundChannels,
+  fetchOutboundPolicy,
+  postOutbound,
+} from '@/lib/outbound-api'
 import { fetchScenarios, fetchScenario } from '@/lib/scenarios-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
@@ -46,7 +46,7 @@ import { cn } from '@/lib/utils'
 import { validationMessage } from './channels'
 import { Field, Failure } from './index'
 
-export function NotificationRulesPanel({
+export function OutboundRulesPanel({
   scenarioId,
 }: {
   scenarioId?: string
@@ -54,17 +54,17 @@ export function NotificationRulesPanel({
   const [selected, setSelected] = useState(scenarioId ?? ''),
     [search, setSearch] = useState('')
   const scenarios = useQuery({
-    queryKey: ['notification-scenarios', search],
+    queryKey: ['outbound-scenarios', search],
     queryFn: () => fetchScenarios({ search, purpose: 'user', limit: 100 }),
   })
   const scenario = useQuery({
-    queryKey: ['notification-scenario', selected],
+    queryKey: ['outbound-scenario', selected],
     queryFn: () => fetchScenario(selected),
     enabled: Boolean(selected),
   })
   const policy = useQuery({
-    queryKey: ['notification-policy', selected],
-    queryFn: () => fetchNotificationPolicy(selected),
+    queryKey: ['outbound-policy', selected],
+    queryFn: () => fetchOutboundPolicy(selected),
     enabled: Boolean(selected),
   })
   const canWrite = useCan('workflow:write') && useCan('run:read')
@@ -154,7 +154,7 @@ export function NotificationRulesPanel({
         )}
       </div>
 
-      {/* 右侧 Detail：场景通知策略表单 */}
+      {/* 右侧 Detail：场景推送策略表单 */}
       <div className='min-w-0 space-y-4'>
         <Failure
           message={
@@ -166,7 +166,7 @@ export function NotificationRulesPanel({
 
         {selected && (policy.isPending || scenario.isPending) && (
           <div className='rounded-lg border border-border-card bg-card p-12 text-center text-body text-muted-foreground shadow-card'>
-            正在加载场景通知设置…
+            正在加载场景推送设置…
           </div>
         )}
 
@@ -183,7 +183,7 @@ export function NotificationRulesPanel({
           />
         ) : !selected ? (
           <div className='rounded-lg border border-border-card bg-card p-12 text-center text-body text-muted-foreground shadow-card'>
-            请从左侧选择一个场景以配置通知策略
+            请从左侧选择一个场景以配置推送策略
           </div>
         ) : null}
       </div>
@@ -203,19 +203,19 @@ function PolicyForm({
   scenarioId: string
   scenarioName: string
   targetId: string
-  initial: NotificationPolicy
+  initial: OutboundPolicy
   revision: number
   canWrite: boolean
   onSaved: () => Promise<unknown>
 }) {
-  const [policy, setPolicy] = useState(initial ?? DEFAULT_NOTIFICATION_POLICY),
+  const [policy, setPolicy] = useState(initial ?? DEFAULT_OUTBOUND_POLICY),
     [reason, setReason] = useState(''),
     [cancelPrevious, setCancelPrevious] = useState(false)
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('')
   const channels = useQuery({
-    queryKey: ['notification-channels', targetId],
-    queryFn: () => fetchNotificationChannels(targetId),
+    queryKey: ['outbound-channels', targetId],
+    queryFn: () => fetchOutboundChannels(targetId),
   })
 
   async function save(e: FormEvent) {
@@ -223,19 +223,19 @@ function PolicyForm({
     setBusy(true)
     setError('')
     try {
-      const input = notificationPolicyWriteSchema.parse({
+      const input = outboundPolicyWriteSchema.parse({
         expectedRevision: revision,
         policy,
         cancelPrevious,
         reason,
       })
-      await postNotification(
+      await postOutbound(
         `scenarios/${scenarioId}/policy`,
         input,
-        notificationPolicyResponseSchema
+        outboundPolicyResponseSchema
       )
       await onSaved()
-      toast.success('场景通知设置已保存')
+      toast.success('场景推送设置已保存')
     } catch (e) {
       setError(validationMessage(e))
     } finally {
@@ -258,7 +258,7 @@ function PolicyForm({
           </p>
         </div>
         <StatusBadge tone={policy.enabled ? 'success' : 'neutral'}>
-          {policy.enabled ? '通知已启用' : '通知未开启'}
+          {policy.enabled ? '推送已启用' : '推送未开启'}
         </StatusBadge>
       </div>
 
@@ -266,7 +266,7 @@ function PolicyForm({
         <div className='flex items-center justify-between rounded-lg bg-surface-subtle p-3.5'>
           <div>
             <p className='font-medium text-text-primary text-body'>
-              启用结果通知
+              启用结果推送
             </p>
             <p className='text-label text-muted-foreground'>
               关闭时，新运行结束不会外发结果消息。
@@ -277,12 +277,13 @@ function PolicyForm({
             onCheckedChange={(checked) =>
               setPolicy({ ...policy, enabled: checked })
             }
+            aria-label='启用结果推送'
           />
         </div>
 
         <div className='space-y-3'>
           <Field
-            label='通知触发条件'
+            label='推送触发条件'
             hint='异常包括执行失败、业务结果为 WARN / FAIL / UNKNOWN、证据待收齐或不完整。'
           >
             <Select
@@ -290,11 +291,11 @@ function PolicyForm({
               onValueChange={(value) =>
                 setPolicy({
                   ...policy,
-                  mode: value as NotificationPolicy['mode'],
+                  mode: value as OutboundPolicy['mode'],
                 })
               }
             >
-              <SelectTrigger className='w-full sm:w-64' aria-label='通知触发条件'>
+              <SelectTrigger className='w-full sm:w-64' aria-label='推送触发条件'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -312,7 +313,7 @@ function PolicyForm({
                   setPolicy({ ...policy, includeCancelled: Boolean(checked) })
                 }
               />
-              <span>用户或系统取消运行也发送通知</span>
+              <span>用户或系统取消运行也发送推送</span>
             </label>
           )}
         </div>
@@ -347,13 +348,13 @@ function PolicyForm({
               已授权发送渠道
             </p>
             <p className='text-label text-muted-foreground'>
-              仅展示已获准用于此目标系统的标准通知渠道。
+              仅展示已获准用于此目标系统的标准推送渠道。
             </p>
           </div>
 
           <div className='grid gap-3 sm:grid-cols-2'>
             {channels.data?.channels
-              .filter((c) => c.format === 'cairn.notification@1')
+              .filter((c) => c.format === 'cairn.outbound@1' || (c.format as string) === 'cairn.notification@1')
               .map((c) => (
                 <label
                   key={c.id}
@@ -402,7 +403,7 @@ function PolicyForm({
 
           {!channels.data?.channels.length && (
             <p className='rounded-md bg-surface-subtle p-3 text-label text-muted-foreground'>
-              此目标系统暂无已授权渠道，请联系管理员在“通知渠道”中配置并授予该目标的发送权限。
+              此目标系统暂无已授权渠道，请联系管理员在“推送渠道”中配置并授予该目标的发送权限。
             </p>
           )}
 
@@ -431,7 +432,7 @@ function PolicyForm({
               onCheckedChange={(checked) => setCancelPrevious(Boolean(checked))}
             />
             <span>
-              同时停止此前运行尚未提交的通知（包括正在执行中的运行）
+              同时停止此前运行尚未提交的推送（包括正在执行中的运行）
             </span>
           </label>
 
@@ -452,7 +453,7 @@ function PolicyForm({
       <div className='flex flex-wrap items-center gap-3 pt-2'>
         {canWrite && (
           <Button type='submit' disabled={busy}>
-            保存场景通知策略
+            保存场景推送策略
           </Button>
         )}
         <Button variant='outline' asChild>
@@ -466,16 +467,16 @@ function PolicyForm({
   )
 }
 
-export function NotificationAlertRules() {
+export function OutboundAlertRules() {
   const rules = useQuery({
-    queryKey: ['notification-alert-rules'],
+    queryKey: ['outbound-alert-rules'],
     queryFn: fetchMonitorAlertRules,
   })
   const canWrite = useCan('platform-config:write'),
     canConfig = useCan('platform-config:read')
   const channels = useQuery({
-    queryKey: ['notification-channels'],
-    queryFn: () => fetchNotificationChannels(),
+    queryKey: ['outbound-channels'],
+    queryFn: () => fetchOutboundChannels(),
     enabled: canConfig,
   })
 
@@ -497,6 +498,8 @@ export function NotificationAlertRules() {
     />
   )
 }
+export const NotificationAlertRules = OutboundAlertRules
+export const NotificationRulesPanel = OutboundRulesPanel
 
 function AlertRulesForm({
   rules,
@@ -505,12 +508,12 @@ function AlertRulesForm({
   canWrite,
 }: {
   rules: PlatformConfigDocument['alerting']['rules']
-  channels: Awaited<ReturnType<typeof fetchNotificationChannels>>['channels']
+  channels: Awaited<ReturnType<typeof fetchOutboundChannels>>['channels']
   revision: number
   canWrite: boolean
 }) {
   const form = useForm<PlatformConfigDocument>({
-    defaultValues: { alerting: { rules }, notifications: { channels } },
+    defaultValues: { alerting: { rules }, outbound: { channels } },
   })
   const [reason, setReason] = useState(''),
     [busy, setBusy] = useState(false),
@@ -527,8 +530,8 @@ function AlertRulesForm({
         reason,
         rules: form.getValues('alerting.rules'),
       })
-      await client.invalidateQueries({ queryKey: ['notification-alert-rules'] })
-      await client.invalidateQueries({ queryKey: ['notification-channels'] })
+      await client.invalidateQueries({ queryKey: ['outbound-alert-rules'] })
+      await client.invalidateQueries({ queryKey: ['outbound-channels'] })
       toast.success('告警规则已保存')
     } catch (e) {
       setError(validationMessage(e))
@@ -547,10 +550,10 @@ function AlertRulesForm({
           <AlertTriangle className='size-4 text-status-warning-foreground' />
           <div>
             <h2 className='font-semibold text-text-primary text-section'>
-              监控告警规则通知
+              监控告警规则推送
             </h2>
             <p className='text-label text-muted-foreground'>
-              复用监控的告警规则；触发、依据中断和恢复各自留下通知记录。
+              复用监控的告警规则；触发、依据中断和恢复各自留下推送记录。
             </p>
           </div>
         </div>

@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  notificationChannelsResponseSchema,
-  notificationChannelWriteSchema,
-  notificationSettingsWriteSchema,
-  notificationSmtpWriteSchema,
+  outboundChannelsResponseSchema,
+  outboundChannelWriteSchema,
+  outboundSettingsWriteSchema,
+  outboundSmtpWriteSchema,
 } from '@cairn/shared'
 import {
   FileText,
@@ -16,12 +16,12 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  fetchNotificationChannels,
-  notificationReceipt,
-  notificationCommandKey,
-  postNotification,
-  type NotificationChannels,
-} from '@/lib/notifications-api'
+  fetchOutboundChannels,
+  outboundReceipt,
+  outboundCommandKey,
+  postOutbound,
+  type OutboundChannels,
+} from '@/lib/outbound-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
@@ -49,12 +49,12 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Field, Failure } from './index'
 
-type Channel = NotificationChannels['channels'][number]
+type Channel = OutboundChannels['channels'][number]
 
-export function NotificationChannelsPanel() {
+export function OutboundChannelsPanel() {
   const data = useQuery({
-      queryKey: ['notification-channels'],
-      queryFn: () => fetchNotificationChannels(),
+      queryKey: ['outbound-channels'],
+      queryFn: () => fetchOutboundChannels(),
     }),
     client = useQueryClient()
   const canWrite = useCan('platform-config:write')
@@ -71,8 +71,8 @@ export function NotificationChannelsPanel() {
   const [reason, setReason] = useState('')
 
   async function changed() {
-    await client.invalidateQueries({ queryKey: ['notification-channels'] })
-    await client.invalidateQueries({ queryKey: ['notifications'] })
+    await client.invalidateQueries({ queryKey: ['outbound-channels'] })
+    await client.invalidateQueries({ queryKey: ['outbound'] })
   }
 
   async function act() {
@@ -82,13 +82,13 @@ export function NotificationChannelsPanel() {
     try {
       const c = pending.channel
       if (pending.action === 'test')
-        await postNotification(
+        await postOutbound(
           `channels/${c.id}/test`,
           { reason, idempotencyKey: pending.key },
-          notificationReceipt
+          outboundReceipt
         )
       else
-        await postNotification(
+        await postOutbound(
           `channels/${c.id}/state`,
           {
             expectedRevision: data.data.revision,
@@ -97,13 +97,13 @@ export function NotificationChannelsPanel() {
               ? { revokeVersion: c.version }
               : { enabled: pending.action === 'enable' }),
           },
-          notificationChannelsResponseSchema
+          outboundChannelsResponseSchema
         )
       setPending(undefined)
       await changed()
       toast.success(
         pending.action === 'test'
-          ? '测试已登记，请在通知记录查看结果'
+          ? '测试已登记，请在推送记录查看结果'
           : '配置已更新'
       )
     } catch (e) {
@@ -119,7 +119,7 @@ export function NotificationChannelsPanel() {
       <Failure message={data.error?.message || error} />
       {data.isPending && (
         <p className='text-body text-muted-foreground' role='status'>
-          正在加载通知渠道…
+          正在加载推送渠道…
         </p>
       )}
       {current && (
@@ -173,7 +173,7 @@ export function NotificationChannelsPanel() {
 
             {!current.channels.length ? (
               <EmptyState
-                title='还没有通知渠道'
+                title='还没有推送渠道'
                 description='添加 Webhook 或邮件收件人后，可发送合成消息验证配置。'
                 action={
                   canWrite ? (
@@ -286,7 +286,7 @@ export function NotificationChannelsPanel() {
                               setPending({
                                 channel,
                                 action,
-                                key: notificationCommandKey(),
+                                key: outboundCommandKey(),
                               })
                               setReason('')
                               setError('')
@@ -314,7 +314,7 @@ export function NotificationChannelsPanel() {
               <DialogHeader>
                 <DialogTitle>固定消息模板预览</DialogTitle>
                 <DialogDescription>
-                  不同事件类型的通知格式参考。Webhook 使用结构化 JSON 载荷，邮件提供纯文本与 HTML 两种格式。
+                  不同事件类型的推送格式参考。Webhook 使用结构化 JSON 载荷，邮件提供纯文本与 HTML 两种格式。
                 </DialogDescription>
               </DialogHeader>
               <TemplatePreviewContent />
@@ -330,7 +330,7 @@ export function NotificationChannelsPanel() {
             <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-xl'>
               <DialogHeader>
                 <DialogTitle>
-                  {editing === 'new' ? '添加通知渠道' : '编辑通知渠道'}
+                  {editing === 'new' ? '添加推送渠道' : '编辑推送渠道'}
                 </DialogTitle>
                 <DialogDescription>
                   地址和收件人加密保存。变更目的地或目标授权需要全局管理权限。
@@ -387,10 +387,10 @@ export function NotificationChannelsPanel() {
                   {pending?.action === 'revoke'
                     ? '此版本将永久停止发送；回退平台配置不会恢复授权。后续使用须保存一个新版本。'
                     : pending?.action === 'disable'
-                      ? '尚未提交的通知会停止发送，重新启用后也不会补发这批记录。'
+                      ? '尚未提交的推送会停止发送，重新启用后也不会补发这批记录。'
                       : pending?.action === 'test'
                         ? '将向已保存的目的地发送合成消息，不包含业务数据。'
-                        : '启用后可用于新通知。'}
+                        : '启用后可用于新推送。'}
                 </DialogDescription>
               </DialogHeader>
               <Field label='操作原因'>
@@ -421,7 +421,7 @@ function Settings({
   canWrite,
   onSaved,
 }: {
-  current: NotificationChannels
+  current: OutboundChannels
   canWrite: boolean
   onSaved: () => Promise<void>
 }) {
@@ -436,19 +436,19 @@ function Settings({
     setBusy(true)
     setError('')
     try {
-      const input = notificationSettingsWriteSchema.parse({
+      const input = outboundSettingsWriteSchema.parse({
         expectedRevision: current.revision,
         reason,
         enabled,
         consoleBaseUrl: url,
       })
-      await postNotification(
+      await postOutbound(
         'settings',
         input,
-        notificationChannelsResponseSchema
+        outboundChannelsResponseSchema
       )
       await onSaved()
-      toast.success('通知设置已保存')
+      toast.success('推送设置已保存')
     } catch (e) {
       setError(validationMessage(e))
     } finally {
@@ -466,7 +466,7 @@ function Settings({
           <div className='flex items-center gap-2'>
             <Radio className='size-4 text-primary' />
             <h3 className='font-semibold text-text-primary text-section'>
-              通知总开关
+              推送总开关
             </h3>
           </div>
           <div className='flex items-center gap-2'>
@@ -477,18 +477,18 @@ function Settings({
               disabled={!canWrite}
               checked={enabled}
               onCheckedChange={setEnabled}
-              aria-label='启用通知'
+              aria-label='启用推送总开关'
             />
           </div>
         </div>
 
         <p className='text-label text-muted-foreground'>
-          暂停后，尚未提交的通知不再发送；恢复后仅处理新通知。
+          暂停后，尚未提交的推送不再发送；恢复后仅处理新推送。
         </p>
 
         <Field
           label='控制台访问地址'
-          hint='通知正文中的运行详情及告警链接使用此地址拼接（支持 HTTP 或 HTTPS）。'
+          hint='推送正文中的运行详情及告警链接使用此地址拼接（支持 HTTP 或 HTTPS）。'
         >
           <Input
             type='url'
@@ -531,7 +531,7 @@ function SmtpCard({
   onConfigure,
   onSaved,
 }: {
-  current: NotificationChannels
+  current: OutboundChannels
   canWrite: boolean
   onConfigure: () => void
   onSaved: () => Promise<void>
@@ -583,7 +583,7 @@ function SmtpCard({
           </div>
         ) : (
           <div className='rounded-md bg-surface-subtle p-3 text-label text-muted-foreground'>
-            尚未配置 SMTP 中继服务。配置后，邮件渠道方可正式发送通知。
+            尚未配置 SMTP 中继服务。配置后，邮件渠道方可正式发送消息。
           </div>
         )}
       </div>
@@ -607,8 +607,8 @@ function TemplatePreviewContent() {
     <div className='space-y-3 pt-1'>
       <Tabs defaultValue='run'>
         <TabsList className='border-b-0'>
-          <TabsTrigger value='run'>运行结果通知</TabsTrigger>
-          <TabsTrigger value='alert'>监控告警通知</TabsTrigger>
+          <TabsTrigger value='run'>运行结果推送</TabsTrigger>
+          <TabsTrigger value='alert'>监控告警推送</TabsTrigger>
         </TabsList>
         <TabsContent value='run' className='mt-3'>
           <div className='rounded-md bg-surface-subtle p-4 font-mono text-label text-muted-foreground space-y-1'>
@@ -642,7 +642,7 @@ function ChannelForm({
   channel,
   onSaved,
 }: {
-  current: NotificationChannels
+  current: OutboundChannels
   channel?: Channel
   onSaved: () => Promise<void>
 }) {
@@ -658,13 +658,13 @@ function ChannelForm({
     [reason, setReason] = useState('')
   const [clearToken, setClearToken] = useState(false),
     [clearKey, setClearKey] = useState(false),
-    [format, setFormat] = useState(channel?.format ?? 'cairn.notification@1')
+    [format, setFormat] = useState(channel?.format ?? 'cairn.outbound@1')
   const [replay, setReplay] = useState(channel?.replay ?? 'manual_on_unknown'),
     [search, setSearch] = useState(''),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('')
   const options = useQuery({
-    queryKey: ['notification-targets', search],
+    queryKey: ['outbound-targets', search],
     queryFn: () => fetchTargets({ search, limit: 100 }),
   })
 
@@ -673,7 +673,7 @@ function ChannelForm({
     setBusy(true)
     setError('')
     try {
-      const input = notificationChannelWriteSchema.parse({
+      const input = outboundChannelWriteSchema.parse({
         expectedRevision: current.revision,
         reason,
         id: channel?.id,
@@ -682,7 +682,7 @@ function ChannelForm({
         enabled,
         allowAlerts,
         targetIds: targets,
-        format: kind === 'email' ? 'cairn.notification@1' : format,
+        format: kind === 'email' ? 'cairn.outbound@1' : format,
         replay: kind === 'email' ? 'manual_on_unknown' : replay,
         ...(kind === 'webhook'
           ? {
@@ -696,10 +696,10 @@ function ChannelForm({
                 : undefined,
             }),
       })
-      await postNotification(
+      await postOutbound(
         'channels',
         input,
-        notificationChannelsResponseSchema
+        outboundChannelsResponseSchema
       )
       await onSaved()
       toast.success('渠道已保存')
@@ -716,7 +716,7 @@ function ChannelForm({
         <Input
           required
           maxLength={80}
-          placeholder='如：运维告警群 Webhook / 业务通知邮件'
+          placeholder='如：运维告警群 Webhook / 业务推送邮件'
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
@@ -785,8 +785,11 @@ function ChannelForm({
               value={format}
               onValueChange={(value) => setFormat(value as typeof format)}
             >
+              <SelectFieldOption value='cairn.outbound@1'>
+                标准推送（推荐）
+              </SelectFieldOption>
               <SelectFieldOption value='cairn.notification@1'>
-                标准通知（推荐）
+                标准通知（兼容）
               </SelectFieldOption>
               <SelectFieldOption value='legacy_alert@1'>
                 兼容旧版告警
@@ -803,7 +806,7 @@ function ChannelForm({
               }
             />
             <span>
-              接收方已按通知编号去重，允许接收结果不明时自动重试
+              接收方已按推送编号去重，允许接收结果不明时自动重试
             </span>
           </label>
         </>
@@ -839,7 +842,7 @@ function ChannelForm({
 
       <fieldset className='space-y-2'>
         <legend className='text-label font-medium'>
-          允许结果通知的目标系统（已选 {targets.length} 个）
+          允许结果推送的目标系统（已选 {targets.length} 个）
         </legend>
         <Input
           aria-label='搜索授权目标'
@@ -896,7 +899,7 @@ function SmtpForm({
   current,
   onSaved,
 }: {
-  current: NotificationChannels
+  current: OutboundChannels
   onSaved: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false),
@@ -909,7 +912,7 @@ function SmtpForm({
     setBusy(true)
     setError('')
     try {
-      const input = notificationSmtpWriteSchema.parse({
+      const input = outboundSmtpWriteSchema.parse({
         expectedRevision: current.revision,
         reason: f.get('reason'),
         enabled,
@@ -920,7 +923,7 @@ function SmtpForm({
         password: f.get('password') || undefined,
         from: f.get('from'),
       })
-      await postNotification('smtp', input, notificationChannelsResponseSchema)
+      await postOutbound('smtp', input, outboundChannelsResponseSchema)
       await onSaved()
       toast.success('邮件发送配置已保存')
     } catch (e) {
@@ -1011,7 +1014,7 @@ function SmtpStateActions({
   current,
   onSaved,
 }: {
-  current: NotificationChannels
+  current: OutboundChannels
   onSaved: () => Promise<void>
 }) {
   const [action, setAction] = useState<'toggle' | 'revoke'>(),
@@ -1024,7 +1027,7 @@ function SmtpStateActions({
     setBusy(true)
     setError('')
     try {
-      await postNotification(
+      await postOutbound(
         'smtp/state',
         {
           expectedRevision: current.revision,
@@ -1033,7 +1036,7 @@ function SmtpStateActions({
             ? { revokeVersion: smtp.version }
             : { enabled: !smtp.enabled }),
         },
-        notificationChannelsResponseSchema
+        outboundChannelsResponseSchema
       )
       setAction(undefined)
       await onSaved()
@@ -1110,3 +1113,5 @@ export function validationMessage(error: unknown) {
       .join('；')
   return error instanceof Error ? error.message : '保存失败，请重试'
 }
+
+export const NotificationChannelsPanel = OutboundChannelsPanel

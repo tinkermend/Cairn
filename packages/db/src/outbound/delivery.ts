@@ -1,21 +1,29 @@
-import { and, asc, eq, inArray, isNull, lt, lte, or } from 'drizzle-orm'
-import { NOTIFICATION_WORKER_PROTOCOL, type NotificationStatus } from '@cairn/shared'
+import { and, asc, eq, inArray, lt, lte, or } from 'drizzle-orm'
+import {
+  OUTBOUND_WORKER_PROTOCOL,
+  NOTIFICATION_WORKER_PROTOCOL,
+  type OutboundStatus,
+} from '@cairn/shared'
 import type { Db } from '../client.js'
 import { atomic, clockNow, locked, schemaFor } from '../native.js'
 import { newId } from '../id.js'
-import { bindingSuppression, lockNotificationDispatch } from './core.js'
+import { bindingSuppression, lockOutboundDispatch } from './core.js'
 
-export type NotificationClaim = {
+export type OutboundClaim = {
   deliveryId: string
   workerId: string
   instanceId: string
   epoch: number
 }
-export type NotificationJob = NotificationClaim & {
-  delivery: typeof import('../schema/notifications.js').notificationDeliveries.$inferSelect
-  event: typeof import('../schema/notifications.js').notificationEvents.$inferSelect
+export type OutboundJob = OutboundClaim & {
+  delivery: typeof import('../schema/outbound.js').outboundDeliveries.$inferSelect
+  event: typeof import('../schema/outbound.js').outboundEvents.$inferSelect
   attemptId: string
 }
+
+export type NotificationClaim = OutboundClaim
+export type NotificationJob = OutboundJob
+
 async function liveWorker(db: Db, workerId: string, instanceId: string, now: Date) {
   const { workers } = schemaFor(db)
   const [w] = await db
@@ -26,24 +34,26 @@ async function liveWorker(db: Db, workerId: string, instanceId: string, now: Dat
     w &&
     w.status === 'READY' &&
     (!w.heartbeatExpiresAt || w.heartbeatExpiresAt > now) &&
-    w.protocolCapabilities?.includes(NOTIFICATION_WORKER_PROTOCOL),
+    w.protocolCapabilities?.some(
+      (p) => p === OUTBOUND_WORKER_PROTOCOL || p === NOTIFICATION_WORKER_PROTOCOL,
+    ),
   )
 }
 
-export async function claimNotificationDeliveries(
+export async function claimOutboundDeliveries(
   db: Db,
   input: { workerId: string; instanceId: string; limit?: number; now?: Date },
-): Promise<NotificationJob[]> {
+): Promise<OutboundJob[]> {
   return atomic(db, async (tx) => {
-    await lockNotificationDispatch(tx)
+    await lockOutboundDispatch(tx)
     const now = input.now ?? (await clockNow(tx))
     if (!(await liveWorker(tx, input.workerId, input.instanceId, now))) return []
-    const { assertNotificationWriterRollout } = await import('./config.js')
-    await assertNotificationWriterRollout(tx)
+    const { assertOutboundWriterRollout } = await import('./config.js')
+    await assertOutboundWriterRollout(tx)
     const {
-      notificationDeliveries: d,
-      notificationEvents: e,
-      notificationDeliveryAttempts: a,
+      outboundDeliveries: d,
+      outboundEvents: e,
+      outboundDeliveryAttempts: a,
     } = schemaFor(tx)
     const expired = await tx
       .select()
@@ -94,7 +104,7 @@ export async function claimNotificationDeliveries(
       )
       .orderBy(asc(d.nextAttemptAt), asc(d.id))
       .limit(100)
-    const jobs: NotificationJob[] = []
+    const jobs: OutboundJob[] = []
     for (const row of candidates) {
       if (jobs.length >= Math.min(input.limit ?? 4, 4)) break
       const [event] = await tx.select().from(e).where(eq(e.id, row.eventId))
@@ -161,8 +171,8 @@ export async function claimNotificationDeliveries(
   })
 }
 
-async function claimRow(tx: Db, claim: NotificationClaim, now: Date) {
-  const { notificationDeliveries: d } = schemaFor(tx)
+async function claimRow(tx: Db, claim: OutboundClaim, now: Date) {
+  const { outboundDeliveries: d } = schemaFor(tx)
   const [row] = await tx.select().from(d).where(eq(d.id, claim.deliveryId))
   if (
     !row ||
@@ -176,12 +186,13 @@ async function claimRow(tx: Db, claim: NotificationClaim, now: Date) {
     return null
   return row
 }
-export async function beginNotificationSubmission(db: Db, claim: NotificationClaim) {
+
+export async function beginOutboundSubmission(db: Db, claim: OutboundClaim) {
   return atomic(db, async (tx) => {
     const {
-      notificationDeliveries: d,
-      notificationEvents: e,
-      notificationDeliveryAttempts: a,
+      outboundDeliveries: d,
+      outboundEvents: e,
+      outboundDeliveryAttempts: a,
       runs,
       scenarios,
       targets,
@@ -220,12 +231,12 @@ export async function beginNotificationSubmission(db: Db, claim: NotificationCla
           .from(monitoringAlerts)
           .where(eq(monitoringAlerts.id, initial.event.alertId)),
       )
-    await lockNotificationDispatch(tx)
+    await lockOutboundDispatch(tx)
     const now = await clockNow(tx)
     const row = await claimRow(tx, claim, now)
     if (!row || !(await liveWorker(tx, claim.workerId, claim.instanceId, now))) return false
-    const { assertNotificationWriterRollout } = await import('./config.js')
-    await assertNotificationWriterRollout(tx)
+    const { assertOutboundWriterRollout } = await import('./config.js')
+    await assertOutboundWriterRollout(tx)
     const reason = await bindingSuppression(tx, row.binding, initial.event)
     if (reason) {
       await tx
@@ -248,9 +259,9 @@ export async function beginNotificationSubmission(db: Db, claim: NotificationCla
   })
 }
 
-export async function finishNotificationDelivery(
+export async function finishOutboundDelivery(
   db: Db,
-  claim: NotificationClaim,
+  claim: OutboundClaim,
   result: {
     outcome: 'accepted' | 'retryable' | 'failed' | 'unknown'
     errorCode?: string
@@ -258,11 +269,11 @@ export async function finishNotificationDelivery(
   },
 ) {
   return atomic(db, async (tx) => {
-    await lockNotificationDispatch(tx)
+    await lockOutboundDispatch(tx)
     const now = await clockNow(tx)
     const row = await claimRow(tx, claim, now)
     if (!row || !(await liveWorker(tx, claim.workerId, claim.instanceId, now))) return false
-    const { notificationDeliveries: d, notificationDeliveryAttempts: a } = schemaFor(tx)
+    const { outboundDeliveries: d, outboundDeliveryAttempts: a } = schemaFor(tx)
     const [attempt] = await tx
       .select()
       .from(a)
@@ -274,7 +285,7 @@ export async function finishNotificationDelivery(
         row.binding.channel.kind === 'webhook' &&
         row.binding.channel.replay === 'receiver_deduplicates')
     const retry = safe && attempt.origin === 'auto' && row.automaticAttemptCount < 5
-    const status: NotificationStatus = retry
+    const status: OutboundStatus = retry
       ? 'retry_wait'
       : result.outcome === 'retryable'
         ? 'failed'
@@ -305,3 +316,8 @@ export async function finishNotificationDelivery(
     return true
   })
 }
+
+// Backward-compatible aliases
+export const claimNotificationDeliveries = claimOutboundDeliveries
+export const beginNotificationSubmission = beginOutboundSubmission
+export const finishNotificationDelivery = finishOutboundDelivery

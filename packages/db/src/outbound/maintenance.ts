@@ -1,13 +1,13 @@
-import { and, asc, eq, inArray, isNull, lt, notExists, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, lt, notExists, or } from 'drizzle-orm'
 import type { Db } from '../client.js'
 import { atomic, clockNow, locked, schemaFor } from '../native.js'
-import { enqueueAlertNotificationTx, lockNotificationDispatch, bindingSuppression } from './core.js'
+import { enqueueAlertOutboundTx, lockOutboundDispatch, bindingSuppression } from './core.js'
 
 /** Old senders must be stopped before migration. Existing new-format event means this alert is already owned. */
-export async function importLegacyNotificationNotices(db: Db) {
-  const { assertNotificationWriterRollout } = await import('./config.js')
-  await assertNotificationWriterRollout(db)
-  const { monitoringAlerts: a, notificationEvents: e, notificationDeliveries: d } = schemaFor(db)
+export async function importLegacyOutboundNotices(db: Db) {
+  const { assertOutboundWriterRollout } = await import('./config.js')
+  await assertOutboundWriterRollout(db)
+  const { monitoringAlerts: a, outboundEvents: e, outboundDeliveries: d } = schemaFor(db)
   const rows = await db
     .select({ id: a.id })
     .from(a)
@@ -23,11 +23,11 @@ export async function importLegacyNotificationNotices(db: Db) {
     await atomic(db, async (tx) => {
       const [alert] = await locked(tx, tx.select().from(a).where(eq(a.id, row.id)))
       if (!alert?.deliveryKind) return
-      await lockNotificationDispatch(tx)
+      await lockOutboundDispatch(tx)
       if ((await tx.select({ id: e.id }).from(e).where(eq(e.alertId, row.id)).limit(1)).length)
         return
       const key = `legacy:${row.id}:${alert.deliveryKind}`
-      await enqueueAlertNotificationTx(tx, row.id, alert.deliveryKind, key)
+      await enqueueAlertOutboundTx(tx, row.id, alert.deliveryKind, key)
       if (alert.deliveryStatus !== 'pending' || alert.deliveryAttempts > 0) {
         const [event] = await tx.select().from(e).where(eq(e.sourceKey, key))
         if (event)
@@ -41,10 +41,10 @@ export async function importLegacyNotificationNotices(db: Db) {
 }
 
 /** Persist revocations promptly even for deliveries whose retry time has not arrived. */
-export async function reconcileNotificationSuppressions(db: Db) {
+export async function reconcileOutboundSuppressions(db: Db) {
   return atomic(db, async (tx) => {
-    await lockNotificationDispatch(tx)
-    const { notificationDeliveries: d, notificationEvents: e } = schemaFor(tx)
+    await lockOutboundDispatch(tx)
+    const { outboundDeliveries: d, outboundEvents: e } = schemaFor(tx)
     const now = await clockNow(tx)
     const rows = await tx
       .select({ delivery: d, event: e })
@@ -68,13 +68,13 @@ export async function reconcileNotificationSuppressions(db: Db) {
   })
 }
 
-export async function purgeNotificationHistory(db: Db, options: { now?: Date } = {}) {
+export async function purgeOutboundHistory(db: Db, options: { now?: Date } = {}) {
   return atomic(db, async (tx) => {
-    await lockNotificationDispatch(tx)
+    await lockOutboundDispatch(tx)
     const {
-      notificationEvents: e,
-      notificationDeliveries: d,
-      notificationDeliveryAttempts: a,
+      outboundEvents: e,
+      outboundDeliveries: d,
+      outboundDeliveryAttempts: a,
     } = schemaFor(tx)
     const now = options.now ?? (await clockNow(tx)),
       cutoff = new Date(now.getTime() - 30 * 86400_000)
@@ -117,3 +117,8 @@ export async function purgeNotificationHistory(db: Db, options: { now?: Date } =
     return events.length
   })
 }
+
+// Backward-compatible aliases
+export const importLegacyNotificationNotices = importLegacyOutboundNotices
+export const reconcileNotificationSuppressions = reconcileOutboundSuppressions
+export const purgeNotificationHistory = purgeOutboundHistory

@@ -4,25 +4,25 @@ import { request } from 'node:https'
 import { isIP } from 'node:net'
 import nodemailer from 'nodemailer'
 import {
-  beginNotificationSubmission,
-  claimNotificationDeliveries,
-  finishNotificationDelivery,
+  beginOutboundSubmission,
+  claimOutboundDeliveries,
+  finishOutboundDelivery,
   getLatestHtmlReportArtifact,
   isReportGenerationPending,
   loadSecretCiphertext,
-  prepareNotificationEvents,
-  repairNotificationIntents,
-  importLegacyNotificationNotices,
-  reconcileNotificationSuppressions,
-  purgeNotificationHistory,
+  prepareOutboundEvents,
+  repairOutboundIntents,
+  importLegacyOutboundNotices,
+  reconcileOutboundSuppressions,
+  purgeOutboundHistory,
   type DbHandle,
-  type NotificationJob,
+  type OutboundJob,
 } from '@cairn/db'
 import type { LocalSecretProvider } from '@cairn/secret'
 import type { ObjectStore } from '@cairn/storage'
 import {
   LOCAL_SECRET_PROVIDER,
-  NOTIFICATION_PROTOCOL,
+  OUTBOUND_PROTOCOL,
   alertNoticeSchema,
   alertWebhookSecretPayloadSchema,
   buildDingTalkCard,
@@ -30,8 +30,8 @@ import {
   buildWechatWorkCard,
   isBlockedAlertWebhookHost,
   isBlockedAlertWebhookUrl,
-  notificationChannelSecretSchema,
-  notificationSmtpSecretSchema,
+  outboundChannelSecretSchema,
+  outboundSmtpSecretSchema,
 } from '@cairn/shared'
 
 type Result = {
@@ -43,7 +43,7 @@ type Destination = { address: string; family: number }
 const fail = (code: string) => Object.assign(new Error(code), { code })
 
 /** DNS itself does not accept AbortSignal. Bound the wait and detach the listener on either outcome. */
-export async function withNotificationDeadline<T>(
+export async function withOutboundDeadline<T>(
   work: Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {
@@ -59,8 +59,9 @@ export async function withNotificationDeadline<T>(
     signal.removeEventListener('abort', abort)
   }
 }
+export const withNotificationDeadline = withOutboundDeadline
 
-export async function resolveNotificationDestination(
+export async function resolveOutboundDestination(
   url: string,
   blockedHosts: readonly string[] = [],
 ): Promise<Destination[]> {
@@ -84,8 +85,9 @@ export async function resolveNotificationDestination(
     throw fail('destination_blocked')
   return addresses
 }
+export const resolveNotificationDestination = resolveOutboundDestination
 
-export function notificationWebhookBody(job: NotificationJob): string {
+export function outboundWebhookBody(job: OutboundJob): string {
   const payload = job.event.payload!
   const p = payload as Record<string, any>
   if (job.delivery.binding.channel.format === 'legacy_alert@1' && payload.alert) {
@@ -110,7 +112,7 @@ export function notificationWebhookBody(job: NotificationJob): string {
     }
   }
   const body = JSON.stringify({
-    protocol: NOTIFICATION_PROTOCOL,
+    protocol: OUTBOUND_PROTOCOL,
     eventId: job.event.id,
     deliveryId: job.deliveryId,
     type: job.event.type,
@@ -122,13 +124,14 @@ export function notificationWebhookBody(job: NotificationJob): string {
     consoleUrl: job.event.consoleUrl,
     data: payload,
   })
-  if (Buffer.byteLength(body) > 32 * 1024) throw fail('notification_payload_too_large')
+  if (Buffer.byteLength(body) > 32 * 1024) throw fail('outbound_payload_too_large')
   return body
 }
+export const notificationWebhookBody = outboundWebhookBody
 
 /** Pure formatting. No template expression evaluation and no untrusted HTML. */
-export function notificationEmailText(
-  job: NotificationJob,
+export function outboundEmailText(
+  job: OutboundJob,
   options?: { hasAttachment?: boolean },
 ): string {
   const p = job.event.payload!
@@ -153,7 +156,7 @@ export function notificationEmailText(
     p.takeover && `有效至：${p.takeover.expiresAt}`,
     job.event.runId && `运行编号：${job.event.runId}`,
     job.event.consoleUrl,
-    `通知编号：${job.deliveryId}`,
+    `推送编号：${job.deliveryId}`,
     options?.hasAttachment
       ? '附件：已包含运行报告 HTML，可直接下载或在浏览器中打开查看。'
       : null,
@@ -161,8 +164,9 @@ export function notificationEmailText(
     .filter(Boolean)
     .join('\n')
 }
+export const notificationEmailText = outboundEmailText
 
-export async function sendNotificationWebhook(input: {
+export async function sendOutboundWebhook(input: {
   url: string
   token?: string
   signingKey?: string
@@ -246,27 +250,29 @@ export async function sendNotificationWebhook(input: {
     req.end(input.body)
   })
 }
+export const sendNotificationWebhook = sendOutboundWebhook
 
-export type NotificationEmailAttachment = {
+export type OutboundEmailAttachment = {
   filename: string
   content: Buffer | string
   contentType?: string
 }
+export type NotificationEmailAttachment = OutboundEmailAttachment
 
-export async function sendNotificationEmail(input: {
-  smtp: ReturnType<typeof notificationSmtpSecretSchema.parse>
+export async function sendOutboundEmail(input: {
+  smtp: ReturnType<typeof outboundSmtpSecretSchema.parse>
   recipient: string
-  job: NotificationJob
+  job: OutboundJob
   signal: AbortSignal
-  attachments?: NotificationEmailAttachment[]
+  attachments?: OutboundEmailAttachment[]
 }): Promise<Result> {
   const s = input.smtp
-  const text = notificationEmailText(input.job, {
+  const text = outboundEmailText(input.job, {
     hasAttachment: Boolean(input.attachments?.length),
   })
   const html = `<div style="white-space:pre-wrap">${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)}</div>`
   if (Buffer.byteLength(text) + Buffer.byteLength(html) > 128 * 1024)
-    return { outcome: 'failed', errorCode: 'notification_payload_too_large' }
+    return { outcome: 'failed', errorCode: 'outbound_payload_too_large' }
   let dataStarted = false
   // Nodemailer can label a post-DATA socket close as CONN. Track the protocol boundary,
   // consuming diagnostic events only as a boolean: never forward or retain their contents.
@@ -308,7 +314,7 @@ export async function sendNotificationEmail(input: {
       subject: input.job.event.payload!.title.replace(/[\r\n]/g, ' '),
       text,
       html,
-      messageId: `<${input.job.deliveryId}@cairn.notification>`,
+      messageId: `<${input.job.deliveryId}@cairn.outbound>`,
       date: input.job.event.occurredAt,
       headers: { 'X-Cairn-Delivery-Id': input.job.deliveryId },
       attachments: (input.attachments ?? []).map((att) => ({
@@ -340,8 +346,9 @@ export async function sendNotificationEmail(input: {
     transport.close()
   }
 }
+export const sendNotificationEmail = sendOutboundEmail
 
-export type NotificationDeliveryDeps = {
+export type OutboundDeliveryDeps = {
   db: DbHandle
   workerId: string
   instanceId: string
@@ -351,15 +358,17 @@ export type NotificationDeliveryDeps = {
   smtpDestinations?: string[]
   store?: ObjectStore
   /** Transport fixture injection; runtime assembly always uses the pinned public resolver. */
-  resolveDestination?: typeof resolveNotificationDestination
+  resolveDestination?: typeof resolveOutboundDestination
 }
-export async function deliverNotifications(input: NotificationDeliveryDeps): Promise<number> {
-  await importLegacyNotificationNotices(input.db)
-  await repairNotificationIntents(input.db)
-  await prepareNotificationEvents(input.db)
-  await reconcileNotificationSuppressions(input.db)
-  await purgeNotificationHistory(input.db)
-  const jobs = await claimNotificationDeliveries(input.db, input)
+export type NotificationDeliveryDeps = OutboundDeliveryDeps
+
+export async function deliverOutbound(input: OutboundDeliveryDeps): Promise<number> {
+  await importLegacyOutboundNotices(input.db)
+  await repairOutboundIntents(input.db)
+  await prepareOutboundEvents(input.db)
+  await reconcileOutboundSuppressions(input.db)
+  await purgeOutboundHistory(input.db)
+  const jobs = await claimOutboundDeliveries(input.db, input)
   await Promise.all(
     jobs.map(async (job) => {
       let result: Result
@@ -377,7 +386,7 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
           raw && typeof raw === 'object' && !('kind' in raw)
             ? alertWebhookSecretPayloadSchema.parse(raw)
             : undefined
-        const channel = notificationChannelSecretSchema.parse(
+        const channel = outboundChannelSecretSchema.parse(
           legacy ? { kind: 'webhook', url: legacy.url, token: legacy.token } : raw,
         )
         const signal = AbortSignal.any([
@@ -385,18 +394,18 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
           ...(input.signal ? [input.signal] : []),
         ])
         if (channel.kind === 'webhook') {
-          const addresses = await withNotificationDeadline(
-            (input.resolveDestination ?? resolveNotificationDestination)(
+          const addresses = await withOutboundDeadline(
+            (input.resolveDestination ?? resolveOutboundDestination)(
               channel.url,
               input.blockedHosts,
             ),
             signal,
           )
           if (signal.aborted) throw fail('send_aborted')
-          if (!(await beginNotificationSubmission(input.db, job))) return
-          result = await sendNotificationWebhook({
+          if (!(await beginOutboundSubmission(input.db, job))) return
+          result = await sendOutboundWebhook({
             ...channel,
-            body: notificationWebhookBody(job),
+            body: outboundWebhookBody(job),
             deliveryId: job.deliveryId,
             addresses,
             signal,
@@ -405,13 +414,13 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
         } else {
           const smtpRef = job.delivery.binding.smtp?.secretRef
           if (!smtpRef) throw fail('smtp_missing')
-          const smtp = notificationSmtpSecretSchema.parse(await decrypt(smtpRef))
+          const smtp = outboundSmtpSecretSchema.parse(await decrypt(smtpRef))
           const recipient = channel.recipients.find((r) => r.id === job.delivery.recipientKey)
           if (!recipient) throw fail('recipient_missing')
           if (signal.aborted) throw fail('send_aborted')
-          if (!(await beginNotificationSubmission(input.db, job))) return
+          if (!(await beginOutboundSubmission(input.db, job))) return
 
-          let attachments: NotificationEmailAttachment[] | undefined
+          let attachments: OutboundEmailAttachment[] | undefined
           const runId = job.event.runId
           const suiteRunId = (job.event.payload as Record<string, any> | undefined)?.suiteRunId
           if (input.store && (runId || suiteRunId)) {
@@ -460,7 +469,7 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
             }
           }
 
-          result = await sendNotificationEmail({
+          result = await sendOutboundEmail({
             smtp,
             recipient: recipient.email,
             job,
@@ -486,11 +495,12 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
             'send_aborted',
           ].includes(code ?? '')
             ? code
-            : 'notification_preparation_failed',
+            : 'outbound_preparation_failed',
         }
       }
-      await finishNotificationDelivery(input.db, job, result)
+      await finishOutboundDelivery(input.db, job, result)
     }),
   )
   return jobs.length
 }
+export const deliverNotifications = deliverOutbound

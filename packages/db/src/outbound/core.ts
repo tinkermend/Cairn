@@ -1,15 +1,16 @@
 import { and, asc, eq, inArray, isNull, lte } from 'drizzle-orm'
 import {
-  DEFAULT_NOTIFICATION_POLICY,
+  DEFAULT_OUTBOUND_POLICY,
   FINISHED_RUN_STATUSES,
-  RUN_NOTIFICATION_PROTOCOL,
+  RUN_OUTBOUND_PROTOCOL,
+  OUTBOUND_PROTOCOL,
   FACTORY_PLATFORM_CONFIG,
-  frozenNotificationPolicySchema,
-  notificationPayloadSchema,
-  notificationReasons,
-  type FrozenNotificationBinding,
-  type FrozenNotificationPolicy,
-  type NotificationPayload,
+  frozenOutboundPolicySchema,
+  outboundPayloadSchema,
+  outboundReasons,
+  type FrozenOutboundBinding,
+  type FrozenOutboundPolicy,
+  type OutboundPayload,
   type PlatformConfigDocument,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
@@ -18,19 +19,21 @@ import { newId } from '../id.js'
 import { getOrCreatePlatformConfig, getPlatformConfig } from '../platform-config/store.js'
 import { recalculateRunOutcomeTx } from '../runs/outcome-results.js'
 
-export async function lockNotificationDispatch(tx: Db) {
-  const { notificationControls: c } = schemaFor(tx)
+export async function lockOutboundDispatch(tx: Db) {
+  const { outboundControls: c } = schemaFor(tx)
   await locked(tx, tx.select().from(c).where(eq(c.key, 'dispatch')))
 }
-export async function notificationControlValues(db: Db, keys: string[]) {
-  const { notificationControls: c } = schemaFor(db)
+
+export async function outboundControlValues(db: Db, keys: string[]) {
+  const { outboundControls: c } = schemaFor(db)
   const rows = keys.length ? await db.select().from(c).where(inArray(c.key, keys)) : []
   return Object.fromEntries(
     keys.map((key) => [key, rows.find((r) => r.key === key)?.generation ?? 0]),
   )
 }
-export async function bumpNotificationControl(tx: Db, key: string, revoked = false) {
-  const { notificationControls: c } = schemaFor(tx)
+
+export async function bumpOutboundControl(tx: Db, key: string, revoked = false) {
+  const { outboundControls: c } = schemaFor(tx)
   await insertIgnoreRows(tx, c, { key, generation: 0, revoked: false })
   const [row] = await locked(tx, tx.select().from(c).where(eq(c.key, key)))
   await tx
@@ -38,15 +41,16 @@ export async function bumpNotificationControl(tx: Db, key: string, revoked = fal
     .set({ generation: row!.generation + 1, revoked: revoked || row!.revoked })
     .where(eq(c.key, key))
 }
-export async function freezeNotificationBindings(
+
+export async function freezeOutboundBindings(
   db: Db,
   document: PlatformConfigDocument,
   ids: string[],
   targetId?: string,
   scenarioId?: string,
 ) {
-  const n = document.notifications
-  const out: FrozenNotificationBinding[] = []
+  const n = document.outbound
+  const out: FrozenOutboundBinding[] = []
   for (const id of ids) {
     const channel = n.channels.find((c) => c.id === id)
     if (!channel) continue
@@ -64,12 +68,13 @@ export async function freezeNotificationBindings(
         channel.kind === 'email' && n.smtp
           ? { enabled: n.smtp.enabled, version: n.smtp.version, secretRef: n.smtp.secretRef }
           : null,
-      controls: await notificationControlValues(db, keys),
+      controls: await outboundControlValues(db, keys),
     })
   }
   return out
 }
-export async function freezeRunNotificationPolicy(
+
+export async function freezeRunOutboundPolicy(
   tx: Db,
   input: {
     scenarioId: string
@@ -79,26 +84,26 @@ export async function freezeRunNotificationPolicy(
     source: 'console' | 'service'
     eligible: boolean
   },
-): Promise<FrozenNotificationPolicy> {
-  await lockNotificationDispatch(tx)
-  const { scenarioNotificationPolicies: p } = schemaFor(tx)
+): Promise<FrozenOutboundPolicy> {
+  await lockOutboundDispatch(tx)
+  const { scenarioOutboundPolicies: p } = schemaFor(tx)
   const current = (await getPlatformConfig(tx)) ?? {
     revision: 0,
     document: FACTORY_PLATFORM_CONFIG,
   }
   const [row] = await tx.select().from(p).where(eq(p.scenarioId, input.scenarioId))
-  const policy = row?.policy ?? DEFAULT_NOTIFICATION_POLICY
+  const policy = row?.policy ?? DEFAULT_OUTBOUND_POLICY
   const enabled =
     input.eligible &&
     policy.enabled &&
-    current.document.notifications.enabled &&
+    current.document.outbound.enabled &&
     policy.sourceKinds.includes(input.source)
   if (enabled) {
-    const { assertNotificationWriterRollout } = await import('./config.js')
-    await assertNotificationWriterRollout(tx)
+    const { assertOutboundWriterRollout } = await import('./config.js')
+    await assertOutboundWriterRollout(tx)
   }
-  return frozenNotificationPolicySchema.parse({
-    protocol: RUN_NOTIFICATION_PROTOCOL,
+  return frozenOutboundPolicySchema.parse({
+    protocol: RUN_OUTBOUND_PROTOCOL,
     enabled,
     reason: !input.eligible ? 'ineligible_source' : !enabled ? 'disabled' : 'enabled',
     policyRevision: row?.revision ?? 0,
@@ -107,10 +112,10 @@ export async function freezeRunNotificationPolicy(
     source: input.source,
     scenarioName: input.scenarioName,
     targetName: input.targetName,
-    consoleBaseUrl: current.document.notifications.consoleBaseUrl,
+    consoleBaseUrl: current.document.outbound.consoleBaseUrl,
     templateVersion: 1,
     bindings: enabled
-      ? await freezeNotificationBindings(
+      ? await freezeOutboundBindings(
           tx,
           current.document,
           policy.channelIds,
@@ -120,11 +125,12 @@ export async function freezeRunNotificationPolicy(
       : [],
   })
 }
-export async function enqueueRunNotificationIntentTx(tx: Db, runId: string) {
-  const { runs, notificationEvents: e } = schemaFor(tx)
+
+export async function enqueueRunOutboundIntentTx(tx: Db, runId: string) {
+  const { runs, outboundEvents: e } = schemaFor(tx)
   const [run] = await tx.select().from(runs).where(eq(runs.id, runId))
   if (!run?.finishedAt || !(FINISHED_RUN_STATUSES as readonly string[]).includes(run.status)) return
-  const policy = run.snapshot.notificationPolicy
+  const policy = run.snapshot.outboundPolicy ?? (run.snapshot as any).notificationPolicy
   if (!policy?.enabled) return
   await insertIgnoreRows(tx, e, {
     id: newId(),
@@ -146,7 +152,7 @@ export async function enqueueRunNotificationIntentTx(tx: Db, runId: string) {
 
 export async function bindingSuppression(
   db: Db,
-  binding: FrozenNotificationBinding,
+  binding: FrozenOutboundBinding,
   event: {
     type: string
     targetId: string | null
@@ -157,7 +163,7 @@ export async function bindingSuppression(
   document?: PlatformConfigDocument,
   controlsMap?: Map<string, { key: string; revoked: boolean; generation: number }>,
 ): Promise<string | null> {
-  const { notificationControls: c, runs, targets, scenarios, monitoringAlerts } = schemaFor(db)
+  const { outboundControls: c, runs, targets, scenarios, monitoringAlerts } = schemaFor(db)
   const keys = Object.keys(binding.controls)
   if (keys.length > 0) {
     const controls = controlsMap
@@ -170,13 +176,13 @@ export async function bindingSuppression(
       return 'authorization_revoked'
   }
   const doc = document ?? (await getOrCreatePlatformConfig(db)).document
-  const channel = doc.notifications.channels.find((v) => v.id === binding.channel.id)
-  if (!doc.notifications.enabled) return 'notifications_paused'
+  const channel = doc.outbound.channels.find((v) => v.id === binding.channel.id)
+  if (!doc.outbound.enabled) return 'outbound_paused'
   if (!binding.channel.enabled) return 'channel_disabled_at_capture'
   if (!channel?.enabled) return 'channel_disabled'
   if (
     binding.channel.kind === 'email' &&
-    (!binding.smtp?.enabled || !doc.notifications.smtp?.enabled)
+    (!binding.smtp?.enabled || !doc.outbound.smtp?.enabled)
   )
     return 'smtp_disabled'
   if (event.type.startsWith('alert.')) {
@@ -202,13 +208,14 @@ export async function bindingSuppression(
     const [run] = await db.select().from(runs).where(eq(runs.id, event.runId!))
     if (!target || target.deletedAt || !scenario || scenario.deletedAt || !run || run.deletedAt)
       return 'source_deleted'
-    if (binding.channel.format !== 'cairn.notification@1') return 'channel_protocol_unsupported'
+    if (binding.channel.format !== OUTBOUND_PROTOCOL && (binding.channel.format as string) !== 'cairn.notification@1')
+      return 'channel_protocol_unsupported'
   }
   return null
 }
 
-export async function materializeNotificationDeliveries(tx: Db, eventId: string) {
-  const { notificationEvents: e, notificationDeliveries: d } = schemaFor(tx)
+export async function materializeOutboundDeliveries(tx: Db, eventId: string) {
+  const { outboundEvents: e, outboundDeliveries: d } = schemaFor(tx)
   const [event] = await tx.select().from(e).where(eq(e.id, eventId))
   if (!event || event.state !== 'ready') return
   const now = await clockNow(tx)
@@ -240,11 +247,11 @@ export async function materializeNotificationDeliveries(tx: Db, eventId: string)
       .where(eq(e.id, eventId))
 }
 
-export async function prepareNotificationEvents(
+export async function prepareOutboundEvents(
   db: Db,
   options: { now?: Date; limit?: number } = {},
 ) {
-  const { notificationEvents: e, runs } = schemaFor(db)
+  const { outboundEvents: e, runs } = schemaFor(db)
   const now = options.now ?? (await clockNow(db))
   const rows = await db
     .select({ id: e.id })
@@ -258,7 +265,7 @@ export async function prepareNotificationEvents(
       const [initial] = await tx.select().from(e).where(eq(e.id, row.id))
       if (!initial?.runId) return
       const [run] = await locked(tx, tx.select().from(runs).where(eq(runs.id, initial.runId)))
-      await lockNotificationDispatch(tx)
+      await lockOutboundDispatch(tx)
       const [event] = await locked(tx, tx.select().from(e).where(eq(e.id, row.id)))
       if (!event || event.state !== 'waiting_result') return
       const eligible = await Promise.all(
@@ -289,7 +296,7 @@ export async function prepareNotificationEvents(
       }
       const outcomeStatus = await recalculateRunOutcomeTx(tx, run.id, run.snapshot, now)
       const policy = event.policy!
-      const reasons = notificationReasons(policy.policy, { ...run, outcomeStatus })
+      const reasons = outboundReasons(policy.policy, { ...run, outcomeStatus })
       if (!reasons.length) {
         await tx
           .update(e)
@@ -297,7 +304,7 @@ export async function prepareNotificationEvents(
           .where(eq(e.id, row.id))
         return
       }
-      const payload = notificationPayloadSchema.parse({
+      const payload = outboundPayloadSchema.parse({
         title: `运行结果：${policy.scenarioName}`,
         scenarioName: policy.scenarioName,
         targetName: policy.targetName,
@@ -315,27 +322,27 @@ export async function prepareNotificationEvents(
         reasons,
       })
       await tx.update(e).set({ state: 'ready', payload, observedAt: now }).where(eq(e.id, row.id))
-      await materializeNotificationDeliveries(tx, row.id)
+      await materializeOutboundDeliveries(tx, row.id)
     })
   return rows.length
 }
 
-export async function enqueueAlertNotificationTx(
+export async function enqueueAlertOutboundTx(
   tx: Db,
   alertId: string,
   kind: 'firing' | 'resolved' | 'interrupted',
   legacyKey?: string,
 ) {
-  const { monitoringAlerts: a, notificationEvents: e } = schemaFor(tx)
+  const { monitoringAlerts: a, outboundEvents: e } = schemaFor(tx)
   const [alert] = await tx.select().from(a).where(eq(a.id, alertId))
   if (!alert) return
-  await lockNotificationDispatch(tx)
+  await lockOutboundDispatch(tx)
   const current = await getOrCreatePlatformConfig(tx)
-  if (current.document.notifications.enabled) {
-    const { assertNotificationWriterRollout } = await import('./config.js')
-    await assertNotificationWriterRollout(tx)
+  if (current.document.outbound.enabled) {
+    const { assertOutboundWriterRollout } = await import('./config.js')
+    await assertOutboundWriterRollout(tx)
   }
-  const bindings = await freezeNotificationBindings(tx, current.document, alert.channelIds)
+  const bindings = await freezeOutboundBindings(tx, current.document, alert.channelIds)
   const previous = await tx
     .select({ sequence: e.sourceSequence })
     .from(e)
@@ -349,7 +356,7 @@ export async function enqueueAlertNotificationTx(
       : kind === 'resolved'
         ? alert.resolvedAt
         : alert.interruptedAt) ?? now
-  const payload: NotificationPayload = {
+  const payload: OutboundPayload = {
     title: `${kind === 'resolved' ? '告警恢复' : kind === 'interrupted' ? '判断依据中断' : '告警触发'}：${alert.ruleName}`,
     alert: {
       kind,
@@ -376,19 +383,19 @@ export async function enqueueAlertNotificationTx(
     alertId,
     sourceSequence: sequence,
     state: 'ready',
-    payload: notificationPayloadSchema.parse(payload),
+    payload: outboundPayloadSchema.parse(payload),
     bindings,
     occurredAt,
     observedAt: now,
     nextPrepareAt: now,
-    consoleUrl: current.document.notifications.consoleBaseUrl
-      ? `${current.document.notifications.consoleBaseUrl.replace(/\/$/, '')}/monitoring`
+    consoleUrl: current.document.outbound.consoleBaseUrl
+      ? `${current.document.outbound.consoleBaseUrl.replace(/\/$/, '')}/monitoring`
       : null,
   })
-  await materializeNotificationDeliveries(tx, id)
+  await materializeOutboundDeliveries(tx, id)
 }
 
-export async function enqueueTakeoverNotificationTx(
+export async function enqueueTakeoverOutboundTx(
   tx: Db,
   input: {
     targetId: string
@@ -403,25 +410,25 @@ export async function enqueueTakeoverNotificationTx(
     channelIds?: string[]
   },
 ) {
-  const { notificationEvents: e } = schemaFor(tx)
-  await lockNotificationDispatch(tx)
+  const { outboundEvents: e } = schemaFor(tx)
+  await lockOutboundDispatch(tx)
   const current = await getOrCreatePlatformConfig(tx)
-  if (!current.document.notifications.enabled) return
-  const { assertNotificationWriterRollout } = await import('./config.js')
-  await assertNotificationWriterRollout(tx)
+  if (!current.document.outbound.enabled) return
+  const { assertOutboundWriterRollout } = await import('./config.js')
+  await assertOutboundWriterRollout(tx)
   const candidateIds =
     input.channelIds && input.channelIds.length > 0
       ? input.channelIds
-      : current.document.notifications.channels.filter((c) => c.enabled).map((c) => c.id)
-  const bindings = await freezeNotificationBindings(tx, current.document, candidateIds)
+      : current.document.outbound.channels.filter((c) => c.enabled).map((c) => c.id)
+  const bindings = await freezeOutboundBindings(tx, current.document, candidateIds)
   if (!bindings.length) return
 
   const now = await clockNow(tx)
-  const baseUrl = (input.consoleBaseUrl ?? current.document.notifications.consoleBaseUrl ?? '').replace(/\/$/, '')
+  const baseUrl = (input.consoleBaseUrl ?? current.document.outbound.consoleBaseUrl ?? '').replace(/\/$/, '')
   const takeoverUrl = baseUrl
     ? `${baseUrl}/sessions/${input.targetId}/${input.targetAccountId}?takeover=${input.operationId}`
     : ''
-  const payload: NotificationPayload = {
+  const payload: OutboundPayload = {
     title: `[人工接管提醒] 目标 ${input.targetName} 需要人工登录认证`,
     takeover: {
       targetId: input.targetId,
@@ -441,25 +448,25 @@ export async function enqueueTakeoverNotificationTx(
     targetId: input.targetId,
     sourceSequence: 1,
     state: 'ready',
-    payload: notificationPayloadSchema.parse(payload),
+    payload: outboundPayloadSchema.parse(payload),
     bindings,
     occurredAt: now,
     observedAt: now,
     nextPrepareAt: now,
     consoleUrl: takeoverUrl || null,
   })
-  await materializeNotificationDeliveries(tx, id)
+  await materializeOutboundDeliveries(tx, id)
 }
 
-export async function repairNotificationIntents(db: Db) {
-  const { runs, notificationEvents: e } = schemaFor(db)
+export async function repairOutboundIntents(db: Db) {
+  const { runs, outboundEvents: e } = schemaFor(db)
   const candidates = await db
     .select({ id: runs.id })
     .from(runs)
     .leftJoin(e, eq(e.runId, runs.id))
     .where(
       and(
-        eq(runs.notificationExpected, true),
+        eq(runs.outboundExpected, true),
         inArray(runs.status, [...FINISHED_RUN_STATUSES]),
         isNull(e.id),
         isNull(runs.deletedAt),
@@ -467,5 +474,18 @@ export async function repairNotificationIntents(db: Db) {
     )
     .orderBy(asc(runs.finishedAt), asc(runs.id))
     .limit(100)
-  for (const run of candidates) await atomic(db, (tx) => enqueueRunNotificationIntentTx(tx, run.id))
+  for (const run of candidates) await atomic(db, (tx) => enqueueRunOutboundIntentTx(tx, run.id))
 }
+
+// Backward-compatible aliases
+export const lockNotificationDispatch = lockOutboundDispatch
+export const notificationControlValues = outboundControlValues
+export const bumpNotificationControl = bumpOutboundControl
+export const freezeNotificationBindings = freezeOutboundBindings
+export const freezeRunNotificationPolicy = freezeRunOutboundPolicy
+export const enqueueRunNotificationIntentTx = enqueueRunOutboundIntentTx
+export const materializeNotificationDeliveries = materializeOutboundDeliveries
+export const prepareNotificationEvents = prepareOutboundEvents
+export const enqueueAlertNotificationTx = enqueueAlertOutboundTx
+export const enqueueTakeoverNotificationTx = enqueueTakeoverOutboundTx
+export const repairNotificationIntents = repairOutboundIntents

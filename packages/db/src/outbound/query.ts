@@ -2,41 +2,39 @@ import { createHash } from 'node:crypto'
 import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, like, lt, lte, or, sql } from 'drizzle-orm'
 import {
   canonicalJson,
-  notificationActionSchema,
-  notificationEventSchema,
-  notificationListQuerySchema,
-  type NotificationEventDto,
-  type NotificationPayload,
+  outboundActionSchema,
+  outboundEventSchema,
+  outboundListQuerySchema,
+  type OutboundEventDto,
+  type OutboundPayload,
   type PlatformConfigDocument,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
-import { atomic, clockNow, locked, schemaFor } from '../native.js'
+import { atomic, clockNow, schemaFor } from '../native.js'
 import { newId } from '../id.js'
 import {
   hasPermissionFromGrants,
   loadAccountGrants,
   lockConsoleAuthorization,
   scopeFromGrants,
-  scopedTargetFilter,
   targetScopeFilter,
-  targetScopeFor,
   type ScopeGrantRow,
 } from '../console/target-authorization.js'
 import { recordAudit } from '../audit/record.js'
 import { badRequest, conflict, forbidden, notFound } from '../runs/errors.js'
 import { getOrCreatePlatformConfig } from '../platform-config/store.js'
-import { requireNotificationPermission } from './config.js'
+import { requireOutboundPermission } from './config.js'
 import {
   bindingSuppression,
-  freezeNotificationBindings,
-  lockNotificationDispatch,
-  materializeNotificationDeliveries,
+  freezeOutboundBindings,
+  lockOutboundDispatch,
+  materializeOutboundDeliveries,
 } from './core.js'
 
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex')
 const has = async (db: Db, actor: string, permission: string) => {
   try {
-    await requireNotificationPermission(db, actor, permission)
+    await requireOutboundPermission(db, actor, permission)
     return true
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'FORBIDDEN')
@@ -53,33 +51,33 @@ async function visible(db: Db, actorId: string) {
  * `loadAccountGrants` 的查询与 permission 无关，按权限逐次查库是纯浪费。
  */
 function visibleFromGrants(db: Db, rows: ScopeGrantRow[]) {
-  if (!hasPermissionFromGrants(rows, 'notification:read')) {
+  if (!hasPermissionFromGrants(rows, 'outbound:read')) {
     throw forbidden('FORBIDDEN', '没有所需权限')
   }
-  const { notificationEvents: e } = schemaFor(db)
+  const { outboundEvents: e } = schemaFor(db)
   const scoped = (permission: string) =>
     and(
       targetScopeFilter(e.targetId, scopeFromGrants(rows, 'target:read')),
       targetScopeFilter(e.targetId, scopeFromGrants(rows, permission)),
     )
   return or(
-    and(eq(e.type, 'run.finished'), scoped('run:read'), scoped('notification:read')),
+    and(eq(e.type, 'run.finished'), scoped('run:read'), scoped('outbound:read')),
     hasPermissionFromGrants(rows, 'monitor:read') ? like(e.type, 'alert.%') : sql`1 = 0`,
     hasPermissionFromGrants(rows, 'platform-config:read') ? eq(e.type, 'channel.test') : sql`1 = 0`,
   )
 }
 async function toEvent(
   db: Db,
-  row: typeof import('../schema/notifications.js').notificationEvents.$inferSelect,
+  row: typeof import('../schema/outbound.js').outboundEvents.$inferSelect,
   options: {
     detailed?: boolean
-    deliveries?: (typeof import('../schema/notifications.js').notificationDeliveries.$inferSelect)[]
+    deliveries?: (typeof import('../schema/outbound.js').outboundDeliveries.$inferSelect)[]
     document?: PlatformConfigDocument
-    controlsMap?: Map<string, typeof import('../schema/notifications.js').notificationControls.$inferSelect>
+    controlsMap?: Map<string, typeof import('../schema/outbound.js').outboundControls.$inferSelect>
   } = {},
-): Promise<NotificationEventDto> {
+): Promise<OutboundEventDto> {
   const { detailed = false, deliveries: preloadedDeliveries, document, controlsMap } = options
-  const { notificationDeliveries: d, notificationDeliveryAttempts: a } = schemaFor(db)
+  const { outboundDeliveries: d, outboundDeliveryAttempts: a } = schemaFor(db)
   const rows =
     preloadedDeliveries ?? (await db.select().from(d).where(eq(d.eventId, row.id)).orderBy(asc(d.id)))
   const decisions = new Map<string, string | null>()
@@ -136,7 +134,7 @@ async function toEvent(
       reason = checks[0] ?? 'authorization_revoked'
     }
   }
-  return notificationEventSchema.parse({
+  return outboundEventSchema.parse({
     ...row,
     state,
     reason,
@@ -145,16 +143,16 @@ async function toEvent(
     deliveries,
   })
 }
-export async function listNotificationEvents(db: Db, actorId: string, raw: unknown = {}) {
-  const input = notificationListQuerySchema.parse(raw)
-  const { notificationEvents: e, notificationDeliveries: d, notificationControls: c } = schemaFor(db)
+export async function listOutboundEvents(db: Db, actorId: string, raw: unknown = {}) {
+  const input = outboundListQuerySchema.parse(raw)
+  const { outboundEvents: e, outboundDeliveries: d, outboundControls: c } = schemaFor(db)
   // 整页只取一次授予行；可见性过滤与游标指纹的五项范围都从它内存派生。
   const grants = await loadAccountGrants(db, actorId)
   const filter = visibleFromGrants(db, grants)
   const scopes = [
     'target:read',
     'run:read',
-    'notification:read',
+    'outbound:read',
     'monitor:read',
     'platform-config:read',
   ].map((p) => scopeFromGrants(grants, p))
@@ -171,7 +169,7 @@ export async function listNotificationEvents(db: Db, actorId: string, raw: unkno
         throw new Error('cursor')
       before = parsed
     } catch {
-      throw badRequest('NOTIFICATION_CURSOR_INVALID', '筛选或权限已变化，请刷新列表')
+      throw badRequest('OUTBOUND_CURSOR_INVALID', '筛选或权限已变化，请刷新列表')
     }
   }
   const rows = await db
@@ -298,25 +296,25 @@ export async function listNotificationEvents(db: Db, actorId: string, raw: unkno
         : null,
   }
 }
-export async function getNotificationEvent(db: Db, actorId: string, eventId: string) {
-  const { notificationEvents: e } = schemaFor(db)
+export async function getOutboundEvent(db: Db, actorId: string, eventId: string) {
+  const { outboundEvents: e } = schemaFor(db)
   const [row] = await db
     .select()
     .from(e)
     .where(and(eq(e.id, eventId), await visible(db, actorId)))
-  if (!row) throw notFound('NOTIFICATION_NOT_FOUND', '通知不存在或无权访问')
+  if (!row) throw notFound('OUTBOUND_NOT_FOUND', '推送不存在或无权访问')
   return toEvent(db, row, { detailed: true })
 }
-export async function getNotificationChannels(db: Db, actorId: string, targetId?: string) {
+export async function getOutboundChannels(db: Db, actorId: string, targetId?: string) {
   const current = await getOrCreatePlatformConfig(db),
-    n = current.document.notifications
+    n = current.document.outbound
   const manager = await has(db, actorId, 'platform-config:read')
   if (!manager) {
-    if (!targetId) throw notFound('NOTIFICATION_CHANNEL_NOT_FOUND', '请先选择有权访问的目标')
+    if (!targetId) throw notFound('OUTBOUND_CHANNEL_NOT_FOUND', '请先选择有权访问的目标')
     const { assertTargetPermission } = await import('../console/target-authorization.js')
     await assertTargetPermission(db, actorId, targetId, 'workflow:read')
   }
-  const { notificationControls: control } = schemaFor(db)
+  const { outboundControls: control } = schemaFor(db)
   const versions = [
     ...n.channels.map((c) => `version:${c.id}:${c.version}`),
     ...(n.smtp ? [`smtp-version:${n.smtp.version}`] : []),
@@ -359,16 +357,16 @@ async function commandReceipt(
   action: string,
   raw: unknown,
 ) {
-  const input = notificationActionSchema.parse(raw),
+  const input = outboundActionSchema.parse(raw),
     id = `${actorId}:${input.idempotencyKey}`
-  const { notificationCommands: c } = schemaFor(tx)
+  const { outboundCommands: c } = schemaFor(tx)
   const digest = hash({ action, resourceId, input })
   const [existing] = await tx.select().from(c).where(eq(c.id, id))
   if (existing && existing.digest !== digest)
-    throw conflict('NOTIFICATION_IDEMPOTENCY_CONFLICT', '幂等键已用于其他操作')
+    throw conflict('OUTBOUND_IDEMPOTENCY_CONFLICT', '幂等键已用于其他操作')
   return { input, id, digest, existing }
 }
-export async function createNotificationTest(
+export async function createOutboundTest(
   db: Db,
   actorId: string,
   channelId: string,
@@ -376,16 +374,16 @@ export async function createNotificationTest(
 ) {
   return atomic(db, async (tx) => {
     await lockConsoleAuthorization(tx, actorId)
-    await requireNotificationPermission(tx, actorId, 'platform-config:write')
-    await lockNotificationDispatch(tx)
+    await requireOutboundPermission(tx, actorId, 'platform-config:write')
+    await lockOutboundDispatch(tx)
     const cmd = await commandReceipt(tx, actorId, channelId, 'test', raw)
     if (cmd.existing) return { eventId: cmd.existing.resultId }
     const current = await getOrCreatePlatformConfig(tx),
-      n = current.document.notifications
+      n = current.document.outbound
     const channel = n.channels.find((c) => c.id === channelId)
     if (!n.enabled || !channel?.enabled || (channel.kind === 'email' && !n.smtp?.enabled))
-      throw badRequest('NOTIFICATION_CHANNEL_UNAVAILABLE', '请先保存并启用渠道及发送配置')
-    const { notificationEvents: e, notificationCommands: c } = schemaFor(tx)
+      throw badRequest('OUTBOUND_CHANNEL_UNAVAILABLE', '请先保存并启用渠道及发送配置')
+    const { outboundEvents: e, outboundCommands: c } = schemaFor(tx)
     const now = await clockNow(tx)
     const recent = await tx
       .select()
@@ -401,15 +399,15 @@ export async function createNotificationTest(
           r.createdAt.getTime() > now.getTime() - 60_000,
       )
     )
-      throw conflict('NOTIFICATION_RATE_LIMITED', '测试发送过于频繁')
+      throw conflict('OUTBOUND_RATE_LIMITED', '测试发送过于频繁')
     const id = newId()
-    const payload: NotificationPayload = { title: '识途通知渠道测试：这是一条合成测试消息' }
+    const payload: OutboundPayload = { title: '识途消息推送渠道测试：这是一条合成测试消息' }
     if (channel.format === 'legacy_alert@1')
       payload.alert = {
         kind: 'firing',
         alertId: id,
-        ruleId: 'notification-test',
-        ruleName: '通知渠道测试（合成消息）',
+        ruleId: 'outbound-test',
+        ruleName: '推送渠道测试（合成消息）',
         scope: 'platform',
         scopeId: 'platform',
         severity: 'warning',
@@ -428,12 +426,12 @@ export async function createNotificationTest(
       actorId,
       state: 'ready',
       payload,
-      bindings: await freezeNotificationBindings(tx, current.document, [channelId]),
+      bindings: await freezeOutboundBindings(tx, current.document, [channelId]),
       occurredAt: now,
       observedAt: now,
       nextPrepareAt: now,
     })
-    await materializeNotificationDeliveries(tx, id)
+    await materializeOutboundDeliveries(tx, id)
     await tx.insert(c).values({
       id: cmd.id,
       actorId,
@@ -446,15 +444,15 @@ export async function createNotificationTest(
     await recordAudit(
       tx,
       { id: actorId },
-      'notification.test',
-      'notification_channel',
+      'outbound.test',
+      'outbound_channel',
       channelId,
       cmd.input.reason,
     )
     return { eventId: id }
   })
 }
-export async function operateNotificationDelivery(
+export async function operateOutboundDelivery(
   db: Db,
   actorId: string,
   deliveryId: string,
@@ -463,24 +461,24 @@ export async function operateNotificationDelivery(
 ) {
   return atomic(db, async (tx) => {
     await lockConsoleAuthorization(tx, actorId)
-    await requireNotificationPermission(tx, actorId, 'notification:operate')
-    await lockNotificationDispatch(tx)
+    await requireOutboundPermission(tx, actorId, 'outbound:operate')
+    await lockOutboundDispatch(tx)
     const {
-      notificationDeliveries: d,
-      notificationEvents: e,
-      notificationCommands: c,
+      outboundDeliveries: d,
+      outboundEvents: e,
+      outboundCommands: c,
     } = schemaFor(tx)
     const [delivery] = await tx.select().from(d).where(eq(d.id, deliveryId))
-    if (!delivery) throw notFound('NOTIFICATION_NOT_FOUND', '通知不存在或无权访问')
-    await getNotificationEvent(tx, actorId, delivery.eventId)
+    if (!delivery) throw notFound('OUTBOUND_NOT_FOUND', '推送不存在或无权访问')
+    await getOutboundEvent(tx, actorId, delivery.eventId)
     const [event] = await tx.select().from(e).where(eq(e.id, delivery.eventId))
     if (event!.type.startsWith('alert.'))
-      await requireNotificationPermission(tx, actorId, 'monitor:operate')
+      await requireOutboundPermission(tx, actorId, 'monitor:operate')
     if (event!.type === 'channel.test')
-      await requireNotificationPermission(tx, actorId, 'platform-config:write')
+      await requireOutboundPermission(tx, actorId, 'platform-config:write')
     if (event!.targetId) {
       const { assertTargetPermission } = await import('../console/target-authorization.js')
-      await assertTargetPermission(tx, actorId, event!.targetId, 'notification:operate')
+      await assertTargetPermission(tx, actorId, event!.targetId, 'outbound:operate')
     }
     const cmd = await commandReceipt(tx, actorId, deliveryId, action, raw)
     if (cmd.existing) return { eventId: cmd.existing.resultId }
@@ -490,22 +488,22 @@ export async function operateNotificationDelivery(
       .from(c)
       .where(and(eq(c.resourceId, deliveryId), gt(c.createdAt, new Date(now.getTime() - 60_000))))
       .limit(1)
-    if (recent.length) throw conflict('NOTIFICATION_RATE_LIMITED', '操作过于频繁')
+    if (recent.length) throw conflict('OUTBOUND_RATE_LIMITED', '操作过于频繁')
     if (delivery.closedAt || event!.purgedAt)
-      throw conflict('NOTIFICATION_CLOSED', '记录已结案或正文已清理')
+      throw conflict('OUTBOUND_CLOSED', '记录已结案或正文已清理')
     if (action === 'close') {
       if (delivery.status !== 'unknown')
-        throw conflict('NOTIFICATION_STATE_CONFLICT', '仅结果不明可结案')
+        throw conflict('OUTBOUND_STATE_CONFLICT', '仅结果不明可结案')
       await tx.update(d).set({ closedAt: now, updatedAt: now }).where(eq(d.id, deliveryId))
     } else {
       if (delivery.reason === 'legacy_unknown')
-        throw conflict('NOTIFICATION_LEGACY_UNKNOWN', '旧发送事实不完整，不能从此记录重发')
+        throw conflict('OUTBOUND_LEGACY_UNKNOWN', '旧发送事实不完整，不能从此记录重发')
       if (!['failed', 'unknown'].includes(delivery.status))
-        throw conflict('NOTIFICATION_STATE_CONFLICT', '仅失败或结果不明可重试')
+        throw conflict('OUTBOUND_STATE_CONFLICT', '仅失败或结果不明可重试')
       if (delivery.status === 'unknown' && !cmd.input.confirmUnknown)
-        throw badRequest('NOTIFICATION_UNKNOWN_CONFIRMATION', '请确认再次发送可能重复')
+        throw badRequest('OUTBOUND_UNKNOWN_CONFIRMATION', '请确认再次发送可能重复')
       if (await bindingSuppression(tx, delivery.binding, event!))
-        throw conflict('NOTIFICATION_AUTHORIZATION_REVOKED', '原目的地授权已撤销，不能重试')
+        throw conflict('OUTBOUND_AUTHORIZATION_REVOKED', '原目的地授权已撤销，不能重试')
       await tx
         .update(d)
         .set({
@@ -529,11 +527,18 @@ export async function operateNotificationDelivery(
     await recordAudit(
       tx,
       { id: actorId },
-      action === 'retry' ? 'notification.retry' : 'notification.close',
-      'notification_delivery',
+      action === 'retry' ? 'outbound.retry' : 'outbound.close',
+      'outbound_delivery',
       deliveryId,
       cmd.input.reason,
     )
     return { eventId: delivery.eventId }
   })
 }
+
+// Backward-compatible aliases
+export const listNotificationEvents = listOutboundEvents
+export const getNotificationEvent = getOutboundEvent
+export const getNotificationChannels = getOutboundChannels
+export const createNotificationTest = createOutboundTest
+export const operateNotificationDelivery = operateOutboundDelivery

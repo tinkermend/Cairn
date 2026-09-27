@@ -3,27 +3,27 @@ import type { Request, Response } from 'express'
 import { z } from 'zod'
 import {
   entityIdSchema,
-  notificationActionSchema,
-  notificationChannelStateSchema,
-  notificationChannelWriteSchema,
-  notificationListQuerySchema,
-  notificationPolicyWriteSchema,
-  notificationSettingsWriteSchema,
-  notificationSmtpWriteSchema,
-  type NotificationChannelWrite,
-  type NotificationSmtpWrite,
+  outboundActionSchema,
+  outboundChannelStateSchema,
+  outboundChannelWriteSchema,
+  outboundListQuerySchema,
+  outboundPolicyWriteSchema,
+  outboundSettingsWriteSchema,
+  outboundSmtpWriteSchema,
+  type OutboundChannelWrite,
+  type OutboundSmtpWrite,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import { abortWhenSseClientDrops } from '../common/sse-abort'
 import type { RequestAccount } from '../common/request-account'
 import { CurrentAccount } from '../rbac/current-account.decorator'
 import { RequirePermissions } from '../rbac/require-permission.decorator'
-import { NotificationsService } from './notifications.service'
+import { OutboundService } from './outbound.service'
 
 const uuid = new ZodValidationPipe(entityIdSchema)
-@Controller('notifications')
-export class NotificationsController {
-  constructor(private readonly service: NotificationsService) {}
+@Controller('outbound')
+export class OutboundController {
+  constructor(private readonly service: OutboundService) {}
   @Get('channels')
   channels(
     @CurrentAccount() a: RequestAccount,
@@ -37,7 +37,7 @@ export class NotificationsController {
   @RequirePermissions('platform-config:write')
   saveChannel(
     @CurrentAccount() a: RequestAccount,
-    @Body(new ZodValidationPipe(notificationChannelWriteSchema)) b: NotificationChannelWrite,
+    @Body(new ZodValidationPipe(outboundChannelWriteSchema)) b: OutboundChannelWrite,
   ) {
     return this.service.saveChannel(a.id, b)
   }
@@ -46,7 +46,7 @@ export class NotificationsController {
   @RequirePermissions('platform-config:write')
   saveSmtp(
     @CurrentAccount() a: RequestAccount,
-    @Body(new ZodValidationPipe(notificationSmtpWriteSchema)) b: NotificationSmtpWrite,
+    @Body(new ZodValidationPipe(outboundSmtpWriteSchema)) b: OutboundSmtpWrite,
   ) {
     return this.service.saveSmtp(a.id, b)
   }
@@ -55,8 +55,8 @@ export class NotificationsController {
   @RequirePermissions('platform-config:write')
   settings(
     @CurrentAccount() a: RequestAccount,
-    @Body(new ZodValidationPipe(notificationSettingsWriteSchema))
-    b: z.infer<typeof notificationSettingsWriteSchema>,
+    @Body(new ZodValidationPipe(outboundSettingsWriteSchema))
+    b: z.infer<typeof outboundSettingsWriteSchema>,
   ) {
     return this.service.settings(a.id, b)
   }
@@ -66,8 +66,8 @@ export class NotificationsController {
   state(
     @CurrentAccount() a: RequestAccount,
     @Param('channelId', uuid) id: string,
-    @Body(new ZodValidationPipe(notificationChannelStateSchema))
-    b: z.infer<typeof notificationChannelStateSchema>,
+    @Body(new ZodValidationPipe(outboundChannelStateSchema))
+    b: z.infer<typeof outboundChannelStateSchema>,
   ) {
     return this.service.state(a.id, id, b)
   }
@@ -76,9 +76,9 @@ export class NotificationsController {
   @RequirePermissions('platform-config:write')
   smtpState(
     @CurrentAccount() a: RequestAccount,
-    @Body(new ZodValidationPipe(notificationChannelStateSchema)) b: unknown,
+    @Body(new ZodValidationPipe(outboundChannelStateSchema)) b: unknown,
   ) {
-    return this.service.smtpState(a.id, b as Parameters<NotificationsService['smtpState']>[1])
+    return this.service.smtpState(a.id, b as Parameters<OutboundService['smtpState']>[1])
   }
   @Post('channels/:channelId/test')
   @HttpCode(202)
@@ -86,7 +86,7 @@ export class NotificationsController {
   test(
     @CurrentAccount() a: RequestAccount,
     @Param('channelId', uuid) id: string,
-    @Body(new ZodValidationPipe(notificationActionSchema)) b: unknown,
+    @Body(new ZodValidationPipe(outboundActionSchema)) b: unknown,
   ) {
     return this.service.test(a.id, id, b)
   }
@@ -101,23 +101,23 @@ export class NotificationsController {
   savePolicy(
     @CurrentAccount() a: RequestAccount,
     @Param('scenarioId', uuid) id: string,
-    @Body(new ZodValidationPipe(notificationPolicyWriteSchema)) b: unknown,
+    @Body(new ZodValidationPipe(outboundPolicyWriteSchema)) b: unknown,
   ) {
     return this.service.savePolicy(a.id, id, b)
   }
   @Get('events')
-  @RequirePermissions('notification:read')
+  @RequirePermissions('outbound:read')
   list(
     @CurrentAccount() a: RequestAccount,
-    @Query(new ZodValidationPipe(notificationListQuerySchema)) q: unknown,
+    @Query(new ZodValidationPipe(outboundListQuerySchema)) q: unknown,
   ) {
     return this.service.list(a.id, q)
   }
   @Get('stream')
-  @RequirePermissions('notification:read')
+  @RequirePermissions('outbound:read')
   stream(
     @CurrentAccount() a: RequestAccount,
-    @Query(new ZodValidationPipe(notificationListQuerySchema)) q: unknown,
+    @Query(new ZodValidationPipe(outboundListQuerySchema)) q: unknown,
     @Req() req: Request,
     @Res() res: Response,
   ) {
@@ -130,27 +130,27 @@ export class NotificationsController {
     })
   }
   @Get('events/:eventId')
-  @RequirePermissions('notification:read')
+  @RequirePermissions('outbound:read')
   detail(@CurrentAccount() a: RequestAccount, @Param('eventId', uuid) id: string) {
     return this.service.detail(a.id, id)
   }
   @Post('deliveries/:deliveryId/retry')
   @HttpCode(200)
-  @RequirePermissions('notification:operate')
+  @RequirePermissions('outbound:operate')
   retry(
     @CurrentAccount() a: RequestAccount,
     @Param('deliveryId', uuid) id: string,
-    @Body(new ZodValidationPipe(notificationActionSchema)) b: unknown,
+    @Body(new ZodValidationPipe(outboundActionSchema)) b: unknown,
   ) {
     return this.service.operate(a.id, id, 'retry', b)
   }
   @Post('deliveries/:deliveryId/close')
   @HttpCode(200)
-  @RequirePermissions('notification:operate')
+  @RequirePermissions('outbound:operate')
   close(
     @CurrentAccount() a: RequestAccount,
     @Param('deliveryId', uuid) id: string,
-    @Body(new ZodValidationPipe(notificationActionSchema)) b: unknown,
+    @Body(new ZodValidationPipe(outboundActionSchema)) b: unknown,
   ) {
     return this.service.operate(a.id, id, 'close', b)
   }

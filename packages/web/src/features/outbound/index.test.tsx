@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { NotificationsPage } from './index'
+import { OutboundPage } from './index'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, to, ...props }: any) => (
@@ -21,6 +21,8 @@ vi.mock('@/stores/auth-store', () => ({
           id: 'user-1',
           name: '管理员',
           permissions: [
+            'outbound:read',
+            'outbound:operate',
             'notification:read',
             'notification:operate',
             'platform-config:read',
@@ -36,9 +38,9 @@ vi.mock('@/stores/auth-store', () => ({
     }),
 }))
 
-vi.mock('@/lib/notifications-api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/notifications-api')>()),
-  fetchNotificationEvents: vi.fn(async () => ({
+vi.mock('@/lib/outbound-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/outbound-api')>()),
+  fetchOutboundEvents: vi.fn(async () => ({
     items: [
       {
         id: 'event-1',
@@ -108,7 +110,7 @@ vi.mock('@/lib/notifications-api', async (importOriginal) => ({
     ],
     nextCursor: null,
   })),
-  fetchNotificationChannels: vi.fn(async () => ({
+  fetchOutboundChannels: vi.fn(async () => ({
     revision: 1,
     enabled: true,
     consoleBaseUrl: 'https://cairn.example.com',
@@ -129,7 +131,7 @@ vi.mock('@/lib/notifications-api', async (importOriginal) => ({
         version: 1,
         host: 'oapi.dingtalk.com',
         recipientCount: 0,
-        format: 'cairn.notification@1',
+        format: 'cairn.outbound@1',
         replay: 'manual_on_unknown',
         revoked: false,
       },
@@ -143,12 +145,15 @@ vi.mock('@/lib/notifications-api', async (importOriginal) => ({
         version: 1,
         host: 'smtp.example.com',
         recipientCount: 2,
-        format: 'cairn.notification@1',
+        format: 'cairn.outbound@1',
         replay: 'manual_on_unknown',
         revoked: false,
       },
     ],
   })),
+  subscribeOutbound: vi.fn(async () => {}),
+  fetchNotificationEvents: vi.fn(async () => ({ items: [], nextCursor: null })),
+  fetchNotificationChannels: vi.fn(async () => ({ revision: 1, enabled: true, channels: [] })),
   subscribeNotifications: vi.fn(async () => {}),
 }))
 
@@ -158,19 +163,19 @@ vi.mock('@/lib/targets-api', () => ({
   })),
 }))
 
-describe('NotificationsPage', () => {
-  it('渲染通知页面与概览指标卡', async () => {
+describe('OutboundPage', () => {
+  it('渲染消息推送页面与概览指标卡', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
     const { getByText, getByRole } = await render(
       <QueryClientProvider client={queryClient}>
-        <NotificationsPage />
+        <OutboundPage />
       </QueryClientProvider>
     )
 
     await expect
-      .element(getByRole('heading', { name: '通知' }))
+      .element(getByRole('heading', { name: '消息推送' }))
       .toBeInTheDocument()
     await expect
       .element(getByText('集中管理场景运行结果、告警与发送渠道。每个目的地的投递结果独立记录。'))

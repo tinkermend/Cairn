@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import {
-  DEFAULT_NOTIFICATION_POLICY,
+  DEFAULT_OUTBOUND_POLICY,
   LOCAL_SECRET_PROVIDER,
-  NOTIFICATION_WORKER_PROTOCOL,
+  OUTBOUND_WORKER_PROTOCOL,
 } from '@cairn/shared'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { expose } from '../database.js'
@@ -11,20 +11,20 @@ import { newId } from '../id.js'
 import { insertIgnoreRows, schemaFor } from '../native.js'
 import { exportDatabase, importDatabase } from '../transfer.js'
 import { getOrCreatePlatformConfig } from '../platform-config/store.js'
-import { writeNotificationConfig, writeNotificationPolicy } from '../notifications/config.js'
-import { createNotificationTest, getNotificationEvent } from '../notifications/query.js'
+import { writeOutboundConfig, writeOutboundPolicy } from '../outbound/config.js'
+import { createOutboundTest, getOutboundEvent } from '../outbound/query.js'
 import {
-  claimNotificationDeliveries,
-  beginNotificationSubmission,
-  finishNotificationDelivery,
-} from '../notifications/delivery.js'
-import { repairNotificationIntents } from '../notifications/core.js'
+  claimOutboundDeliveries,
+  beginOutboundSubmission,
+  finishOutboundDelivery,
+} from '../outbound/delivery.js'
+import { repairOutboundIntents } from '../outbound/core.js'
 import { createScenarioWithVersion } from '../runs/scenarios.js'
 import { createRunWithSnapshot, requestRunCancel } from '../runs/runs.js'
 import { registerWorker } from '../leases/index.js'
 import { loadSecretCiphertext } from '../secrets/store.js'
 
-describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () => {
+describe.skipIf(!DRIVERS.includes('mysql'))('消息推送跨库转储与恢复', () => {
   it.each([
     ['postgres', 'mysql'],
     ['mysql', 'postgres'],
@@ -53,7 +53,7 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
           .select()
           .from(t.consoleRoles)
           .where(eq(t.consoleRoles.key, 'admin'))
-        for (const permission of ['notification:read', 'notification:operate'])
+        for (const permission of ['outbound:read', 'outbound:operate'])
           await insertIgnoreRows(source.db, t.consoleRolePermissions, {
             consoleRoleId: admin!.id,
             permission,
@@ -65,12 +65,12 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
           .insert(t.targets)
           .values({
             id: target,
-            code: 'transfer-notifications',
-            name: '通知转储目标',
+            code: 'transfer-outbound',
+            name: '推送转储目标',
             entryUrl: 'https://example.test',
           })
         const c = await getOrCreatePlatformConfig(source.db)
-        await writeNotificationConfig(source.db, {
+        await writeOutboundConfig(source.db, {
           actorId: actor,
           expectedRevision: c.revision,
           reason: '转储测试',
@@ -86,7 +86,7 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
             secretRef: { provider: LOCAL_SECRET_PROVIDER, secretId },
             host: 'hook.example.test',
             recipients: [],
-            format: 'cairn.notification@1',
+            format: 'cairn.outbound@1',
             replay: 'manual_on_unknown',
           },
           secrets: [{ id: secretId, ciphertext }],
@@ -105,17 +105,17 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
           ],
           actor: { id: actor },
         })
-        await writeNotificationPolicy(source.db, scenario.id, actor, {
+        await writeOutboundPolicy(source.db, scenario.id, actor, {
           expectedRevision: 0,
           reason: '转储测试',
-          policy: { ...DEFAULT_NOTIFICATION_POLICY, enabled: true, channelIds: [channelId] },
+          policy: { ...DEFAULT_OUTBOUND_POLICY, enabled: true, channelIds: [channelId] },
         })
         const run = await createRunWithSnapshot(source.db, {
           scenarioId: scenario.id,
           actor: { id: actor },
         })
         await requestRunCancel(source.db, run.detail.id, { id: actor })
-        const receipt = await createNotificationTest(source.db, actor, channelId, {
+        const receipt = await createOutboundTest(source.db, actor, channelId, {
           idempotencyKey: newId(),
           reason: '转储测试',
         })
@@ -124,15 +124,15 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
           ...worker,
           capacity: 1,
           lostAfterSeconds: 3600,
-          protocolCapabilities: [NOTIFICATION_WORKER_PROTOCOL],
+          protocolCapabilities: [OUTBOUND_WORKER_PROTOCOL],
         })
-        const [job] = await claimNotificationDeliveries(source.db, worker)
-        await beginNotificationSubmission(source.db, job!)
+        const [job] = await claimOutboundDeliveries(source.db, worker)
+        await beginOutboundSubmission(source.db, job!)
         const options = { writersStopped: true as const, allowMillisecondPrecisionLoss: true }
         await expect(exportDatabase(expose(source), source.env, options)).rejects.toThrow(
-          'Notification submissions must settle',
+          'Outbound submissions must settle',
         )
-        await finishNotificationDelivery(source.db, job!, {
+        await finishOutboundDelivery(source.db, job!, {
           outcome: 'unknown',
           errorCode: 'webhook_receipt_unknown',
         })
@@ -142,7 +142,7 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
           .where(eq(t.workers.id, worker.workerId))
         const archive = await exportDatabase(expose(source), source.env, options)
         await importDatabase(expose(destination), destination.env, archive, options)
-        const restored = await getNotificationEvent(destination.db, actor, receipt.eventId)
+        const restored = await getOutboundEvent(destination.db, actor, receipt.eventId)
         expect(restored.deliveries[0]).toMatchObject({
           id: job!.deliveryId,
           status: 'unknown',
@@ -157,24 +157,25 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
           .select()
           .from(dst.runs)
           .where(eq(dst.runs.id, run.detail.id))
-        expect(savedRun!.snapshot.notificationPolicy?.bindings[0]?.channel.secretRef.secretId).toBe(
+        const savedPolicy = savedRun!.snapshot.outboundPolicy ?? savedRun!.snapshot.notificationPolicy
+        expect(savedPolicy?.bindings[0]?.channel.secretRef.secretId).toBe(
           secretId,
         )
-        await repairNotificationIntents(destination.db)
+        await repairOutboundIntents(destination.db)
         expect(
           await destination.db
             .select()
-            .from(dst.notificationEvents)
-            .where(eq(dst.notificationEvents.runId, run.detail.id)),
+            .from(dst.outboundEvents)
+            .where(eq(dst.outboundEvents.runId, run.detail.id)),
         ).toHaveLength(1)
         const again = await exportDatabase(expose(destination), destination.env, options)
         for (const name of [
-          'notificationEvents',
-          'notificationDeliveries',
-          'notificationDeliveryAttempts',
-          'notificationCommands',
-          'notificationControls',
-          'scenarioNotificationPolicies',
+          'outboundEvents',
+          'outboundDeliveries',
+          'outboundDeliveryAttempts',
+          'outboundCommands',
+          'outboundControls',
+          'scenarioOutboundPolicies',
         ] as const)
           expect(again.tables[name]).toEqual(archive.tables[name])
       } finally {

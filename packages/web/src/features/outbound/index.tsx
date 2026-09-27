@@ -1,29 +1,28 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { type NotificationStatus } from '@cairn/shared'
+import { type OutboundStatus } from '@cairn/shared'
 import {
   AlertTriangle,
-  Bell,
+  Send,
   CheckCircle2,
   Copy,
   ExternalLink,
   Radio,
   RefreshCw,
   Search,
-  Send,
   Workflow,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  fetchNotificationChannels,
-  fetchNotificationEvent,
-  fetchNotificationEvents,
-  notificationCommandKey,
-  notificationReceipt,
-  postNotification,
-  subscribeNotifications,
-} from '@/lib/notifications-api'
+  fetchOutboundChannels,
+  fetchOutboundEvent,
+  fetchOutboundEvents,
+  outboundCommandKey,
+  outboundReceipt,
+  postOutbound,
+  subscribeOutbound,
+} from '@/lib/outbound-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
 import { useCursorPage } from '@/hooks/use-cursor-page'
@@ -64,10 +63,10 @@ import {
   RUN_OUTCOME_STATUS_LABELS,
 } from '@/features/runs/outcome-labels'
 import { cn } from '@/lib/utils'
-import { NotificationChannelsPanel } from './channels'
-import { NotificationRulesPanel, NotificationAlertRules } from './rules'
+import { OutboundChannelsPanel } from './channels'
+import { OutboundRulesPanel, OutboundAlertRules } from './rules'
 
-export const statusLabels: Record<NotificationStatus, string> = {
+export const statusLabels: Record<OutboundStatus, string> = {
   pending: '等待发送',
   sending: '正在发送',
   retry_wait: '等待重试',
@@ -79,7 +78,7 @@ export const statusLabels: Record<NotificationStatus, string> = {
 
 export const stateLabels = {
   waiting_result: '等待结果汇总',
-  filtered: '未满足通知条件',
+  filtered: '未满足推送条件',
   suppressed: '已停止发送',
   ready: '已生成摘要',
 }
@@ -119,10 +118,10 @@ export function Failure({ message }: { message?: string }) {
   ) : null
 }
 
-export function NotificationsPage() {
-  const search = useSearch({ from: '/_authenticated/notifications/' }),
+export function OutboundPage() {
+  const search = useSearch({ from: '/_authenticated/outbound/' }),
     navigate = useNavigate()
-  const canRead = useCan('notification:read'),
+  const canRead = useCan('outbound:read'),
     canConfig = useCan('platform-config:read'),
     canWorkflow = useCan('workflow:read'),
     canMonitor = useCan('monitor:read')
@@ -130,8 +129,8 @@ export function NotificationsPage() {
     search.tab ?? (canRead ? 'records' : canConfig ? 'channels' : 'results')
 
   const channelsQuery = useQuery({
-    queryKey: ['notification-channels'],
-    queryFn: () => fetchNotificationChannels(),
+    queryKey: ['outbound-channels'],
+    queryFn: () => fetchOutboundChannels(),
     enabled: canConfig,
   })
 
@@ -143,27 +142,27 @@ export function NotificationsPage() {
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
-        title='通知'
+        title='消息推送'
         description='集中管理场景运行结果、告警与发送渠道。每个目的地的投递结果独立记录。'
       />
       <Tabs
         value={tab}
         onValueChange={(value) =>
           void navigate({
-            to: '/notifications',
+            to: '/outbound',
             search: { ...search, tab: value },
           })
         }
       >
         <TabsList className='border-b-0'>
-          {canRead && <TabsTrigger value='records'>通知记录</TabsTrigger>}
-          {canWorkflow && <TabsTrigger value='results'>结果通知</TabsTrigger>}
-          {canMonitor && <TabsTrigger value='alerts'>告警通知</TabsTrigger>}
-          {canConfig && <TabsTrigger value='channels'>通知渠道</TabsTrigger>}
+          {canRead && <TabsTrigger value='records'>推送记录</TabsTrigger>}
+          {canWorkflow && <TabsTrigger value='results'>结果推送</TabsTrigger>}
+          {canMonitor && <TabsTrigger value='alerts'>告警推送</TabsTrigger>}
+          {canConfig && <TabsTrigger value='channels'>推送渠道</TabsTrigger>}
         </TabsList>
         <TabsContent value='records'>
           {canRead && (
-            <NotificationRecords
+            <OutboundRecords
               runId={search.runId}
               alertId={search.alertId}
               activeChannelsCount={activeChannelsCount}
@@ -172,21 +171,22 @@ export function NotificationsPage() {
         </TabsContent>
         <TabsContent value='results'>
           {canWorkflow && (
-            <NotificationRulesPanel scenarioId={search.scenarioId} />
+            <OutboundRulesPanel scenarioId={search.scenarioId} />
           )}
         </TabsContent>
         <TabsContent value='alerts'>
-          {canMonitor && <NotificationAlertRules />}
+          {canMonitor && <OutboundAlertRules />}
         </TabsContent>
         <TabsContent value='channels'>
-          {canConfig && <NotificationChannelsPanel />}
+          {canConfig && <OutboundChannelsPanel />}
         </TabsContent>
       </Tabs>
     </Main>
   )
 }
+export const NotificationsPage = OutboundPage
 
-function NotificationRecords({
+function OutboundRecords({
   runId,
   alertId,
   activeChannelsCount,
@@ -209,7 +209,7 @@ function NotificationRecords({
   const canTargets = useCan('target:read')
 
   const targets = useQuery({
-    queryKey: ['notification-targets'],
+    queryKey: ['outbound-targets'],
     queryFn: () => fetchTargets({ limit: 100 }),
     enabled: canTargets,
   })
@@ -231,15 +231,15 @@ function NotificationRecords({
   )
 
   const list = useQuery({
-    queryKey: ['notifications', filter],
-    queryFn: () => fetchNotificationEvents(filter),
+    queryKey: ['outbound', filter],
+    queryFn: () => fetchOutboundEvents(filter),
   })
 
   useEffect(() => {
     const abort = new AbortController()
     setStreamError('')
-    void subscribeNotifications(filter, abort.signal, (value) => {
-      client.setQueryData(['notifications', filter], value)
+    void subscribeOutbound(filter, abort.signal, (value) => {
+      client.setQueryData(['outbound', filter], value)
     })
       .then(() => {
         if (!abort.signal.aborted)
@@ -282,13 +282,13 @@ function NotificationRecords({
           {
             label: '本页记录',
             value: items.length,
-            description: '当前已加载的通知事件',
-            icon: <Bell className='size-4 text-primary' />,
+            description: '当前已加载的推送事件',
+            icon: <Send className='size-4 text-primary' />,
           },
           {
             label: '对方已接受',
             value: acceptedCount,
-            description: '服务器成功接收的通知',
+            description: '服务器成功接收的消息',
             icon: (
               <CheckCircle2 className='size-4 text-status-success-foreground' />
             ),
@@ -336,8 +336,8 @@ function NotificationRecords({
                 className='pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground'
               />
               <Input
-                aria-label='搜索通知'
-                placeholder='搜索通知/运行编号或标题'
+                aria-label='搜索推送'
+                placeholder='搜索推送/运行编号或标题'
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value)
@@ -347,13 +347,13 @@ function NotificationRecords({
               />
             </div>
             <Select value={type || 'all'} onValueChange={handleTypeChange}>
-              <SelectTrigger className='h-8 w-32' aria-label='通知类型'>
+              <SelectTrigger className='h-8 w-32' aria-label='推送类型'>
                 <SelectValue placeholder='全部类型' />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value='all'>全部类型</SelectItem>
                 <SelectItem value='run'>运行结果</SelectItem>
-                <SelectItem value='alert'>告警通知</SelectItem>
+                <SelectItem value='alert'>告警推送</SelectItem>
                 <SelectItem value='test'>渠道测试</SelectItem>
               </SelectContent>
             </Select>
@@ -394,9 +394,9 @@ function NotificationRecords({
 
         {(runId || alertId) && (
           <div className='border-b border-border-divider bg-surface-subtle px-4 py-2 text-label text-muted-foreground'>
-            当前仅显示此{runId ? '运行' : '告警'}的通知。
+            当前仅显示此{runId ? '运行' : '告警'}的推送。
             <Link
-              to='/notifications'
+              to='/outbound'
               search={{ tab: 'records' }}
               className='ml-2 font-medium text-primary hover:underline'
             >
@@ -409,19 +409,19 @@ function NotificationRecords({
 
         {list.isPending ? (
           <div className='p-8 text-center text-body text-muted-foreground'>
-            正在加载通知…
+            正在加载推送记录…
           </div>
         ) : items.length === 0 ? (
           <EmptyState
             title={
               status || type || targetId || search
-                ? '没有匹配的通知记录'
-                : '暂无符合条件的通知'
+                ? '没有匹配的推送记录'
+                : '暂无符合条件的推送'
             }
             description={
               status || type || targetId || search
                 ? '试试清除或调整筛选条件。'
-                : '启用结果通知或告警规则后，记录会显示在这里。'
+                : '启用结果推送或告警规则后，记录会显示在这里。'
             }
             action={
               status || type || targetId || search ? (
@@ -473,15 +473,15 @@ function NotificationRecords({
                         ) : event.type === 'channel.test' ? (
                           <Send className='size-4 text-muted-foreground' />
                         ) : (
-                          <Bell className='size-4' />
+                          <Send className='size-4' />
                         )}
                       </span>
                       <div className='min-w-0'>
                         <p className='truncate font-medium text-text-primary text-body'>
                           {event.payload?.title ??
                             (event.type === 'run.finished'
-                              ? '运行结果通知'
-                              : '通知')}
+                              ? '运行结果推送'
+                              : '消息推送')}
                         </p>
                         <div className='mt-0.5 flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
                           <span
@@ -596,24 +596,25 @@ function NotificationRecords({
       >
         <SheetContent className='w-full overflow-y-auto sm:max-w-xl'>
           <SheetHeader>
-            <SheetTitle>通知详情</SheetTitle>
+            <SheetTitle>推送详情</SheetTitle>
             <SheetDescription>
               “对方已接受”表示服务器接收成功，不代表邮件已读。
             </SheetDescription>
           </SheetHeader>
-          {detailId && <NotificationDetail id={detailId} />}
+          {detailId && <OutboundDetail id={detailId} />}
         </SheetContent>
       </Sheet>
     </div>
   )
 }
+export const NotificationRecords = OutboundRecords
 
-function NotificationDetail({ id }: { id: string }) {
+function OutboundDetail({ id }: { id: string }) {
   const detail = useQuery({
-    queryKey: ['notification-detail', id],
-    queryFn: () => fetchNotificationEvent(id),
+    queryKey: ['outbound-detail', id],
+    queryFn: () => fetchOutboundEvent(id),
   })
-  const canOperate = useCan('notification:operate'),
+  const canOperate = useCan('outbound:operate'),
     canMonitor = useCan('monitor:operate'),
     client = useQueryClient()
   const [operation, setOperation] = useState<{
@@ -632,14 +633,14 @@ function NotificationDetail({ id }: { id: string }) {
     setBusy(true)
     setError('')
     try {
-      await postNotification(
+      await postOutbound(
         `deliveries/${operation.deliveryId}/${operation.action}`,
         { idempotencyKey: operation.key, reason, confirmUnknown: confirmed },
-        notificationReceipt
+        outboundReceipt
       )
       setOperation(undefined)
       await detail.refetch()
-      await client.invalidateQueries({ queryKey: ['notifications'] })
+      await client.invalidateQueries({ queryKey: ['outbound'] })
       toast.success('操作已登记')
     } catch (e) {
       setError(e instanceof Error ? e.message : '操作失败')
@@ -725,7 +726,7 @@ function NotificationDetail({ id }: { id: string }) {
 
             {event.payload?.summaryStage === 'evidence_pending' && (
               <p className='mt-3 text-label text-status-warning-foreground'>
-                汇总时证据仍在收集，后续补齐不会再次通知。
+                汇总时证据仍在收集，后续补齐不会再次推送。
               </p>
             )}
 
@@ -778,13 +779,13 @@ function NotificationDetail({ id }: { id: string }) {
                   </StatusBadge>
                 </div>
                 <div className='flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground'>
-                  <span>通知编号：</span>
+                  <span>投递编号：</span>
                   <span
                     className='rounded border border-border-divider bg-muted/60 px-1.5 py-0.5 hover:bg-muted cursor-pointer select-all text-text-primary'
-                    title={`完整通知编号：${d.id}（点击复制）`}
+                    title={`完整投递编号：${d.id}（点击复制）`}
                     onClick={() => {
                       navigator.clipboard.writeText(d.id)
-                      toast.success(`已复制通知编号：${d.id}`)
+                      toast.success(`已复制投递编号：${d.id}`)
                     }}
                   >
                     {d.id}
@@ -793,10 +794,10 @@ function NotificationDetail({ id }: { id: string }) {
                     variant='ghost'
                     size='icon'
                     className='size-5 text-muted-foreground hover:text-foreground'
-                    title='复制通知编号'
+                    title='复制投递编号'
                     onClick={() => {
                       navigator.clipboard.writeText(d.id)
-                      toast.success(`已复制通知编号：${d.id}`)
+                      toast.success(`已复制投递编号：${d.id}`)
                     }}
                   >
                     <Copy className='size-3' />
@@ -847,7 +848,7 @@ function NotificationDetail({ id }: { id: string }) {
                             deliveryId: d.id,
                             action: 'retry',
                             unknown: d.status === 'unknown',
-                            key: notificationCommandKey(),
+                            key: outboundCommandKey(),
                           })
                           setReason('')
                           setConfirmed(false)
@@ -864,7 +865,7 @@ function NotificationDetail({ id }: { id: string }) {
                               deliveryId: d.id,
                               action: 'close',
                               unknown: true,
-                              key: notificationCommandKey(),
+                              key: outboundCommandKey(),
                             })
                             setReason('')
                             setConfirmed(false)
@@ -899,7 +900,7 @@ function NotificationDetail({ id }: { id: string }) {
                     onCheckedChange={(checked) => setConfirmed(Boolean(checked))}
                   />
                   <span>
-                    原发送可能已被接受，我确认再次发送可能产生重复通知。
+                    原发送可能已被接受，我确认再次发送可能产生重复推送。
                   </span>
                 </label>
               )}
@@ -935,14 +936,15 @@ function NotificationDetail({ id }: { id: string }) {
 export function reasonLabel(reason: string) {
   const labels: Record<string, string> = {
     authorization_revoked: '原发送授权已撤销',
-    notifications_paused: '通知已暂停',
+    outbound_paused: '推送已暂停',
+    notifications_paused: '推送已暂停',
     channel_disabled: '渠道已停用',
     smtp_disabled: '邮件发送已停用',
     target_use_revoked: '目标授权已撤销',
     alert_use_revoked: '告警用途已撤销',
     source_deleted: '来源已删除',
     no_destination: '未选择发送渠道',
-    conditions_not_matched: '未满足通知条件',
+    conditions_not_matched: '未满足推送条件',
     webhook_rejected: 'Webhook 拒绝接收',
     webhook_receipt_unknown: 'Webhook 接收结果不明',
     smtp_receipt_unknown: '邮件服务器接收结果不明',
@@ -951,10 +953,11 @@ export function reasonLabel(reason: string) {
     smtp_rejected: '邮件服务器拒绝接收',
     smtp_connect_failed: '邮件服务器连接未完成，将按策略重试',
     webhook_connect_failed: 'Webhook 连接未完成，将按策略重试',
-    notification_preparation_failed: '通知准备失败，请检查渠道配置',
+    outbound_preparation_failed: '推送准备失败，请检查渠道配置',
+    notification_preparation_failed: '推送准备失败，请检查渠道配置',
     secret_provider_unavailable: '凭据服务不可用',
     send_aborted: '提交前已取消，将按策略重试',
-    legacy_unknown: '旧通知缺少完整回执，可核对后结案，不能直接重发',
+    legacy_unknown: '历史记录缺少完整回执，可核对后结案，不能直接重发',
     channel_disabled_at_capture: '生成消息时渠道已停用',
     alert_silenced: '告警已静默',
     destination_blocked: '目的地不符合网络访问策略',

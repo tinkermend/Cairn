@@ -2,17 +2,18 @@ import { Module } from '@nestjs/common'
 import { AuthModule } from '../auth/auth.module'
 import { config } from '../config/env'
 import { credentialKeyFromEnv, LocalSecretProvider } from '../secrets/local-secret-provider'
-import { NotificationsController } from './notifications.controller'
-import { NotificationsService } from './notifications.service'
+import { OutboundController } from './outbound.controller'
+import { OutboundService } from './outbound.service'
+
 @Module({
   imports: [AuthModule],
-  controllers: [NotificationsController],
+  controllers: [OutboundController],
   providers: [
-    NotificationsService,
+    OutboundService,
     {
       provide: LocalSecretProvider,
       useFactory: () => new LocalSecretProvider(credentialKeyFromEnv(config.CAIRN_CREDENTIAL_KEY)),
     },
   ],
 })
-export class NotificationsModule {}
+export class OutboundModule {}
