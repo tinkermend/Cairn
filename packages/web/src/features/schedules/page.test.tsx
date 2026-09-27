@@ -10,6 +10,7 @@ import { SchedulesPage } from './page'
 
 const mocks = vi.hoisted(() => ({
   fetchSchedules: vi.fn(),
+  createSchedule: vi.fn(),
   fetchTargets: vi.fn(),
   fetchTargetAccounts: vi.fn(),
   fetchPlatformConfig: vi.fn(),
@@ -23,7 +24,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/schedules-api', () => ({
   fetchSchedules: mocks.fetchSchedules,
-  createSchedule: vi.fn(),
+  createSchedule: mocks.createSchedule,
   updateSchedule: mocks.updateSchedule,
   setScheduleEnabled: vi.fn(),
   previewSchedule: vi.fn(),
@@ -96,7 +97,7 @@ describe('定时任务列表', () => {
     mocks.fetchMapSafeEntries.mockResolvedValue({ items: [] })
   })
 
-  it('空列表说明四类任务和出厂关闭', async () => {
+  it('空列表说明任务类型和新计划默认停用', async () => {
     mocks.fetchSchedules.mockResolvedValue({ items: [] })
     await renderPage()
     await expect
@@ -104,9 +105,8 @@ describe('定时任务列表', () => {
       .toBeVisible()
     await expect.element(page.getByText('还没有调度计划')).toBeVisible()
     await expect
-      .element(page.getByText(/先选任务类型再固定版本和排期/))
+      .element(page.getByText('先选任务类型和目标系统，再设置排期。新计划保存后默认停用。'))
       .toBeVisible()
-    await expect.element(page.getByText(/出厂关闭/)).toBeVisible()
     await expect.element(page.getByLabelText('任务类型')).toBeVisible()
     await page.getByLabelText('任务类型').click()
     await expect
@@ -118,11 +118,14 @@ describe('定时任务列表', () => {
     await expect
       .element(page.getByRole('option', { name: '知识分析', exact: true }))
       .toBeVisible()
+    await expect
+      .element(page.getByRole('option', { name: '地图采集', exact: true }))
+      .toBeVisible()
     await page.getByRole('option', { name: '全部', exact: true }).click()
   })
 
   it('有写权限时可以打开新建调度', async () => {
-    signIn(['schedule:read', 'schedule:write', 'target:read'])
+    signIn(['schedule:read', 'schedule:write', 'target:read', 'platform-config:read'])
     mocks.fetchSchedules.mockResolvedValue({ items: [] })
     await renderPage()
     await page.getByRole('button', { name: '新建调度' }).click()
@@ -130,8 +133,79 @@ describe('定时任务列表', () => {
       .element(page.getByRole('heading', { name: '新建调度' }))
       .toBeVisible()
     await expect
-      .element(page.getByText(/启用前请预览窗口并确认工厂开关/))
+      .element(page.getByText(/启用前请预览执行时间，并确认平台已开放相应任务/))
       .toBeVisible()
+    await expect
+      .element(page.getByText(/平台尚未开放场景执行的定时触发。计划可以保存或启用/))
+      .toBeVisible()
+    await expect
+      .element(page.getByLabelText('时间规则'))
+      .toBeVisible()
+    await expect
+      .element(page.getByLabelText('触发时间'))
+      .toBeVisible()
+    await expect
+      .element(page.getByLabelText('最晚受理截止（窗口保护）'))
+      .toBeVisible()
+    await expect
+      .element(page.getByText('排期规则说明'))
+      .toBeVisible()
+  })
+
+  it('筛选类型无结果时展示没有匹配计划并提供清除筛选按钮', async () => {
+    signIn(['schedule:read', 'target:read'])
+    mocks.fetchSchedules.mockResolvedValue({ items: [] })
+    await renderPage()
+    await page.getByLabelText('任务类型').click()
+    await page.getByRole('option', { name: '场景执行', exact: true }).click()
+    await expect.element(page.getByText('没有匹配的调度计划')).toBeVisible()
+    await expect
+      .element(page.getByRole('button', { name: '清除筛选' }))
+      .toBeVisible()
+    await page.getByRole('button', { name: '清除筛选' }).click()
+    await expect.element(page.getByText('还没有调度计划')).toBeVisible()
+  })
+
+  it('地图采集计划使用地图开放状态，并保存选定的采集账号', async () => {
+    signIn(['schedule:read', 'schedule:write', 'target:read', 'platform-config:read'])
+    mocks.fetchSchedules.mockResolvedValue({ items: [] })
+    mocks.fetchPlatformConfig.mockResolvedValue({
+      document: {
+        scenarioScheduledRunEnabled: false,
+        knowledgeAnalysisEnabled: true,
+        mapScheduledRefreshEnabled: false,
+      },
+    })
+    mocks.fetchTargetAccounts.mockResolvedValue({
+      items: [
+        { id: '22222222-2222-4222-8222-222222222222', displayName: '地图账号', usage: 'map' },
+        { id: '99999999-9999-4999-8999-999999999999', displayName: '业务账号', usage: 'business' },
+      ],
+    })
+    mocks.createSchedule.mockResolvedValue({ created: true })
+    await renderPage()
+    await page.getByRole('button', { name: '新建调度' }).click()
+    await page.getByLabelText('任务类型').last().click()
+    await page.getByRole('option', { name: '地图采集', exact: true }).click()
+    await expect
+      .element(page.getByText(/平台尚未开放地图采集的定时触发。计划可以保存或启用/))
+      .toBeVisible()
+    await page.getByLabelText('目标系统').click()
+    await page.getByRole('option', { name: '演示商城' }).click()
+    await page.getByLabelText('目标账号').click()
+    await page.getByRole('option', { name: '地图账号', exact: true }).click()
+    await page.getByRole('button', { name: '仅保存' }).click()
+    await expect
+      .poll(() => mocks.createSchedule.mock.calls[0]?.[0]?.definition)
+      .toMatchObject({
+        name: '知识地图采集',
+        consumer: {
+          type: 'map_ingest',
+          targetId: '11111111-1111-4111-8111-111111111111',
+          targetAccountId: '22222222-2222-4222-8222-222222222222',
+        },
+      })
+    expect(scheduleDefinitionSchema.parse(mocks.createSchedule.mock.calls[0][0].definition).consumer.type).toBe('map_ingest')
   })
 
   it('已准入不显示为采集成功，错过窗口单独说明', async () => {
@@ -142,7 +216,7 @@ describe('定时任务列表', () => {
           name: '夜间采集',
           targetId: '11111111-1111-4111-8111-111111111111',
           targetAccountId: '22222222-2222-4222-8222-222222222222',
-          consumerKey: 'map_refresh',
+          consumerKey: 'map_ingest',
           enabled: true,
           revision: 2,
           currentVersionId: '55555555-5555-4555-8555-555555555555',
@@ -162,10 +236,9 @@ describe('定时任务列表', () => {
               misfire: 'skip',
             },
             consumer: {
-              type: 'map_refresh',
+              type: 'map_ingest',
               targetId: '11111111-1111-4111-8111-111111111111',
               targetAccountId: '22222222-2222-4222-8222-222222222222',
-              entryId: '33333333-3333-4333-8333-333333333333',
             },
           },
           nextDueAt: '2026-09-17T18:00:00.000Z',
@@ -194,8 +267,8 @@ describe('定时任务列表', () => {
         {
           scheduleId: '88888888-8888-4888-8888-888888888888',
           targetId: '11111111-1111-4111-8111-111111111111',
-          targetAccountId: '99999999-9999-4999-8999-999999999999',
-          consumerKey: 'map_refresh',
+          targetAccountId: null,
+          consumerKey: 'map_ingest',
           enabled: false,
           revision: 1,
           currentVersionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -215,10 +288,8 @@ describe('定时任务列表', () => {
               misfire: 'skip',
             },
             consumer: {
-              type: 'map_refresh',
+              type: 'map_ingest',
               targetId: '11111111-1111-4111-8111-111111111111',
-              targetAccountId: '99999999-9999-4999-8999-999999999999',
-              entryId: '33333333-3333-4333-8333-333333333333',
             },
           },
           nextDueAt: null,
@@ -248,6 +319,7 @@ describe('定时任务列表', () => {
     await renderPage()
     await expect.element(page.getByText('演示商城').first()).toBeVisible()
     await expect.element(page.getByText('值班账号')).toBeVisible()
+    await expect.element(page.getByText('由平台选择采集账号')).toBeVisible()
     await expect
       .element(page.getByText('已准入（已创建执行对象，不等于业务成功）'))
       .toBeVisible()
@@ -257,7 +329,7 @@ describe('定时任务列表', () => {
       .not.toBeInTheDocument()
   })
 
-  it('工厂未开放显示中文阻断原因而不是原始码', async () => {
+  it('平台未开放时显示阻断原因和处理方法', async () => {
     mocks.fetchSchedules.mockResolvedValue({
       items: [
         {
@@ -302,7 +374,7 @@ describe('定时任务列表', () => {
     })
     await renderPage()
     await expect.element(page.getByText('验收-知识分析-默认停用')).toBeVisible()
-    await expect.element(page.getByText('工厂未开放该类调度')).toBeVisible()
+    await expect.element(page.getByText('平台尚未开放此类定时任务；请在平台配置中开放后再执行')).toBeVisible()
     await expect
       .element(page.getByText('FACTORY_DISABLED', { exact: true }))
       .not.toBeInTheDocument()

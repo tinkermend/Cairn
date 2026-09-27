@@ -48,7 +48,7 @@ function timeSummary(item: ScheduleDto) {
     return `间隔 ${Math.round(item.definition.timeRule.intervalMs / 60000)} 分钟`
   }
   const windows = item.definition.timeRule.windows
-  return `${item.definition.timezone} ${windows.length > 1 ? `${windows.length} 个时间窗口` : `${windows[0].windowStart}–${windows[0].windowEnd}`}`
+  return `${item.definition.timezone} ${windows.length > 1 ? `${windows.length} 个时间点` : `${windows[0].windowStart}（截止 ${windows[0].windowEnd}）`}`
 }
 
 export function SchedulesPage() {
@@ -129,9 +129,9 @@ export function SchedulesPage() {
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
         title='定时任务'
-        description='统一管理场景、场景集、知识地图采集和知识分析的定时计划。知识地图采集会定时访问已知资产，采集最新观察并核验变化。保存默认停用；工厂开关关闭时不会触发。'
+        description='统一管理场景、场景集、知识地图采集和知识分析的定时计划。新计划保存后默认停用。'
         actions={
-          canWrite ? (
+          canWrite && (items.length > 0 || Boolean(consumerKey)) ? (
             <Button
               onClick={() => {
                 setEditing(null)
@@ -175,8 +175,28 @@ export function SchedulesPage() {
         />
       ) : items.length === 0 ? (
         <EmptyState
-          title='还没有调度计划'
-          description='先选任务类型再固定版本和排期。出厂关闭时即使保存也不会触发。'
+          title={consumerKey ? '没有匹配的调度计划' : '还没有调度计划'}
+          description={
+            consumerKey
+              ? '当前筛选的任务类型下暂无计划，可更换筛选或清除条件。'
+              : '先选任务类型和目标系统，再设置排期。新计划保存后默认停用。'
+          }
+          action={
+            consumerKey ? (
+              <Button variant='outline' onClick={() => setConsumerKey('')}>
+                清除筛选
+              </Button>
+            ) : canWrite ? (
+              <Button
+                onClick={() => {
+                  setEditing(null)
+                  setEditorOpen(true)
+                }}
+              >
+                新建调度
+              </Button>
+            ) : undefined
+          }
         />
       ) : (
         <>
@@ -231,7 +251,9 @@ export function SchedulesPage() {
                         {item.targetAccountId
                           ? (accountNames.get(item.targetAccountId) ??
                             item.targetAccountId.slice(0, 8))
-                          : (item.objectLabel ?? '无浏览器账号')}
+                          : item.consumerKey === 'map_ingest'
+                            ? '由平台选择采集账号'
+                            : (item.objectLabel ?? '无浏览器账号')}
                       </p>
                     </TableCell>
                     <TableCell>{timeSummary(item)}</TableCell>

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  accountAllowsMap,
   requiredRunInputKeys,
   canonicalJson,
   SCHEDULE_INTERVAL_MIN_MS,
@@ -60,6 +61,67 @@ const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 7, label: '周日' },
 ]
 
+function formatLocalTime(isoUtc: string, timeZone: string) {
+  try {
+    return new Date(isoUtc).toLocaleTimeString('zh-CN', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: timeZone.trim() || 'Asia/Shanghai',
+    })
+  } catch {
+    return isoUtc
+  }
+}
+
+function getScheduleSummaryText({
+  ruleKind,
+  weekdays,
+  windowStart,
+  windowEnd,
+  intervalMin,
+  extraWindows,
+}: {
+  ruleKind: 'calendar' | 'interval'
+  weekdays: ScheduleWeekday[]
+  windowStart: string
+  windowEnd: string
+  intervalMin: number
+  extraWindows: { ruleId: string; windowStart: string; windowEnd: string }[]
+}): string {
+  if (ruleKind === 'interval') {
+    return `全天每隔 ${intervalMin} 分钟持续触发 1 次（按固定间隔循环执行）。`
+  }
+  const dayLabels = WEEKDAYS.filter((d) => weekdays.includes(d.value)).map(
+    (d) => d.label
+  )
+  let dayDesc = ''
+  if (dayLabels.length === 7) {
+    dayDesc = '每天'
+  } else if (
+    dayLabels.length === 5 &&
+    [1, 2, 3, 4, 5].every((val) => weekdays.includes(val as ScheduleWeekday))
+  ) {
+    dayDesc = '每个工作日（周一至周五）'
+  } else if (
+    dayLabels.length === 2 &&
+    [6, 7].every((val) => weekdays.includes(val as ScheduleWeekday))
+  ) {
+    dayDesc = '周末（周六、周日）'
+  } else if (dayLabels.length > 0) {
+    dayDesc = `每${dayLabels.join('、')}`
+  } else {
+    dayDesc = '未选择执行日期'
+  }
+
+  const times = [
+    `${windowStart}（截止 ${windowEnd}）`,
+    ...extraWindows.map((w) => `${w.windowStart}（截止 ${w.windowEnd}）`),
+  ]
+  const count = times.length
+  return `${dayDesc}在指定时刻发起 1 次执行（每日共 ${count} 次单次触发）：${times.join('、')}。到达触发时刻立即排入准入；若因节点排队或离线，超过最晚截止时刻仍未受理则主动跳过，避免影响业务高峰期。`
+}
+
 export type ScenarioOrSuiteObjectContext = {
   type: 'scenario_run' | 'suite_run'
   targetId: string
@@ -69,7 +131,12 @@ export type ScenarioOrSuiteObjectContext = {
   versionId?: string | null
 }
 
-export type ScheduleObjectContext = ScenarioOrSuiteObjectContext
+export type ScheduleObjectContext = ScenarioOrSuiteObjectContext | {
+  type: 'map_ingest'
+  targetId: string
+  targetName?: string
+  name: string
+}
 
 function emptyDefinition(
   type: ScheduleConsumerType,
@@ -139,6 +206,12 @@ function emptyDefinition(
         strategyVersion: 'analysis-strategy@1',
         budget: { maxItems: 50, useAi: false },
       },
+    }
+  }
+  if (type === 'map_ingest') {
+    return {
+      ...base,
+      consumer: { type, targetId },
     }
   }
   throw new Error(`未知调度类型：${type as string}`)
@@ -214,7 +287,9 @@ export function ScheduleEditorDialog({
   const [accountId, setAccountId] = useState(
     existing?.definition.consumer.type === 'scenario_run'
       ? (existing.definition.consumer.accountBinding.targetAccountId ?? '')
-      : ''
+      : existing?.definition.consumer.type === 'map_ingest'
+        ? (existing.definition.consumer.targetAccountId ?? '')
+        : ''
   )
   const [suiteId, setSuiteId] = useState(
     existing?.definition.consumer.type === 'suite_run'
@@ -537,6 +612,24 @@ export function ScheduleEditorDialog({
         },
       }
     }
+    if (type === 'map_ingest') {
+      return {
+        ...base,
+        name: name || '知识地图采集',
+        timeRule,
+        timezone: timeRule.kind === 'calendar' ? timeRule.timezone : 'UTC',
+        weekdays:
+          timeRule.kind === 'calendar' ? timeRule.weekdays : base.weekdays,
+        windowStart,
+        windowEnd,
+        misfire: timeRule.misfire,
+        consumer: {
+          type,
+          targetId,
+          targetAccountId: accountId || undefined,
+        },
+      }
+    }
     throw new Error(`未知调度类型：${type as string}`)
   }, [
     accountId,
@@ -568,6 +661,19 @@ export function ScheduleEditorDialog({
     windowEnd,
     windowStart,
   ])
+
+  const scheduleSummary = useMemo(
+    () =>
+      getScheduleSummaryText({
+        ruleKind,
+        weekdays,
+        windowStart,
+        windowEnd,
+        intervalMin,
+        extraWindows,
+      }),
+    [ruleKind, weekdays, windowStart, windowEnd, intervalMin, extraWindows]
+  )
 
   const previewMutation = useMutation({
     mutationFn: () => previewSchedule({ definition }),
@@ -641,14 +747,13 @@ export function ScheduleEditorDialog({
       toast.error(error instanceof Error ? error.message : '启用失败'),
   })
 
-  const factoryOn =
-    type === 'scenario_run'
-      ? configQuery.data?.document.scenarioScheduledRunEnabled
-      : type === 'suite_run'
-        ? configQuery.data?.document.suiteScheduledRunEnabled
-        : type === 'knowledge_analysis'
-          ? configQuery.data?.document.knowledgeAnalysisEnabled
-          : false
+  const taskAvailability: Record<ScheduleConsumerType, boolean | undefined> = {
+    scenario_run: configQuery.data?.document.scenarioScheduledRunEnabled,
+    suite_run: configQuery.data?.document.suiteScheduledRunEnabled,
+    knowledge_analysis: configQuery.data?.document.knowledgeAnalysisEnabled,
+    map_ingest: configQuery.data?.document.mapScheduledRefreshEnabled,
+  }
+  const taskAvailable = taskAvailability[type]
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -656,7 +761,7 @@ export function ScheduleEditorDialog({
         <DialogHeader>
           <DialogTitle>{existing ? '编辑调度' : '新建调度'}</DialogTitle>
           <DialogDescription>
-            先选任务再固定版本、输入和排期。保存默认停用；启用前请预览窗口并确认工厂开关。
+            选择任务和目标系统，按需设置账号、输入与排期。保存后默认停用；启用前请预览执行时间，并确认平台已开放相应任务。
           </DialogDescription>
         </DialogHeader>
         <div className='grid gap-4'>
@@ -668,9 +773,10 @@ export function ScheduleEditorDialog({
 
                 disabled={Boolean(existing) || Boolean(context) || !canWrite}
                 value={type}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
                   setType(value as ScheduleConsumerType)
-                }
+                  setAccountId('')
+                }}
               >
                 {Object.entries(CONSUMER_LABELS).map(([value, label]) => (
                   <SelectFieldOption key={value} value={value}>
@@ -793,6 +899,32 @@ export function ScheduleEditorDialog({
               </SelectField>
               <p className='text-label text-muted-foreground'>
                 成员版本和账号映射随集合修订冻结，不会追随新的默认账号。
+              </p>
+            </div>
+          ) : null}
+          {type === 'map_ingest' ? (
+            <div className='grid gap-1'>
+              <Label htmlFor='schedule-map-account'>目标账号</Label>
+              <SelectField
+                id='schedule-map-account'
+                disabled={!canWrite || !targetId}
+                value={accountId}
+                onValueChange={setAccountId}
+              >
+                <SelectFieldOption value=''>由平台选择可用账号</SelectFieldOption>
+                {(accountsQuery.data?.items ?? []).map((item) => (
+                  <SelectFieldOption
+                    key={item.id}
+                    value={item.id}
+                    disabled={!accountAllowsMap(item.usage)}
+                  >
+                    {item.displayName}
+                    {!accountAllowsMap(item.usage) ? '（未允许地图采集）' : ''}
+                  </SelectFieldOption>
+                ))}
+              </SelectField>
+              <p className='text-label text-muted-foreground'>
+                留空时由平台选择允许地图采集的账号。计划将访问目标系统已启用的采集入口。
               </p>
             </div>
           ) : null}
@@ -1020,8 +1152,8 @@ export function ScheduleEditorDialog({
                   setRuleKind(value as 'calendar' | 'interval')
                 }
               >
-                <SelectFieldOption value='calendar'>日历窗口</SelectFieldOption>
-                <SelectFieldOption value='interval'>固定间隔</SelectFieldOption>
+                <SelectFieldOption value='calendar'>指定时间排期（单次执行）</SelectFieldOption>
+                <SelectFieldOption value='interval'>持续固定间隔</SelectFieldOption>
               </SelectField>
             </div>
             {ruleKind === 'interval' ? (
@@ -1052,137 +1184,180 @@ export function ScheduleEditorDialog({
           </div>
           {ruleKind === 'calendar' ? (
             <>
-              <div className='flex flex-wrap gap-2'>
-                {WEEKDAYS.map((day) => (
-                  <label
-                    key={day.value}
-                    className='flex items-center gap-1 text-body'
-                  >
-                    <input
-                      type='checkbox'
-                      checked={weekdays.includes(day.value)}
-                      disabled={!canWrite}
-                      onChange={() =>
-                        setWeekdays((current) =>
-                          current.includes(day.value)
-                            ? current.filter((item) => item !== day.value)
-                            : [...current, day.value]
-                        )
-                      }
-                    />
-                    {day.label}
-                  </label>
-                ))}
-              </div>
-              <div className='grid gap-2 md:grid-cols-2'>
-                <div className='grid gap-1'>
-                  <Label htmlFor='schedule-start'>开始</Label>
-                  <Input
-                    id='schedule-start'
-                    value={windowStart}
-                    disabled={!canWrite}
-                    onChange={(event) => setWindowStart(event.target.value)}
-                  />
+              <div className='grid gap-1.5'>
+                <Label>执行日期</Label>
+                <div className='flex flex-wrap gap-2'>
+                  {WEEKDAYS.map((day) => (
+                    <label
+                      key={day.value}
+                      className='flex items-center gap-1 text-body'
+                    >
+                      <input
+                        type='checkbox'
+                        checked={weekdays.includes(day.value)}
+                        disabled={!canWrite}
+                        onChange={() =>
+                          setWeekdays((current) =>
+                            current.includes(day.value)
+                              ? current.filter((item) => item !== day.value)
+                              : [...current, day.value]
+                          )
+                        }
+                      />
+                      {day.label}
+                    </label>
+                  ))}
                 </div>
-                <div className='grid gap-1'>
-                  <Label htmlFor='schedule-end'>结束</Label>
-                  <Input
-                    id='schedule-end'
-                    value={windowEnd}
-                    disabled={!canWrite}
-                    onChange={(event) => setWindowEnd(event.target.value)}
-                  />
+              </div>
+              <div className='grid gap-3 rounded-md border border-border-card bg-muted/20 p-3'>
+                <div className='grid gap-2 md:grid-cols-2'>
+                  <div className='grid gap-1'>
+                    <Label htmlFor='schedule-start'>触发时间</Label>
+                    <Input
+                      id='schedule-start'
+                      value={windowStart}
+                      disabled={!canWrite}
+                      onChange={(event) => setWindowStart(event.target.value)}
+                    />
+                    <p className='text-label text-muted-foreground'>
+                      到达该时刻准时发起执行（每日 1 次单次触发）。
+                    </p>
+                  </div>
+                  <div className='grid gap-1'>
+                    <Label htmlFor='schedule-end'>最晚受理截止（窗口保护）</Label>
+                    <Input
+                      id='schedule-end'
+                      value={windowEnd}
+                      disabled={!canWrite}
+                      onChange={(event) => setWindowEnd(event.target.value)}
+                    />
+                    <p className='text-label text-muted-foreground'>
+                      若节点排队或离线，超此时刻未开始则跳过，防止白天高峰误跑。
+                    </p>
+                  </div>
                 </div>
               </div>
               {extraWindows.map((window, index) => (
                 <div
                   key={window.ruleId}
-                  className='flex flex-wrap items-end gap-2'
+                  className='grid gap-2 rounded-md border border-border-card bg-muted/10 p-3'
                 >
-                  <div className='grid flex-1 gap-1'>
-                    <Label htmlFor={`window-start-${index}`}>
-                      窗口 {index + 2} 开始
-                    </Label>
-                    <Input
-                      id={`window-start-${index}`}
-                      type='time'
-                      value={window.windowStart}
+                  <div className='flex items-center justify-between'>
+                    <span className='text-label font-medium'>
+                      附加执行时间点 {index + 2}
+                    </span>
+                    <Button
+                      variant='ghost'
+                      size='sm'
                       disabled={!canWrite}
-                      onChange={(event) =>
+                      onClick={() =>
                         setExtraWindows((items) =>
-                          items.map((item, i) =>
-                            i === index
-                              ? { ...item, windowStart: event.target.value }
-                              : item
-                          )
+                          items.filter((_, i) => i !== index)
                         )
                       }
-                    />
+                    >
+                      移除
+                    </Button>
                   </div>
-                  <div className='grid flex-1 gap-1'>
-                    <Label htmlFor={`window-end-${index}`}>结束</Label>
-                    <Input
-                      id={`window-end-${index}`}
-                      type='time'
-                      value={window.windowEnd}
-                      disabled={!canWrite}
-                      onChange={(event) =>
-                        setExtraWindows((items) =>
-                          items.map((item, i) =>
-                            i === index
-                              ? { ...item, windowEnd: event.target.value }
-                              : item
+                  <div className='grid gap-2 md:grid-cols-2'>
+                    <div className='grid gap-1'>
+                      <Label htmlFor={`window-start-${index}`}>触发时间</Label>
+                      <Input
+                        id={`window-start-${index}`}
+                        type='time'
+                        value={window.windowStart}
+                        disabled={!canWrite}
+                        onChange={(event) =>
+                          setExtraWindows((items) =>
+                            items.map((item, i) =>
+                              i === index
+                                ? { ...item, windowStart: event.target.value }
+                                : item
+                            )
                           )
-                        )
-                      }
-                    />
+                        }
+                      />
+                    </div>
+                    <div className='grid gap-1'>
+                      <Label htmlFor={`window-end-${index}`}>最晚受理截止</Label>
+                      <Input
+                        id={`window-end-${index}`}
+                        type='time'
+                        value={window.windowEnd}
+                        disabled={!canWrite}
+                        onChange={(event) =>
+                          setExtraWindows((items) =>
+                            items.map((item, i) =>
+                              i === index
+                                ? { ...item, windowEnd: event.target.value }
+                                : item
+                            )
+                          )
+                        }
+                      />
+                    </div>
                   </div>
-                  <Button
-                    variant='outline'
-                    disabled={!canWrite}
-                    onClick={() =>
-                      setExtraWindows((items) =>
-                        items.filter((_, i) => i !== index)
-                      )
-                    }
-                  >
-                    移除
-                  </Button>
                 </div>
               ))}
-              <Button
-                variant='outline'
-                disabled={!canWrite || extraWindows.length >= 7}
-                onClick={() =>
-                  setExtraWindows((items) => [
-                    ...items,
-                    {
-                      ruleId: `window-${Date.now()}`,
-                      windowStart: '09:00',
-                      windowEnd: '10:00',
-                    },
-                  ])
-                }
-              >
-                添加窗口
-              </Button>
+              <div>
+                <Button
+                  variant='outline'
+                  size='sm'
+                  disabled={!canWrite || extraWindows.length >= 7}
+                  onClick={() =>
+                    setExtraWindows((items) => [
+                      ...items,
+                      {
+                        ruleId: `window-${Date.now()}`,
+                        windowStart: '09:00',
+                        windowEnd: '10:00',
+                      },
+                    ])
+                  }
+                >
+                  添加执行时间点
+                </Button>
+              </div>
             </>
           ) : null}
-          {factoryOn === false ? (
+          <div className='rounded-md border border-border-card bg-muted/30 p-3 text-label text-muted-foreground'>
+            <p className='font-medium text-text-primary mb-1'>排期规则说明</p>
+            <p>{scheduleSummary}</p>
+          </div>
+          {taskAvailable === false ? (
             <p className='text-label text-status-warning-foreground'>
-              工厂尚未开放该类调度，可以保存和启用，但不会自动触发或手动执行。
+              平台尚未开放{CONSUMER_LABELS[type]}的定时触发。计划可以保存或启用，但不会按排期执行。请在平台配置中开放此类任务。
             </p>
           ) : null}
           {previewMutation.data ? (
-            <ul className='grid gap-1 text-label text-muted-foreground'>
-              {previewMutation.data.windows.slice(0, 5).map((window) => (
-                <li key={window.localSlotKey}>
-                  {window.kind === 'ok'
-                    ? `${window.localStartDate} ${window.windowStartUtc} → ${window.windowEndUtc}`
-                    : `${window.localStartDate} 跳过 · ${window.reason}`}
-                </li>
-              ))}
-            </ul>
+            <div className='grid gap-1.5 rounded-md border border-border-card bg-muted/20 p-3'>
+              <p className='text-label font-medium text-text-primary'>
+                未来执行时间预演（本地时区）
+              </p>
+              <ul className='grid gap-1.5 text-label text-muted-foreground'>
+                {previewMutation.data.windows.slice(0, 5).map((window) => (
+                  <li
+                    key={window.localSlotKey}
+                    className='flex items-center gap-2'
+                  >
+                    <span className='font-mono font-medium text-text-primary'>
+                      {window.localStartDate}
+                    </span>
+                    {window.kind === 'ok' ? (
+                      <span>
+                        {formatLocalTime(window.windowStartUtc, timezone)}{' '}
+                        准时发起（最晚受理截止{' '}
+                        {formatLocalTime(window.windowEndUtc, timezone)}）
+                      </span>
+                    ) : (
+                      <span className='text-destructive'>
+                        跳过 · {window.reason}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </div>
         <DialogFooter className='gap-2 sm:justify-between'>
@@ -1194,7 +1369,7 @@ export function ScheduleEditorDialog({
               !targetId || (type === 'scenario_run' && Boolean(inputError))
             }
           >
-            预览窗口
+            预览执行时间
           </Button>
           <div className='flex gap-2'>
             <Button
