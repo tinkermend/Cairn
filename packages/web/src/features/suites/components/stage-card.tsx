@@ -180,6 +180,10 @@ export function StageCard({
                 </SelectContent>
               </Select>
             </div>
+
+            <Badge variant='outline' className='ml-auto text-3xs font-normal text-muted-foreground bg-card border-border-divider/60'>
+              阶段独立策略
+            </Badge>
           </div>
         </div>
 

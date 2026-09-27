@@ -114,9 +114,10 @@ describe('场景集综合巡检报告文档装配与快照', () => {
     expect(summaryBlock.skippedCount).toBe(1) // m3
     expect(summaryBlock.savedPercent).toBe(67) // (45000 - 15000) / 45000 = 66.67% -> 67%
 
-    // 评分：(2*100 + 0 + 0 + 1*50) / 4 = 250 / 4 = 63 (FAIR)
-    expect(summaryBlock.healthScore).toBe(63)
-    expect(summaryBlock.healthGrade).toBe('FAIR')
+    // 跳过项没有业务结论，整集不能给出业务评分。
+    expect(summaryBlock.healthScore).toBeNull()
+    expect(summaryBlock.healthGrade).toBeNull()
+    expect(summaryBlock.undeterminedCount).toBe(0)
 
     // 检查 L1 业务宽表行
     expect(summaryBlock.gridRows).toHaveLength(4)
@@ -135,6 +136,58 @@ describe('场景集综合巡检报告文档装配与快照', () => {
     expect(summaryBlock.aggregatedFindings[0]!.displayName).toBe('订单积压巡检')
     expect(summaryBlock.aggregatedFindings[0]!.severity).toBe('HIGH')
     expect(summaryBlock.aggregatedFindings[0]!.evidenceId).toBe('00000000-0000-4000-8000-000000000099')
+  })
+
+  it('旧输出的执行失败和未配置业务检查不会被报告计为业务正常或异常', () => {
+    const doc = buildDocument({
+      stage: 'final',
+      title: '历史巡检',
+      config: DEFAULT_REPORT_CONFIG,
+      gaps: [],
+      source: {
+        kind: 'SUITE_RUN',
+        status: 'COMPLETED',
+        verdict: 'incomplete',
+        items: [
+          {
+            ordinal: 0,
+            memberId: 'm1',
+            displayName: '无检查项',
+            admission: 'SETTLED',
+            run: {
+              status: 'SUCCEEDED',
+              outcomeStatus: 'NOT_EVALUATED',
+              output: { status: 'NORMAL', summary: '业务正常', metrics: {}, findings: [], dataRow: {}, assembledAt: '2026-09-22T10:00:00.000Z' },
+            },
+          },
+          {
+            ordinal: 1,
+            memberId: 'm2',
+            displayName: '执行中断',
+            admission: 'SETTLED',
+            run: {
+              status: 'FAILED',
+              outcomeStatus: 'NOT_EVALUATED',
+              output: {
+                status: 'ANOMALOUS',
+                summary: '业务成功',
+                metrics: {},
+                findings: [{ id: 'f-execution-failed', severity: 'HIGH', title: '执行中断' }],
+                dataRow: {},
+                assembledAt: '2026-09-22T10:00:00.000Z',
+              },
+            },
+          },
+        ],
+      },
+    })
+    const summary = suiteSummaryBlockSchema.parse(doc.sections.flatMap((section) => section.blocks).find((block) => block.type === 'suite_business_summary'))
+    expect(summary.normalCount).toBe(0)
+    expect(summary.anomalousCount).toBe(0)
+    expect(summary.undeterminedCount).toBe(2)
+    expect(summary.healthScore).toBeNull()
+    expect(summary.gridRows.map((row) => row.status)).toEqual(['UNDETERMINED', 'UNDETERMINED'])
+    expect(summary.gridRows.every((row) => !row.summary.includes('业务成功'))).toBe(true)
   })
 
   it('reportScreenshotRefs 自动将 Finding 关联的证据标记为 anomalous 纳入报告材料', () => {

@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest'
-import { BrowserSessionManager } from './session-manager'
+import { BrowserSessionManager, SessionLeaseError } from './session-manager'
 import { computeContextVersion } from '@cairn/shared'
 import { occupyAutoLoginBudget, recordAutoLoginOutcome, enterRunWaitingForAuth } from '@cairn/db'
 import { currentOccupancyGrant, submitLoginCredentials } from './runtime'
@@ -213,6 +213,30 @@ it('提交登录后抛错：预算已计次，必须补记一次失败 outcome �
 it('拿不到凭据不占自动登录额度', async () => {
   manager.resolveLoginCredential = vi.fn(async () => null)
   expect(await recover()).toMatchObject({ ok: false, unrecoverable: true })
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+})
+it('凭据解密失败返回 AUTH_CREDENTIAL_UNREADABLE 且不占自动登录额度', async () => {
+  manager.resolveLoginCredential = vi.fn(async () => {
+    throw new SessionLeaseError('AUTH_CREDENTIAL_UNREADABLE', '解密失败')
+  })
+  expect(await recover()).toEqual({
+    ok: false,
+    unrecoverable: true,
+    code: 'AUTH_CREDENTIAL_UNREADABLE',
+    runStatus: 'FAILED',
+  })
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+})
+it('凭据解出空密码返回 AUTH_CREDENTIAL_MISSING 且不占自动登录额度', async () => {
+  manager.resolveLoginCredential = vi.fn(async () => ({ username: 'alice', password: '' }))
+  expect(await recover()).toEqual({
+    ok: false,
+    unrecoverable: true,
+    code: 'AUTH_CREDENTIAL_MISSING',
+    runStatus: 'FAILED',
+  })
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
   expect(submitLoginCredentials).not.toHaveBeenCalled()
 })

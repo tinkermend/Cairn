@@ -35,6 +35,7 @@ import { lockRunRow } from '../leases/leases.js'
 import { appendRunEvents } from '../observe/events.js'
 import { commitObjectEvidence, findObjectEvidenceByRunType, markEvidenceMissing } from './objects.js'
 import { recordAudit } from '../audit/record.js'
+import { scopedTargetFilter } from '../console/target-authorization.js'
 
 export type PendingEvidenceRow = EvidenceMetadata & {
   objectId: string | null
@@ -48,6 +49,7 @@ export type PendingEvidenceRow = EvidenceMetadata & {
 export async function getEvidenceForRun(
   db: Db,
   input: { runId: string; evidenceId: string },
+  actorId?: string,
 ): Promise<EvidenceRow | null> {
   const { evidences, runs } = schemaFor(db)
   const [row] = await db
@@ -59,6 +61,7 @@ export async function getEvidenceForRun(
         eq(evidences.id, input.evidenceId),
         eq(evidences.runId, input.runId),
         isNull(runs.deletedAt),
+        await scopedTargetFilter(db, actorId, runs.targetId, 'run:read'),
       ),
     )
     .limit(1)

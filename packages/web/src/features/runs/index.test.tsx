@@ -3,6 +3,7 @@ import type { RunListResponse, RunSummaryDto } from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { useAuthStore } from '@/stores/auth-store'
+import { runsPageSearchSchema } from '@/routes/_authenticated/runs/index'
 import { RunsPage } from './index'
 
 const mocks = vi.hoisted(() => ({
@@ -13,8 +14,14 @@ const mocks = vi.hoisted(() => ({
   deleteRun: vi.fn(),
   fetchScenarios: vi.fn().mockResolvedValue({ items: [] }),
   fetchTargets: vi.fn().mockResolvedValue({ items: [] }),
+  fetchEvidenceSearch: vi.fn(),
 }))
-let routeSearch: { targetId?: string } = {}
+let routeSearch: {
+  targetId?: string
+  view?: 'runs' | 'materials'
+  evidenceView?: 'recent_failures'
+  asOf?: string
+} = {}
 const navigateMock = vi.fn()
 
 vi.mock('@/lib/runs-api', async (importOriginal) => {
@@ -37,6 +44,12 @@ vi.mock('@/lib/targets-api', () => ({
   fetchTargets: mocks.fetchTargets,
   fetchTarget: vi.fn(),
   fetchTargetAccounts: vi.fn().mockResolvedValue({ items: [] }),
+}))
+vi.mock('@/lib/evidence-api', () => ({
+  fetchEvidenceSearch: mocks.fetchEvidenceSearch,
+  fetchEvidenceDetail: vi.fn(),
+  fetchEvidenceRetentionSummary: vi.fn(),
+  fetchEvidenceRetentionObjects: vi.fn(),
 }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -135,6 +148,14 @@ describe('RunsPage', () => {
     mocks.deleteRun.mockResolvedValue({ success: true })
     mocks.fetchScenarios.mockResolvedValue({ items: [] })
     mocks.fetchTargets.mockResolvedValue({ items: [] })
+    mocks.fetchEvidenceSearch.mockResolvedValue({
+      items: [],
+      asOf: '2026-09-27T00:00:00.000Z',
+      readAt: '2026-09-27T00:00:00.000Z',
+      timeWindowLifted: false,
+      sort: 'createdAt_desc',
+      summary: { evidenceCount: 0, objectCount: 0, knownBytes: 0, unknownByteObjects: 0 },
+    })
   })
 
   afterEach(() => {
@@ -147,6 +168,62 @@ describe('RunsPage', () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
     expect(mocks.fetchRuns).toHaveBeenCalledWith(expect.objectContaining({ targetId: routeSearch.targetId }))
+  })
+
+  it('材料检索不把顶层 view=materials 当成证据预置视图', async () => {
+    expect(runsPageSearchSchema.parse({ view: 'materials', evidenceView: 'recent_failures' })).toMatchObject({
+      view: 'materials', evidenceView: 'recent_failures',
+    })
+    routeSearch = { view: 'materials' }
+    signIn(['run:read'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText('没有符合筛选条件的证据')).toBeInTheDocument()
+    expect(mocks.fetchEvidenceSearch).toHaveBeenCalledWith(expect.objectContaining({ view: undefined }))
+    expect(screen.getByText('视图：undefined').elements()).toHaveLength(0)
+
+    await screen.getByRole('button', { name: '最近失败' }).click()
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: '/runs',
+      search: expect.objectContaining({ view: 'materials', evidenceView: 'recent_failures' }),
+    }))
+  })
+
+  it('材料检索从 evidenceView 恢复证据预置视图并传给查询', async () => {
+    routeSearch = { view: 'materials', evidenceView: 'recent_failures' }
+    signIn(['run:read'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText('视图：最近失败')).toBeInTheDocument()
+    expect(mocks.fetchEvidenceSearch).toHaveBeenCalledWith(expect.objectContaining({ view: 'recent_failures' }))
+  })
+
+  it('材料检索等待地址同步 asOf 时只发起一次替换导航', async () => {
+    routeSearch = { view: 'materials' }
+    signIn(['run:read'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const page = () => <QueryClientProvider client={client}><RunsPage /></QueryClientProvider>
+    const screen = await render(page())
+
+    await expect.element(screen.getByText('没有符合筛选条件的证据')).toBeInTheDocument()
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1))
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({
+      replace: true,
+      search: expect.objectContaining({
+        view: 'materials',
+        asOf: '2026-09-27T00:00:00.000Z',
+      }),
+    }))
+
+    // 其他查询返回时 RunsPage 会重渲染，但地址状态可能仍是旧值。
+    await screen.rerender(page())
+    await screen.rerender(page())
+    expect(navigateMock).toHaveBeenCalledTimes(1)
+
+    routeSearch = { view: 'materials', asOf: '2026-09-27T00:00:00.000Z' }
+    await screen.rerender(page())
+    await vi.waitFor(() => expect(mocks.fetchEvidenceSearch).toHaveBeenCalledTimes(2))
+    expect(navigateMock).toHaveBeenCalledTimes(1)
   })
 
   /** 列表是用来认出"这是哪一条"的，裸 UUID 等于没有信息（D14）。 */

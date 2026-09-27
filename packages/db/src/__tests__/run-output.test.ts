@@ -4,6 +4,7 @@ import {
   type Step,
   type ScenarioOutputDecl,
   type RunSnapshot,
+  type RunOutput,
   FACTORY_PLATFORM_CONFIG,
 } from '@cairn/shared'
 import { computeSnapshotDigest } from '../runs/digest.js'
@@ -19,6 +20,7 @@ import {
 } from '../test-entry.js'
 import { newId } from '../id.js'
 import { assembleRunSnapshot } from '../runs/assemble-snapshot.js'
+import { captureSource } from '../reports/reports.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_output`
 
@@ -35,6 +37,15 @@ const step1: Step = {
       title: 'Item 1',
     },
   },
+}
+
+const countStep: Step = {
+  id: '00000000-0000-4000-8000-000000000082',
+  name: '输出项目数',
+  type: 'echo',
+  effectType: 'READ_ONLY',
+  outputKey: 'item_count',
+  input: { value: 100 },
 }
 
 const outputsDecl: ScenarioOutputDecl = {
@@ -156,7 +167,7 @@ describe.each(DRIVERS)('%s 业务输出 settleRunOutput 与 API 读取集成', {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
       name: '业务输出场景',
-      steps: [step1],
+      steps: [step1, countStep],
       outputs: outputsDecl,
       actor: { id: actorId },
     })
@@ -269,5 +280,56 @@ describe.each(DRIVERS)('%s 业务输出 settleRunOutput 与 API 读取集成', {
     // 物理库仍然为 null，不被隐式变动
     const [afterRow] = await handle.db.select().from(runs).where(eq(runs.id, runId)).limit(1)
     expect(afterRow.output).toBeNull()
+  })
+
+  it('历史失败运行的列表和详情不显示成功结论，保留部分数据且不改写原始输出', async () => {
+    const { runs } = schemaFor(handle.db)
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '历史失败输出场景',
+      steps: [step1, countStep],
+      outputs: outputsDecl,
+      actor: { id: actorId },
+    })
+    const run = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const storedOutput: RunOutput = {
+      summary: 'ModelAPI 密钥已创建，状态正常',
+      status: 'NORMAL',
+      metrics: { item_count: 1 },
+      findings: [],
+      dataRow: { report_id: 7 },
+      assembledAt: new Date().toISOString(),
+    }
+    await handle.db.update(runs).set({
+      status: 'FAILED',
+      outcomeStatus: 'NOT_EVALUATED',
+      evidenceStatus: 'PENDING',
+      output: storedOutput,
+      finishedAt: new Date(),
+    }).where(eq(runs.id, run.detail.id))
+
+    const list = await listRuns(handle.db, { targetId })
+    expect(list.items.find((item) => item.id === run.detail.id)).toMatchObject({
+      status: 'FAILED',
+      outcomeStatus: 'NOT_EVALUATED',
+      evidenceStatus: 'PENDING',
+      outputSummary: '执行过程中断。',
+    })
+
+    const detail = await loadRunDetail(handle.db, run.detail.id)
+    expect(detail?.output).toEqual({ ...storedOutput, status: 'UNDETERMINED', summary: '执行过程中断。' })
+    expect(detail?.outcomeStatus).toBe('NOT_EVALUATED')
+    expect(detail?.evidenceStatus).toBe('PENDING')
+
+    const reportSource = await captureSource(handle.db, { kind: 'RUN', runId: run.detail.id })
+    expect((reportSource.payload.output as RunOutput).summary).toBe('执行过程中断。')
+    expect((reportSource.payload.output as RunOutput).status).toBe('UNDETERMINED')
+    expect((reportSource.payload.output as RunOutput).dataRow).toEqual({ report_id: 7 })
+
+    const [afterRead] = await handle.db.select({ output: runs.output }).from(runs).where(eq(runs.id, run.detail.id))
+    expect(afterRead.output).toEqual(storedOutput)
   })
 })

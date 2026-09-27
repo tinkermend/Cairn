@@ -352,10 +352,10 @@ export function RunHeroBanner({
                 </DropdownMenuItem>
               ) : null}
 
-              <Can allOf={['notification:read']}>
+              <Can allOf={['outbound:read']}>
                 <DropdownMenuItem asChild>
-                  <Link to='/notifications' search={{ tab: 'records', runId: run.id }}>
-                    通知发送记录
+                  <Link to='/outbound' search={{ tab: 'records', runId: run.id }}>
+                    消息推送记录
                   </Link>
                 </DropdownMenuItem>
               </Can>

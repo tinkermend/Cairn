@@ -107,20 +107,20 @@ describe('证据正文下载（集成）', { timeout: 30_000 }, () => {
       objectKey: reserved.objectKey,
     })
 
-    const file = await runs.evidenceContent(runId, evidence.id)
+    const file = await runs.evidenceContent(runId, evidence.id, actor.id)
     expect(file.contentType).toBe('image/png')
     expect(file.byteSize).toBe(body.byteLength)
     expect(file.filename).toBe('screenshot.png')
     expect(file.body).toEqual(body)
 
-    await expect(runs.evidenceContent(otherRunId, evidence.id)).rejects.toBeInstanceOf(NotFoundException)
+    await expect(runs.evidenceContent(otherRunId, evidence.id, actor.id)).rejects.toBeInstanceOf(NotFoundException)
 
     const missing = await recordMissingObjectEvidence(handle.db, {
       runId,
       type: 'screenshot',
       missingReason: OBJECT_MISSING_REASONS.workerLost,
     })
-    await expect(runs.evidenceContent(runId, missing.id)).rejects.toMatchObject({
+    await expect(runs.evidenceContent(runId, missing.id, actor.id)).rejects.toMatchObject({
       response: { code: 'EVIDENCE_NOT_AVAILABLE', message: expect.stringContaining('worker_lost') },
     })
 
@@ -146,7 +146,7 @@ describe('证据正文下载（集成）', { timeout: 30_000 }, () => {
       type: 'video',
       objectKey: reserved.objectKey,
     })
-    const file = await runs.evidenceContent(runId, evidence.id)
+    const file = await runs.evidenceContent(runId, evidence.id, actor.id)
     expect(file.contentType).toBe('video/webm')
     expect(file.filename).toBe(`run-${runId.slice(0, 8)}.webm`)
     expect(file.body).toEqual(body)

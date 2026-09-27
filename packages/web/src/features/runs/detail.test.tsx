@@ -6,6 +6,7 @@ import { render } from 'vitest-browser-react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runPlacement, type RunDetailDto, type RunEvidenceListResponse, type RunObservation } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { RunDetailPage } from './detail'
 
 const RUN_ID = '44444444-4444-4444-8444-444444444444'
@@ -258,6 +259,23 @@ describe('RunDetailPage', () => {
     useAuthStore.getState().auth.setUser(null)
   })
 
+  it.each([
+    { status: 'SUCCEEDED', outcomeStatus: 'PASS', expectedTone: 'success', outcomeLabel: '业务通过' },
+    { status: 'SUCCEEDED', outcomeStatus: 'FAIL', expectedTone: 'error', outcomeLabel: '业务异常' },
+    { status: 'FAILED', outcomeStatus: 'NOT_EVALUATED', expectedTone: 'error', outcomeLabel: '未评价业务结果' },
+  ] as const)('执行 $status、业务 $outcomeStatus 时助手上下文为 $expectedTone', async ({ status, outcomeStatus, expectedTone, outcomeLabel }) => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(runDetail({ status, outcomeStatus, stepRuns: [] })),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText(outcomeLabel)).toBeInTheDocument()
+    await vi.waitFor(() => {
+      expect(useAssistantStore.getState().boundContext?.statusTone).toBe(expectedTone)
+    })
+  })
+
   /** 验收 33 与 34：步骤、Attempt、证据、context 都要能看见，待核查是橙色且核查是主操作。 */
   it('待核查：橙色状态、核查是主操作，步骤/Attempt/证据/context 可见', async () => {
     signIn(['run:read', 'run:review', 'run:cancel', 'run:execute'])
@@ -289,6 +307,69 @@ describe('RunDetailPage', () => {
     await expect.element(screen.getByText(/第 1 次尝试/)).toBeInTheDocument()
     expect(document.body.textContent).toContain('接管时副作用步骤结果未确认')
     expect(document.body.textContent).toContain('greeting')
+  })
+
+  it('耗时分布区分运行历时、已执行步骤耗时与步骤外等待，未执行步骤不参与占比', async () => {
+    const originalStep = runDetail().stepRuns[0]
+    const firstStep = {
+      ...originalStep,
+      name: '读取页面',
+      status: 'SUCCEEDED' as const,
+      startedAt: '2026-09-11T02:00:01.000Z',
+      finishedAt: '2026-09-11T02:00:03.900Z',
+      attempts: [{
+        ...originalStep.attempts[0],
+        status: 'SUCCEEDED' as const,
+        startedAt: '2026-09-11T02:00:01.000Z',
+        finishedAt: '2026-09-11T02:00:03.900Z',
+        error: null,
+      }],
+    }
+    const secondStep = {
+      ...firstStep,
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      stepId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      name: '提交页面',
+      ordinal: 1,
+      startedAt: '2026-09-11T02:00:03.900Z',
+      finishedAt: '2026-09-11T02:00:10.000Z',
+      attempts: [{
+        ...firstStep.attempts[0],
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        startedAt: '2026-09-11T02:00:09.000Z',
+        finishedAt: '2026-09-11T02:00:10.000Z',
+      }],
+    }
+    const pendingStep = {
+      ...firstStep,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      stepId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      name: '尚未执行',
+      ordinal: 2,
+      status: 'PENDING' as const,
+      startedAt: null,
+      finishedAt: null,
+      attempts: [],
+    }
+    mocks.fetchRunObservation.mockResolvedValue(observationOf(runDetail({
+      status: 'SUCCEEDED',
+      startedAt: '2026-09-11T02:00:00.000Z',
+      finishedAt: '2026-09-11T02:28:36.000Z',
+      stepRuns: [firstStep, secondStep, pendingStep],
+    })))
+    signIn(['run:read'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText('耗时分布与性能透视')).toBeInTheDocument()
+    const performance = screen.getByText('耗时分布与性能透视').element().closest('section')
+    expect(performance).not.toBeNull()
+    expect(performance?.textContent).toContain('运行历时: 1716 s')
+    expect(performance?.textContent).toContain('已记录步骤耗时总和: 9.0s')
+    expect(performance?.textContent).toContain('未归于步骤的耗时：1707s')
+    expect(performance?.textContent).toContain('已执行步骤: 2 / 编排步骤: 3')
+    expect(performance?.textContent).toContain('占已记录步骤耗时 32%')
+    expect(performance?.textContent).toContain('6.1s')
+    expect(performance?.textContent).not.toContain('尚未执行')
   })
 
   it('核查写入说明并调用接口', async () => {

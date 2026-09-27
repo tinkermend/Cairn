@@ -9,6 +9,8 @@ import {
 import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 import {
+  authorizeTargetRequest,
+  DomainError,
   getRun,
   authHoldFromLease,
   findAuthWaitLeaseForRun,
@@ -47,6 +49,7 @@ import type { RequestAccount } from '../common/request-account'
 import { classifyAccountRecheck, rethrowDomain } from '../common/domain-error'
 import { DB_HANDLE } from '../db/db.module'
 import { WorkerForwardError, WorkerInternalClient } from './worker-internal.client'
+import { visibleRunDetail } from './report-visibility'
 
 @Injectable()
 export class BrowserService {
@@ -58,6 +61,7 @@ export class BrowserService {
   ) {}
 
   async meta(runId: string, actor: RequestAccount, pageId?: string): Promise<ManagedBrowserMeta> {
+    await this.requireRunScope(runId, actor.id, ['run:read', 'session:view'])
     const target = await this.resolveTarget(runId)
     if (!target.session || !target.worker) return await this.degraded(target, 'worker_unreachable')
     try {
@@ -86,6 +90,7 @@ export class BrowserService {
     response: Response
     signal: AbortSignal
   }): Promise<void> {
+    await this.requireRunScope(input.runId, input.actor.id, ['run:read', 'session:view'])
     const target = await this.resolveTarget(input.runId)
     if (!target.session || !target.worker) {
       throw new ServiceUnavailableException({ code: 'WORKER_UNREACHABLE', message: '执行面暂时不可达' })
@@ -163,8 +168,12 @@ export class BrowserService {
   }
 
   async resumeAuth(runId: string, body: ResumeAuthBody, actor: RequestAccount) {
-    await this.mutate(runId, actor, workerInternalPath('/resume-auth'), JSON.stringify(body))
-    return getRun(this.db, runId).catch(rethrowDomain)
+    await this.mutate(runId, actor, workerInternalPath('/resume-auth'), JSON.stringify(body), undefined, ['session:control', 'run:execute', 'run:read'])
+    try {
+      return await visibleRunDetail(this.db, actor.id, await getRun(this.db, runId, actor.id))
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
   observe(runId: string, body: ObserveOperation, actor: RequestAccount) {
@@ -174,6 +183,7 @@ export class BrowserService {
       workerInternalPath('/observe'),
       JSON.stringify(observeOperationSchema.parse(body)),
       targetObservationSchema,
+      ['run:read', 'session:view', 'workflow:write'],
     )
   }
 
@@ -183,8 +193,14 @@ export class BrowserService {
       actor,
       workerRunsInternalPath('/debug-resume'),
       JSON.stringify(debugActionSchema.parse(body)),
+      undefined,
+      ['run:execute', 'workflow:write', 'run:read'],
     )
-    return getRun(this.db, runId).catch(rethrowDomain)
+    try {
+      return await visibleRunDetail(this.db, actor.id, await getRun(this.db, runId, actor.id))
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
   private async mutate(
@@ -193,7 +209,9 @@ export class BrowserService {
     path: string,
     body: string,
     schema?: { parse: (value: unknown) => unknown },
+    permissions: string[] = ['session:control', 'run:execute'],
   ) {
+    await this.requireRunScope(runId, actor.id, permissions)
     const target = await this.resolveTarget(runId)
     if (path === workerInternalPath('/resume-auth') && target.run.status !== 'WAITING_FOR_AUTH') {
       throw new ConflictException({ code: 'RUN_NOT_WAITING_FOR_AUTH', message: '只有等待认证的运行可以恢复领取' })
@@ -211,6 +229,10 @@ export class BrowserService {
     } catch (error) {
       this.rethrowForward(error)
     }
+  }
+
+  private async requireRunScope(runId: string, actorId: string, permissions: string[]): Promise<void> {
+    await authorizeTargetRequest(this.db, actorId, { runId, permissions }).catch(rethrowDomain)
   }
 
   private callBase(
@@ -330,6 +352,7 @@ export class BrowserService {
       const account = await this.auth.resolveAccount(accountId)
       if (account.status === 'disabled') return 'FORBIDDEN'
       if (!hasAllPermissions(account.permissions, ['run:read', 'session:view'])) return 'FORBIDDEN'
+      await authorizeTargetRequest(this.db, accountId, { runId, permissions: ['run:read', 'session:view'] })
       const target = await this.resolveTarget(runId)
       if (!target.worker || !target.endpoint || target.session?.status !== 'OPEN') return 'FORBIDDEN'
       if (
@@ -344,6 +367,7 @@ export class BrowserService {
       }
       return null
     } catch (error) {
+      if (error instanceof DomainError && (error.kind === 'not_found' || error.kind === 'forbidden')) return 'FORBIDDEN'
       return classifyAccountRecheck(error)
     }
   }

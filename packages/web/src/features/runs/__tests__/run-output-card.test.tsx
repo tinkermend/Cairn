@@ -31,7 +31,7 @@ const mockOutput: RunOutput = {
 
 describe('RunOutputCard', () => {
   it('无 output 时返回 null，不渲染任何节点', async () => {
-    const { container } = await render(<RunOutputCard output={null} />)
+    const { container } = await render(<RunOutputCard output={null} runStatus='SUCCEEDED' outcomeStatus='PASS' />)
     expect(container.firstChild).toBeNull()
   })
 
@@ -42,6 +42,8 @@ describe('RunOutputCard', () => {
     const { getByText, getByTestId, getByRole } = await render(
       <RunOutputCard
         output={mockOutput}
+        runStatus='SUCCEEDED'
+        outcomeStatus='WARN'
         onFocusEvidence={onFocusEvidence}
         onFocusStep={onFocusStep}
       />,
@@ -82,5 +84,50 @@ describe('RunOutputCard', () => {
     await expect.element(expandBtn).toBeInTheDocument()
     await expandBtn.click()
     await expect.element(getByRole('cell', { name: 'SKU-8801' })).toBeInTheDocument()
+  })
+
+  it('未完成业务判定时，旧输出不再显示成功结论或业务正常，部分指标仍可核查', async () => {
+    const { getByText, getByTestId } = await render(
+      <RunOutputCard
+        output={{ ...mockOutput, summary: '密钥已创建，状态正常', status: 'NORMAL' }}
+        runStatus='FAILED'
+        outcomeStatus='NOT_EVALUATED'
+      />,
+    )
+
+    await expect.element(getByText('业务未判定')).toBeInTheDocument()
+    await expect.element(getByTestId('run-output-summary')).toHaveTextContent('执行过程中断。')
+    await expect.element(getByTestId('metric-card-item_count')).toHaveTextContent('128')
+    expect(getByText('业务正常').query()).toBeNull()
+    expect(getByText('密钥已创建，状态正常').query()).toBeNull()
+  })
+
+  it.each([
+    ['FAIL', '业务异常', '流程执行完成，但业务检查未通过。'],
+    ['UNKNOWN', '业务未判定', '流程执行完成，但业务结果无法确认。'],
+  ] as const)('执行成功但业务结果为 %s 时，旧输出按业务结果轴呈现', async (outcomeStatus, label, summary) => {
+    const { getByText, getByTestId } = await render(
+      <RunOutputCard
+        output={{ ...mockOutput, summary: '密钥已创建，状态正常', status: 'NORMAL' }}
+        runStatus='SUCCEEDED'
+        outcomeStatus={outcomeStatus}
+      />,
+    )
+
+    await expect.element(getByText(label)).toBeInTheDocument()
+    await expect.element(getByTestId('run-output-summary')).toHaveTextContent(summary)
+    expect(getByText('业务正常').query()).toBeNull()
+  })
+
+  it('执行完成但尚未配置业务判定时，历史 NORMAL 输出标为业务未判定', async () => {
+    const { getByText } = await render(
+      <RunOutputCard
+        output={{ ...mockOutput, status: 'NORMAL' }}
+        runStatus='SUCCEEDED'
+        outcomeStatus='NOT_EVALUATED'
+      />,
+    )
+    await expect.element(getByText('业务未判定')).toBeInTheDocument()
+    expect(getByText('业务正常').query()).toBeNull()
   })
 })

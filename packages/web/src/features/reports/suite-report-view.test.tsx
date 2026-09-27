@@ -35,13 +35,14 @@ const sampleSuiteDocument: ReportDocument = {
       blocks: [
         {
           type: 'suite_business_summary',
-          healthScore: 75,
-          healthGrade: 'GOOD',
+          healthScore: 59,
+          healthGrade: 'POOR',
           totalCount: 3,
           normalCount: 2,
           warningCount: 0,
           anomalousCount: 1,
           skippedCount: 0,
+          undeterminedCount: 0,
           wallClockMs: 12000,
           childDurationMs: 30000,
           savedPercent: 60,
@@ -104,8 +105,8 @@ describe('SuiteReportView 交互控制台与四层总报表', () => {
   it('L0: 正确展示健康评分卡、模块状态分布与并发耗时节约指标', async () => {
     await render(<SuiteReportView document={sampleSuiteDocument} />)
 
-    await expect.element(page.getByText('75')).toBeVisible()
-    await expect.element(page.getByText('评级：良')).toBeVisible()
+    await expect.element(page.getByText('59')).toBeVisible()
+    await expect.element(page.getByText('评级：差')).toBeVisible()
     await expect.element(page.getByText('并发节约 60% 耗时')).toBeVisible()
     await expect.element(page.getByText('整次耗时：12.0 秒')).toBeVisible()
     await expect.element(page.getByText('总巡检项')).toBeVisible()
@@ -172,7 +173,33 @@ describe('SuiteReportView 交互控制台与四层总报表', () => {
     expect(writeTextSpy).toHaveBeenCalled()
     const copiedText = writeTextSpy.mock.calls[0]?.[0]
     expect(copiedText).toContain('【双十一电商核心链路巡检总报表】')
-    expect(copiedText).toContain('系统健康度：75分 (良)')
+    expect(copiedText).toContain('业务检查得分：59分 (差)')
     expect(copiedText).toContain('支付网关未在 5s 内响应')
+  })
+
+  it('旧版封存报告按来源运行只读修正未评估分类与满分展示', async () => {
+    const legacy = structuredClone(sampleSuiteDocument)
+    const block = legacy.sections[0]!.blocks[0]!
+    block.healthScore = 100
+    block.healthGrade = 'EXCELLENT'
+    block.normalCount = 3
+    block.anomalousCount = 0
+    delete block.undeterminedCount
+    const rows = block.gridRows as Array<Record<string, unknown>>
+    block.gridRows = rows.map((row) => ({ ...row, status: 'NORMAL' })) as typeof block.gridRows
+    legacy.verdict = 'incomplete'
+    legacy.source = {
+      items: ['m1', 'm2', 'm3'].map((memberId) => ({
+        memberId,
+        admission: 'SETTLED',
+        run: { status: 'SUCCEEDED', outcomeStatus: 'NOT_EVALUATED' },
+      })),
+    }
+    await render(<SuiteReportView document={legacy} />)
+    await expect.element(page.getByText('业务结果未完整判定，暂不评分')).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '仅看正常 (0)' })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '仅看未判定 (3)' })).toBeVisible()
+    await expect.element(page.getByText(/旧版封存报告。本页按来源运行重新分类 3 项/)).toBeVisible()
+    await expect.element(page.getByText('评级：优')).not.toBeInTheDocument()
   })
 })

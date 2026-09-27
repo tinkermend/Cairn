@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { frozenNotificationPolicySchema } from './notifications.js'
+import { frozenOutboundPolicySchema } from './outbound.js'
 import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { snapshotNeedsBrowserAi } from './resolution.js'
 import { frozenResolutionSchema } from './resolution-policy.js'
@@ -361,7 +361,8 @@ export const runSnapshotSchema = z
     importedOutcomeProtocol: z.literal(IMPORTED_OUTCOME_PROTOCOL).optional(),
     /** 创建时读取的平台配置修订。旧快照可缺省。 */
     platformConfigRevision: z.number().int().positive().optional(),
-    notificationPolicy: frozenNotificationPolicySchema.optional(),
+    outboundPolicy: frozenOutboundPolicySchema.optional(),
+    notificationPolicy: frozenOutboundPolicySchema.optional(),
     /**
      * 冻结的 Target 认证解释。新 Run 必写；旧快照缺字段时 Worker 仍读当前行。
      */

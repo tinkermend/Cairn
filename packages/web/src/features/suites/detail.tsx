@@ -437,6 +437,7 @@ export function SuiteDetailPage() {
             name={name}
             description={description}
             document={document}
+            isStageMode={isStageMode}
             canWrite={canWrite}
             targetAccounts={targetAccounts.data?.items ?? []}
             targetId={suite.targetId}

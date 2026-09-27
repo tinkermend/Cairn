@@ -53,13 +53,15 @@ export class RunsController {
   @RequirePermissions('run:read')
   async list(@Query(new ZodValidationPipe(runListQuerySchema)) query: RunListQuery, @CurrentAccount() account: RequestAccount) {
     const result = await this.runs.list(query, account.id)
-    if (!account.permissions.includes('report:read')) {
-      return {
-        ...result,
-        items: result.items.map(({ runReportStatus, reportId, ...item }) => item),
-      }
+    const scope = await this.runs.reportReadScope(account.id)
+    return {
+      ...result,
+      items: result.items.map((item) => {
+        if (scope.all || scope.ids.includes(item.targetId)) return item
+        const { runReportStatus, reportId, ...rest } = item
+        return rest
+      }),
     }
-    return result
   }
 
   @Post()
@@ -77,9 +79,10 @@ export class RunsController {
   @Get(':runId/observation')
   @RequirePermissions('run:read')
   async observation(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
-    const result = await this.observations.observation(runId)
+    const result = await this.observations.observation(runId, account.id)
     if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
-    if (!account.permissions.includes('report:read')) {
+    const reportScope = await this.runs.reportReadScope(account.id)
+    if (!reportScope.all && !reportScope.ids.includes(result.run.targetId)) {
       const { runReportStatus, reportId, reportError, ...restRun } = result.run
       return {
         ...result,
@@ -97,7 +100,7 @@ export class RunsController {
     @Req() req: Request,
     @Res() res: Response,
   ) {
-    const result = await this.observations.observation(runId)
+    const result = await this.observations.observation(runId, actor.id)
     if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
     const lastEventId = headerValue(req.headers['last-event-id'])
     await this.observations.stream({
@@ -115,8 +118,9 @@ export class RunsController {
   mapDecisions(
     @Param('runId') runId: string,
     @Query(new ZodValidationPipe(mapDecisionListQuerySchema)) query: MapDecisionListQuery,
+    @CurrentAccount() account: RequestAccount,
   ) {
-    return this.runs.mapDecisions(runId, query)
+    return this.runs.mapDecisions(runId, query, account.id)
   }
 
   @Get(':runId/resolution-decisions')
@@ -124,8 +128,9 @@ export class RunsController {
   resolutionDecisions(
     @Param('runId') runId: string,
     @Query(new ZodValidationPipe(resolutionDecisionListQuerySchema)) query: ResolutionDecisionListQuery,
+    @CurrentAccount() account: RequestAccount,
   ) {
-    return this.runs.resolutionDecisions(runId, query)
+    return this.runs.resolutionDecisions(runId, query, account.id)
   }
 
   @Get(':runId/attempts/:attemptId/ai-tasks')
@@ -134,8 +139,9 @@ export class RunsController {
     @Param('runId') runId: string,
     @Param('attemptId') attemptId: string,
     @Query(new ZodValidationPipe(aiTaskListQuerySchema)) query: AiTaskListQuery,
+    @CurrentAccount() account: RequestAccount,
   ) {
-    return this.runs.aiTasks(runId, attemptId, query)
+    return this.runs.aiTasks(runId, attemptId, query, account.id)
   }
 
   @Post(':runId/attempts/:attemptId/solidification-drafts')
@@ -154,10 +160,11 @@ export class RunsController {
   async listIterations(
     @Param('runId') runId: string,
     @Query(new ZodValidationPipe(stepIterationListQuerySchema)) query: StepIterationListQuery,
+    @CurrentAccount() account: RequestAccount,
   ) {
-    const run = await this.runs.get(runId)
+    const run = await this.runs.get(runId, account.id)
     if (!run) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
-    return this.runs.iterations(runId, query)
+    return this.runs.iterations(runId, account.id, query)
   }
 
   @Get(':runId/iterations/:iterationId')
@@ -165,10 +172,11 @@ export class RunsController {
   async getIteration(
     @Param('runId') runId: string,
     @Param('iterationId') iterationId: string,
+    @CurrentAccount() account: RequestAccount,
   ) {
-    const run = await this.runs.get(runId)
+    const run = await this.runs.get(runId, account.id)
     if (!run) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
-    const result = await this.runs.iterationDetail(runId, iterationId)
+    const result = await this.runs.iterationDetail(runId, iterationId, account.id)
     if (!result) throw new NotFoundException({ code: 'ITERATION_NOT_FOUND', message: '迭代记录不存在' })
     return result
   }
@@ -176,8 +184,9 @@ export class RunsController {
   @Get(':runId')
   @RequirePermissions('run:read')
   async get(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
-    const result = await this.runs.get(runId)
-    if (!account.permissions.includes('report:read')) {
+    const result = await this.runs.get(runId, account.id)
+    const reportScope = await this.runs.reportReadScope(account.id)
+    if (!reportScope.all && !reportScope.ids.includes(result.targetId)) {
       const { runReportStatus, reportId, reportError, ...rest } = result
       return rest
     }
@@ -196,8 +205,8 @@ export class RunsController {
 
   @Get(':runId/evidence')
   @RequirePermissions('run:read')
-  evidence(@Param('runId') runId: string) {
-    return this.runs.evidence(runId)
+  evidence(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
+    return this.runs.evidence(runId, account.id)
   }
 
   @Get(':runId/evidence/:evidenceId/content')
@@ -205,11 +214,12 @@ export class RunsController {
   async evidenceContent(
     @Param('runId') runId: string,
     @Param('evidenceId') evidenceId: string,
+    @CurrentAccount() account: RequestAccount,
     @Req() req: Request,
     @Res() res: Response,
   ) {
     const header = headerValue(req.headers.range)
-    const file = await this.runs.evidenceContent(runId, evidenceId, header)
+    const file = await this.runs.evidenceContent(runId, evidenceId, account.id, header)
     res.setHeader('Content-Type', file.contentType)
     res.setHeader('Content-Length', String(file.byteSize))
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`)
@@ -225,14 +235,14 @@ export class RunsController {
 
   @Post(':runId/cancel')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('run:cancel')
+  @RequirePermissions('run:cancel', 'run:read')
   cancel(@Param('runId') runId: string, @CurrentAccount() actor: RequestAccount) {
     return this.runs.cancel(runId, actor)
   }
 
   @Post(':runId/review')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('run:review')
+  @RequirePermissions('run:review', 'run:read')
   review(
     @Param('runId') runId: string,
     @Body(new ZodValidationPipe(reviewRunBodySchema)) body: ReviewRunBody,
@@ -243,8 +253,8 @@ export class RunsController {
 
   @Get(':runId/delete-preview')
   @RequirePermissions('run:delete')
-  previewDelete(@Param('runId') runId: string) {
-    return this.runs.previewDelete(runId)
+  previewDelete(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
+    return this.runs.previewDelete(runId, account.id)
   }
 
   @Post(':runId/delete')
@@ -262,8 +272,8 @@ export class RunsController {
 
   @Get(':runId/cleanup')
   @RequirePermissions('run:read')
-  cleanupStatus(@Param('runId') runId: string) {
-    return this.runs.cleanupStatus(runId)
+  cleanupStatus(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
+    return this.runs.cleanupStatus(runId, account.id)
   }
 
   @Post(':runId/cleanup/retry')
@@ -365,7 +375,7 @@ export class RunsController {
 
   @Post(':runId/debug')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('run:execute', 'workflow:write')
+  @RequirePermissions('run:execute', 'workflow:write', 'run:read')
   debug(
     @Param('runId') runId: string,
     @Body(new ZodValidationPipe(debugActionSchema)) body: DebugAction,
@@ -376,7 +386,7 @@ export class RunsController {
 
   @Post(':runId/resume-auth')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('session:control', 'run:execute')
+  @RequirePermissions('session:control', 'run:execute', 'run:read')
   resumeAuth(
     @Param('runId') runId: string,
     @Body(new ZodValidationPipe(resumeAuthBodySchema)) body: ResumeAuthBody,

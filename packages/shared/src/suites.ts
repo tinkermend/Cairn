@@ -402,6 +402,16 @@ export const suiteListQuerySchema = z.object({
 })
 export type SuiteListQuery = z.infer<typeof suiteListQuerySchema>
 
+export const suiteSummaryLatestRunSchema = z.object({
+  id: entityIdSchema,
+  status: suiteRunStatusSchema,
+  verdict: suiteVerdictSchema.optional().nullable(),
+  startedAt: utcInstantSchema,
+  finishedAt: utcInstantSchema.optional().nullable(),
+  durationMs: z.number().int().nonnegative().optional().nullable(),
+})
+export type SuiteSummaryLatestRun = z.infer<typeof suiteSummaryLatestRunSchema>
+
 export const suiteSummarySchema = z.object({
   id: entityIdSchema,
   targetId: entityIdSchema,
@@ -411,6 +421,9 @@ export const suiteSummarySchema = z.object({
   draftRevision: z.number().int().positive(),
   publishedVersionNo: z.number().int().positive().nullable(),
   memberCount: z.number().int().nonnegative(),
+  stageCount: z.number().int().nonnegative().optional(),
+  isStageMode: z.boolean().optional(),
+  latestRun: suiteSummaryLatestRunSchema.optional().nullable(),
   executionMode: suiteExecutionModeSchema.optional(),
   maxConcurrency: z.number().int().optional(),
   updatedAt: utcInstantSchema,
@@ -635,6 +648,7 @@ export const suiteRunPreviewResponseSchema = z.object({
   deadlineAt: utcInstantSchema,
   accountInterleaveHint: z.literal(true),
   aiBudgetNotReserved: z.literal(true),
+  outboundNote: z.string().optional(),
   notificationNote: z.string(),
   members: z.array(suiteRunPreviewMemberSchema),
   issues: z.array(suiteValidationIssueSchema),

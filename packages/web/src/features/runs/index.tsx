@@ -28,6 +28,7 @@ import { fetchScenarios } from '@/lib/scenarios-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -92,6 +93,10 @@ export function RunsPage() {
   const canCancel = useCan('run:cancel')
 
   const currentView = routeSearch.view ?? 'runs'
+  const materialSearch: EvidencePageSearch = {
+    ...routeSearch,
+    view: routeSearch.evidenceView,
+  }
 
   const patch = (
     next: Partial<RunsPageSearch>,
@@ -248,6 +253,27 @@ export function RunsPage() {
   }
 
   const items = query.data?.items ?? []
+  const assistantFilters = useMemo(() => {
+    const reported: Record<string, string | number | boolean> = {}
+    for (const [key, value] of Object.entries(filters)) {
+      if (key === 'limit' || key === 'cursor' || value === undefined) continue
+      reported[key] = value
+    }
+    return reported
+  }, [filters])
+
+  useAssistantContextBinding(
+    currentView === 'runs'
+      ? {
+          page: 'run',
+          filters: assistantFilters,
+          listHasFailures: items.some((run) => run.status === 'FAILED'),
+          statusLabel: '运行记录列表',
+          summaryText: '运行记录与执行历史列表',
+          statusTone: 'neutral',
+        }
+      : null,
+  )
 
   return (
     <>
@@ -295,13 +321,14 @@ export function RunsPage() {
           />
         ) : currentView === 'materials' ? (
           <SearchPanel
-            search={routeSearch as unknown as EvidencePageSearch}
-            patch={
-              patch as (
-                next: Partial<EvidencePageSearch>,
-                options?: { replace?: boolean }
-              ) => void
-            }
+            search={materialSearch}
+            patch={(next, options) => {
+              const { view, ...rest } = next
+              patch({
+                ...rest,
+                ...('view' in next ? { evidenceView: view } : {}),
+              }, options)
+            }}
           />
         ) : currentView === 'retention' ? (
           <RetentionPanel

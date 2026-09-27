@@ -345,7 +345,8 @@ export async function previewSuiteRun(
     deadlineAt: deadlineAt.toISOString(),
     accountInterleaveHint: true,
     aiBudgetNotReserved: true,
-    notificationNote: '每个子运行会按自身场景通知策略单独发送，集合不会合并成一条通知。',
+    outboundNote: '每个子运行会按自身场景消息推送策略单独发送，集合不会合并成一条推送。',
+    notificationNote: '每个子运行会按自身场景消息推送策略单独发送，集合不会合并成一条推送。',
     members,
     issues,
   }

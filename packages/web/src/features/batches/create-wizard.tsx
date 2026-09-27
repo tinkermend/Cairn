@@ -220,7 +220,7 @@ export function BatchCreateWizard({
               <Layers className='h-5 w-5 text-primary' />
               新建批量自动化运行 (Batch Automation)
             </DialogTitle>
-            <div className='flex items-center gap-1.5 text-xs text-muted-foreground mr-6'>
+            <div className='flex items-center gap-1.5 text-label text-muted-foreground mr-6'>
               <span className={step === 1 ? 'font-bold text-primary' : ''}>1. 场景</span>
               <ChevronRight className='h-3 w-3' />
               <span className={step === 2 ? 'font-bold text-primary' : ''}>2. 数据集</span>
@@ -236,7 +236,7 @@ export function BatchCreateWizard({
         </DialogHeader>
 
         {errorMsg && (
-          <div className='p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2'>
+          <div className='p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-label flex items-center gap-2'>
             <AlertCircle className='h-4 w-4 shrink-0' />
             <span>{errorMsg}</span>
           </div>
@@ -247,9 +247,10 @@ export function BatchCreateWizard({
           {step === 1 && (
             <div className='space-y-4'>
               <div className='space-y-1.5'>
-                <Label className='text-xs'>自动化批次名称</Label>
+                <Label htmlFor='batch-create-name' className='text-label'>自动化批次名称</Label>
                 <Input
-                  className='h-8 text-xs'
+                  id='batch-create-name'
+                  className='h-8 text-label'
                   placeholder='例如: 2026Q3 批量开户联调压测'
                   value={batchName}
                   onChange={(e) => setBatchName(e.target.value)}
@@ -257,7 +258,7 @@ export function BatchCreateWizard({
               </div>
 
               <div className='space-y-1.5'>
-                <Label className='text-xs'>选择目标场景</Label>
+                <Label htmlFor='batch-create-scenario' className='text-label'>选择目标场景</Label>
                 <Select
                   value={selectedScenarioId}
                   onValueChange={(val) => {
@@ -271,7 +272,7 @@ export function BatchCreateWizard({
                     }
                   }}
                 >
-                  <SelectTrigger className='h-8 text-xs'>
+                  <SelectTrigger id='batch-create-scenario' className='h-8 text-label'>
                     <SelectValue placeholder='选择要批量执行的场景' />
                   </SelectTrigger>
                   <SelectContent>
@@ -285,7 +286,7 @@ export function BatchCreateWizard({
               </div>
 
               {scenarioDetail && (
-                <div className='p-3 rounded-lg border bg-muted/20 space-y-2 text-xs'>
+                <div className='p-3 rounded-lg border bg-muted/20 space-y-2 text-label'>
                   <div className='flex items-center justify-between'>
                     <span className='text-muted-foreground'>场景已发布版本</span>
                     {publishedVersion ? (
@@ -293,7 +294,7 @@ export function BatchCreateWizard({
                         v{publishedVersion.versionNo}
                       </Badge>
                     ) : (
-                      <Badge variant='destructive' className='text-[10px]'>
+                      <Badge variant='destructive' className='text-3xs'>
                         尚未发布版本，请先发布场景
                       </Badge>
                     )}
@@ -311,7 +312,7 @@ export function BatchCreateWizard({
           {step === 2 && (
             <div className='space-y-4'>
               <div className='space-y-1.5'>
-                <Label className='text-xs'>选择批量驱动数据集</Label>
+                <Label htmlFor='batch-create-dataset' className='text-label'>选择批量驱动数据集</Label>
                 <Select
                   value={selectedDatasetId}
                   onValueChange={(val) => {
@@ -319,7 +320,7 @@ export function BatchCreateWizard({
                     setPreflightData(null)
                   }}
                 >
-                  <SelectTrigger className='h-8 text-xs'>
+                  <SelectTrigger id='batch-create-dataset' className='h-8 text-label'>
                     <SelectValue placeholder='选择已导入的数据集' />
                   </SelectTrigger>
                   <SelectContent>
@@ -330,13 +331,13 @@ export function BatchCreateWizard({
                     ))}
                   </SelectContent>
                 </Select>
-                <p className='text-[11px] text-muted-foreground'>
+                <p className='text-label text-muted-foreground'>
                   只列出该场景所属目标系统下的数据集。
                 </p>
               </div>
 
               {selectedDataset && (
-                <div className='p-3 rounded-lg border bg-muted/10 space-y-2 text-xs'>
+                <div className='p-3 rounded-lg border bg-muted/10 space-y-2 text-label'>
                   <div className='flex items-center justify-between'>
                     <span className='text-muted-foreground'>数据源文件</span>
                     <span className='font-mono'>{selectedDataset.sourceFilename}</span>
@@ -349,7 +350,7 @@ export function BatchCreateWizard({
                     <span className='text-muted-foreground'>包含字段</span>
                     <div className='flex flex-wrap gap-1 max-w-sm justify-end'>
                       {selectedDataset.columns.map((c) => (
-                        <Badge key={c.key} variant='outline' className='text-[10px]'>
+                        <Badge key={c.key} variant='outline' className='text-3xs'>
                           {c.name}
                         </Badge>
                       ))}
@@ -365,8 +366,8 @@ export function BatchCreateWizard({
             <div className='space-y-4'>
               <div className='flex items-center justify-between'>
                 <div>
-                  <h4 className='text-xs font-semibold'>输入参数字段映射工作台</h4>
-                  <p className='text-[11px] text-muted-foreground'>
+                  <h4 className='text-label font-semibold'>输入参数字段映射工作台</h4>
+                  <p className='text-label text-muted-foreground'>
                     为场景中的每个入参指定来源：数据表列、动态 Mock 生成器或固定常量
                   </p>
                 </div>
@@ -375,7 +376,7 @@ export function BatchCreateWizard({
                   variant='outline'
                   size='sm'
                   onClick={handleAutoMap}
-                  className='h-7 text-xs gap-1'
+                  className='h-7 text-label gap-1'
                 >
                   <Sparkles className='h-3.5 w-3.5 text-primary' />
                   自动智能匹配
@@ -383,7 +384,7 @@ export function BatchCreateWizard({
               </div>
 
               {scenarioInputs.length === 0 ? (
-                <div className='p-6 text-center text-xs text-muted-foreground border rounded-lg'>
+                <div className='p-6 text-center text-label text-muted-foreground border rounded-lg'>
                   该场景未声明任何输入参数，所有执行项将使用空上下文直接触发。
                 </div>
               ) : (
@@ -398,15 +399,15 @@ export function BatchCreateWizard({
                     return (
                       <div
                         key={input.key}
-                        className='p-3 border rounded-lg bg-card space-y-2.5 text-xs'
+                        className='p-3 border rounded-lg bg-card space-y-2.5 text-label'
                       >
                         <div className='flex items-center justify-between'>
                           <div className='flex items-center gap-2'>
                             <span className='font-semibold'>{input.label}</span>
-                            <span className='text-muted-foreground font-mono text-[11px]'>
+                            <span className='text-muted-foreground font-mono text-label'>
                               ({input.key})
                             </span>
-                            <Badge variant='outline' className='text-[10px]'>
+                            <Badge variant='outline' className='text-3xs'>
                               {input.type ?? 'string'}
                             </Badge>
                           </div>
@@ -441,7 +442,7 @@ export function BatchCreateWizard({
                               }
                             }}
                           >
-                            <SelectTrigger className='h-7 w-32 text-xs'>
+                            <SelectTrigger className='h-7 w-32 text-label' aria-label={`${input.label} 来源`}>
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -454,7 +455,7 @@ export function BatchCreateWizard({
 
                         {rule.source === 'column' && (
                           <div className='flex items-center gap-2 pt-1'>
-                            <Label className='text-[11px] text-muted-foreground whitespace-nowrap'>
+                            <Label className='text-label text-muted-foreground whitespace-nowrap'>
                               对应列名:
                             </Label>
                             <Select
@@ -466,7 +467,7 @@ export function BatchCreateWizard({
                                 })
                               }
                             >
-                              <SelectTrigger className='h-7 text-xs'>
+                              <SelectTrigger className='h-7 text-label' aria-label={`${input.label} 对应列名`}>
                                 <SelectValue placeholder='选择对应列' />
                               </SelectTrigger>
                               <SelectContent>
@@ -482,11 +483,12 @@ export function BatchCreateWizard({
 
                         {rule.source === 'fixed' && (
                           <div className='flex items-center gap-2 pt-1'>
-                            <Label className='text-[11px] text-muted-foreground whitespace-nowrap'>
+                            <Label className='text-label text-muted-foreground whitespace-nowrap'>
                               固定输入值:
                             </Label>
                             <Input
-                              className='h-7 text-xs'
+                              className='h-7 text-label'
+                              aria-label={`${input.label} 固定输入值`}
                               value={String(rule.value ?? '')}
                               placeholder='填入固定参数值'
                               onChange={(e) =>
@@ -527,8 +529,8 @@ export function BatchCreateWizard({
               <div className='p-3.5 rounded-lg border bg-card space-y-3'>
                 <div className='flex items-center justify-between'>
                   <div>
-                    <h4 className='text-xs font-semibold'>数据前置预检 (Preflight)</h4>
-                    <p className='text-[11px] text-muted-foreground'>
+                    <h4 className='text-label font-semibold'>数据前置预检 (Preflight)</h4>
+                    <p className='text-label text-muted-foreground'>
                       模拟对所选数据集执行全量类型校验与必填规则诊断
                     </p>
                   </div>
@@ -538,7 +540,7 @@ export function BatchCreateWizard({
                     size='sm'
                     disabled={preflightPending}
                     onClick={handleRunPreflight}
-                    className='h-7 text-xs'
+                    className='h-7 text-label'
                   >
                     {preflightPending ? '正在校验...' : '执行预检'}
                   </Button>
@@ -546,34 +548,34 @@ export function BatchCreateWizard({
 
                 {preflightData && (
                   <div className='space-y-2 pt-1'>
-                    <div className='grid grid-cols-4 gap-2 text-center text-xs'>
+                    <div className='grid grid-cols-4 gap-2 text-center text-label'>
                       <div className='p-2 rounded bg-muted/30'>
-                        <div className='text-muted-foreground text-[10px]'>预检总行数</div>
+                        <div className='text-muted-foreground text-3xs'>预检总行数</div>
                         <div className='font-mono font-bold'>{preflightData.totalRows}</div>
                       </div>
-                      <div className='p-2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'>
-                        <div className='text-[10px]'>有效行</div>
+                      <div className='p-2 rounded bg-status-success-background text-status-success-foreground'>
+                        <div className='text-3xs'>有效行</div>
                         <div className='font-mono font-bold'>{preflightData.validCount}</div>
                       </div>
-                      <div className='p-2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400'>
-                        <div className='text-[10px]'>警告行</div>
+                      <div className='p-2 rounded bg-status-warning-background text-status-warning-foreground'>
+                        <div className='text-3xs'>警告行</div>
                         <div className='font-mono font-bold'>{preflightData.warningCount}</div>
                       </div>
                       <div className='p-2 rounded bg-destructive/10 text-destructive'>
-                        <div className='text-[10px]'>阻断错误行</div>
+                        <div className='text-3xs'>阻断错误行</div>
                         <div className='font-mono font-bold'>{preflightData.errorCount}</div>
                       </div>
                     </div>
 
                     {preflightData.issues.length > 0 && (
-                      <div className='p-2 rounded bg-muted/20 border max-h-28 overflow-y-auto text-[11px] space-y-1 font-mono'>
+                      <div className='p-2 rounded bg-muted/20 border max-h-28 overflow-y-auto text-label space-y-1 font-mono'>
                         {preflightData.issues.slice(0, 10).map((issue, idx) => (
                           <div
                             key={idx}
                             className={
                               issue.severity === 'error'
                                 ? 'text-destructive flex items-center gap-1.5'
-                                : 'text-amber-600 dark:text-amber-400 flex items-center gap-1.5'
+                                : 'text-status-warning-foreground flex items-center gap-1.5'
                             }
                           >
                             <span>第 {issue.rowIndex + 1} 行 [{issue.fieldKey}]:</span>
@@ -587,7 +589,7 @@ export function BatchCreateWizard({
               </div>
 
               {/* Execution Pacing & Circuit Breaker */}
-              <div className='p-3.5 rounded-lg border bg-card space-y-3.5 text-xs'>
+              <div className='p-3.5 rounded-lg border bg-card space-y-3.5 text-label'>
                 <h4 className='font-semibold flex items-center gap-1.5'>
                   <Sliders className='h-4 w-4 text-primary' />
                   调度并发与防风控节奏控制
@@ -595,23 +597,24 @@ export function BatchCreateWizard({
 
                 <div className='grid grid-cols-2 gap-3'>
                   <div className='space-y-1.5'>
-                    <Label className='text-[11px]'>最大并发会话数 (1 ~ 10)</Label>
+                    <Label htmlFor='batch-create-concurrency' className='text-label'>最大并发会话数 (1 ~ 10)</Label>
                     <Input
+                      id='batch-create-concurrency'
                       type='number'
                       min={1}
                       max={10}
-                      className='h-8 text-xs'
+                      className='h-8 text-label'
                       value={maxConcurrency}
                       onChange={(e) => setMaxConcurrency(Number(e.target.value))}
                     />
                   </div>
                   <div className='space-y-1.5'>
-                    <Label className='text-[11px]'>失败策略</Label>
+                    <Label htmlFor='batch-create-failure-policy' className='text-label'>失败策略</Label>
                     <Select
                       value={failurePolicy}
-                      onValueChange={(val: any) => setFailurePolicy(val)}
+                      onValueChange={(val: 'continue' | 'stop_on_first' | 'stop_on_threshold') => setFailurePolicy(val)}
                     >
-                      <SelectTrigger className='h-8 text-xs'>
+                      <SelectTrigger id='batch-create-failure-policy' className='h-8 text-label'>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -625,12 +628,13 @@ export function BatchCreateWizard({
 
                 {failurePolicy === 'stop_on_threshold' && (
                   <div className='space-y-1.5'>
-                    <Label className='text-[11px]'>熔断阈值（连续 Target 故障达到此数量自动暂停批次）</Label>
+                    <Label htmlFor='batch-create-failure-threshold' className='text-label'>熔断阈值（连续 Target 故障达到此数量自动暂停批次）</Label>
                     <Input
+                      id='batch-create-failure-threshold'
                       type='number'
                       min={1}
                       max={50}
-                      className='h-8 text-xs'
+                      className='h-8 text-label'
                       value={failureThreshold}
                       onChange={(e) => setFailureThreshold(Number(e.target.value))}
                     />
@@ -639,42 +643,44 @@ export function BatchCreateWizard({
 
                 <div className='grid grid-cols-2 gap-3'>
                   <div className='space-y-1.5'>
-                    <Label className='text-[11px]'>最小行间延迟 (毫秒)</Label>
+                    <Label htmlFor='batch-create-min-delay' className='text-label'>最小行间延迟 (毫秒)</Label>
                     <Input
+                      id='batch-create-min-delay'
                       type='number'
                       min={0}
                       step={500}
-                      className='h-8 text-xs'
+                      className='h-8 text-label'
                       value={minDelayMs}
                       onChange={(e) => setMinDelayMs(Number(e.target.value))}
                     />
                   </div>
                   <div className='space-y-1.5'>
-                    <Label className='text-[11px]'>最大行间延迟 (毫秒)</Label>
+                    <Label htmlFor='batch-create-max-delay' className='text-label'>最大行间延迟 (毫秒)</Label>
                     <Input
+                      id='batch-create-max-delay'
                       type='number'
                       min={0}
                       step={500}
-                      className='h-8 text-xs'
+                      className='h-8 text-label'
                       value={maxDelayMs}
                       onChange={(e) => setMaxDelayMs(Number(e.target.value))}
                     />
                   </div>
                 </div>
 
-                <div className='text-[11px] text-muted-foreground font-mono flex items-center justify-between p-2 rounded bg-muted/20'>
+                <div className='text-label text-muted-foreground font-mono flex items-center justify-between p-2 rounded bg-muted/20'>
                   <span>随机延迟抖动预览：每次执行将随机休眠 ~{(sampleJitter / 1000).toFixed(1)} 秒</span>
-                  <Badge variant='outline' className='text-[10px]'>防风控保护</Badge>
+                  <Badge variant='outline' className='text-3xs'>防风控保护</Badge>
                 </div>
 
                 <div className='flex items-center justify-between pt-1 border-t'>
                   <div className='space-y-0.5'>
-                    <Label className='text-xs'>单项执行后自动重置页面</Label>
-                    <p className='text-[11px] text-muted-foreground'>
+                    <Label htmlFor='batch-create-reset-page' className='text-label'>单项执行后自动重置页面</Label>
+                    <p className='text-label text-muted-foreground'>
                       每行测试执行完毕后自动返回起始 URL 并关闭弹窗阻断，确保下一行干净执行
                     </p>
                   </div>
-                  <Switch checked={resetPage} onCheckedChange={setResetPage} />
+                  <Switch id='batch-create-reset-page' checked={resetPage} onCheckedChange={setResetPage} />
                 </div>
               </div>
             </div>
@@ -688,7 +694,7 @@ export function BatchCreateWizard({
                 type='button'
                 variant='outline'
                 size='sm'
-                onClick={() => setStep((s) => (s - 1) as any)}
+                onClick={() => setStep((s) => s === 4 ? 3 : s === 3 ? 2 : 1)}
                 disabled={isSubmitting}
               >
                 上一步
@@ -717,7 +723,7 @@ export function BatchCreateWizard({
                   if (step === 2 && Object.keys(binding).length === 0) {
                     handleAutoMap()
                   }
-                  setStep((s) => (s + 1) as any)
+                  setStep((s) => s === 1 ? 2 : s === 2 ? 3 : 4)
                 }}
               >
                 下一步

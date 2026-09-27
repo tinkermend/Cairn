@@ -17,6 +17,7 @@ import { canonicalJson, syncSha256, type OutcomeStatus, type RepairSourceRunKind
 import {
   assembleRunOutput,
   deriveFallbackSummary,
+  projectRunOutputSummary,
   CANCELLED_ATTEMPT_ERROR,
   TERMINAL_RUN_STATUSES,
   cleanupStatusResponseSchema,
@@ -97,6 +98,7 @@ import {
   snapshotDeletedBy,
 } from '../lifecycle.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
+import { scopedTargetFilter } from '../console/target-authorization.js'
 import {
   findActiveLeaseForRun,
   listActiveLeasesByRunIds,
@@ -149,10 +151,16 @@ export async function countRunsForAccount(db: Db, accountId: string): Promise<nu
   return Number(row?.n ?? 0)
 }
 
-export async function getRun(db: Db, runId: string): Promise<RunDetailDto> {
-  const detail = await loadRunDetail(db, runId)
+export async function getRun(db: Db, runId: string, actorId?: string): Promise<RunDetailDto> {
+  const detail = await loadRunDetail(db, runId, actorId)
   if (!detail) throw notFound('RUN_NOT_FOUND', '运行不存在')
   return detail
+}
+
+/** Trusted session routing only needs these two fields; never export the full Run DTO here. */
+export async function getRunSessionOwner(db: Db, runId: string) {
+  const detail = await getRun(db, runId)
+  return { status: detail.status, sessionId: detail.placement.sessionId }
 }
 
 export type RunReportInfo = {
@@ -313,6 +321,9 @@ export async function listRuns(
   const limit = parsed.limit
   const filters: (SQL | undefined)[] = [
     await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, runs.targetId, 'run:read'),
+    parsed.hasReport !== undefined
+      ? await scopedTargetFilter(db, actorId, runs.targetId, 'report:read')
+      : undefined,
     isNull(runs.deletedAt),
     parsed.targetId ? eq(runs.targetId, parsed.targetId) : undefined,
     parsed.scenarioId ? eq(runs.scenarioId, parsed.scenarioId) : undefined,
@@ -443,7 +454,7 @@ export async function listRuns(
       suiteRunId: row.suiteRunId ?? null,
       suiteMemberId: row.suiteMemberId ?? null,
       outputSummary:
-        row.output?.summary ??
+        (row.output ? projectRunOutputSummary(row.output, row.status, row.outcomeStatus).summary : null) ??
         (isFinishedRunStatus(row.status)
           ? deriveFallbackSummary(row.status, row.outcomeStatus)
           : null),
@@ -659,9 +670,9 @@ export async function retryRunCleanup(
   return getRunCleanupStatus(db, runId)
 }
 
-export async function listRunEvidence(db: Db, runId: string) {
+export async function listRunEvidence(db: Db, runId: string, actorId?: string) {
   const { evidences } = schemaFor(db)
-  await getRun(db, runId)
+  await getRun(db, runId, actorId)
   const rows = await db
     .select()
     .from(evidences)
@@ -691,7 +702,7 @@ export async function computeRunPlacement(
   })
 }
 
-export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto | null> {
+export async function loadRunDetail(db: Db, runId: string, actorId?: string): Promise<RunDetailDto | null> {
   const { attempts, outcomeResults, runs, scenarioVersions, scenarios, stepRuns, targetAccounts, targets } =
     schemaFor(db)
   const [joined] = await db
@@ -710,7 +721,11 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     .innerJoin(targets, eq(targets.id, runs.targetId))
     .innerJoin(scenarioVersions, eq(scenarioVersions.id, runs.scenarioVersionId))
     .leftJoin(targetAccounts, eq(targetAccounts.id, runs.targetAccountId))
-    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+    .where(and(
+      eq(runs.id, runId),
+      isNull(runs.deletedAt),
+      await scopedTargetFilter(db, actorId, runs.targetId, 'run:read'),
+    ))
     .limit(1)
   if (!joined) return null
   const row = joined.run
@@ -840,7 +855,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     }
   })
 
-  const output =
+  const assembledOutput =
     row.output ??
     (isFinishedRunStatus(row.status)
       ? assembleRunOutput({
@@ -856,6 +871,10 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
           now: row.finishedAt ?? row.updatedAt,
         })
       : null)
+
+  const output = assembledOutput
+    ? projectRunOutputSummary(assembledOutput, row.status, row.outcomeStatus)
+    : null
 
   const reportStatuses = await resolveRunReportStatuses(db, [runId])
   const reportInfo = reportStatuses.get(runId)
@@ -1227,12 +1246,14 @@ export async function writeRunWithSnapshot(
         if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
         throw error
       }
-      const { freezeRunNotificationPolicy } = await import('../notifications/core.js')
-      snapshot.notificationPolicy = await freezeRunNotificationPolicy(tx as unknown as Db, {
+      const { freezeRunOutboundPolicy } = await import('../outbound/core.js')
+      const outboundPolicy = await freezeRunOutboundPolicy(tx as unknown as Db, {
         scenarioId: scenario.id, targetId: scenario.targetId, scenarioName: scenario.name,
         targetName: target.name, source: input.actor.kind === 'service' ? 'service' : 'console',
         eligible: !isTrial && !input.mapJob && scenario.purpose === 'user' && debugMode === 'runThrough',
       })
+      snapshot.outboundPolicy = outboundPolicy
+      snapshot.notificationPolicy = outboundPolicy
       snapshot.digest = computeSnapshotDigest(snapshot)
       const digest = snapshot.digest
       await assertDemonstrationExecutorRolloutTx(tx as unknown as Db, snapshot)
@@ -1252,7 +1273,7 @@ export async function writeRunWithSnapshot(
         debugMode,
         snapshot,
         snapshotDigest: digest,
-        notificationExpected: snapshot.notificationPolicy.enabled,
+        outboundExpected: outboundPolicy.enabled,
         context: runInput,
         idempotencyKey: input.idempotencyKey,
         idempotencyDigest,
@@ -2027,7 +2048,8 @@ export async function finishAttemptTx(
         // finished_at 表示「已有最终结论」，按 FINISHED 而不是 HALTED 判定：
         // NEEDS_REVIEW 只是停下来等人，结论要等 reviewRun 才写，否则耗时统计会把待核查
         // 算成已完成，同一条 Run 还会先后写两个不同的完成时间。
-        ...(isFinishedRunStatus(finalRunStatus) ? { finishedAt: now } : {}),
+        // Webhook enabledAt 使用数据库时钟，终态时间必须同源才能可靠比较。
+        ...(isFinishedRunStatus(finalRunStatus) ? { finishedAt: databaseNow(tx) } : {}),
         ...(input.checkpoint !== undefined ? { checkpoint: input.checkpoint } : {}),
         ...(input.debugOverlay !== undefined ? { debugOverlay: input.debugOverlay } : {}),
         ...(input.authCheckpoint !== undefined ? { authCheckpoint: input.authCheckpoint } : {}),
@@ -2289,7 +2311,7 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
     const drained = await updateRows(
       tx,
       runs,
-      { status: 'SUCCEEDED', finishedAt: now, updatedAt: now },
+      { status: 'SUCCEEDED', finishedAt: databaseNow(tx), updatedAt: now },
       and(
         eq(runs.id, grant.runId),
         eq(runs.status, 'RUNNING'),
@@ -2434,7 +2456,7 @@ export async function failRunValidation(
     }
     await tx
       .update(runs)
-      .set({ status, ...(status === 'FAILED' ? { finishedAt: now } : {}), ...(checkpoint ? { authCheckpoint: checkpoint } : {}), updatedAt: now })
+      .set({ status, ...(status === 'FAILED' ? { finishedAt: databaseNow(tx) } : {}), ...(checkpoint ? { authCheckpoint: checkpoint } : {}), updatedAt: now })
       .where(eq(runs.id, runId))
     const calculatedOutcome = await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
     const validationSubject = (run.snapshot as any)?.validationSubject
@@ -2640,7 +2662,7 @@ export async function stopRunDebug(
       .update(runs)
       .set({
         status: finalStatus,
-        finishedAt: now,
+        finishedAt: databaseNow(tx),
         debugOverlay: null,
         checkpoint: null,
         updatedAt: now,
@@ -2886,6 +2908,107 @@ export async function loadRunStepStates(db: Db, runId: string, scopePath?: strin
       error: (a.error as ExecutionError | null) ?? null,
     })),
   }))
+}
+
+export interface RunFailureSummaryItem {
+  runId: string
+  stepRunId?: string
+  stepId?: string
+  stepName?: string
+  ordinal?: number
+  attemptId?: string
+  attemptNo?: number
+  errorCode?: string
+  errorCategory?: string
+  errorMessage?: string
+  errorSafeMessage?: string
+  cancelReason?: string | null
+  finishedAt?: Date | null
+}
+
+export async function loadRunFailureSummaries(
+  db: Db,
+  runIds: string[],
+): Promise<RunFailureSummaryItem[]> {
+  if (runIds.length === 0) return []
+  const { runs, stepRuns, attempts } = schemaFor(db)
+
+  const runRows = await db
+    .select({
+      id: runs.id,
+      cancelReason: runs.cancelReason,
+      finishedAt: runs.finishedAt,
+    })
+    .from(runs)
+    .where(inArray(runs.id, runIds))
+
+  const runMap = new Map(runRows.map((r) => [r.id, r]))
+
+  const stepRows = await db
+    .select({
+      runId: stepRuns.runId,
+      stepRunId: stepRuns.id,
+      stepId: stepRuns.stepId,
+      stepName: stepRuns.name,
+      ordinal: stepRuns.ordinal,
+      finishedAt: stepRuns.finishedAt,
+      attemptId: attempts.id,
+      attemptNo: attempts.attemptNo,
+      attemptStatus: attempts.status,
+      attemptError: attempts.error,
+    })
+    .from(stepRuns)
+    .leftJoin(attempts, eq(attempts.stepRunId, stepRuns.id))
+    .where(
+      and(
+        inArray(stepRuns.runId, runIds),
+        eq(stepRuns.status, 'FAILED'),
+      ),
+    )
+    .orderBy(stepRuns.runId, stepRuns.ordinal, desc(attempts.attemptNo))
+
+  const failuresByRunId = new Map<string, RunFailureSummaryItem>()
+  for (const row of stepRows) {
+    if (failuresByRunId.has(row.runId)) continue
+
+    const err = row.attemptError as
+      | { code?: string; category?: string; message?: string; safeMessage?: string }
+      | undefined
+
+    const runMeta = runMap.get(row.runId)
+    failuresByRunId.set(row.runId, {
+      runId: row.runId,
+      stepRunId: row.stepRunId,
+      stepId: row.stepId,
+      stepName: row.stepName ?? undefined,
+      ordinal: row.ordinal,
+      attemptId: row.attemptId ?? undefined,
+      attemptNo: row.attemptNo ?? undefined,
+      errorCode: err?.code,
+      errorCategory: err?.category,
+      errorMessage: err?.message,
+      errorSafeMessage: err?.safeMessage,
+      cancelReason: runMeta?.cancelReason ?? null,
+      finishedAt: row.finishedAt ?? runMeta?.finishedAt ?? null,
+    })
+  }
+
+  const result: RunFailureSummaryItem[] = []
+  for (const runId of runIds) {
+    const existing = failuresByRunId.get(runId)
+    if (existing) {
+      result.push(existing)
+    } else {
+      const runMeta = runMap.get(runId)
+      result.push({
+        runId,
+        cancelReason: runMeta?.cancelReason ?? null,
+        finishedAt: runMeta?.finishedAt ?? null,
+      })
+    }
+  }
+
+  return result
 }
 
 export {

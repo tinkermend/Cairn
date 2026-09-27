@@ -1,5 +1,6 @@
 import { BadRequestException, HttpException, HttpStatus, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
 import {
+  authorizeTargetRequest,
   createDemonstration,
   createRunWithSnapshot,
   deleteRun,
@@ -21,7 +22,9 @@ import {
   retryRunCleanup,
   retryRunReport,
   reviewRun,
+  targetScopeFor,
   type DbHandle,
+  type TargetScope,
 } from '@cairn/db'
 import { aiTraceToDemonstrationSource } from '@cairn/authoring'
 import {
@@ -49,6 +52,7 @@ import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
 import { OBJECT_STORE } from '../objects/object-store.token'
+import { visibleRunDetail, visibleRunList } from './report-visibility'
 
 export type EvidenceContent = {
   body: Uint8Array
@@ -71,27 +75,47 @@ export class RunsService {
     return this.dbHandle
   }
 
-  list(query?: RunListQuery, actorId?: string) {
-    return listRuns(this.db, query, actorId).catch(rethrowDomain)
+  private async requireRunScope(runId: string, actorId: string, permissions: string[] = ['run:read']) {
+    await authorizeTargetRequest(this.db, actorId, { runId, permissions }).catch(rethrowDomain)
   }
 
-  get(id: string) {
-    return getRun(this.db, id).catch(rethrowDomain)
+  async list(query: RunListQuery, actorId: string) {
+    try {
+      return await visibleRunList(this.db, actorId, await listRuns(this.db, query, actorId))
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
-  retryReport(runId: string, actor: RequestAccount) {
+  reportReadScope(actorId: string): Promise<TargetScope> {
+    return targetScopeFor(this.db, actorId, 'report:read').catch(rethrowDomain)
+  }
+
+  async get(id: string, actorId: string) {
+    try {
+      return await visibleRunDetail(this.db, actorId, await getRun(this.db, id, actorId))
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async retryReport(runId: string, actor: RequestAccount) {
+    await this.requireRunScope(runId, actor.id, ['report:export', 'run:read'])
     return retryRunReport(this.db, runId, { kind: 'console', id: actor.id }).catch(rethrowDomain)
   }
 
-  mapDecisions(id: string, query: MapDecisionListQuery) {
+  async mapDecisions(id: string, query: MapDecisionListQuery, actorId: string) {
+    await this.requireRunScope(id, actorId)
     return listMapSelectionDecisions(this.db, id, query).catch(rethrowDomain)
   }
 
-  resolutionDecisions(id: string, query: ResolutionDecisionListQuery) {
+  async resolutionDecisions(id: string, query: ResolutionDecisionListQuery, actorId: string) {
+    await this.requireRunScope(id, actorId)
     return listResolutionDecisions(this.db, id, query).catch(rethrowDomain)
   }
 
-  aiTasks(runId: string, attemptId: string, query: AiTaskListQuery) {
+  async aiTasks(runId: string, attemptId: string, query: AiTaskListQuery, actorId: string) {
+    await this.requireRunScope(runId, actorId)
     return listAiTaskEvents(this.db, { runId, attemptId, ...query }).catch(rethrowDomain)
   }
 
@@ -101,7 +125,8 @@ export class RunsService {
     actor: RequestAccount,
   ): Promise<CreateSolidificationDraftResponse> {
     try {
-      const run = await getRun(this.db, runId)
+      await this.requireRunScope(runId, actor.id, ['run:read', 'workflow:write'])
+      const run = await getRun(this.db, runId, actor.id)
       if (!run) {
         throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
       }
@@ -238,36 +263,42 @@ export class RunsService {
     }
   }
 
-  previewDelete(id: string) {
+  async previewDelete(id: string, actorId: string) {
+    await this.requireRunScope(id, actorId, ['run:delete'])
     return previewDeleteRun(this.db, id).catch(rethrowDomain)
   }
 
-  delete(id: string, actor: RequestAccount, body?: DeleteResourceBody) {
+  async delete(id: string, actor: RequestAccount, body?: DeleteResourceBody) {
+    await this.requireRunScope(id, actor.id, ['run:delete'])
     return deleteRun(this.db, id, actor, body).catch(rethrowDomain)
   }
 
-  cleanupStatus(id: string) {
+  async cleanupStatus(id: string, actorId: string) {
+    await this.requireRunScope(id, actorId)
     return getRunCleanupStatus(this.db, id).catch(rethrowDomain)
   }
 
-  retryCleanup(id: string, actor: RequestAccount) {
+  async retryCleanup(id: string, actor: RequestAccount) {
+    await this.requireRunScope(id, actor.id, ['run:delete'])
     return retryRunCleanup(this.db, id, actor).catch(rethrowDomain)
   }
 
-  evidence(id: string) {
-    return listRunEvidence(this.db, id).catch(rethrowDomain)
+  evidence(id: string, actorId: string) {
+    return listRunEvidence(this.db, id, actorId).catch(rethrowDomain)
   }
 
-  iterations(id: string, query?: StepIterationListQuery) {
+  async iterations(id: string, actorId: string, query?: StepIterationListQuery) {
+    await this.requireRunScope(id, actorId)
     return loadRunIterations(this.db, id, query).catch(rethrowDomain)
   }
 
-  iterationDetail(runId: string, iterationId: string) {
+  async iterationDetail(runId: string, iterationId: string, actorId: string) {
+    await this.requireRunScope(runId, actorId)
     return loadIterationDetail(this.db, runId, iterationId).catch(rethrowDomain)
   }
 
-  async evidenceContent(runId: string, evidenceId: string, rangeHeader?: string): Promise<EvidenceContent> {
-    const row = await getEvidenceForRun(this.db, { runId, evidenceId }).catch(rethrowDomain)
+  async evidenceContent(runId: string, evidenceId: string, actorId: string, rangeHeader?: string): Promise<EvidenceContent> {
+    const row = await getEvidenceForRun(this.db, { runId, evidenceId }, actorId).catch(rethrowDomain)
     if (!row) {
       throw new NotFoundException({ code: 'EVIDENCE_NOT_FOUND', message: '证据不存在' })
     }
@@ -327,11 +358,12 @@ export class RunsService {
         targetPreference: layers.targetPreference,
         targetPolicy: layers.targetPolicy,
       })
-      return await createRunWithSnapshot(this.db, {
+      const created = await createRunWithSnapshot(this.db, {
         ...body,
         actor: { id: actor.id },
         hangWaitMs: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
       })
+      return { ...created, detail: await visibleRunDetail(this.db, actor.id, created.detail) }
     } catch (error) {
       rethrowDomain(error)
     }
@@ -339,7 +371,8 @@ export class RunsService {
 
   async cancel(id: string, actor: RequestAccount) {
     try {
-      return await requestRunCancel(this.db, id, { id: actor.id })
+      await this.requireRunScope(id, actor.id, ['run:cancel', 'run:read'])
+      return await visibleRunDetail(this.db, actor.id, await requestRunCancel(this.db, id, { id: actor.id }))
     } catch (error) {
       rethrowDomain(error)
     }
@@ -347,13 +380,14 @@ export class RunsService {
 
   async review(id: string, body: ReviewRunBody, actor: RequestAccount) {
     try {
+      await this.requireRunScope(id, actor.id, ['run:review', 'run:read'])
       await reviewRun(this.db, {
         runId: id,
         actor: { id: actor.id },
         conclusion: body.conclusion,
         note: body.note,
       })
-      return await getRun(this.db, id)
+      return await visibleRunDetail(this.db, actor.id, await getRun(this.db, id, actor.id))
     } catch (error) {
       rethrowDomain(error)
     }

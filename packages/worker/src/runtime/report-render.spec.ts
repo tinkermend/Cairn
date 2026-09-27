@@ -8,6 +8,7 @@ import type { ObjectStore } from '@cairn/storage'
 import { cleanupReportWorkspaces, copyBoundedObject, renderReportHtml, writeReportZip } from './report-render'
 import { crc32 } from './report-layout'
 import { reportLines } from './report-content'
+import type { ReportDocument } from '@cairn/shared'
 
 const document = {
   stage: 'final' as const,
@@ -65,8 +66,8 @@ describe('报告渲染与交付（自包含 HTML 双模板）', () => {
         targetName: '核心中台',
         suiteName: '业务晨检',
         items: [
-          { memberId: 'm1', ordinal: 0, displayName: '登录认证', admission: 'SETTLED', runStatus: 'SUCCEEDED', outcomeStatus: 'PASS', childRunId: 'run-1' },
-          { memberId: 'm2', ordinal: 1, displayName: '支付结算', admission: 'SETTLED', runStatus: 'FAILED', outcomeStatus: 'FAIL', childRunId: 'run-2' },
+          { memberId: 'm1', ordinal: 0, displayName: '登录认证', admission: 'SETTLED', runStatus: 'SUCCEEDED', outcomeStatus: 'PASS', childRunId: 'run-1', run: { status: 'SUCCEEDED', outcomeStatus: 'PASS' } },
+          { memberId: 'm2', ordinal: 1, displayName: '支付结算', admission: 'SETTLED', runStatus: 'FAILED', outcomeStatus: 'FAIL', childRunId: 'run-2', run: { status: 'FAILED', outcomeStatus: 'FAIL' } },
         ],
       },
       sections: [
@@ -79,8 +80,8 @@ describe('报告渲染与交付（自包含 HTML 双模板）', () => {
               type: 'suite_business_summary',
               healthScore: 92,
               healthGrade: 'EXCELLENT',
-              totalCount: 10,
-              normalCount: 9,
+              totalCount: 2,
+              normalCount: 1,
               warningCount: 0,
               anomalousCount: 1,
               skippedCount: 0,
@@ -117,10 +118,11 @@ describe('报告渲染与交付（自包含 HTML 双模板）', () => {
                 {
                   memberId: 'm2',
                   displayName: '支付结算',
+                  id: 'finding-pay-err',
                   title: '支付通道超时未响应',
                   severity: 'HIGH',
                   detail: '超过 10 秒无 ACK',
-                  evidenceId: 'ev-pay-err',
+                  evidenceId: '01a0f40a-ff20-73bb-af3a-25003a00ea11',
                 },
               ],
             },
@@ -133,14 +135,78 @@ describe('报告渲染与交付（自包含 HTML 双模板）', () => {
     const html = renderReportHtml(suiteDocument)
     expect(html).toContain('<!DOCTYPE html>')
     expect(html).toContain('场景集巡检总报告')
-    expect(html).toContain('92')
-    expect(html).toContain('优 (EXCELLENT)')
+    expect(html).toContain('50')
+    expect(html).toContain('差 (POOR)')
     expect(html).toContain('68%')
     expect(html).toContain('核心业务巡检对照总表')
     expect(html).toContain('跨场景聚合核心异常')
     expect(html).toContain('支付通道超时未响应')
-    expect(html).toContain('ev-pay-err')
+    expect(html).toContain('01a0f40a-ff20-73bb-af3a-25003a00ea11')
     expect(html).not.toMatch(/src=["']https?:\/\//)
+  })
+
+  it('旧场景集封存摘要把未评价成员记为正常时，仅投影展示为未判定且不再显示满分', () => {
+    const legacy: ReportDocument = {
+      ...document,
+      title: '旧版场景集报告',
+      source: {
+        kind: 'SUITE_RUN', status: 'COMPLETED', verdict: 'all_pass', suiteName: '晨检',
+        items: [{ memberId: 'm1', displayName: '订单', admission: 'SETTLED', run: {
+          status: 'SUCCEEDED', outcomeStatus: 'NOT_EVALUATED', output: { status: 'NORMAL', summary: '旧版误写的正常摘要' },
+        } }],
+      },
+      sections: [{ id: 'summary', title: '汇总', required: true, blocks: [{
+        type: 'suite_business_summary', healthScore: 100, healthGrade: 'EXCELLENT',
+        totalCount: 1, normalCount: 1, warningCount: 0, anomalousCount: 0, skippedCount: 0,
+        wallClockMs: 1000, childDurationMs: 1000, savedPercent: 0,
+        gridRows: [{ ordinal: 0, memberId: 'm1', displayName: '订单', scenarioName: '订单检查',
+          status: 'NORMAL', summary: '旧版误写的正常摘要', metrics: {}, dataRow: {}, durationMs: 1000, hasFindings: false }],
+        aggregatedFindings: [],
+      }] }],
+      gaps: [],
+    }
+    const sealed = JSON.stringify(legacy)
+    const html = renderReportHtml(legacy)
+    const lines = reportLines(legacy).map((line) => line.text).join('\n')
+
+    expect(html).toContain('未评分：业务结果未完整判定')
+    expect(html).toContain('业务检查结论：</strong><span class="badge badge-neutral">结论不完整')
+    expect(html).toContain('封存时结论：</strong>全部通过；当前展示按封存运行事实只读校正')
+    expect(html).toContain('未判定 1')
+    expect(html).toContain('仅未判定 (1)')
+    expect(html).toContain('data-status="UNDETERMINED"')
+    expect(html).not.toContain('评级：优')
+    expect(lines).toContain('业务检查得分：未评分（业务结果未完整判定）')
+    expect(lines).toContain('业务结论：结论不完整')
+    expect(lines).toContain('[未判定]')
+    expect(JSON.stringify(legacy)).toBe(sealed)
+
+    const unverifiable: ReportDocument = {
+      ...legacy,
+      source: { ...legacy.source, items: [{ memberId: 'm1', displayName: '订单', admission: 'SETTLED' }] },
+    }
+    const unverifiedHtml = renderReportHtml(unverifiable)
+    expect(unverifiedHtml).toContain('旧版分类不可复核')
+    expect(unverifiedHtml).toContain('未评分：历史成员分类缺少可核对的运行快照')
+
+    const skipped: ReportDocument = {
+      ...legacy,
+      source: { ...legacy.source, items: [{ memberId: 'm1', displayName: '订单', admission: 'SKIPPED' }] },
+    }
+    const skippedHtml = renderReportHtml(skipped)
+    expect(skippedHtml).toContain('仅跳过 (1)')
+    expect(skippedHtml).toContain('data-status="SKIPPED"')
+    expect(skippedHtml).toContain('未评分：存在跳过的检查项')
+
+    const empty: ReportDocument = {
+      ...legacy,
+      source: { ...legacy.source, items: [] },
+      sections: [{ ...legacy.sections[0]!, blocks: [{
+        ...legacy.sections[0]!.blocks[0]!, healthScore: 100, healthGrade: 'EXCELLENT',
+        totalCount: 0, normalCount: 0, gridRows: [],
+      }] }],
+    }
+    expect(renderReportHtml(empty)).toContain('未评分：没有可评分的检查项')
   })
 
   it('关闭可选章节与成功详情仍保留异常、未知及重试失败事实，成员按冻结分组展示', () => {

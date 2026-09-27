@@ -131,12 +131,11 @@ export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemp
                   navigate({
                     to: '/scenarios/$scenarioId',
                     params: { scenarioId: solidifyMutation.data!.scenarioId },
-                    search: (prev: Record<string, unknown>) => ({
-                      ...prev,
+                    search: {
                       import: solidifyMutation.data!.recordingDraftId,
                       importPlacement: 'replace_sequence',
                       importNodeId: solidifyMutation.data!.sourceNodeId,
-                    }),
+                    },
                   })
                 }
               >

@@ -1,4 +1,4 @@
-import { schemaFor } from '../native.js'
+import { databaseNow, schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import {
@@ -85,7 +85,7 @@ export async function settleLeaselessRun(
       await closeRunningAttemptsTx(tx as unknown as Db, input.runId, now)
       await tx
         .update(runs)
-        .set({ status: 'FAILED', finishedAt: now, updatedAt: now })
+        .set({ status: 'FAILED', finishedAt: databaseNow(tx), updatedAt: now })
         .where(eq(runs.id, input.runId))
       const debugWorkerLostError: ExecutionError = {
         code: 'DEBUG_WORKER_LOST',
@@ -385,7 +385,7 @@ export async function settleRunCancellationTx(
     .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.purpose, 'AUTH_WAIT'), eq(sessionLeases.status, 'ACTIVE')))
   if (outcome !== 'continue') return outcome
   const { runs, stepRuns, stepIterations } = schemaFor(tx)
-  await tx.update(runs).set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
+  await tx.update(runs).set({ status: 'CANCELLED', finishedAt: databaseNow(tx), updatedAt: now })
     .where(eq(runs.id, runId))
   const [cancelledRun] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, runId)).limit(1)
   if (cancelledRun) {
@@ -417,7 +417,7 @@ export async function reviewRun(
     const status: RunStatus = input.conclusion === 'fail' ? 'FAILED' : 'CANCELLED'
     await tx
       .update(runs)
-      .set({ status, finishedAt: now, updatedAt: now })
+      .set({ status, finishedAt: databaseNow(tx), updatedAt: now })
       .where(eq(runs.id, input.runId))
     const [runRow] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, input.runId)).limit(1)
     if (runRow) {

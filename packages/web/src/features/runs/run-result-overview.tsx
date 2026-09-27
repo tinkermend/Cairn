@@ -41,6 +41,18 @@ export type RunResultOverviewProps = {
   onFocusEvidence?: (evidenceId: string) => void
 }
 
+function elapsedMs(startedAt: string | null | undefined, finishedAt: string | null | undefined): number | null {
+  if (!startedAt || !finishedAt) return null
+  const duration = Date.parse(finishedAt) - Date.parse(startedAt)
+  return Number.isFinite(duration) && duration >= 0 ? duration : null
+}
+
+function formatElapsedMs(durationMs: number): string {
+  if (durationMs < 1000) return `${durationMs}ms`
+  if (durationMs < 10_000) return `${(durationMs / 1000).toFixed(1)}s`
+  return `${Math.round(durationMs / 1000)}s`
+}
+
 export function RunResultOverview({
   run,
   evidenceItems,
@@ -59,31 +71,24 @@ export function RunResultOverview({
   const failedDiagnosis = failedAttempt?.error ? translateStepError(failedAttempt.error) : null
 
   // 2. 计算步骤耗时分析与性能分布
-  const { totalDurationMs, performanceItems, topBottlenecks } = useMemo(() => {
-    let maxMs = 0
-    let totalMs = 0
-
-    const items = run.stepRuns.map((step) => {
-      let ms = 0
+  const { recordedStepDurationMs, performanceItems, topBottlenecks } = useMemo(() => {
+    const items = run.stepRuns.filter((step) => step.startedAt || step.attempts.length > 0).map((step) => {
       const lastAtt = step.attempts[step.attempts.length - 1]
-      if (lastAtt && lastAtt.startedAt && lastAtt.finishedAt) {
-        ms = Math.max(0, Date.parse(lastAtt.finishedAt) - Date.parse(lastAtt.startedAt))
-      } else if (step.startedAt && step.finishedAt) {
-        ms = Math.max(0, Date.parse(step.finishedAt) - Date.parse(step.startedAt))
-      }
-      totalMs += ms
-      if (ms > maxMs) maxMs = ms
+      const stepElapsedMs = elapsedMs(step.startedAt, step.finishedAt) ??
+        elapsedMs(step.attempts[0]?.startedAt, lastAtt?.finishedAt)
+      const ms = stepElapsedMs ?? 0
 
       return {
         step,
         durationMs: ms,
-        durationFormatted: ms > 0 ? (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`) : '0s',
+        durationFormatted: stepElapsedMs !== null ? formatElapsedMs(ms) : step.status === 'RUNNING' ? '进行中' : '时间未记录',
         percentage: 0,
         isBottleneck: false,
       }
     })
 
     // 计算占比
+    const totalMs = items.reduce((sum, item) => sum + item.durationMs, 0)
     const effectiveTotalMs = totalMs > 0 ? totalMs : 1
     items.forEach((item) => {
       item.percentage = Math.round((item.durationMs / effectiveTotalMs) * 100)
@@ -97,11 +102,16 @@ export function RunResultOverview({
     })
 
     return {
-      totalDurationMs: totalMs,
+      recordedStepDurationMs: totalMs,
       performanceItems: items,
       topBottlenecks: bottlenecks,
     }
   }, [run.stepRuns])
+
+  const runElapsedMs = elapsedMs(run.startedAt, run.finishedAt)
+  const unassignedMs = runElapsedMs !== null && runElapsedMs >= recordedStepDurationMs
+    ? runElapsedMs - recordedStepDurationMs
+    : null
 
   // 3. 提取全局上下文变量 (run.context 中的键值)
   const contextEntries = useMemo(() => {
@@ -209,7 +219,7 @@ export function RunResultOverview({
           </div>
         ) : (
           <p className='text-label text-muted-foreground pt-1'>
-            本次运行未配置成功条件或运行期不变式规则，业务判定按预定步骤执行结果呈现。
+            本次运行未配置成功条件或运行期不变式规则；步骤执行结果可单独查看，业务结果未评价。
           </p>
         )}
       </section>
@@ -218,6 +228,8 @@ export function RunResultOverview({
       {run.output ? (
         <RunOutputCard
           output={run.output}
+          runStatus={run.status}
+          outcomeStatus={run.outcomeStatus}
           onFocusEvidence={onFocusEvidence}
           onFocusStep={(stepOrdinal) => {
             const step = run.stepRuns.find((s) => s.ordinal === stepOrdinal)
@@ -271,19 +283,29 @@ export function RunResultOverview({
             <Clock className='size-4 text-primary' />
             <h2 className='text-body font-semibold text-foreground'>耗时分布与性能透视</h2>
           </div>
-          <div className='flex items-center gap-3 text-label text-muted-foreground'>
-            <span>总耗时: <strong className='text-foreground font-mono'>{formatDuration(run.startedAt, run.finishedAt) || `${Math.round(totalDurationMs / 1000)}s`}</strong></span>
-            <span>·</span>
-            <span>步骤数: <strong className='text-foreground font-mono'>{run.stepRuns.length}</strong> 步</span>
+          <div className='flex flex-wrap items-center gap-x-3 gap-y-1 text-label text-muted-foreground'>
+            {runElapsedMs !== null ? (
+              <span>运行历时: <strong className='text-foreground font-mono'>{formatDuration(run.startedAt, run.finishedAt)}</strong></span>
+            ) : null}
+            <span>已记录步骤耗时总和: <strong className='text-foreground font-mono'>{formatElapsedMs(recordedStepDurationMs)}</strong></span>
+            <span>已执行步骤: <strong className='text-foreground font-mono'>{performanceItems.length}</strong> / 编排步骤: <strong className='text-foreground font-mono'>{run.stepRuns.length}</strong></span>
           </div>
         </div>
+
+        {unassignedMs !== null ? (
+          <p className='text-label text-muted-foreground'>
+            未归于步骤的耗时：<strong className='font-mono text-foreground'>{formatElapsedMs(unassignedMs)}</strong>（可能包含等待、恢复或收尾时间）
+          </p>
+        ) : runElapsedMs !== null ? (
+          <p className='text-label text-muted-foreground'>步骤时间存在重叠，无法直接计算未归于步骤的耗时。</p>
+        ) : null}
 
         {/* 耗时瓶颈 TOP 步骤提示 */}
         {topBottlenecks.length > 0 ? (
           <div className='rounded-md border border-status-warning-foreground/30 bg-status-warning-background/15 p-3 space-y-2'>
             <div className='flex items-center gap-1.5 text-label font-medium text-status-warning-foreground'>
               <Flame className='size-4' />
-              <span>关键耗时瓶颈步骤 (消耗大部分执行时间):</span>
+              <span>耗时最长的步骤（按已记录步骤耗时）：</span>
             </div>
             <div className='grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2'>
               {topBottlenecks.map(({ step, durationFormatted, percentage }) => (
@@ -298,7 +320,7 @@ export function RunResultOverview({
                       #{step.ordinal + 1} {step.name}
                     </div>
                     <div className='text-caption text-muted-foreground'>
-                      占总耗时 {percentage}%
+                      占已记录步骤耗时 {percentage}%
                     </div>
                   </div>
                   <span className='font-mono font-bold text-status-warning-foreground shrink-0'>
@@ -312,7 +334,10 @@ export function RunResultOverview({
 
         {/* 步骤耗时瀑布清单 (Waterfall Bar List) */}
         <div className='space-y-1.5 pt-1'>
-          <p className='text-caption font-medium text-muted-foreground mb-1'>各步骤耗时横向对比 (点击条目直达步骤现场):</p>
+          <p className='text-caption font-medium text-muted-foreground mb-1'>已执行步骤耗时横向对比（百分比以已记录步骤耗时总和为分母；点击条目直达步骤现场）：</p>
+          {performanceItems.length === 0 ? (
+            <p className='text-label text-muted-foreground'>暂无已执行步骤耗时记录。</p>
+          ) : null}
           {performanceItems.map(({ step, durationFormatted, percentage }) => (
             <div
               key={step.id}
@@ -350,7 +375,7 @@ export function RunResultOverview({
                           ? 'bg-status-warning-foreground'
                           : 'bg-primary/70'
                     }`}
-                    style={{ width: `${Math.max(2, percentage)}%` }}
+                    style={{ width: `${percentage > 0 ? Math.max(2, percentage) : 0}%` }}
                   />
                 </div>
               </div>

@@ -154,7 +154,7 @@ export function RunCreateDialog({
               value={scenarioSearch}
               onChange={(event) => setScenarioSearch(event.target.value)}
             />
-            <Select value={scenarioId || undefined} onValueChange={setScenarioId}>
+            <Select value={scenarioId} onValueChange={setScenarioId}>
               <SelectTrigger id='run-scenario' className='w-full' aria-label='场景'>
                 <SelectValue placeholder='选择场景' />
               </SelectTrigger>
@@ -196,7 +196,7 @@ export function RunCreateDialog({
               onChange={(event) => setAccountSearch(event.target.value)}
             />
             <Select
-              value={targetAccountId || (usableAccounts.length > 0 ? undefined : '__none__')}
+              value={targetAccountId || (usableAccounts.length > 0 ? '' : '__none__')}
               onValueChange={(value) => setTargetAccountId(value === '__none__' ? '' : value)}
             >
               <SelectTrigger className='w-full'>

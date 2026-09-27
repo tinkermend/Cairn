@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { entityIdSchema, hasPermission, runStatusSchema } from '@cairn/shared'
+import { entityIdSchema, evidenceSearchViewSchema, hasPermission, runStatusSchema } from '@cairn/shared'
 import { z } from 'zod'
 import { RunsPage } from '@/features/runs'
 import { evidencePageSearchSchema } from '@/features/evidence'
@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 export const runsPageSearchSchema = evidencePageSearchSchema.extend({
   view: z.enum(['runs', 'suites', 'reports', 'materials', 'retention']).optional().catch('runs'),
+  evidenceView: evidenceSearchViewSchema.optional().catch(undefined),
   targetId: entityIdSchema.optional().catch(undefined),
   search: z.string().optional().catch(undefined),
   status: runStatusSchema.optional().catch(undefined),

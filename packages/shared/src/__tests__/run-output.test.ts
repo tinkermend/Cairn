@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   assembleRunOutput,
+  projectRunOutput,
+  projectRunOutputSummary,
   runOutputSchema,
   scenarioDocumentSchema,
   scenarioOutputDeclSchema,
@@ -97,6 +99,11 @@ describe('Scenario Output Declaration Schema (AC01)', () => {
 })
 
 describe('RunOutput Assembly & Fallback (AC02, AC03, AC04, AC05)', () => {
+  const outputsDeclForIncompleteRun = {
+    summaryTemplate: '密钥已创建，状态正常',
+    metrics: [{ key: 'item_count', name: '项目数', fromContextKey: 'report', fromField: 'total' }],
+    dataRowFields: [{ columnKey: 'report_id', columnHeader: 'ID', fromContextKey: 'report', fromField: 'id' }],
+  }
   const sampleSteps: Step[] = [
     {
       id: 'step-1',
@@ -205,22 +212,104 @@ describe('RunOutput Assembly & Fallback (AC02, AC03, AC04, AC05)', () => {
       status: 'SUCCEEDED',
       outcomeStatus: 'FAIL',
     })
-    expect(failOut.summary).toBe('流程执行中断或未通过，发现业务异常。')
+    expect(failOut.summary).toBe('流程执行完成，但业务检查未通过。')
     expect(failOut.status).toBe('ANOMALOUS')
+
+    const unknownOut = assembleRunOutput({
+      status: 'SUCCEEDED',
+      outcomeStatus: 'UNKNOWN',
+    })
+    expect(unknownOut.summary).toBe('流程执行完成，但业务结果无法确认。')
+    expect(unknownOut.status).toBe('UNDETERMINED')
+
+    const notEvaluatedOut = assembleRunOutput({
+      status: 'SUCCEEDED',
+      outcomeStatus: 'NOT_EVALUATED',
+    })
+    expect(notEvaluatedOut.status).toBe('UNDETERMINED')
 
     const cancelledOut = assembleRunOutput({
       status: 'CANCELLED',
     })
     expect(cancelledOut.summary).toBe('任务已被人工或系统取消。')
+    expect(cancelledOut.status).toBe('UNDETERMINED')
 
     const errorOut = assembleRunOutput({
       status: 'FAILED',
       error: { safeMessage: '网络连接超时' },
     })
     expect(errorOut.summary).toBe('执行过程中断：网络连接超时')
-    expect(errorOut.status).toBe('ANOMALOUS')
+    expect(errorOut.status).toBe('UNDETERMINED')
     expect(errorOut.findings).toHaveLength(1)
     expect(errorOut.findings[0]!.title).toBe('步骤执行异常中断')
+  })
+
+  it.each([
+    ['FAILED', '执行过程中断：调试会话等待超时'],
+    ['CANCELLED', '任务已被人工或系统取消。'],
+    ['NEEDS_REVIEW', '运行待人工核查，业务结果尚未确认。'],
+  ])('%s 时不使用宣称完成的业务结论模板，仍保留已产生的指标与数据', (status, summary) => {
+    const output = assembleRunOutput({
+      status,
+      outcomeStatus: 'NOT_EVALUATED',
+      error: { safeMessage: '调试会话等待超时' },
+      outputsDecl: outputsDeclForIncompleteRun,
+      context: { report: { total: 1, id: 7, title: '部分数据' } },
+    })
+
+    expect(output.summary).toBe(summary)
+    expect(output.status).toBe('UNDETERMINED')
+    expect(output.metrics).toEqual({ item_count: 1 })
+    expect(output.dataRow).toEqual({ report_id: 7 })
+  })
+
+  it('失败时也不使用从上下文读取的成功结论', () => {
+    const output = assembleRunOutput({
+      status: 'FAILED',
+      outcomeStatus: 'NOT_EVALUATED',
+      outputsDecl: { summaryFromContextKey: 'result', metrics: [], dataRowFields: [] },
+      context: { result: '密钥已创建' },
+    })
+    expect(output.summary).toBe('执行过程中断。')
+    expect(output.status).toBe('UNDETERMINED')
+  })
+
+  it.each([
+    ['FAIL', '流程执行完成，但业务检查未通过。'],
+    ['UNKNOWN', '流程执行完成，但业务结果无法确认。'],
+  ])('执行成功但业务结果为 %s 时，声明模板与历史摘要都不宣称业务成功', (outcomeStatus, summary) => {
+    const output = assembleRunOutput({
+      status: 'SUCCEEDED',
+      outcomeStatus,
+      outputsDecl: outputsDeclForIncompleteRun,
+      context: { report: { total: 1, id: 7, title: '部分数据' } },
+    })
+    expect(output.summary).toBe(summary)
+    expect(output.metrics).toEqual({ item_count: 1 })
+    expect(output.dataRow).toEqual({ report_id: 7 })
+
+    const projected = projectRunOutputSummary({ ...output, summary: '密钥已创建，状态正常' }, 'SUCCEEDED', outcomeStatus)
+    expect(projected.summary).toBe(summary)
+    expect(projected.status).toBe(outcomeStatus === 'FAIL' ? 'ANOMALOUS' : 'UNDETERMINED')
+    expect(projected.metrics).toEqual(output.metrics)
+    expect(projected.dataRow).toEqual(output.dataRow)
+  })
+
+  it('历史输出的 NORMAL 不掩盖未判定，已确认的业务失败仍显示异常', () => {
+    const old = assembleRunOutput({ status: 'SUCCEEDED', outcomeStatus: 'PASS' })
+    expect(projectRunOutput(old, 'FAILED', 'NOT_EVALUATED')).toMatchObject({
+      status: 'UNDETERMINED',
+      summary: '执行过程中断。',
+    })
+    expect(projectRunOutput(old, 'SUCCEEDED', 'UNKNOWN')).toMatchObject({
+      status: 'UNDETERMINED',
+      summary: '流程执行完成，但业务结果无法确认。',
+    })
+    expect(projectRunOutput(old, 'SUCCEEDED', 'FAIL')).toMatchObject({
+      status: 'ANOMALOUS',
+      summary: '流程执行完成，但业务检查未通过。',
+    })
+    expect(projectRunOutput(old, 'SUCCEEDED', 'PASS')).toEqual(old)
   })
 
   it('AC04: 异常与断言违规转化为 Findings（绑定 severity、evidenceId、stepOrdinal，高亮 ANOMALOUS）', () => {

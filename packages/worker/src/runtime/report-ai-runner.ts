@@ -31,6 +31,7 @@ import type { ObjectStore } from '@cairn/storage'
 import type { LocalSecretProvider } from '@cairn/secret'
 import { createHash } from 'node:crypto'
 import { renderReportHtml, type ReportImage } from './report-html.js'
+import { suiteScoreUnavailableReason, suiteSummaryForReport, suiteVerdictForReport } from './report-content.js'
 
 function sha256Hex(data: unknown): string {
   return `sha256:${createHash('sha256').update(typeof data === 'string' ? data : JSON.stringify(data)).digest('hex')}`
@@ -71,12 +72,25 @@ export type SanitizedReportData = {
     }>
   }
   suiteName?: string
+  sealedVerdict?: string
+  suiteBusiness?: {
+    healthScore: number | null
+    healthGrade: string | null
+    scoreUnavailableReason?: string
+    normalCount: number
+    warningCount: number
+    anomalousCount: number
+    undeterminedCount: number
+    skippedCount: number
+    unverifiedCount: number
+  }
   counts?: Record<string, number>
   members?: Array<{
     memberId: string
     displayName: string
     status: string
     verdict: string
+    businessStatus: string
     summary?: string
   }>
 }
@@ -177,18 +191,33 @@ export function sanitizeReportSource(document: ReportDocument): {
   }
 
   // Suite Run
+  const projected = suiteSummaryForReport(document)
+  const suiteSummary = projected.summary
+  const displayVerdict = suiteVerdictForReport(document, projected)
+  const scoreAvailable = suiteSummary?.healthScore != null && suiteSummary.healthGrade != null
+    && document.verdict !== 'incomplete' && source.verdict !== 'incomplete'
+  const projectedRows = new Map(suiteSummary?.gridRows.map((row) => [row.memberId, row]) ?? [])
   const items = Array.isArray(source.items) ? source.items : []
   const members = items.map((item: any) => {
     const memberId = String(item.memberId ?? '')
     if (memberId) validCitationIds.add(memberId)
     if (item.childRunId) validCitationIds.add(String(item.childRunId))
 
+    const run = item.run && typeof item.run === 'object' && !Array.isArray(item.run) ? item.run : null
+    const verifiable = item.admission === 'SKIPPED'
+      || (run && typeof run.status === 'string' && typeof run.outcomeStatus === 'string')
+    const projectedRow = projectedRows.get(memberId)
+    const businessStatus = verifiable ? projectedRow?.status ?? (item.admission === 'SKIPPED' ? 'SKIPPED' : 'UNDETERMINED') : 'UNVERIFIED'
+
     return {
       memberId,
       displayName: String(item.displayName ?? memberId),
-      status: String(item.run?.status ?? item.admissionStatus ?? 'UNKNOWN'),
-      verdict: String(item.run?.verdict ?? item.run?.outcomeStatus ?? 'UNKNOWN'),
-      summary: item.run?.output?.summary ? String(item.run.output.summary).slice(0, 300) : undefined,
+      status: String(run?.status ?? item.runStatus ?? item.admission ?? 'UNKNOWN'),
+      verdict: String(run?.outcomeStatus ?? item.outcomeStatus ?? 'UNKNOWN'),
+      businessStatus,
+      summary: businessStatus === 'UNVERIFIED' ? '历史分类缺少可核对的运行快照'
+        : businessStatus === 'UNDETERMINED' ? projectedRow?.summary ?? '业务结果未判定'
+          : projectedRow?.summary ? projectedRow.summary.slice(0, 300) : undefined,
     }
   })
 
@@ -197,7 +226,8 @@ export function sanitizeReportSource(document: ReportDocument): {
     title: document.title,
     suiteName: source.suiteName ? String(source.suiteName) : undefined,
     targetName: source.targetName ? String(source.targetName) : undefined,
-    verdict,
+    verdict: displayVerdict,
+    ...(verdict !== displayVerdict ? { sealedVerdict: verdict } : {}),
     status,
     outcomeStatus,
     evidenceStatus,
@@ -205,6 +235,17 @@ export function sanitizeReportSource(document: ReportDocument): {
     finishedAt,
     durationMs,
     gaps: document.gaps ?? [],
+    suiteBusiness: {
+      healthScore: scoreAvailable ? suiteSummary.healthScore : null,
+      healthGrade: scoreAvailable ? suiteSummary.healthGrade : null,
+      ...(scoreAvailable ? {} : { scoreUnavailableReason: suiteScoreUnavailableReason(document, projected) }),
+      normalCount: suiteSummary?.normalCount ?? 0,
+      warningCount: suiteSummary?.warningCount ?? 0,
+      anomalousCount: suiteSummary?.anomalousCount ?? 0,
+      undeterminedCount: suiteSummary?.undeterminedCount ?? 0,
+      skippedCount: suiteSummary?.skippedCount ?? 0,
+      unverifiedCount: projected.unverifiedCount,
+    },
     counts: (source.counts && typeof source.counts === 'object') ? (source.counts as Record<string, number>) : undefined,
     members,
   }
@@ -235,6 +276,10 @@ export function validateAiInterpretation(
 
   if (runPassed && (/严重执行失败|场景崩溃中止|全部步骤执行失败/.test(text))) {
     throw new Error('AI 解读与已确认的程序版成功运行事实发生冲突')
+  }
+  if (sanitized.kind === 'SUITE_RUN' && sanitized.suiteBusiness?.healthScore === null
+    && /(?:全部|所有|均).{0,8}(?:业务|检查项).{0,8}(?:正常|通过)|业务(?:检查|结果).{0,8}(?:全部通过|均通过)|(?:业务检查得分|业务健康度).{0,5}(?:100|满分)/.test(text)) {
+    throw new Error('AI 解读将未完整判定的业务结果描述为已确认正常')
   }
 
   // 4. 敏感信息过滤校验
@@ -272,7 +317,8 @@ export function buildReportAiPrompt(sanitized: SanitizedReportData): { system: s
 }
 4. 对每一个关键发现，citationIds 必须来自输入数据中真实存在的 ID（如步骤 ID、证据 ID、成员 ID）。若证据不足请留空数组，严禁凭空编造 ID。
 5. 若现有事实或证据不足以判断问题原因，请将 status 设为 "inconclusive"，并在 observation 中明确说明材料不足。
-6. 推测分析必须放在 hypotheses 中并标注可信度，不得将推测写为既成事实。`
+6. 推测分析必须放在 hypotheses 中并标注可信度，不得将推测写为既成事实。
+7. 对场景集，status 和 counts 是执行事实；verdict 是依据封存成员事实的只读展示投影，sealedVerdict 是封存时旧结论。业务判定必须以 suiteBusiness 和 members.businessStatus 为准。healthScore 为 null、businessStatus 为 UNDETERMINED 或 UNVERIFIED 时，不得描述为业务正常、全部通过或满分。`
 
   const user = JSON.stringify(sanitized)
   return { system, user }

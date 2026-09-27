@@ -75,7 +75,7 @@ export function RunDetailPage() {
   const selectedStepId = selectedStep?.stepId
   const selectedStepFailed = selectedStep?.status === 'FAILED'
 
-  const isFailed = run?.status === 'FAILED' || run?.outcomeStatus === 'FAILED'
+  const isFailed = run?.status === 'FAILED' || run?.outcomeStatus === 'FAIL'
   const isSucceeded = run?.status === 'SUCCEEDED'
   const statusTone: 'error' | 'success' | 'info' = isFailed ? 'error' : isSucceeded ? 'success' : 'info'
 
@@ -361,7 +361,9 @@ export function RunDetailPage() {
           <div className='rounded-lg border border-border-card bg-card p-4 shadow-card shrink-0 space-y-2'>
             <h2 className='text-body font-semibold text-foreground'>运行级证据</h2>
             <p className='text-label text-muted-foreground'>
-              这些证据在第一个步骤执行前产生（例如参数校验、调度错误或全局准备失败）。
+              {run.stepRuns.some((step) => step.attempts.length > 0)
+                ? '这些错误未归属到具体步骤尝试；请结合步骤现场核对失败位置。'
+                : '这些证据在第一个步骤执行前产生（例如参数校验、调度错误或全局准备失败）。'}
             </p>
             <div className='mt-2'>
               <AttemptEvidenceList runId={run.id} items={preRunErrors} />

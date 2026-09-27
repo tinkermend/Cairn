@@ -75,6 +75,9 @@ const observation = {
 function mockService() {
   return {
     list: vi.fn(async () => ({ items: [detail] })),
+    reportReadScope: vi.fn(async (actorId: string) => actorId === admin.id
+      ? { all: true, ids: [] }
+      : { all: false, ids: [] }),
     get: vi.fn(async () => detail),
     create: vi.fn(async () => ({ detail, created: true })),
     cancel: vi.fn(async () => ({ ...detail, status: 'CANCELLED' })),
@@ -495,14 +498,14 @@ describe('Runs HTTP', () => {
 
   it('可读运行地图选择记录，不走轮询协议', async () => {
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions`).expect(200)
-    expect(service.mapDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 })
+    expect(service.mapDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 }, admin.id)
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions?cursor=invalid`).expect(400)
     await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions`).expect(403)
   })
 
   it('可读运行解析决策，缺 target:read 拒绝', async () => {
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions`).expect(200)
-    expect(service.resolutionDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 })
+    expect(service.resolutionDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 }, admin.id)
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions?cursor=invalid`).expect(400)
     await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions`).expect(403)
   })
@@ -512,7 +515,7 @@ describe('Runs HTTP', () => {
     await request(adminApp.getHttpServer())
       .get(`/runs/${detail.id}/attempts/${attemptId}/ai-tasks`)
       .expect(200)
-    expect(service.aiTasks).toHaveBeenCalledWith(detail.id, attemptId, { limit: 50 })
+    expect(service.aiTasks).toHaveBeenCalledWith(detail.id, attemptId, { limit: 50 }, admin.id)
     await request(adminApp.getHttpServer())
       .get(`/runs/${detail.id}/attempts/${attemptId}/ai-tasks?limit=invalid`)
       .expect(400)
@@ -543,10 +546,10 @@ describe('Runs HTTP', () => {
   it('可读运行迭代列表和详情，校验权限与未找到错误', async () => {
     const iterationId = '11111111-2222-3333-4444-555555555555'
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations`).expect(200)
-    expect(service.iterations).toHaveBeenCalledWith(detail.id, expect.any(Object))
+    expect(service.iterations).toHaveBeenCalledWith(detail.id, admin.id, expect.any(Object))
 
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations/${iterationId}`).expect(200)
-    expect(service.iterationDetail).toHaveBeenCalledWith(detail.id, iterationId)
+    expect(service.iterationDetail).toHaveBeenCalledWith(detail.id, iterationId, admin.id)
 
     // viewer 有 run:read 权限，也可以读取
     await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/iterations`).expect(200)
@@ -558,6 +561,23 @@ describe('Runs HTTP', () => {
     // 迭代不存在时返回 404
     service.iterationDetail.mockResolvedValueOnce(null)
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations/${iterationId}`).expect(404)
+  })
+
+  it('报告元信息按 report:read 的目标范围隐藏', async () => {
+    const otherTargetId = '22222222-2222-4222-8222-222222222222'
+    const own = { ...detail, runReportStatus: 'generated', reportId: 'report-own', reportError: null }
+    const other = { ...own, id: '88888888-8888-4888-8888-888888888888', targetId: otherTargetId, reportId: 'report-other' }
+    service.list.mockResolvedValueOnce({ items: [own, other] })
+    service.reportReadScope.mockResolvedValueOnce({ all: false, ids: [detail.targetId] })
+    const listed = await request(viewerApp.getHttpServer()).get('/runs').expect(200)
+    expect(listed.body.items[0].reportId).toBe('report-own')
+    expect(listed.body.items[1].reportId).toBeUndefined()
+
+    service.get.mockResolvedValueOnce(other)
+    service.reportReadScope.mockResolvedValueOnce({ all: false, ids: [detail.targetId] })
+    const fetched = await request(viewerApp.getHttpServer()).get(`/runs/${other.id}`).expect(200)
+    expect(fetched.body.reportId).toBeUndefined()
+    expect(fetched.body.runReportStatus).toBeUndefined()
   })
 
   it('可由 AI 动作事实生成确定性草案，缺权限拒绝', async () => {
@@ -573,4 +593,3 @@ describe('Runs HTTP', () => {
       .expect(403)
   })
 })
-

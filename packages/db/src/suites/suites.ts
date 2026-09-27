@@ -19,6 +19,8 @@ import {
   type DeletePreviewResponse,
   type DeleteResourceBody,
   type ResourceDeletedBy,
+  type SuiteRunStatus,
+  type SuiteVerdict,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
@@ -145,20 +147,80 @@ export async function listSuites(db: Db, query: Partial<SuiteListQuery> = {}, ac
     rows.map((row) => ({ ...row, id: row.suite.id, createdAt: row.suite.updatedAt })),
     parsed.limit,
   )
+  const suiteIds = paginated.items.map((row) => row.suite.id)
+  const latestRunsMap = new Map<
+    string,
+    {
+      id: string
+      status: SuiteRunStatus
+      verdict?: SuiteVerdict | null
+      startedAt: string
+      finishedAt?: string | null
+      durationMs?: number | null
+    }
+  >()
+
+  if (suiteIds.length > 0) {
+    const { suiteRuns } = schemaFor(db)
+    const recentRuns = await db
+      .select({
+        id: suiteRuns.id,
+        suiteId: suiteRuns.suiteId,
+        status: suiteRuns.status,
+        verdict: suiteRuns.verdict,
+        startedAt: suiteRuns.startedAt,
+        finishedAt: suiteRuns.finishedAt,
+        createdAt: suiteRuns.createdAt,
+      })
+      .from(suiteRuns)
+      .where(inArray(suiteRuns.suiteId, suiteIds))
+      .orderBy(desc(suiteRuns.createdAt))
+      .limit(suiteIds.length * 10)
+
+    for (const run of recentRuns) {
+      if (!latestRunsMap.has(run.suiteId)) {
+        const durationMs =
+          run.startedAt && run.finishedAt
+            ? Math.max(0, run.finishedAt.getTime() - run.startedAt.getTime())
+            : null
+        latestRunsMap.set(run.suiteId, {
+          id: run.id,
+          status: run.status,
+          verdict: run.verdict ?? null,
+          startedAt: (run.startedAt ?? run.createdAt).toISOString(),
+          finishedAt: run.finishedAt ? run.finishedAt.toISOString() : null,
+          durationMs,
+        })
+      }
+    }
+  }
+
   return suiteListResponseSchema.parse({
-    items: paginated.items.map((row) => ({
-      id: row.suite.id,
-      targetId: row.suite.targetId,
-      name: row.suite.name,
-      description: row.suite.description,
-      status: row.suite.status,
-      executionMode: row.suite.executionMode,
-      maxConcurrency: row.suite.maxConcurrency,
-      draftRevision: row.draftRevision,
-      publishedVersionNo: row.publishedVersionNo == null ? null : Number(row.publishedVersionNo),
-      memberCount: row.document.members.length,
-      updatedAt: row.suite.updatedAt.toISOString(),
-    })),
+    items: paginated.items.map((row) => {
+      const doc = row.document as SuiteDocument
+      const isStageMode = Boolean(doc.stages && doc.stages.length > 0)
+      const stageCount = doc.stages?.length ?? 0
+      const memberCount = isStageMode
+        ? (doc.stages?.flatMap((s) => s.members).length ?? 0)
+        : (doc.members?.length ?? 0)
+
+      return {
+        id: row.suite.id,
+        targetId: row.suite.targetId,
+        name: row.suite.name,
+        description: row.suite.description,
+        status: row.suite.status,
+        executionMode: row.suite.executionMode,
+        maxConcurrency: row.suite.maxConcurrency,
+        draftRevision: row.draftRevision,
+        publishedVersionNo: row.publishedVersionNo == null ? null : Number(row.publishedVersionNo),
+        memberCount,
+        stageCount,
+        isStageMode,
+        latestRun: latestRunsMap.get(row.suite.id) ?? null,
+        updatedAt: row.suite.updatedAt.toISOString(),
+      }
+    }),
     nextCursor: paginated.nextCursor,
   })
 }

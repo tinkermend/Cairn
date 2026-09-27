@@ -14,6 +14,7 @@ describe('报告 AI 总结与质量保障（RA01-RA06）', () => {
     timeZone: 'Asia/Shanghai',
     generatedAt: '2026-09-26T12:00:00.000Z',
     asOf: '2026-09-26T12:00:00.000Z',
+    summary: {},
     source: {
       kind: 'RUN',
       status: 'SUCCEEDED',
@@ -124,6 +125,49 @@ describe('报告 AI 总结与质量保障（RA01-RA06）', () => {
 
       expect(prompt.user).toContain('购物车结算')
       expect(prompt.user).toContain('优惠券核销返回 500 系统错误')
+    })
+
+    it('场景集 AI 输入按封存来源只读校正业务状态，阻止把未评价成员解释为业务正常', () => {
+      const legacy: ReportDocument = {
+        ...sampleDocument,
+        title: '旧版场景集报告',
+        source: {
+          kind: 'SUITE_RUN', status: 'COMPLETED', verdict: 'all_pass',
+          items: [{ memberId: 'm1', displayName: '订单', admission: 'SETTLED', run: {
+            status: 'SUCCEEDED', outcomeStatus: 'NOT_EVALUATED', output: { status: 'NORMAL', summary: '旧版正常摘要' },
+          } }],
+        },
+        sections: [{ id: 'summary', title: '汇总', required: true, blocks: [{
+          type: 'suite_business_summary', healthScore: 100, healthGrade: 'EXCELLENT',
+          totalCount: 1, normalCount: 1, warningCount: 0, anomalousCount: 0, skippedCount: 0,
+          wallClockMs: 1000, childDurationMs: 1000, savedPercent: 0,
+          gridRows: [{ ordinal: 0, memberId: 'm1', displayName: '订单', scenarioName: '订单检查',
+            status: 'NORMAL', summary: '旧版正常摘要', metrics: {}, dataRow: {}, durationMs: 1000, hasFindings: false }],
+          aggregatedFindings: [],
+        }] }],
+        gaps: [],
+      }
+      const sealed = JSON.stringify(legacy)
+      const { sanitized, validCitationIds } = sanitizeReportSource(legacy)
+      const prompt = buildReportAiPrompt(sanitized)
+
+      expect(sanitized.suiteBusiness?.healthScore).toBeNull()
+      expect(sanitized.verdict).toBe('incomplete')
+      expect(sanitized.sealedVerdict).toBe('all_pass')
+      expect(sanitized.suiteBusiness?.undeterminedCount).toBe(1)
+      expect(sanitized.members?.[0]?.businessStatus).toBe('UNDETERMINED')
+      expect(sanitized.members?.[0]?.summary).toContain('业务未判定')
+      expect(prompt.system).toContain('不得描述为业务正常、全部通过或满分')
+      expect(prompt.user).not.toContain('"healthScore":100')
+      expect(validCitationIds.has('m1')).toBe(true)
+      expect(JSON.stringify(legacy)).toBe(sealed)
+
+      const falseClaim: ReportAiInterpretation = {
+        model: 'test', generatedAt: '2026-09-26T12:05:00.000Z', status: 'conclusive',
+        observation: '全部业务检查项正常', findings: [], hypotheses: [], suggestions: [],
+      }
+      expect(() => validateAiInterpretation(falseClaim, validCitationIds, sanitized))
+        .toThrow('AI 解读将未完整判定的业务结果描述为已确认正常')
     })
   })
 
@@ -278,6 +322,7 @@ describe('报告 AI 总结与质量保障（RA01-RA06）', () => {
         timeZone: 'Asia/Shanghai',
         generatedAt: '2026-09-26T12:00:00.000Z',
         asOf: '2026-09-26T12:00:00.000Z',
+        summary: {},
         source: {
           kind: 'SUITE_RUN',
           status: 'COMPLETED',

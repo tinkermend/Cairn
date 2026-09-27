@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
@@ -356,12 +356,17 @@ export function SearchPanel({
     queryFn: () => fetchEvidenceSearch(queryInput),
     placeholderData: keepPreviousData,
   })
+  const requestedAsOf = useRef<string | null>(null)
   useEffect(() => {
     // 自动补上的 asOf 只是把本次读取时刻写进地址，不是用户的一次导航：用 replace，
     // 否则后退会回到无 asOf 的地址，再被这里推一次，形成后退陷阱。
-    if (listed.data?.asOf && !search.asOf)
-      patch({ asOf: listed.data.asOf }, { replace: true })
-  }, [listed.data?.asOf, patch, search.asOf])
+    // 路由同步期间父组件可能重渲染，避免对同一读取时刻反复发起导航。
+    const asOf = listed.data?.asOf
+    if (!search.asOf && !listed.isPlaceholderData && asOf && requestedAsOf.current !== asOf) {
+      requestedAsOf.current = asOf
+      patch({ asOf }, { replace: true })
+    }
+  }, [listed.data?.asOf, listed.isPlaceholderData, patch, search.asOf])
 
   const targets = useQuery({
     queryKey: ['targets', 'evidence'],

@@ -2,14 +2,14 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { runEvidenceStatusSchema } from './evidence.js'
 import { outcomeStatusSchema } from './outcome.js'
-import { runFindingSchema } from './run-output.js'
+import { deriveRunOutputStatus, runFindingSchema } from './run-output.js'
 import { suiteVerdictSchema } from './suite-verdict.js'
-import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
+import { entityIdSchema, jsonValueSchema, utcInstantSchema, type JsonValue } from './wire.js'
 import { REPORT_TITLE_CATALOG, reportTitleSources, type ReportTitleSource } from './report-title-template.js'
 export { REPORT_TITLE_CATALOG, parseReportTitle, reportTitleSources, renderReportTitleV2, type ReportTitleSource, type ReportTitleSegment } from './report-title-template.js'
 
 export const EXPORT_ARTIFACTS_PROTOCOL = 'export-artifacts@2' as const
-export const REPORT_RENDER_VERSION = 'report-render@9' as const
+export const REPORT_RENDER_VERSION = 'report-render@10' as const
 export const REPORT_TEMPLATE_VERSION = 'report-template@1' as const
 export const REPORT_AI_PROMPT_VERSION = 'v1' as const
 
@@ -142,15 +142,17 @@ export function contentDispositionAttachment(fileName: string): string {
 
 export const suiteSummaryBlockSchema = z.strictObject({
   type: z.literal('suite_business_summary'),
-  /** 系统健康度评分 (0 - 100) 与评级 (优/良/中/差) */
-  healthScore: z.number().int().min(0).max(100),
-  healthGrade: z.enum(['EXCELLENT', 'GOOD', 'FAIR', 'POOR']),
+  /** 全部业务结果已判定时的评分；未判定或跳过时不得给出满分。 */
+  healthScore: z.number().int().min(0).max(100).nullable(),
+  healthGrade: z.enum(['EXCELLENT', 'GOOD', 'FAIR', 'POOR']).nullable(),
   /** 核心统计 */
   totalCount: z.number().int(),
   normalCount: z.number().int(),
   warningCount: z.number().int(),
   anomalousCount: z.number().int(),
   skippedCount: z.number().int(),
+  /** 旧报告没有此字段；解析历史封存文档时按零处理。 */
+  undeterminedCount: z.number().int().nonnegative().default(0),
   /** 耗时对比 */
   wallClockMs: z.number().int(),
   childDurationMs: z.number().int(),
@@ -162,7 +164,7 @@ export const suiteSummaryBlockSchema = z.strictObject({
       memberId: z.string(),
       displayName: z.string(),
       scenarioName: z.string(),
-      status: z.enum(['NORMAL', 'WARNING', 'ANOMALOUS', 'SKIPPED']),
+      status: z.enum(['NORMAL', 'WARNING', 'ANOMALOUS', 'UNDETERMINED', 'SKIPPED']),
       summary: z.string(),
       metrics: z.record(z.string(), z.union([z.number(), z.string(), z.boolean()])),
       dataRow: z.record(z.string(), jsonValueSchema),
@@ -185,6 +187,83 @@ export const suiteSummaryBlockSchema = z.strictObject({
 export type SuiteSummaryBlock = z.infer<typeof suiteSummaryBlockSchema>
 export type SuiteGridRow = SuiteSummaryBlock['gridRows'][number]
 export type SuiteAggregatedFinding = SuiteSummaryBlock['aggregatedFindings'][number]
+
+/**
+ * 历史报告的汇总块可能把未评估成员写为 NORMAL。只投影展示数据，不修改封存文档。
+ * 来源快照缺失时保留原行并交由界面明确标注旧版分类不可复核。
+ */
+export function projectSuiteSummaryForDisplay(
+  block: SuiteSummaryBlock,
+  source: Record<string, JsonValue>,
+): { summary: SuiteSummaryBlock; unverifiedCount: number; reclassifiedCount: number } {
+  const sourceItems = Array.isArray(source.items) ? source.items : []
+  const byMemberId = new Map<string, Record<string, JsonValue>>()
+  for (const value of sourceItems) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && typeof value.memberId === 'string') {
+      byMemberId.set(value.memberId, value)
+    }
+  }
+  let unverifiedCount = 0
+  let reclassifiedCount = 0
+  const gridRows = block.gridRows.map((row) => {
+    const item = byMemberId.get(row.memberId)
+    if (!item) {
+      unverifiedCount++
+      return row
+    }
+    if (item.admission === 'SKIPPED') {
+      if (row.status !== 'SKIPPED') reclassifiedCount++
+      return { ...row, status: 'SKIPPED' as const }
+    }
+    const run = item.run && typeof item.run === 'object' && !Array.isArray(item.run) ? item.run : null
+    const runStatus = typeof run?.status === 'string' ? run.status : item.runStatus
+    const outcomeStatus = typeof run?.outcomeStatus === 'string' ? run.outcomeStatus : item.outcomeStatus
+    if (typeof runStatus !== 'string' || typeof outcomeStatus !== 'string') {
+      unverifiedCount++
+      return row
+    }
+    const output = run?.output && typeof run.output === 'object' && !Array.isArray(run.output) ? run.output : null
+    const rawFindings = output && Array.isArray(output.findings) ? output.findings : []
+    const findings = rawFindings.flatMap((finding) => {
+      const parsed = runFindingSchema.safeParse(finding)
+      return parsed.success ? [parsed.data] : []
+    })
+    const projectedStatus = item.admission !== 'SETTLED'
+      ? 'UNDETERMINED'
+      : outcomeStatus === 'FAIL' ? 'ANOMALOUS'
+        : runStatus !== 'SUCCEEDED' || !['PASS', 'WARN'].includes(outcomeStatus)
+          ? 'UNDETERMINED'
+          : deriveRunOutputStatus(runStatus, outcomeStatus, findings)
+    if (projectedStatus !== row.status) reclassifiedCount++
+    return {
+      ...row,
+      status: projectedStatus,
+      summary: projectedStatus === 'UNDETERMINED' && row.status !== 'UNDETERMINED'
+        ? `业务未判定；原摘要：${row.summary || '未提供'}`
+        : row.summary,
+    }
+  })
+  const normalCount = gridRows.filter((row) => row.status === 'NORMAL').length
+  const warningCount = gridRows.filter((row) => row.status === 'WARNING').length
+  const anomalousCount = gridRows.filter((row) => row.status === 'ANOMALOUS').length
+  const undeterminedCount = gridRows.filter((row) => row.status === 'UNDETERMINED').length
+  const skippedCount = gridRows.filter((row) => row.status === 'SKIPPED').length
+  const score = unverifiedCount > 0
+    ? { healthScore: null, healthGrade: null }
+    : computeSuiteHealthScore({
+      totalCount: gridRows.length,
+      normalCount,
+      warningCount,
+      anomalousCount,
+      undeterminedCount,
+      skippedCount,
+    })
+  return {
+    summary: { ...block, ...score, normalCount, warningCount, anomalousCount, undeterminedCount, skippedCount, gridRows },
+    unverifiedCount,
+    reclassifiedCount,
+  }
+}
 
 export const reportTokenPayloadSchema = z.strictObject({
   suiteRunId: entityIdSchema,
@@ -276,10 +355,11 @@ export const HEALTH_GRADE_LABELS: Record<'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR',
   POOR: '差',
 }
 
-export const SUITE_GRID_STATUS_LABELS: Record<'NORMAL' | 'WARNING' | 'ANOMALOUS' | 'SKIPPED', string> = {
+export const SUITE_GRID_STATUS_LABELS: Record<'NORMAL' | 'WARNING' | 'ANOMALOUS' | 'UNDETERMINED' | 'SKIPPED', string> = {
   NORMAL: '正常',
   WARNING: '警告',
   ANOMALOUS: '异常',
+  UNDETERMINED: '未判定',
   SKIPPED: '已跳过',
 }
 
@@ -289,18 +369,23 @@ export function computeSuiteHealthScore(counts: {
   warningCount: number
   anomalousCount: number
   skippedCount?: number
-}): { healthScore: number; healthGrade: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' } {
+  undeterminedCount?: number
+}): { healthScore: number | null; healthGrade: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' | null } {
   if (counts.totalCount <= 0) {
-    return { healthScore: 100, healthGrade: 'EXCELLENT' }
+    return { healthScore: null, healthGrade: null }
   }
-  const evaluated = counts.normalCount + counts.warningCount + counts.anomalousCount + (counts.skippedCount ?? 0)
-  if (evaluated === 0) {
-    return { healthScore: 100, healthGrade: 'EXCELLENT' }
+  const evaluated = counts.normalCount + counts.warningCount + counts.anomalousCount
+  if (evaluated !== counts.totalCount || (counts.skippedCount ?? 0) > 0 || (counts.undeterminedCount ?? 0) > 0) {
+    return { healthScore: null, healthGrade: null }
   }
-  const raw = Math.round(
-    (counts.normalCount * 100 + counts.warningCount * 60 + (counts.skippedCount ?? 0) * 50) / evaluated,
+  const weighted = Math.round(
+    (counts.normalCount * 100 + counts.warningCount * 60) / evaluated,
   )
-  const healthScore = Math.max(0, Math.min(100, raw))
+  // 聚合异常不能被大量正常项平均成「优」；警告也不应得到满分评级。
+  const capped = counts.anomalousCount > 0
+    ? Math.min(weighted, 59)
+    : counts.warningCount > 0 ? Math.min(weighted, 89) : weighted
+  const healthScore = Math.max(0, Math.min(100, capped))
   let healthGrade: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' = 'POOR'
   if (healthScore >= 90) healthGrade = 'EXCELLENT'
   else if (healthScore >= 75) healthGrade = 'GOOD'

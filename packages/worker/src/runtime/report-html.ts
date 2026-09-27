@@ -1,4 +1,5 @@
 import type { JsonValue, ReportAiInterpretation, ReportDocument } from '@cairn/shared'
+import { suiteScoreUnavailableReason, suiteSummaryForReport, suiteVerdictForReport } from './report-content.js'
 
 export type ReportImage = {
   id: string
@@ -45,6 +46,7 @@ const STATUS_LABELS: Record<string, string> = {
   NORMAL: '正常',
   WARNING: '警告',
   ANOMALOUS: '异常',
+  UNDETERMINED: '未判定',
   EXCELLENT: '优',
   GOOD: '良',
   FAIR: '中',
@@ -1171,29 +1173,33 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
   const logo = images.find((img) => img.kind === 'logo')
   const logoDataUri = logo ? `data:image/jpeg;base64,${logo.body.toString('base64')}` : null
 
-  const suiteSummary = document.sections
-    .flatMap((sec) => sec.blocks)
-    .find((b) => b.type === 'suite_business_summary') as Record<string, JsonValue> | undefined
+  const projected = suiteSummaryForReport(document)
+  const suiteSummary = projected.summary
+  const displayVerdict = suiteVerdictForReport(document, projected)
+  const scoreAvailable = suiteSummary?.healthScore != null && suiteSummary.healthGrade != null
+    && document.verdict !== 'incomplete' && source.verdict !== 'incomplete'
+  const healthScore = scoreAvailable ? suiteSummary.healthScore : null
+  const healthGrade = scoreAvailable ? suiteSummary.healthGrade : null
+  const scoreReason = scoreAvailable ? '' : suiteScoreUnavailableReason(document, projected)
+  const totalCount = suiteSummary?.totalCount ?? 0
+  const normalCount = suiteSummary?.normalCount ?? 0
+  const warningCount = suiteSummary?.warningCount ?? 0
+  const anomalousCount = suiteSummary?.anomalousCount ?? 0
+  const undeterminedCount = suiteSummary?.undeterminedCount ?? 0
+  const skippedCount = suiteSummary?.skippedCount ?? 0
 
-  const healthScore = suiteSummary ? Number(suiteSummary.healthScore ?? 100) : 100
-  const healthGrade = suiteSummary ? String(suiteSummary.healthGrade ?? 'EXCELLENT') : 'EXCELLENT'
-  const totalCount = suiteSummary ? Number(suiteSummary.totalCount ?? 0) : 0
-  const normalCount = suiteSummary ? Number(suiteSummary.normalCount ?? 0) : 0
-  const warningCount = suiteSummary ? Number(suiteSummary.warningCount ?? 0) : 0
-  const anomalousCount = suiteSummary ? Number(suiteSummary.anomalousCount ?? 0) : 0
-  const skippedCount = suiteSummary ? Number(suiteSummary.skippedCount ?? 0) : 0
+  const wallClockMs = suiteSummary?.wallClockMs ?? 0
+  const childDurationMs = suiteSummary?.childDurationMs ?? 0
+  const savedPercent = suiteSummary?.savedPercent ?? 0
 
-  const wallClockMs = suiteSummary ? Number(suiteSummary.wallClockMs ?? 0) : 0
-  const childDurationMs = suiteSummary ? Number(suiteSummary.childDurationMs ?? 0) : 0
-  const savedPercent = suiteSummary ? Number(suiteSummary.savedPercent ?? 0) : 0
-
-  const gridRows = suiteSummary ? records(suiteSummary.gridRows) : []
-  const findings = suiteSummary ? records(suiteSummary.aggregatedFindings) : []
+  const gridRows = suiteSummary?.gridRows ?? []
+  const findings = suiteSummary?.aggregatedFindings ?? []
   const items = records(source.items)
 
-  const summaryText = `${document.title} | 综合健康度: ${healthScore}分 (${labelFor(healthGrade)}) | 模块: ${normalCount}/${totalCount} 正常 | 并发节约: ${savedPercent}%`
+  const scoreText = scoreAvailable ? `${healthScore}分（${labelFor(healthGrade)}）` : `未评分（${scoreReason}）`
+  const summaryText = `${document.title} | 业务检查得分: ${scoreText} | 检查项: ${normalCount}/${totalCount} 正常、${undeterminedCount} 未判定、${skippedCount} 跳过 | 并发节约: ${savedPercent}%`
 
-  const gradeColor = healthScore >= 90 ? '#059669' : healthScore >= 75 ? '#0284c7' : healthScore >= 60 ? '#d97706' : '#dc2626'
+  const gradeColor = healthScore === null ? '#64748b' : healthScore >= 90 ? '#059669' : healthScore >= 75 ? '#0284c7' : healthScore >= 60 ? '#d97706' : '#dc2626'
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1214,7 +1220,7 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
         </div>
       </div>
       <div class="actions-group no-print">
-        <button class="btn" onclick="copyText('${escapeHtml(summaryText)}', '巡检总结')">
+        <button class="btn" onclick="copyText(${escapeHtml(JSON.stringify(summaryText))}, '巡检总结')">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           复制巡检总结
         </button>
@@ -1234,27 +1240,30 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
         <div class="meta-item"><strong>场景集名称：</strong>${escapeHtml(source.suiteName ?? '-')}</div>
         <div class="meta-item"><strong>数据截至：</strong>${formatDate(document.asOf, timeZone)}</div>
         <div class="meta-item"><strong>生成时间：</strong>${formatDate(document.generatedAt, timeZone)}</div>
-        <div class="meta-item"><strong>总结论：</strong><span class="badge ${badgeClass(source.verdict)}">${labelFor(source.verdict)}</span></div>
+        <div class="meta-item"><strong>业务检查结论：</strong><span class="badge ${badgeClass(displayVerdict)}">${labelFor(displayVerdict)}</span></div>
+        ${source.verdict && source.verdict !== displayVerdict ? `<div class="meta-item" style="color:#92400e;"><strong>封存时结论：</strong>${escapeHtml(labelFor(source.verdict))}；当前展示按封存运行事实只读校正</div>` : ''}
       </div>
     </div>
 
-    <!-- L0 决策与综合健康度看板 -->
+    <!-- L0 决策与业务检查总览 -->
     <div class="section">
       <div class="grid-cards">
         <div class="stat-card" style="grid-column: span 2;">
-          <div class="stat-label">系统综合健康度打分</div>
+          <div class="stat-label">业务检查得分</div>
           <div class="score-hero">
             <div class="score-circle" style="color: ${gradeColor}; border-color: ${gradeColor};">
-              <span class="score-val">${healthScore}</span>
-              <span class="score-max">/ 100</span>
+              <span class="score-val"${scoreAvailable ? '' : ' style="font-size:14px;"'}>${scoreAvailable ? healthScore : '未评分'}</span>
+              ${scoreAvailable ? '<span class="score-max">/ 100</span>' : ''}
             </div>
             <div>
               <div style="font-size:18px;font-weight:700;color:${gradeColor};">
-                评级：${labelFor(healthGrade)} (${healthGrade})
+                ${scoreAvailable ? `评级：${labelFor(healthGrade)} (${healthGrade})` : `未评分：${escapeHtml(scoreReason)}`}
               </div>
               <div class="stat-subtext" style="margin-top:6px;">
-                覆盖 ${totalCount} 模块 · 正常 ${normalCount} · 警告 ${warningCount} · 异常 ${anomalousCount} · 跳过 ${skippedCount}
+                检查项 ${totalCount} · 正常 ${normalCount} · 警告 ${warningCount} · 异常 ${anomalousCount} · 未判定 ${undeterminedCount} · 跳过 ${skippedCount}
               </div>
+              ${projected.unverifiedCount > 0 ? `<div class="stat-subtext" style="color:#92400e;margin-top:6px;">${projected.unverifiedCount} 项历史成员缺少可核对的运行快照，旧版分类不可复核。</div>` : ''}
+              ${projected.reclassifiedCount > 0 ? `<div class="stat-subtext" style="margin-top:6px;">依据封存的运行事实，对 ${projected.reclassifiedCount} 项成员状态作只读展示校正。</div>` : ''}
             </div>
           </div>
         </div>
@@ -1275,6 +1284,7 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
       </div>
     </div>
 
+    ${projected.reclassifiedCount > 0 && document.aiInterpretation ? '<div class="section" style="padding:12px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#92400e;font-size:12px;">下方 AI 解读按封存时事实生成，未随历史成员状态的展示校正重新生成。</div>' : ''}
     ${renderAiInterpretationCard(document.aiInterpretation, timeZone)}
 
     <!-- L1 核心业务巡检对照总表 -->
@@ -1289,6 +1299,8 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
           <button class="pill" onclick="filterItems('.grid-row', 'data-status', 'ANOMALOUS', this)">仅异常 (${anomalousCount})</button>
           <button class="pill" onclick="filterItems('.grid-row', 'data-status', 'WARNING', this)">仅警告 (${warningCount})</button>
           <button class="pill" onclick="filterItems('.grid-row', 'data-status', 'NORMAL', this)">仅正常 (${normalCount})</button>
+          <button class="pill" onclick="filterItems('.grid-row', 'data-status', 'UNDETERMINED', this)">仅未判定 (${undeterminedCount})</button>
+          <button class="pill" onclick="filterItems('.grid-row', 'data-status', 'SKIPPED', this)">仅跳过 (${skippedCount})</button>
         </div>
       </div>
 
@@ -1308,7 +1320,7 @@ export function renderSuiteInspectionHtml(document: ReportDocument, images: Repo
             <tbody>
               ${gridRows.map((row) => {
                 const ord = Number(row.ordinal ?? 0) + 1
-                const status = String(row.status ?? 'NORMAL')
+                const status = String(row.status ?? 'UNDETERMINED')
                 const metrics = record(row.metrics)
                 const dataRow = record(row.dataRow)
                 const mKeys = Object.keys(metrics)

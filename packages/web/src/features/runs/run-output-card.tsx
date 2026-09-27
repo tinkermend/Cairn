@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { FindingSeverity, OutputStatus, RunFinding, RunOutput } from '@cairn/shared'
+import { projectRunOutput, type FindingSeverity, type OutcomeStatus, type OutputStatus, type RunFinding, type RunOutput, type RunStatus } from '@cairn/shared'
 import {
   Activity,
   Camera,
@@ -16,6 +16,7 @@ const OUTPUT_STATUS_MAP: Record<OutputStatus, { label: string; tone: StatusTone 
   NORMAL: { label: '业务正常', tone: 'success' },
   WARNING: { label: '业务警告', tone: 'warning' },
   ANOMALOUS: { label: '业务异常', tone: 'error' },
+  UNDETERMINED: { label: '业务未判定', tone: 'neutral' },
 }
 
 const FINDING_SEVERITY_MAP: Record<FindingSeverity, { label: string; tone: StatusTone }> = {
@@ -27,21 +28,22 @@ const FINDING_SEVERITY_MAP: Record<FindingSeverity, { label: string; tone: Statu
 
 export type RunOutputCardProps = {
   output?: RunOutput | null
+  runStatus: RunStatus
+  outcomeStatus: OutcomeStatus
   onFocusEvidence?: (evidenceId: string) => void
   onFocusStep?: (stepOrdinal: number) => void
 }
 
-export function RunOutputCard({ output, onFocusEvidence, onFocusStep }: RunOutputCardProps) {
+export function RunOutputCard({ output, runStatus, outcomeStatus, onFocusEvidence, onFocusStep }: RunOutputCardProps) {
   const [dataRowExpanded, setDataRowExpanded] = useState(false)
 
   if (!output) {
     return null
   }
 
-  const statusConfig = OUTPUT_STATUS_MAP[output.status] ?? {
-    label: output.status,
-    tone: 'neutral' as StatusTone,
-  }
+  const projectedOutput = projectRunOutput(output, runStatus, outcomeStatus)
+  const statusConfig = OUTPUT_STATUS_MAP[projectedOutput.status]
+  const summary = projectedOutput.summary
 
   const metricEntries = Object.entries(output.metrics || {})
   const hasMetrics = metricEntries.length > 0
@@ -88,7 +90,7 @@ export function RunOutputCard({ output, onFocusEvidence, onFocusStep }: RunOutpu
       <div className='rounded-md border border-border-card/80 bg-muted/30 p-4'>
         <div className='text-label font-medium text-muted-foreground mb-1'>业务结论</div>
         <p className='text-body font-medium text-foreground leading-relaxed' data-testid='run-output-summary'>
-          {output.summary}
+          {summary}
         </p>
       </div>
 

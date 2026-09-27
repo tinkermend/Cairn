@@ -21,6 +21,8 @@ import {
   suiteSummaryBlockSchema,
   stepRunFor,
   computeSuiteHealthScore,
+  projectRunOutputSummary,
+  runOutputSchema,
   type CreateReportBody,
   type CreateReportRevisionBody,
   type ExportJobDto,
@@ -373,12 +375,14 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
         status: run.status,
         outcomeStatus: run.outcomeStatus,
         evidenceStatus: run.evidenceStatus,
-        output: (row!.output ?? null) as JsonValue,
-        scenarioName: context?.displayName ?? row!.snapshot.notificationPolicy?.scenarioName ?? run.scenarioName,
-        targetName: context?.targetName ?? row!.snapshot.notificationPolicy?.targetName ?? run.targetName,
+        output: (row!.output
+          ? projectRunOutputSummary(row!.output, row!.status, row!.outcomeStatus)
+          : null) as JsonValue,
+        scenarioName: context?.displayName ?? row!.snapshot.outboundPolicy?.scenarioName ?? row!.snapshot.notificationPolicy?.scenarioName ?? run.scenarioName,
+        targetName: context?.targetName ?? row!.snapshot.outboundPolicy?.targetName ?? row!.snapshot.notificationPolicy?.targetName ?? run.targetName,
         reportDefaults: context?.reportConfig ?? DEFAULT_REPORT_CONFIG,
         reportConfigSources: context?.configSources ?? null,
-        namesSource: context || row!.snapshot.notificationPolicy ? 'run_snapshot' : 'generation_time',
+        namesSource: context || row!.snapshot.outboundPolicy || row!.snapshot.notificationPolicy ? 'run_snapshot' : 'generation_time',
         createdAt: run.createdAt,
         startedAt: run.startedAt,
         finishedAt: run.finishedAt,
@@ -406,8 +410,8 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
       terminal: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(run.status),
       evidencePending: run.evidenceStatus === 'PENDING',
       titleVars: {
-        systemName: context?.targetName ?? row!.snapshot.notificationPolicy?.targetName ?? run.targetName,
-        scenarioName: context?.displayName ?? row!.snapshot.notificationPolicy?.scenarioName ?? run.scenarioName,
+        systemName: context?.targetName ?? row!.snapshot.outboundPolicy?.targetName ?? row!.snapshot.notificationPolicy?.targetName ?? run.targetName,
+        scenarioName: context?.displayName ?? row!.snapshot.outboundPolicy?.scenarioName ?? row!.snapshot.notificationPolicy?.scenarioName ?? run.scenarioName,
         executedDate: run.createdAt.slice(0, 10),
         runNumber: run.id.slice(0, 8),
       },
@@ -488,6 +492,7 @@ function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteS
   let warningCount = 0
   let anomalousCount = 0
   let skippedCount = 0
+  let undeterminedCount = 0
 
   for (const item of items) {
     const ordinal = Number(item.ordinal ?? 0)
@@ -502,7 +507,7 @@ function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteS
       ? (childRun.output as Record<string, JsonValue>)
       : null
 
-    let status: 'NORMAL' | 'WARNING' | 'ANOMALOUS' | 'SKIPPED' = 'NORMAL'
+    let status: SuiteGridRow['status'] = 'UNDETERMINED'
     let summary = ''
     let metrics: Record<string, string | number | boolean> = {}
     let dataRow: Record<string, JsonValue> = {}
@@ -512,28 +517,49 @@ function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteS
       status = 'SKIPPED'
       summary = String(item.skipReason ?? '已跳过')
       skippedCount++
+    } else if (item.admission !== 'SETTLED') {
+      status = 'UNDETERMINED'
+      summary = '运行尚未结束，业务结果未判定'
+      undeterminedCount++
     } else if (childOutput) {
-      const outputStatus = String(childOutput.status)
-      if (outputStatus === 'ANOMALOUS') {
+      const runStatus = String(childRun.status ?? '')
+      const outcomeStatus = String(childRun.outcomeStatus ?? '')
+      const parsedOutput = runOutputSchema.safeParse(childOutput)
+      const safeOutput = parsedOutput.success
+        ? projectRunOutputSummary(parsedOutput.data, runStatus, outcomeStatus)
+        : childOutput
+      const outputStatus = String(safeOutput.status)
+      if (outcomeStatus === 'FAIL') {
         status = 'ANOMALOUS'
         anomalousCount++
-      } else if (outputStatus === 'WARNING') {
+      } else if (runStatus !== 'SUCCEEDED' || !['PASS', 'WARN'].includes(outcomeStatus) || outputStatus === 'UNDETERMINED') {
+        status = 'UNDETERMINED'
+        undeterminedCount++
+      } else if (outputStatus === 'ANOMALOUS') {
+        status = 'ANOMALOUS'
+        anomalousCount++
+      } else if (outputStatus === 'WARNING' || outcomeStatus === 'WARN') {
         status = 'WARNING'
         warningCount++
-      } else {
+      } else if (outputStatus === 'NORMAL') {
         status = 'NORMAL'
         normalCount++
+      } else {
+        status = 'UNDETERMINED'
+        undeterminedCount++
       }
-      summary = typeof childOutput.summary === 'string' ? childOutput.summary : ''
-      if (childOutput.metrics && typeof childOutput.metrics === 'object' && !Array.isArray(childOutput.metrics)) {
-        metrics = childOutput.metrics as Record<string, string | number | boolean>
+      summary = status === 'UNDETERMINED'
+        ? (runStatus === 'SUCCEEDED' ? '流程执行完成，业务结果未判定' : '执行未完成，业务结果未判定')
+        : typeof safeOutput.summary === 'string' ? safeOutput.summary : ''
+      if (safeOutput.metrics && typeof safeOutput.metrics === 'object' && !Array.isArray(safeOutput.metrics)) {
+        metrics = safeOutput.metrics as Record<string, string | number | boolean>
       }
-      if (childOutput.dataRow && typeof childOutput.dataRow === 'object' && !Array.isArray(childOutput.dataRow)) {
-        dataRow = childOutput.dataRow as Record<string, JsonValue>
+      if (safeOutput.dataRow && typeof safeOutput.dataRow === 'object' && !Array.isArray(safeOutput.dataRow)) {
+        dataRow = safeOutput.dataRow as Record<string, JsonValue>
       }
-      if (Array.isArray(childOutput.findings) && childOutput.findings.length > 0) {
+      if (Array.isArray(safeOutput.findings) && safeOutput.findings.length > 0) {
         hasFindings = true
-        for (const finding of childOutput.findings as Array<Record<string, JsonValue>>) {
+        for (const finding of safeOutput.findings as Array<Record<string, JsonValue>>) {
           aggregatedFindings.push({
             memberId,
             displayName,
@@ -552,22 +578,22 @@ function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteS
       // 兼容没有 output 对象的历史运行或保底回退
       const runStatus = String(childRun.status ?? '')
       const outcomeStatus = String(childRun.outcomeStatus ?? '')
-      if (runStatus === 'FAILED' || outcomeStatus === 'FAIL') {
+      if (outcomeStatus === 'FAIL') {
         status = 'ANOMALOUS'
         anomalousCount++
-        summary = '运行失败或断言异常'
+        summary = '业务检查未通过'
+      } else if (runStatus !== 'SUCCEEDED' || !['PASS', 'WARN'].includes(outcomeStatus)) {
+        status = 'UNDETERMINED'
+        undeterminedCount++
+        summary = runStatus === 'SUCCEEDED' ? '流程执行完成，业务结果未判定' : '执行未完成，业务结果未判定'
       } else if (outcomeStatus === 'WARN') {
         status = 'WARNING'
         warningCount++
         summary = '运行完成但有警告'
-      } else if (runStatus === 'SUCCEEDED' || outcomeStatus === 'PASS') {
+      } else if (outcomeStatus === 'PASS') {
         status = 'NORMAL'
         normalCount++
         summary = '运行正常通过'
-      } else {
-        status = 'ANOMALOUS'
-        anomalousCount++
-        summary = runStatus ? `执行状态：${runStatus}` : '未完成'
       }
     }
 
@@ -605,6 +631,7 @@ function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteS
     warningCount,
     anomalousCount,
     skippedCount,
+    undeterminedCount,
   })
 
   const wallClockMs = typeof source.wallClockMs === 'number' ? source.wallClockMs : 0
@@ -622,6 +649,7 @@ function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteS
     warningCount,
     anomalousCount,
     skippedCount,
+    undeterminedCount,
     wallClockMs,
     childDurationMs,
     savedPercent,
@@ -2039,4 +2067,3 @@ export async function retryReportAiJob(
     return loadReportDto(tx, reportId)
   })
 }
-

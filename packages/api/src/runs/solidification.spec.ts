@@ -1,9 +1,11 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common'
 import { describe, expect, it, vi } from 'vitest'
 import { computeStepDefinitionDigest, type AiTaskEvent, type DemonstrationDetail } from '@cairn/shared'
+import { DomainError } from '@cairn/db'
 import { RunsService } from './runs.service'
 
 const mocks = vi.hoisted(() => ({
+  authorizeTargetRequest: vi.fn(),
   getRun: vi.fn(),
   getScenario: vi.fn(),
   listAiTaskEvents: vi.fn(),
@@ -14,6 +16,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cairn/db')>()
   return {
     ...actual,
+    authorizeTargetRequest: mocks.authorizeTargetRequest,
     getRun: mocks.getRun,
     getScenario: mocks.getScenario,
     listAiTaskEvents: mocks.listAiTaskEvents,
@@ -22,6 +25,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
 })
 
 describe('RunsService.createSolidificationDraft', () => {
+  mocks.authorizeTargetRequest.mockResolvedValue(undefined)
   const runId = '66666666-6666-4666-8666-666666666666'
   const attemptId = '77777777-7777-4777-8777-777777777777'
   const stepRunId = '88888888-8888-4888-8888-888888888888'
@@ -101,6 +105,18 @@ describe('RunsService.createSolidificationDraft', () => {
     },
     timestamp: '2026-09-24T10:00:01.000Z',
   }
+
+  it('目标越权时不读取运行或创建草案', async () => {
+    mocks.getRun.mockClear()
+    mocks.createDemonstration.mockClear()
+    mocks.authorizeTargetRequest.mockRejectedValueOnce(new DomainError('not_found', 'TARGET_NOT_FOUND', '目标不存在或无权访问'))
+    const service = new RunsService({} as any)
+    await expect(service.createSolidificationDraft(runId, attemptId, actor)).rejects.toMatchObject({
+      response: { code: 'TARGET_NOT_FOUND' },
+    })
+    expect(mocks.getRun).not.toHaveBeenCalled()
+    expect(mocks.createDemonstration).not.toHaveBeenCalled()
+  })
 
   it('运行记录不存在时抛出 NotFoundException', async () => {
     mocks.getRun.mockResolvedValueOnce(null)
@@ -306,4 +322,3 @@ describe('RunsService.createSolidificationDraft', () => {
     expect(result.sourceNodePresent).toBe(true)
   })
 })
-

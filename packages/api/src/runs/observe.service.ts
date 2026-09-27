@@ -2,11 +2,14 @@ import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } f
 import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 import {
+  authorizeTargetRequest,
   diagnoseRunEventCursor,
+  DomainError,
   listRunEventWatermarks,
   listRunEventsAfter,
   loadRunObservation,
   loadRunObservationProgress,
+  targetScopeFor,
   type ChangeHintBus,
   type DbHandle,
 } from '@cairn/db'
@@ -21,7 +24,7 @@ import {
 } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
 import { AuthService } from '../auth/auth.service'
-import { classifyAccountRecheck } from '../common/domain-error'
+import { classifyAccountRecheck, rethrowDomain } from '../common/domain-error'
 import { trackSseConnection } from '../common/process-gauges'
 import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
@@ -86,8 +89,22 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     return (await this.bus.ping()) ? 'up' : 'down'
   }
 
-  observation(runId: string) {
-    return loadRunObservation(this.db, runId)
+  async observation(runId: string, actorId: string) {
+    await this.requireRunScope(runId, actorId)
+    const result = await loadRunObservation(this.db, runId, actorId)
+    if (result && !(await this.canReadReport(result.run.targetId, actorId))) {
+      result.run = { ...result.run, runReportStatus: 'not_configured', reportId: null, reportError: null }
+    }
+    return result
+  }
+
+  private async requireRunScope(runId: string, actorId: string): Promise<void> {
+    await authorizeTargetRequest(this.db, actorId, { runId, permissions: ['run:read'] }).catch(rethrowDomain)
+  }
+
+  private async canReadReport(targetId: string, actorId: string): Promise<boolean> {
+    const scope = await targetScopeFor(this.db, actorId, 'report:read').catch(rethrowDomain)
+    return scope.all || scope.ids.includes(targetId)
   }
 
   async stream(
@@ -100,6 +117,7 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
       signal: AbortSignal
     },
   ): Promise<void> {
+    await this.requireRunScope(input.runId, input.account.id)
     const res = input.response
     res.status(200)
     res.setHeader('Content-Type', 'text/event-stream')
@@ -116,6 +134,8 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     let readySent = false
     let inFlightCatchUp: Promise<void> | null = null
     let dirtyCatchUp = false
+    let reportVisible = false
+    let targetId: string | undefined
     let pendingWaiters: Array<() => void> = []
     let heartbeat: NodeJS.Timeout | undefined
     let authTick: NodeJS.Timeout | undefined
@@ -143,6 +163,20 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     }
 
     const catchUp = async () => {
+      try {
+        await authorizeTargetRequest(this.db, input.account.id, { runId: input.runId, permissions: ['run:read'] })
+      } catch (error) {
+        sendControl({
+          kind: 'error',
+          runId: input.runId,
+          code: error instanceof DomainError && (error.kind === 'not_found' || error.kind === 'forbidden')
+            ? 'FORBIDDEN' : 'INTERNAL',
+          message: '没有运行读取权限',
+        })
+        close()
+        return
+      }
+      if (targetId) reportVisible = await this.canReadReport(targetId, input.account.id)
       const watermark = await loadRunObservationProgress(this.db, input.runId)
       if (!watermark) {
         sendControl({
@@ -166,7 +200,8 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
             config.CAIRN_RUN_EVENT_PAGE_SIZE,
           )
           for (const event of page) {
-            if (event.type === 'run.report_changed' && !input.account.permissions.includes('report:read')) {
+            if (event.type === 'run.report_changed' && !reportVisible) {
+              applied = event.sequence
               continue
             }
             sendEvent(event)
@@ -227,7 +262,7 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     input.signal.addEventListener('abort', close)
     res.on('close', close)
 
-    const initial = await loadRunObservation(this.db, input.runId)
+    const initial = await loadRunObservation(this.db, input.runId, input.account.id)
     if (!initial) {
       sendControl({
         kind: 'error',
@@ -238,9 +273,10 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
       close()
       return
     }
-    if (!input.account.permissions.includes('report:read')) {
-      const { runReportStatus, reportId, reportError, ...restRun } = initial.run
-      initial.run = restRun as any
+    targetId = initial.run.targetId
+    reportVisible = await this.canReadReport(targetId, input.account.id)
+    if (!reportVisible) {
+      initial.run = { ...initial.run, runReportStatus: 'not_configured', reportId: null, reportError: null }
     }
     const cursor = diagnoseRunEventCursor({
       runId: input.runId,
@@ -290,7 +326,7 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     heartbeat.unref()
 
     authTick = setInterval(() => {
-      void this.recheck(input.account.id, expiresAt)
+      void this.recheck(input.account.id, expiresAt, input.runId)
         .then((code) => {
           if (!code) return
           sendControl({
@@ -350,14 +386,17 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
   private async recheck(
     accountId: string,
     expiresAt: number,
+    runId: string,
   ): Promise<'UNAUTHORIZED' | 'FORBIDDEN' | 'INTERNAL' | null> {
     if (Date.now() >= expiresAt) return 'UNAUTHORIZED'
     try {
       const account = await this.auth.resolveAccount(accountId)
       if (account.status === 'disabled') return 'FORBIDDEN'
       if (!hasPermission(account.permissions, 'run:read')) return 'FORBIDDEN'
+      await authorizeTargetRequest(this.db, accountId, { runId, permissions: ['run:read'] })
       return null
     } catch (error) {
+      if (error instanceof DomainError && (error.kind === 'not_found' || error.kind === 'forbidden')) return 'FORBIDDEN'
       return classifyAccountRecheck(error)
     }
   }

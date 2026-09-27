@@ -36,7 +36,7 @@ export const scenarioOutputDeclSchema = z.strictObject({
 })
 export type ScenarioOutputDecl = z.infer<typeof scenarioOutputDeclSchema>
 
-export const OUTPUT_STATUSES = ['NORMAL', 'WARNING', 'ANOMALOUS'] as const
+export const OUTPUT_STATUSES = ['NORMAL', 'WARNING', 'ANOMALOUS', 'UNDETERMINED'] as const
 export type OutputStatus = (typeof OUTPUT_STATUSES)[number]
 export const outputStatusSchema = z.enum(OUTPUT_STATUSES)
 
@@ -144,6 +144,34 @@ function interpolateTemplate(template: string, context: Record<string, JsonValue
   })
 }
 
+function needsSafeSummary(status?: string | null, outcomeStatus?: string | null): boolean {
+  return status === 'FAILED' || status === 'CANCELLED' || status === 'NEEDS_REVIEW' ||
+    outcomeStatus === 'FAIL' || outcomeStatus === 'UNKNOWN'
+}
+
+/**
+ * RunOutput.status 只表达可确认的业务评价；执行失败本身不是业务异常。
+ * 已观察到的业务失败或严重发现项仍可确认为异常，未完成或未评估的其余情况为未判定。
+ */
+export function deriveRunOutputStatus(
+  runStatus?: string | null,
+  outcomeStatus?: string | null,
+  findings: readonly RunFinding[] = [],
+): OutputStatus {
+  const businessFindings = findings.filter((finding) => finding.id !== 'f-execution-failed')
+  if (
+    outcomeStatus === 'FAIL' ||
+    businessFindings.some((finding) => finding.severity === 'HIGH' || finding.severity === 'FATAL')
+  ) return 'ANOMALOUS'
+  if (runStatus !== 'SUCCEEDED' || outcomeStatus === 'UNKNOWN' || outcomeStatus === 'NOT_EVALUATED') {
+    return 'UNDETERMINED'
+  }
+  if (outcomeStatus === 'WARN' || businessFindings.some((finding) => finding.severity === 'WARN')) {
+    return 'WARNING'
+  }
+  return outcomeStatus === 'PASS' ? 'NORMAL' : 'UNDETERMINED'
+}
+
 /**
  * 确定性派生降级业务结论（用于无配置场景或历史存量 Run 读取回退）
  */
@@ -156,16 +184,45 @@ export function deriveFallbackSummary(
     return '任务已被人工或系统取消。'
   } else if (status === 'FAILED') {
     return errorMsg ? `执行过程中断：${errorMsg}` : '执行过程中断。'
+  } else if (status === 'NEEDS_REVIEW') {
+    return '运行待人工核查，业务结果尚未确认。'
   } else if (outcomeStatus === 'PASS') {
     return '流程执行完成，所有检查项均符合预期。'
   } else if (outcomeStatus === 'WARN') {
     return '流程执行完成，存在需要注意的业务警告。'
   } else if (outcomeStatus === 'FAIL') {
-    return '流程执行中断或未通过，发现业务异常。'
+    return status === 'SUCCEEDED'
+      ? '流程执行完成，但业务检查未通过。'
+      : '流程执行中断或未通过，发现业务异常。'
+  } else if (outcomeStatus === 'UNKNOWN') {
+    return status === 'SUCCEEDED'
+      ? '流程执行完成，但业务结果无法确认。'
+      : '业务结果无法确认。'
   } else {
     return '流程执行完成。'
   }
 }
+
+/** 历史 RunOutput 在读取时修正可能误导的结论与业务状态，保留原始指标、发现项与数据行。 */
+export function projectRunOutput(
+  output: RunOutput,
+  status?: string | null,
+  outcomeStatus?: string | null,
+  errorMsg?: string | null,
+): RunOutput {
+  const projectedStatus = deriveRunOutputStatus(status, outcomeStatus, output.findings)
+  if (!needsSafeSummary(status, outcomeStatus)) {
+    return projectedStatus === output.status ? output : { ...output, status: projectedStatus }
+  }
+  return {
+    ...output,
+    status: projectedStatus,
+    summary: truncateString(deriveFallbackSummary(status, outcomeStatus, errorMsg), 500),
+  }
+}
+
+/** @deprecated 使用 projectRunOutput；保留旧导出以兼容既有调用方。 */
+export const projectRunOutputSummary = projectRunOutput
 
 /**
  * 纯函数：根据 Run 终态信息装配标准化业务输出包 RunOutput。
@@ -280,24 +337,15 @@ export function assembleRunOutput(input: AssembleRunOutputInput): RunOutput {
     }
   }
 
-  // 4. Status 映射
-  let status: OutputStatus = 'NORMAL'
-  if (
-    findings.some((f) => f.severity === 'HIGH' || f.severity === 'FATAL') ||
-    input.outcomeStatus === 'FAIL' ||
-    input.status === 'FAILED'
-  ) {
-    status = 'ANOMALOUS'
-  } else if (
-    findings.some((f) => f.severity === 'WARN') ||
-    input.outcomeStatus === 'WARN'
-  ) {
-    status = 'WARNING'
-  }
+  // 4. Status 映射：执行状态与业务评价保持独立
+  const status = deriveRunOutputStatus(input.status, input.outcomeStatus, findings)
 
   // 5. Summary 装配与降级
   let summary = ''
-  if (outputsDecl?.summaryTemplate) {
+  if (needsSafeSummary(input.status, input.outcomeStatus)) {
+    const firstErrMsg = input.error?.safeMessage || input.error?.message || input.error?.code
+    summary = deriveFallbackSummary(input.status, input.outcomeStatus, firstErrMsg)
+  } else if (outputsDecl?.summaryTemplate) {
     summary = interpolateTemplate(outputsDecl.summaryTemplate, { ...context, ...metrics }).trim()
   } else if (outputsDecl?.summaryFromContextKey) {
     const rawVal = context[outputsDecl.summaryFromContextKey]

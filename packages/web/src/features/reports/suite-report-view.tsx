@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import {
   HEALTH_GRADE_LABELS,
   SUITE_GRID_STATUS_LABELS,
+  projectSuiteSummaryForDisplay,
   suiteSummaryBlockSchema,
   type ReportDocument,
   type SuiteGridRow,
@@ -43,7 +44,7 @@ export function SuiteReportView({
   document: ReportDocument
   onExport?: () => void
 }) {
-  const [filter, setFilter] = useState<'ALL' | 'ANOMALOUS' | 'WARNING' | 'NORMAL'>('ALL')
+  const [filter, setFilter] = useState<'ALL' | 'ANOMALOUS' | 'WARNING' | 'NORMAL' | 'UNDETERMINED'>('ALL')
   const [activeLightbox, setActiveLightbox] = useState<{
     imageUrl: string
     title: string
@@ -51,7 +52,7 @@ export function SuiteReportView({
   } | null>(null)
   const [zoomLevel, setZoomLevel] = useState(1)
 
-  const summaryBlock: SuiteSummaryBlock | null = useMemo(() => {
+  const reportSummary = useMemo(() => {
     const raw = document.sections
       .flatMap((s) => s.blocks)
       .find((b) => b.type === 'suite_business_summary')
@@ -61,8 +62,13 @@ export function SuiteReportView({
       console.error('Failed to parse suite_business_summary:', parsed.error)
       return null
     }
-    return parsed.data
+    const legacy = !Object.prototype.hasOwnProperty.call(raw, 'undeterminedCount')
+    const projected = legacy
+      ? projectSuiteSummaryForDisplay(parsed.data, document.source)
+      : { summary: parsed.data, unverifiedCount: 0, reclassifiedCount: 0 }
+    return { ...projected, legacy }
   }, [document])
+  const summaryBlock: SuiteSummaryBlock | null = reportSummary?.summary ?? null
 
   const materialsMap = useMemo(() => {
     const map = new Map<string, string>()
@@ -83,17 +89,23 @@ export function SuiteReportView({
     if (filter === 'ANOMALOUS') return row.status === 'ANOMALOUS'
     if (filter === 'WARNING') return row.status === 'WARNING'
     if (filter === 'NORMAL') return row.status === 'NORMAL'
+    if (filter === 'UNDETERMINED') return row.status === 'UNDETERMINED'
     return true
   })
 
-  const gradeLabel = HEALTH_GRADE_LABELS[summaryBlock.healthGrade] ?? summaryBlock.healthGrade
+  // 历史封存报告仍保留原始分数；旧版 incomplete 结论在当前界面不展示为健康评级。
+  const scoreAvailable = summaryBlock.healthScore != null && summaryBlock.healthGrade != null &&
+    summaryBlock.undeterminedCount === 0 && summaryBlock.skippedCount === 0 && document.verdict !== 'incomplete'
+  const gradeLabel = scoreAvailable && summaryBlock.healthGrade
+    ? HEALTH_GRADE_LABELS[summaryBlock.healthGrade]
+    : null
 
   function copyRichSummary() {
     if (!summaryBlock) return
     const lines = [
       `【${document.title}】`,
-      `系统健康度：${summaryBlock.healthScore}分 (${gradeLabel})`,
-      `覆盖模块：${summaryBlock.totalCount} | 正常：${summaryBlock.normalCount} | 警告：${summaryBlock.warningCount} | 异常：${summaryBlock.anomalousCount} | 跳过：${summaryBlock.skippedCount}`,
+      `业务检查得分：${scoreAvailable ? `${summaryBlock.healthScore}分 (${gradeLabel})` : '未评分（业务结果未完整判定）'}`,
+      `覆盖模块：${summaryBlock.totalCount} | 正常：${summaryBlock.normalCount} | 警告：${summaryBlock.warningCount} | 异常：${summaryBlock.anomalousCount} | 未判定：${summaryBlock.undeterminedCount} | 跳过：${summaryBlock.skippedCount}`,
       `实际耗时：${(summaryBlock.wallClockMs / 1000).toFixed(1)}s (累计耗时 ${(summaryBlock.childDurationMs / 1000).toFixed(1)}s，节省 ${summaryBlock.savedPercent}%)`,
     ]
     if (summaryBlock.aggregatedFindings.length > 0) {
@@ -131,30 +143,43 @@ export function SuiteReportView({
         </div>
       </div>
 
+      {reportSummary?.legacy ? (
+        <p role='status' className='rounded-lg border border-warning/30 bg-warning/10 p-3 text-label text-foreground'>
+          这是旧版封存报告。本页按来源运行重新分类 {reportSummary.reclassifiedCount} 项，原报告数据未改。
+          {reportSummary.unverifiedCount > 0
+            ? `另有 ${reportSummary.unverifiedCount} 项缺少可核验来源；旧版“正常”分类不能据此认定业务正常。`
+            : null}
+        </p>
+      ) : null}
+
       {/* L0: 决策与执行总览 */}
       <section className='grid gap-4 sm:grid-cols-12'>
-        {/* 健康度综合打分卡片 */}
+        {/* 业务检查评分与判定覆盖 */}
         <div className='flex flex-col items-center justify-center rounded-lg border border-border-card bg-card p-6 shadow-card sm:col-span-4'>
-          <p className='text-label text-muted-foreground'>系统综合健康度</p>
+          <p className='text-label text-muted-foreground'>业务检查得分</p>
           <div className='my-3 flex items-baseline gap-2'>
             <span
               className={`text-5xl font-extrabold tracking-tight ${
-                summaryBlock.healthScore >= 90
+                !scoreAvailable
+                  ? 'text-muted-foreground'
+                  : summaryBlock.healthScore! >= 90
                   ? 'text-success'
-                  : summaryBlock.healthScore >= 75
+                  : summaryBlock.healthScore! >= 75
                     ? 'text-info'
-                    : summaryBlock.healthScore >= 60
+                    : summaryBlock.healthScore! >= 60
                       ? 'text-warning'
                       : 'text-destructive'
               }`}
             >
-              {summaryBlock.healthScore}
+              {scoreAvailable ? summaryBlock.healthScore : '—'}
             </span>
-            <span className='text-label text-muted-foreground'>/ 100</span>
+            {scoreAvailable ? <span className='text-label text-muted-foreground'>/ 100</span> : null}
           </div>
           <Badge
             className={`px-3 py-0.5 text-xs font-semibold ${
-              summaryBlock.healthGrade === 'EXCELLENT'
+              !scoreAvailable
+                ? 'bg-muted text-muted-foreground border-border'
+                : summaryBlock.healthGrade === 'EXCELLENT'
                 ? 'bg-success/15 text-success border-success/30'
                 : summaryBlock.healthGrade === 'GOOD'
                   ? 'bg-info/15 text-info border-info/30'
@@ -163,13 +188,13 @@ export function SuiteReportView({
                     : 'bg-destructive/15 text-destructive border-destructive/30'
             }`}
           >
-            评级：{gradeLabel}
+            {scoreAvailable ? `评级：${gradeLabel}` : '业务结果未完整判定，暂不评分'}
           </Badge>
         </div>
 
         {/* 模块计数与耗时对比 */}
         <div className='flex flex-col justify-between gap-4 rounded-lg border border-border-card bg-card p-6 shadow-card sm:col-span-8'>
-          <div className='grid grid-cols-2 gap-3 sm:grid-cols-5'>
+          <div className='grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6'>
             <div className='rounded-md border border-border/50 bg-muted/40 p-3'>
               <p className='text-xs text-muted-foreground'>总巡检项</p>
               <p className='text-xl font-bold'>{summaryBlock.totalCount}</p>
@@ -185,6 +210,10 @@ export function SuiteReportView({
             <div className='rounded-md border border-destructive/30 bg-destructive/10 p-3'>
               <p className='text-xs text-destructive'>异常模块</p>
               <p className='text-xl font-bold text-destructive'>{summaryBlock.anomalousCount}</p>
+            </div>
+            <div className='rounded-md border border-border/50 bg-muted/40 p-3'>
+              <p className='text-xs text-muted-foreground'>未判定模块</p>
+              <p className='text-xl font-bold text-muted-foreground'>{summaryBlock.undeterminedCount}</p>
             </div>
             <div className='rounded-md border border-border/50 bg-muted/40 p-3'>
               <p className='text-xs text-muted-foreground'>跳过模块</p>
@@ -251,6 +280,14 @@ export function SuiteReportView({
               onClick={() => setFilter('NORMAL')}
             >
               仅看正常 ({summaryBlock.normalCount})
+            </Button>
+            <Button
+              variant={filter === 'UNDETERMINED' ? 'secondary' : 'ghost'}
+              size='sm'
+              className='h-7 text-xs'
+              onClick={() => setFilter('UNDETERMINED')}
+            >
+              仅看未判定 ({summaryBlock.undeterminedCount})
             </Button>
           </div>
         </div>

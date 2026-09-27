@@ -286,6 +286,7 @@ describe('SuiteDetailPage 左右双栏流水线工作台 UI 验收', () => {
           executionMode: 'parallel',
           maxConcurrency: 4,
           failurePolicy: 'continue',
+          autoGenerateFinalReport: false,
         },
       },
       published: { id: 'pub-0', versionNo: 1 },

@@ -2,17 +2,20 @@ import { NotFoundException } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { JwtService } from '@nestjs/jwt'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { diagnoseRunEventCursor } from '@cairn/db'
+import { diagnoseRunEventCursor, DomainError } from '@cairn/db'
 import { AuthService } from '../auth/auth.service'
 import { DB_HANDLE } from '../db/db.module'
 import { CHANGE_HINT } from '../observe/change-hint.module'
 import { unusedChangeHint } from '../__tests__/http-app'
+import { config } from '../config/env'
 import { ObserveService } from './observe.service'
 
 const runId = '66666666-6666-4666-8666-666666666666'
 const otherRun = '77777777-7777-4777-8777-777777777777'
 
 const mocks = vi.hoisted(() => ({
+  authorizeTargetRequest: vi.fn(),
+  targetScopeFor: vi.fn(),
   loadRunObservation: vi.fn(),
   loadRunObservationProgress: vi.fn(),
   listRunEventsAfter: vi.fn(),
@@ -23,6 +26,8 @@ vi.mock('@cairn/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cairn/db')>()
   return {
     ...actual,
+    authorizeTargetRequest: mocks.authorizeTargetRequest,
+    targetScopeFor: mocks.targetScopeFor,
     loadRunObservation: mocks.loadRunObservation,
     loadRunObservationProgress: mocks.loadRunObservationProgress,
     listRunEventsAfter: mocks.listRunEventsAfter,
@@ -82,6 +87,10 @@ describe('ObserveService.stream', () => {
   let service: ObserveService
 
   beforeEach(async () => {
+    mocks.authorizeTargetRequest.mockReset()
+    mocks.authorizeTargetRequest.mockResolvedValue(undefined)
+    mocks.targetScopeFor.mockReset()
+    mocks.targetScopeFor.mockResolvedValue({ all: true, ids: [] })
     mocks.loadRunObservation.mockReset()
     mocks.loadRunObservationProgress.mockReset()
     mocks.listRunEventsAfter.mockReset()
@@ -103,6 +112,70 @@ describe('ObserveService.stream', () => {
 
   afterEach(() => {
     service.onModuleDestroy()
+  })
+
+  it('目标越权时拒绝观察与事件流，且不读取事件或写响应', async () => {
+    mocks.authorizeTargetRequest.mockRejectedValue(new DomainError('not_found', 'TARGET_NOT_FOUND', '目标不存在或无权访问'))
+    const res = mockResponse()
+    await expect(service.observation(runId, 'acc')).rejects.toMatchObject({
+      response: { code: 'TARGET_NOT_FOUND' },
+    })
+    await expect(service.stream({
+      runId,
+      account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+      response: res as never,
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({ response: { code: 'TARGET_NOT_FOUND' } })
+    expect(mocks.loadRunObservation).not.toHaveBeenCalled()
+    expect(mocks.listRunEventsAfter).not.toHaveBeenCalled()
+    expect(res.status).not.toHaveBeenCalled()
+  })
+
+  it('报告事件与元信息按目标范围隐藏', async () => {
+    const targetId = '11111111-1111-4111-8111-111111111111'
+    mocks.targetScopeFor.mockResolvedValue({ all: false, ids: [] })
+    mocks.loadRunObservation.mockResolvedValue({
+      ...observation(),
+      run: { ...observation().run, targetId, runReportStatus: 'generated', reportId: 'secret-report', reportError: null },
+    })
+    const result = await service.observation(runId, 'acc')
+    expect(result?.run.reportId).toBeNull()
+
+    mocks.listRunEventsAfter.mockResolvedValueOnce([{ ...created, type: 'run.report_changed' }]).mockResolvedValue([])
+    const res = mockResponse()
+    const controller = new AbortController()
+    await service.stream({
+      runId,
+      account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read', 'report:read'] },
+      response: res as never,
+      signal: controller.signal,
+    })
+    expect(res.chunks.join('')).not.toContain('run.report_changed')
+    controller.abort()
+  })
+
+  it('整页报告事件被隐藏时仍推进游标并结束补读', async () => {
+    const pageSize = config.CAIRN_RUN_EVENT_PAGE_SIZE
+    mocks.targetScopeFor.mockResolvedValue({ all: false, ids: [] })
+    mocks.loadRunObservation.mockResolvedValue({
+      ...observation({ eventSeq: pageSize }),
+      run: { ...observation().run, targetId: '11111111-1111-4111-8111-111111111111' },
+    })
+    mocks.loadRunObservationProgress.mockResolvedValue(progress({ eventSeq: pageSize }))
+    const page = Array.from({ length: pageSize }, (_, index) => ({ ...created, sequence: index + 1, type: 'run.report_changed' }))
+    mocks.listRunEventsAfter.mockImplementation(async (_db, _id, after: number) => after === 0 ? page : [])
+    const res = mockResponse()
+    const controller = new AbortController()
+    await service.stream({
+      runId,
+      lastEventId: `${runId}:0`,
+      account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+      response: res as never,
+      signal: controller.signal,
+    })
+    expect(mocks.listRunEventsAfter).toHaveBeenCalledTimes(2)
+    expect(res.chunks.join('')).not.toContain('run.report_changed')
+    controller.abort()
   })
 
   it('补读持久事件后发 ready，realtime 反映订阅是否成功', async () => {

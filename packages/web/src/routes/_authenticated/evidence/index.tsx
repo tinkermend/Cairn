@@ -10,23 +10,23 @@ export const Route = createFileRoute('/_authenticated/evidence/')({
     if (!user || !hasPermission(user.permissions, 'run:read')) {
       throw redirect({ to: '/403' })
     }
-    const { tab, ...rest } = search
+    const { tab, view: evidenceView, ...rest } = search
     const viewMap: Record<string, 'runs' | 'reports' | 'materials' | 'retention'> = {
       runs: 'runs',
       reports: 'reports',
       search: 'materials',
       retention: 'retention',
     }
-    const view = tab ? viewMap[tab] ?? 'runs' : 'runs'
+    const view = tab ? viewMap[tab] ?? 'runs' : evidenceView ? 'materials' : 'runs'
     throw redirect({
       to: '/runs',
       search: {
         ...rest,
         view,
+        evidenceView,
       },
       replace: true,
     })
   },
   component: () => null,
 })
-

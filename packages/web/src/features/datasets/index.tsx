@@ -147,6 +147,7 @@ export function DatasetsPage() {
               <div className='relative flex-1 min-w-60'>
                 <Search className='absolute left-3 top-2.5 h-4 w-4 text-muted-foreground' />
                 <Input
+                  aria-label='搜索数据集名称'
                   placeholder='搜索数据集名称...'
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -155,7 +156,7 @@ export function DatasetsPage() {
               </div>
               {canReadTargets && (
                 <Select value={targetId} onValueChange={setTargetId}>
-                  <SelectTrigger className='w-48 h-9 text-xs'>
+                  <SelectTrigger aria-label='筛选目标系统' className='w-48 h-9 text-xs'>
                     <SelectValue placeholder='关联目标系统' />
                   </SelectTrigger>
                   <SelectContent>

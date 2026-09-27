@@ -253,13 +253,14 @@ describe('Suite Stages Schema & Orchestration Contracts', () => {
   it('AC04: builds rich notification cards for WeChat Work, Feishu and DingTalk', () => {
     const summaryBlock: SuiteSummaryBlock = {
       type: 'suite_business_summary',
-      healthScore: 88,
-      healthGrade: 'GOOD',
+      healthScore: 59,
+      healthGrade: 'POOR',
       totalCount: 10,
       normalCount: 9,
       warningCount: 0,
       anomalousCount: 1,
       skippedCount: 0,
+      undeterminedCount: 0,
       wallClockMs: 135000,
       childDurationMs: 450000,
       savedPercent: 70,
@@ -288,7 +289,7 @@ describe('Suite Stages Schema & Orchestration Contracts', () => {
     const feishuCard = buildFeishuCard({ summary: summaryBlock, suiteName: '生产环境日常系统巡检', viewUrl })
     expect(feishuCard.msg_type).toBe('interactive')
     expect(feishuCard.card.header.title.content).toContain('生产环境日常系统巡检')
-    expect(feishuCard.card.elements[0].text.content).toContain('88 分')
+    expect(feishuCard.card.elements[0].text.content).toContain('59分（差）')
     expect(JSON.stringify(feishuCard.card)).toContain(viewUrl)
 
     // 3. DingTalk ActionCard
@@ -296,5 +297,55 @@ describe('Suite Stages Schema & Orchestration Contracts', () => {
     expect(dingCard.msgtype).toBe('actionCard')
     expect(dingCard.actionCard.singleURL).toBe(viewUrl)
     expect(dingCard.actionCard.text).toContain('订单履约中心')
+  })
+
+  it('未判定或空集的消息卡不宣称业务健康', () => {
+    const base = {
+      type: 'suite_business_summary' as const,
+      healthScore: null,
+      healthGrade: null,
+      totalCount: 2,
+      normalCount: 0,
+      warningCount: 0,
+      anomalousCount: 0,
+      undeterminedCount: 2,
+      skippedCount: 0,
+      wallClockMs: 1000,
+      childDurationMs: 1000,
+      savedPercent: 0,
+      gridRows: [],
+      aggregatedFindings: [],
+    } satisfies SuiteSummaryBlock
+    const wechat = buildWechatWorkCard({ summary: base, suiteName: '旧巡检' })
+    const feishu = buildFeishuCard({ summary: base, suiteName: '旧巡检' })
+    const ding = buildDingTalkCard({ summary: base, suiteName: '旧巡检' })
+    expect(wechat.markdown.content).toContain('未评分（业务结果未完整判定）')
+    expect(feishu.card.header.template).toBe('blue')
+    expect(feishu.card.elements[0].text.content).toContain('无法完整判断')
+    expect(ding.actionCard.text).not.toContain('100分')
+    const empty = buildWechatWorkCard({ summary: { ...base, totalCount: 0, undeterminedCount: 0 }, suiteName: '空集' })
+    expect(empty.markdown.content).toContain('无可判定项目')
+    expect(empty.markdown.content).not.toContain('全部通过')
+
+    const mixed = { ...base, totalCount: 3, normalCount: 1, anomalousCount: 1, undeterminedCount: 1 }
+    const mixedCards = [
+      buildWechatWorkCard({ summary: mixed, suiteName: '混合巡检' }),
+      buildFeishuCard({ summary: mixed, suiteName: '混合巡检' }),
+      buildDingTalkCard({ summary: mixed, suiteName: '混合巡检' }),
+    ]
+    for (const card of mixedCards) {
+      const serialized = JSON.stringify(card)
+      expect(serialized).toContain('发现异常')
+      expect(serialized).toContain('未评分')
+      expect(serialized).not.toContain('100分')
+      expect(serialized).not.toContain('UNDETERMINED')
+    }
+
+    // Worker 直接消费已排队的旧消息 payload；缺少新字段时按未核验显示。
+    const { undeterminedCount: _removed, ...legacy } = { ...base, healthScore: 100, healthGrade: 'EXCELLENT' as const }
+    const oldCard = buildWechatWorkCard({ summary: legacy as SuiteSummaryBlock, suiteName: '旧消息' })
+    expect(oldCard.markdown.content).toContain('历史分类未核验')
+    expect(oldCard.markdown.content).not.toContain('100分')
+    expect(oldCard.markdown.content).not.toContain('✅')
   })
 })

@@ -84,5 +84,7 @@ describe('DatasetsPage', () => {
     await expect.element(screen.getByText('EXCEL', { exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: /查看数据/ })).toBeInTheDocument()
     await expect.element(screen.getByText('已删除账号')).toBeInTheDocument()
+    await expect.element(screen.getByRole('textbox', { name: '搜索数据集名称' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('combobox', { name: '筛选目标系统' })).toBeInTheDocument()
   })
 })

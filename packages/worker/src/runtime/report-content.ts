@@ -1,4 +1,4 @@
-import type { JsonValue, ReportDocument } from '@cairn/shared'
+import { projectSuiteSummaryForDisplay, suiteSummaryBlockSchema, type JsonValue, type ReportDocument, type SuiteSummaryBlock, type SuiteVerdict } from '@cairn/shared'
 
 export type ReportLine = { text: string; level: 'title' | 'heading' | 'body' }
 const labels: Record<string, string> = {
@@ -11,13 +11,47 @@ const labels: Record<string, string> = {
   all_pass: '全部通过', pass_with_warnings: '通过但有提示', anomalies_found: '发现异常', incomplete: '结论不完整',
   failure_policy_stop: '按失败策略停止', suite_cancelled: '集合已取消', deadline_elapsed: '超过运行期限',
   available: '可用', missing: '缺失', screenshot: '截图',
-  NORMAL: '正常', WARNING: '警告', ANOMALOUS: '异常',
+  NORMAL: '正常', WARNING: '警告', ANOMALOUS: '异常', UNDETERMINED: '未判定',
   EXCELLENT: '优', GOOD: '良', FAIR: '中', POOR: '差',
   INFO: '信息', HIGH: '高危', FATAL: '严重',
 }
 const text = (value: JsonValue | undefined): string => value == null ? '未记录' : labels[String(value)] ?? String(value)
 const record = (value: JsonValue | undefined): Record<string, JsonValue> => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 const records = (value: JsonValue | undefined) => Array.isArray(value) ? value.map(record) : []
+
+/** 只读投影历史汇总；封存的 document 和原始业务事实均不改变。 */
+export function suiteSummaryForReport(document: ReportDocument): {
+  summary: SuiteSummaryBlock | null
+  unverifiedCount: number
+  reclassifiedCount: number
+} {
+  const raw = document.sections.flatMap((section) => section.blocks)
+    .find((block) => block.type === 'suite_business_summary')
+  const parsed = suiteSummaryBlockSchema.safeParse(raw)
+  if (!parsed.success) return { summary: null, unverifiedCount: 0, reclassifiedCount: 0 }
+  return projectSuiteSummaryForDisplay(parsed.data, document.source)
+}
+
+export function suiteScoreUnavailableReason(document: ReportDocument, input: ReturnType<typeof suiteSummaryForReport>): string {
+  const summary = input.summary
+  if (!summary) return '缺少可用的业务汇总数据'
+  if (summary.undeterminedCount > 0 || document.verdict === 'incomplete' || document.source.verdict === 'incomplete') return '业务结果未完整判定'
+  if (summary.skippedCount > 0) return '存在跳过的检查项'
+  if (input.unverifiedCount > 0) return '历史成员分类缺少可核对的运行快照'
+  if (summary.totalCount === 0) return '没有可评分的检查项'
+  return '评分条件不满足'
+}
+
+/** 与成员状态投影一致的集合业务结论，用于展示，不覆盖封存 verdict。 */
+export function suiteVerdictForReport(document: ReportDocument, input: ReturnType<typeof suiteSummaryForReport>): SuiteVerdict {
+  const summary = input.summary
+  if (!summary) return 'incomplete'
+  if (summary.anomalousCount > 0) return 'anomalies_found'
+  if (summary.undeterminedCount > 0 || summary.skippedCount > 0 || input.unverifiedCount > 0
+    || document.verdict === 'incomplete' || document.source.verdict === 'incomplete' || summary.totalCount === 0) return 'incomplete'
+  if (summary.warningCount > 0) return 'pass_with_warnings'
+  return summary.normalCount === summary.totalCount ? 'all_pass' : 'incomplete'
+}
 
 /** Both renderers consume this ordered, human-readable view of the sealed document. */
 export function reportLines(document: ReportDocument): ReportLine[] {
@@ -41,10 +75,14 @@ export function reportLines(document: ReportDocument): ReportLine[] {
   add(`生成时间：${date(document.generatedAt)}`)
   if (document.identity) add(`报告编号：${document.identity.reportId}；修订 ${document.identity.revisionNo}（${document.identity.revisionId}）`)
   const source = document.source
+  const suiteProjection = source.kind === 'SUITE_RUN' ? suiteSummaryForReport(document) : null
   add('运行概况', 'heading')
   add(`目标系统：${text(source.targetName)}`)
   add(`${source.kind === 'SUITE_RUN' ? '场景集' : '场景'}：${text(source.suiteName ?? source.scenarioName)}`)
-  add(`执行状态：${text(source.status)}；业务结论：${text(source.verdict ?? source.outcomeStatus)}；证据：${text(source.evidenceStatus)}`)
+  add(`执行状态：${text(source.status)}；业务结论：${text(suiteProjection ? suiteVerdictForReport(document, suiteProjection) : source.verdict ?? source.outcomeStatus)}；证据：${text(source.evidenceStatus)}`)
+  if (suiteProjection && source.verdict !== suiteVerdictForReport(document, suiteProjection)) {
+    add(`封存时集合结论：${text(source.verdict)}；当前展示按封存运行事实只读校正。`)
+  }
   add(`开始：${date(source.startedAt ?? source.createdAt)}；结束：${date(source.finishedAt)}`)
   add(`运行编号：${text(source.suiteRunId ?? source.runId)}`)
   const renderSteps = (run: Record<string, JsonValue>, details: boolean, includeSuccess: boolean) => {
@@ -84,20 +122,25 @@ export function reportLines(document: ReportDocument): ReportLine[] {
   const includeEvidenceIndex = resultBlock?.includeEvidenceIndex !== false
   const includeAttemptHistory = resultBlock?.includeAttemptHistory !== false
   if (source.kind === 'SUITE_RUN') {
-    const suiteSummary = document.sections
-      .flatMap((section) => section.blocks)
-      .find((block) => block.type === 'suite_business_summary') as Record<string, JsonValue> | undefined
+    const projected = suiteProjection!
+    const suiteSummary = projected.summary
 
     if (suiteSummary) {
       add('【决策与执行总览】', 'heading')
-      const grade = text(suiteSummary.healthGrade)
-      add(`系统整体健康度：${suiteSummary.healthScore}分（${grade}） · 覆盖模块：${suiteSummary.totalCount} · 正常：${suiteSummary.normalCount} · 警告：${suiteSummary.warningCount} · 异常：${suiteSummary.anomalousCount} · 跳过：${suiteSummary.skippedCount}`)
+      const scoreAvailable = suiteSummary.healthScore !== null && suiteSummary.healthGrade !== null
+        && document.verdict !== 'incomplete' && document.source.verdict !== 'incomplete'
+      const scoreText = scoreAvailable
+        ? `${suiteSummary.healthScore}分（${text(suiteSummary.healthGrade)}）`
+        : `未评分（${suiteScoreUnavailableReason(document, projected)}）`
+      add(`业务检查得分：${scoreText} · 检查项：${suiteSummary.totalCount} · 正常：${suiteSummary.normalCount} · 警告：${suiteSummary.warningCount} · 异常：${suiteSummary.anomalousCount} · 未判定：${suiteSummary.undeterminedCount} · 跳过：${suiteSummary.skippedCount}`)
+      if (projected.unverifiedCount > 0) add(`历史报告有 ${projected.unverifiedCount} 项成员缺少可核对的运行快照，旧版分类不可复核；不得将其视为已确认正常。`)
+      if (projected.reclassifiedCount > 0) add(`依据封存的运行事实，已对 ${projected.reclassifiedCount} 项历史成员状态作只读展示校正。`)
       const wallSec = (Number(suiteSummary.wallClockMs ?? 0) / 1000).toFixed(1)
       const childSec = (Number(suiteSummary.childDurationMs ?? 0) / 1000).toFixed(1)
       const saved = Number(suiteSummary.savedPercent ?? 0)
       add(`真实总耗时：${wallSec} 秒（累计执行耗时：${childSec} 秒${saved > 0 ? `，并发节约耗时 ${saved}%` : ''}）`)
 
-      const gridRows = records(suiteSummary.gridRows)
+      const gridRows = suiteSummary.gridRows
       if (gridRows.length) {
         add('【核心业务巡检对照总表】', 'heading')
         for (const row of gridRows) {

@@ -220,7 +220,7 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
       objectKey: reserved.objectKey,
     })
 
-    const listed = await runs.evidence(created.detail.id)
+    const listed = await runs.evidence(created.detail.id, actor.id)
     const found = listed.items.find((item) => item.objectKey === reserved.objectKey)
     expect(found).toMatchObject({
       type: 'log',
@@ -293,7 +293,7 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
       expectedVersion: session.version,
       status: 'OPEN',
     })
-    const detail = await runs.get(created.detail.id)
+    const detail = await runs.get(created.detail.id, actor.id)
     expect(detail.placement).toMatchObject({
       state: 'owner_required',
       sessionId: session.id,
