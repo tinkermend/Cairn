@@ -3,10 +3,13 @@ import { handleKnowledgeAnswer } from './knowledge-answer.handler.js'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 
 vi.mock('@cairn/db', () => ({
+  authorizeTargetRequest: vi.fn().mockResolvedValue(undefined),
+  getRun: vi.fn(),
   loadRunObservation: vi.fn(),
   getScenario: vi.fn(),
   getSessionDto: vi.fn(),
   getSchedule: vi.fn(),
+  listScheduleOccurrences: vi.fn(async () => ({ items: [] })),
   getDataset: vi.fn(),
   DomainError: class DomainError extends Error {
     constructor(public kind: string, public code: string, message: string) {
@@ -20,16 +23,21 @@ vi.mock('./common.js', () => ({
 }))
 
 import {
+  authorizeTargetRequest,
+  getRun,
   loadRunObservation,
   getScenario,
   getSessionDto,
   getSchedule,
+  listScheduleOccurrences,
   getDataset,
 } from '@cairn/db'
 
 describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(authorizeTargetRequest).mockResolvedValue(undefined)
+    vi.mocked(getRun).mockResolvedValue({ id: 'run-100' } as never)
   })
 
   const createMockContext = (
@@ -348,7 +356,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       actor: {
         id: 'user-1',
         name: 'Admin',
-        permissions: ['ai:assist', 'target:read'],
+        permissions: ['ai:assist', 'target:read', 'session:read'],
         targetScope: 'all',
       },
       session: { completeJson: completeJsonMock } as any,
@@ -377,7 +385,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       actor: {
         id: 'user-1',
         name: 'Admin',
-        permissions: ['ai:assist', 'target:read'],
+        permissions: ['ai:assist', 'target:read', 'session:read'],
         targetScope: 'all',
       },
       body: {
@@ -400,15 +408,120 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     expect(mismatchResult.missing.some((m) => m.key === 'session' && m.reason === 'scope_mismatch')).toBe(true)
   })
 
-  it('CQ-13: loads Schedule facts and handles permission denial', async () => {
+  it('CQ-13: loads Schedule & Occurrences facts, validates citations, and resolves skip reason nextActions', async () => {
     vi.mocked(getSchedule).mockResolvedValue({
       id: 'sched-1',
+      scheduleId: 'sched-1',
+      targetId: 'tgt-1',
       scenarioId: 'sc-1',
-      name: '每日定时报表',
-      cronExpression: '0 8 * * *',
+      name: '每日巡检',
       enabled: true,
-      timezone: 'Asia/Shanghai',
-      nextRunAt: '2026-09-24T00:00:00.000Z',
+      definition: { timezone: 'Asia/Shanghai' },
+      nextDueAt: '2026-09-27T08:00:00.000Z',
+    } as any)
+
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({
+      items: [
+        {
+          occurrenceId: '11111111-1111-4111-8111-111111111111',
+          scheduleId: 'sched-1',
+          scheduleVersionId: 'v1',
+          source: 'scheduled',
+          localSlotKey: 'slot-1',
+          occurrenceKey: null,
+          localStartDate: '2026-09-27 08:00',
+          windowStartUtc: null,
+          windowEndUtc: null,
+          startOffsetMinutes: null,
+          endOffsetMinutes: null,
+          timeRuleVersion: '1',
+          admissionStatus: 'SKIPPED',
+          reason: 'AUTH_PREPARATION_REQUIRED',
+          jobId: null,
+          createdAt: '2026-09-27T00:00:00.000Z',
+          admittedAt: null,
+        },
+      ],
+      nextCursor: undefined,
+    } as any)
+
+    const completeJsonMock = vi.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        summary: '当前调度最近一次在 2026-09-27 08:00 被跳过，原因是目标系统认证尚未准备。',
+        claims: [
+          {
+            factKind: 'observed',
+            text: '调度在 08:00 准入状态为 SKIPPED，跳过原因为 AUTH_PREPARATION_REQUIRED',
+            citations: ['occurrence:11111111-1111-4111-8111-111111111111'],
+          },
+        ],
+      },
+    })
+
+    const ctx = createMockContext({
+      actor: {
+        id: 'user-1',
+        name: 'Scheduler Admin',
+        permissions: ['ai:assist', 'schedule:read'],
+        targetScope: 'all',
+      },
+      session: {
+        completeJson: completeJsonMock,
+      } as any,
+      body: {
+        question: '这个调度昨晚为什么没跑？',
+        pageContext: {
+          version: 2,
+          routeKey: 'schedules.index',
+          pageKind: 'schedule',
+          page: 'schedule',
+          primaryRef: { kind: 'schedule', id: 'sched-1' },
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    // 验证 occurrence 引用通过白名单校验
+    expect(result.claims[0].citations).toContain('occurrence:11111111-1111-4111-8111-111111111111')
+    // 验证包含处置入口（去认证账号）与查看调度列表
+    expect(result.nextActions?.some((a) => a.kind === 'target.accounts' && a.href === '/sessions/tgt-1')).toBe(true)
+    expect(result.nextActions?.some((a) => a.kind === 'schedule.edit' && a.href === '/schedules')).toBe(true)
+
+    // 验证 prompt user content 中包含了 occurrence 与汇总事实
+    const callArgs = completeJsonMock.mock.calls[0]
+    const userPromptContent = JSON.parse(callArgs[2][1].content)
+    expect(userPromptContent.availableCitations).toContain('occurrence:11111111-1111-4111-8111-111111111111')
+    expect(userPromptContent.contextFacts.some((f: any) => f.fact.includes('AUTH_PREPARATION_REQUIRED'))).toBe(true)
+  })
+
+  it('CQ-13: does not offer a skip action when the latest occurrence was admitted', async () => {
+    vi.mocked(getSchedule).mockResolvedValue({
+      id: 'sched-1',
+      scheduleId: 'sched-1',
+      targetId: 'tgt-1',
+      name: '每日巡检',
+      enabled: true,
+      definition: { timezone: 'Asia/Shanghai' },
+    } as any)
+
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({
+      items: [
+        {
+          occurrenceId: '22222222-2222-4222-8222-222222222222',
+          localStartDate: '2026-09-27 09:00',
+          admissionStatus: 'ADMITTED',
+          reason: null,
+          runId: 'run-latest',
+        },
+        {
+          occurrenceId: '11111111-1111-4111-8111-111111111111',
+          localStartDate: '2026-09-27 08:00',
+          admissionStatus: 'SKIPPED',
+          reason: 'AUTH_PREPARATION_REQUIRED',
+        },
+      ],
+      nextCursor: undefined,
     } as any)
 
     const ctx = createMockContext({
@@ -422,19 +535,19 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         completeJson: vi.fn().mockResolvedValue({
           ok: true,
           value: {
-            summary: '定时任务每天早上8点触发。',
+            summary: '最近一次已准入。',
             claims: [
               {
                 factKind: 'observed',
-                text: '调度表达式为 0 8 * * * 且状态为启用',
-                citations: ['schedule:sched-1'],
+                text: '09:00 已准入',
+                citations: ['occurrence:22222222-2222-4222-8222-222222222222'],
               },
             ],
           },
         }),
       } as any,
       body: {
-        question: '何时再触发？',
+        question: '这个调度昨晚为什么没跑？',
         pageContext: {
           version: 2,
           routeKey: 'schedules.index',
@@ -446,7 +559,32 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     const result = await handleKnowledgeAnswer(ctx)
-    expect(result.claims[0].citations).toContain('schedule:sched-1')
+    expect(result.nextActions?.some((a) => a.kind === 'target.accounts')).toBe(false)
+    expect(result.nextActions?.some((a) => a.kind === 'schedule.edit' && a.href === '/schedules')).toBe(true)
+  })
+
+  it('CQ-13: denies schedule facts when schedule:read permission is missing', async () => {
+    const ctx = createMockContext({
+      actor: {
+        id: 'user-1',
+        name: 'Guest User',
+        permissions: ['ai:assist'], // No schedule:read
+        targetScope: 'all',
+      },
+      body: {
+        question: '为什么没跑？',
+        pageContext: {
+          version: 2,
+          routeKey: 'schedules.index',
+          pageKind: 'schedule',
+          page: 'schedule',
+          primaryRef: { kind: 'schedule', id: 'sched-1' },
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.missing.some((m) => m.key === 'schedule' && m.reason === 'permission_denied')).toBe(true)
   })
 
   it('CQ-14: loads Dataset snapshot facts and notes snapshot sampling boundaries', async () => {

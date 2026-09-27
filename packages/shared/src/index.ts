@@ -1005,6 +1005,13 @@ export {
   type ScheduleTickOutcome,
 } from './schedules.js'
 export {
+  SCHEDULE_SKIP_REASON_METAS,
+  resolveSkipReasonAction,
+  type ScheduleSkipReasonMeta,
+  type ScheduleSkipReasonActionMeta,
+  type ResolveSkipReasonParams,
+} from './schedule-skip-reasons.js'
+export {
   KNOWLEDGE_ANALYSIS_PROTOCOL,
   ANALYSIS_STRATEGY_VERSION,
   ANALYSIS_LEASE_TTL_MS,

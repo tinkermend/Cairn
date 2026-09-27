@@ -83,13 +83,22 @@ export const ASSISTANT_STAGES = [
 export type AssistantStage = (typeof ASSISTANT_STAGES)[number]
 export const assistantStageSchema = z.enum(ASSISTANT_STAGES)
 
-export const ASSISTANT_CITATION_KINDS = ['run', 'stepRun', 'attempt', 'evidence', 'step'] as const
+export const ASSISTANT_CITATION_KINDS = [
+  'run',
+  'stepRun',
+  'attempt',
+  'evidence',
+  'step',
+  'occurrence',
+  'schedule',
+  'dataset',
+] as const
 export type AssistantCitationKind = (typeof ASSISTANT_CITATION_KINDS)[number]
 
 export const assistantCitationKeySchema = z
   .string()
   .regex(
-    /^(run|stepRun|attempt|evidence|step):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    /^(run|stepRun|attempt|evidence|step|occurrence|schedule|dataset):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     '引用键须为 kind:uuid',
   )
 export type AssistantCitationKey = z.infer<typeof assistantCitationKeySchema>
@@ -101,6 +110,9 @@ export const ASSISTANT_NEXT_ACTION_KINDS = [
   'run.review',
   'studio.step',
   'target.accounts',
+  'target.detail',
+  'worker.list',
+  'schedule.edit',
   'platform.config',
 ] as const
 export type AssistantNextActionKind = (typeof ASSISTANT_NEXT_ACTION_KINDS)[number]

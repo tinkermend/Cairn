@@ -6,6 +6,9 @@ import {
   normalizeAssistantPageContext,
   hasAllPermissions,
   stepRunFor,
+  SCHEDULE_SKIP_REASON_METAS,
+  resolveSkipReasonAction,
+  type ScheduleSkipReason,
 } from '@cairn/shared'
 import {
   DomainError,
@@ -13,6 +16,7 @@ import {
   getScenario,
   getSessionDto,
   getSchedule,
+  listScheduleOccurrences,
   getDataset,
 } from '@cairn/db'
 import { z } from 'zod'
@@ -108,7 +112,7 @@ export async function handleKnowledgeAnswer(
   if (runId) {
     if (hasAllPermissions(actor.permissions, ['run:read'])) {
       try {
-        const obs = await loadRunObservation(db, runId)
+        const obs = await loadRunObservation(db, runId, actor.id)
         if (obs) {
           if (obs.run.targetId) {
             await requireVisibleTarget(actor, obs.run.targetId, targets, db)
@@ -386,12 +390,89 @@ export async function handleKnowledgeAnswer(
           factItems.push({
             citation: scCit,
             label: `调度规则事实 (${schedule.name || sId.slice(0, 8)})`,
-            fact: `调度ID: ${sId}, 消费类型: ${schedule.consumerKey ?? 'scenario'}, 启用状态: ${schedule.enabled ? '已启用' : '已停用'}${
+            fact: `调度ID: ${sId}, 消费类型: ${schedule.consumerKey ?? 'scenario'}, 启用状态: ${schedule.enabled ? '已启用' : '已停用'}, 时区: ${schedule.definition?.timezone ?? '未设置'}${
               schedule.nextDueAt ? `, 下次触发时间: ${schedule.nextDueAt}` : ''
             }`,
           })
+
+          // 读取最近 20 条触发记录 (Occurrences) 并注入事实与统计
+          try {
+            const occurrencesResp = await listScheduleOccurrences(db, sId, { limit: 20 })
+            const occurrences = occurrencesResp.items ?? []
+            if (occurrences.length > 0) {
+              let admittedCount = 0
+              let skippedCount = 0
+              let failedCount = 0
+              const skipReasonCounts = new Map<string, number>()
+
+              for (const item of occurrences) {
+                const occCit = `occurrence:${item.occurrenceId}`
+                allowedCitations.add(occCit)
+
+                if (item.admissionStatus === 'ADMITTED') admittedCount++
+                else if (item.admissionStatus === 'SKIPPED') {
+                  skippedCount++
+                  if (item.reason) {
+                    skipReasonCounts.set(item.reason, (skipReasonCounts.get(item.reason) ?? 0) + 1)
+                  }
+                } else if (item.admissionStatus === 'FAILED') failedCount++
+
+                const meta = item.reason ? SCHEDULE_SKIP_REASON_METAS[item.reason as ScheduleSkipReason] : null
+                const reasonText = item.reason
+                  ? `跳过原因: ${meta?.label ?? item.reason} [${item.reason}]${meta?.explanation ? ` (${meta.explanation})` : ''}`
+                  : ''
+                const refText = item.runId ? `, 关联运行: ${item.runId}` : item.suiteRunId ? `, 关联集合运行: ${item.suiteRunId}` : ''
+
+                factItems.push({
+                  citation: occCit,
+                  label: `调度触发记录 (${item.localStartDate})`,
+                  fact: `触发记录ID: ${item.occurrenceId}, 应触发时间: ${item.localStartDate}, 准入状态: ${item.admissionStatus}${reasonText ? `, ${reasonText}` : ''}${refText}`,
+                })
+              }
+
+              // 统计汇总
+              let topReason = ''
+              let topReasonCount = 0
+              for (const [r, count] of skipReasonCounts.entries()) {
+                if (count > topReasonCount) {
+                  topReasonCount = count
+                  topReason = r
+                }
+              }
+              const topMeta = topReason ? SCHEDULE_SKIP_REASON_METAS[topReason as ScheduleSkipReason] : null
+              const summaryFact = `最近 ${occurrences.length} 次触发统计: 已准入 ${admittedCount} 次, 已跳过 ${skippedCount} 次, 准入失败 ${failedCount} 次${
+                topReason ? `。主要跳过原因: ${topMeta?.label ?? topReason} (${topReasonCount} 次)` : ''
+              }`
+              factItems.push({
+                citation: scCit,
+                label: `调度近期触发汇总统计`,
+                fact: summaryFact,
+              })
+
+              // listScheduleOccurrences 按创建时间倒序。只有最近一条本身被跳过才给出处置入口。
+              const latest = occurrences[0]
+              if (latest?.admissionStatus === 'SKIPPED' && latest.reason) {
+                const action = resolveSkipReasonAction(latest.reason as ScheduleSkipReason, {
+                  targetId: schedule.targetId,
+                  runId: latest.runId,
+                  scheduleId: sId,
+                })
+                if (action) {
+                  nextActions.push({
+                    kind: action.kind,
+                    label: action.label,
+                    href: action.href,
+                    citations: [scCit],
+                  })
+                }
+              }
+            }
+          } catch {
+            // occurrences 读取失败不阻断 schedule 基本事实
+          }
+
           nextActions.push({
-            kind: 'platform.config',
+            kind: 'schedule.edit',
             label: '查看调度列表',
             href: '/schedules',
             citations: [scCit],
@@ -530,13 +611,15 @@ export async function handleKnowledgeAnswer(
    - observed: 直接来自提供的实体状态或运行证据观测值；
    - human_confirmed: 来自已发布的官方帮助文档、规则或配置规范；
    - inferred: 基于已知前提所做的合理推断，必须在 premises 中列出依据的已知事实，并在 citations 中引用对应 key。
-4. 如果提供的材料不足以完整回答用户的问题，必须在 missing 列表中诚实登记缺失项（key, reason, description），不能凭空臆造。
-5. 保持解答专业、清晰、条理分明。`,
+4. 如果用户提问涉及特定时间范围（如「昨晚」「本周」），请结合当前时间（currentTime）与触发记录中的时间进行语义匹配与聚焦；若用户询问的时间范围超出所提供触发记录的覆盖范围，必须在回答中明确说明“所查阅的历史触发记录仅包含最近 20 次，更早的记录已被截断”，严禁推测或编造未提供的历史事实。
+5. 如果提供的材料不足以完整回答用户的问题，必须在 missing 列表中诚实登记缺失项（key, reason, description），不能凭空臆造。
+6. 保持解答专业、清晰、条理分明。`,
       },
       {
         role: 'user',
         content: JSON.stringify({
           question,
+          currentTime: new Date().toISOString(),
           pageContext: pageContext
             ? {
                 routeKey: pageContext.routeKey,
