@@ -152,6 +152,52 @@ describe('定时任务列表', () => {
       .toBeVisible()
   })
 
+  it('新建调度缺少目标与场景时指出字段并禁止保存，选齐后可提交', async () => {
+    signIn(['schedule:read', 'schedule:write', 'target:read'])
+    mocks.fetchSchedules.mockResolvedValue({ items: [] })
+    mocks.fetchScenarios.mockResolvedValue({
+      items: [{
+        id: '33333333-3333-4333-8333-333333333333',
+        name: '巡检场景',
+        latestVersionId: '44444444-4444-4444-8444-444444444444',
+      }],
+    })
+    mocks.fetchScenario.mockResolvedValue({
+      published: {
+        versionId: '44444444-4444-4444-8444-444444444444',
+        definition: { inputs: [], steps: [] },
+      },
+    })
+    mocks.createSchedule.mockResolvedValue({ created: true })
+
+    await renderPage()
+    await page.getByRole('button', { name: '新建调度' }).click()
+    await expect.element(page.getByText('请选择目标系统。')).toBeVisible()
+    await expect.element(page.getByText('请选择场景。')).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '仅保存' })).toBeDisabled()
+    await expect.element(page.getByRole('button', { name: '保存并启用' })).toBeDisabled()
+    expect(mocks.createSchedule).not.toHaveBeenCalled()
+
+    await page.getByLabelText('目标系统').click()
+    await page.getByRole('option', { name: '演示商城' }).click()
+    await expect.element(page.getByText('请选择目标系统。')).not.toBeInTheDocument()
+    await expect.element(page.getByRole('button', { name: '仅保存' })).toBeDisabled()
+    await page.getByLabelText(/场景/).click()
+    await page.getByRole('option', { name: '巡检场景' }).click()
+    await expect.element(page.getByRole('button', { name: '仅保存' })).toBeEnabled()
+    await page.getByRole('button', { name: '仅保存' }).click()
+    await expect.poll(() => mocks.createSchedule.mock.calls.length).toBe(1)
+    expect(mocks.createSchedule.mock.calls[0]?.[0]?.definition).toMatchObject({
+      name: '巡检场景',
+      consumer: {
+        type: 'scenario_run',
+        targetId: '11111111-1111-4111-8111-111111111111',
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        scenarioVersionId: '44444444-4444-4444-8444-444444444444',
+      },
+    })
+  })
+
   it('筛选类型无结果时展示没有匹配计划并提供清除筛选按钮', async () => {
     signIn(['schedule:read', 'target:read'])
     mocks.fetchSchedules.mockResolvedValue({ items: [] })

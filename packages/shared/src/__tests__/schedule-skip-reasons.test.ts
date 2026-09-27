@@ -60,17 +60,18 @@ describe('schedule skip reasons metadata & contract', () => {
     })
   })
 
-  it('assistantCitationKeySchema validates occurrence, schedule, dataset keys', () => {
+  it('assistantCitationKeySchema validates occurrence, schedule, dataset, incident keys', () => {
     const validUuid = '12345678-1234-4234-8234-123456789abc'
     expect(() => assistantCitationKeySchema.parse(`occurrence:${validUuid}`)).not.toThrow()
     expect(() => assistantCitationKeySchema.parse(`schedule:${validUuid}`)).not.toThrow()
     expect(() => assistantCitationKeySchema.parse(`dataset:${validUuid}`)).not.toThrow()
     expect(() => assistantCitationKeySchema.parse(`run:${validUuid}`)).not.toThrow()
+    expect(() => assistantCitationKeySchema.parse(`incident:${validUuid}`)).not.toThrow()
 
     expect(() => assistantCitationKeySchema.parse('invalid:123')).toThrow()
   })
 
-  it('assistantNextActionSchema validates actions with occurrence citation', () => {
+  it('assistantNextActionSchema validates actions with occurrence or incident citation', () => {
     const validUuid = '12345678-1234-4234-8234-123456789abc'
     const action = {
       kind: 'target.accounts',
@@ -79,5 +80,13 @@ describe('schedule skip reasons metadata & contract', () => {
       citations: [`occurrence:${validUuid}`],
     }
     expect(() => assistantNextActionSchema.parse(action)).not.toThrow()
+
+    const incidentAction = {
+      kind: 'incident.detail',
+      label: '查看可靠性事件详情',
+      href: `/maintenance/incidents/${validUuid}`,
+      citations: [`incident:${validUuid}`],
+    }
+    expect(() => assistantNextActionSchema.parse(incidentAction)).not.toThrow()
   })
 })

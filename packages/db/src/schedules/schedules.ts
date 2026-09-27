@@ -56,9 +56,10 @@ import { recordAudit } from '../audit/record.js'
 import { decodeAuditCursor, encodeAuditCursor } from '../audit/cursor.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, insertIgnoreRows, insertRows, jsonTextEquals, locked, onCommit, schemaFor } from '../native.js'
-import { DomainError, conflict, forbidden, isUniqueViolation, notFound } from '../runs/errors.js'
+import { DomainError, conflict, failure, forbidden, isUniqueViolation, notFound } from '../runs/errors.js'
 import { sha256Hex } from '../runs/digest.js'
-import { cancelMapJob, getMapJob } from '../map/jobs.js'
+import { cancelMapJob, createMapIngestJob, getMapJob, getMapJobPolicy } from '../map/jobs.js'
+import { requireMapCapableAccount } from '../console/account-usage.js'
 import { getOrCreatePlatformConfig } from '../platform-config/store.js'
 import { liveTargetExists } from '../lifecycle.js'
 import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
@@ -102,10 +103,12 @@ function factoryEnabledFor(document: PlatformConfigDocument, type: ScheduleConsu
   if (type === 'scenario_run') return document.scenarioScheduledRunEnabled
   if (type === 'suite_run') return document.suiteScheduledRunEnabled
   if (type === 'knowledge_analysis') return document.knowledgeAnalysisEnabled
+  if (type === 'map_ingest') return document.mapScheduledRefreshEnabled
   return false
 }
 
 function writePermissionsFor(consumer: ScheduleConsumer): string[] {
+  if (consumer.type === 'map_ingest') return ['schedule:write', 'map:maintain']
   if (consumer.type === 'knowledge_analysis') {
     return ['schedule:write', 'map:analyze', consumer.mode === 'run_incremental' ? 'run:read' : 'map:read', ...(consumer.budget.useAi ? ['ai:execute'] : [])]
   }
@@ -113,10 +116,12 @@ function writePermissionsFor(consumer: ScheduleConsumer): string[] {
 }
 
 function identityConflictMessage(type: ScheduleConsumerType): string {
+  if (type === 'map_ingest') return '该目标已有启用中的地图采集计划'
   return type === 'knowledge_analysis' ? '同范围已有启用中的知识分析计划' : '该账号已有启用中的知识地图采集计划'
 }
 
 function identityConflictCode(type: ScheduleConsumerType): string {
+  if (type === 'map_ingest') return 'SCHEDULE_IDENTITY_CONFLICT'
   return type === 'knowledge_analysis' ? 'SCHEDULE_IDENTITY_CONFLICT' : 'SCHEDULE_ACCOUNT_CONFLICT'
 }
 
@@ -324,7 +329,10 @@ async function objectLabelFor(db: Db, consumer: ScheduleConsumer): Promise<strin
       .limit(1)
     return row?.name ?? SCHEDULE_CONSUMER_LABELS.suite_run
   }
-  return `${SCHEDULE_CONSUMER_LABELS.knowledge_analysis} · ${ANALYSIS_MODE_LABELS[consumer.mode]}`
+  if (consumer.type === 'knowledge_analysis') {
+    return `${SCHEDULE_CONSUMER_LABELS.knowledge_analysis} · ${ANALYSIS_MODE_LABELS[consumer.mode]}`
+  }
+  return SCHEDULE_CONSUMER_LABELS[consumer.type]
 }
 
 async function assertScheduleWritePermission(db: Db, actorId: string, consumer: ScheduleConsumer) {
@@ -337,6 +345,10 @@ async function assertConsumerResources(db: Db, definition: ScheduleDefinition, a
   const consumer = definition.consumer
   const target = await requireLiveTarget(db, consumer.targetId)
   if (target.status !== 'active') throw conflict('TARGET_DISABLED', '目标系统已停用')
+  if (consumer.type === 'map_ingest') {
+    if (consumer.targetAccountId) await requireMapCapableAccount(db, consumer.targetId, consumer.targetAccountId)
+    return
+  }
   if (consumer.type === 'knowledge_analysis') {
     const { scenarios, scenarioSuites } = schemaFor(db)
     for (const scenarioId of consumer.source.scenarioIds ?? []) {
@@ -1027,21 +1039,21 @@ export async function listScheduleEvents(
   await scheduleToDto(db, scheduleId)
   const { scheduleEvents } = schemaFor(db)
   const decoded = query.cursor ? decodeAuditCursor(query.cursor) : null
+  const [cursorEvent] = decoded
+    ? await db.select({ seq: scheduleEvents.seq }).from(scheduleEvents)
+        .where(and(eq(scheduleEvents.scheduleId, scheduleId), eq(scheduleEvents.id, decoded.id))).limit(1)
+    : []
+  if (decoded && !cursorEvent) throw failure('bad_request', '游标无效')
   const rows = await db
     .select()
     .from(scheduleEvents)
     .where(
       and(
         eq(scheduleEvents.scheduleId, scheduleId),
-        decoded
-          ? or(
-              sql`${scheduleEvents.createdAt} < ${decoded.createdAt}`,
-              and(eq(scheduleEvents.createdAt, decoded.createdAt), sql`${scheduleEvents.id} < ${decoded.id}`),
-            )
-          : undefined,
+        cursorEvent ? sql`${scheduleEvents.seq} < ${cursorEvent.seq}` : undefined,
       ),
     )
-    .orderBy(desc(scheduleEvents.seq), desc(scheduleEvents.id))
+    .orderBy(desc(scheduleEvents.seq))
     .limit(query.limit + 1)
   const page = rows.slice(0, query.limit)
   return scheduleEventListResponseSchema.parse({
@@ -1457,6 +1469,33 @@ export async function admitScheduleOccurrence(
           reason: null,
         })
       }
+      if (definition.consumer.type === 'map_ingest') {
+        const { mapMenuEntries } = schemaFor(tx)
+        const [enabledEntry] = await tx.select({ id: mapMenuEntries.id }).from(mapMenuEntries)
+          .where(and(eq(mapMenuEntries.targetId, definition.consumer.targetId),
+            eq(mapMenuEntries.enabled, 1), isNull(mapMenuEntries.archivedAt))).limit(1)
+        if (!enabledEntry) return skip('NO_ENABLED_ENTRIES')
+        const policy = await getMapJobPolicy(tx, definition.consumer.targetId)
+        const created = await createMapIngestJob(
+          tx, definition.consumer.targetId,
+          {
+            manualId: occurrence.id, expectedPolicyRevision: policy.revision,
+            targetAccountId: definition.consumer.targetAccountId, scope: 'full',
+          },
+          actor,
+          { kind: 'scheduled', occurrenceId: occurrence.id, startBefore: occurrence.windowEndUtc?.toISOString() },
+        )
+        await tx.update(scheduleOccurrences).set({
+          admissionStatus: 'ADMITTED', jobId: created.job.jobId, admittedAt: now, reason: null,
+        }).where(eq(scheduleOccurrences.id, occurrence.id))
+        await appendEvent(tx, schedule.id, 'admitted', {
+          occurrenceId: occurrence.id, jobId: created.job.jobId,
+        }, now)
+        return occurrenceToDto({
+          ...occurrence, admissionStatus: 'ADMITTED', jobId: created.job.jobId,
+          admittedAt: now, reason: null,
+        }, created.job.firstRunId)
+      }
       return skip('RESOURCE_UNAVAILABLE')
   }).catch(async error => {
     // Roll back consumer creation before recording a rejection. Catching inside
@@ -1468,6 +1507,7 @@ export async function admitScheduleOccurrence(
       : error.code === 'AUTH_PREPARATION_REQUIRED' ? 'AUTH_PREPARATION_REQUIRED'
       : error.code === 'MAP_CONSUMER_UNAVAILABLE' ? 'WORKER_UNAVAILABLE'
       : error.code === 'MAP_ACCOUNT_USAGE_REQUIRED' ? 'MAP_ACCOUNT_USAGE_REQUIRED'
+      : error.code === 'MAP_FORBIDDEN' ? 'MANUAL_JOBS_DISABLED'
       : error.code === 'ANALYSIS_CONFIG_INVALID' ? 'ANALYSIS_CONFIG_INVALID'
       : error.message.includes('手工地图作业尚未对该目标开放') ? 'MANUAL_JOBS_DISABLED'
       : /VERSION|NOT_PUBLISHED/.test(error.code) ? 'VERSION_INVALID'

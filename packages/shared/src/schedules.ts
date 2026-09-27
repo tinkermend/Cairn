@@ -16,10 +16,12 @@ export const SCHEDULE_INTERVAL_MAX_MS = 30 * 24 * 60 * 60 * 1000
 export const SCHEDULE_CONSUMER_SCENARIO_RUN = 'scenario_run' as const
 export const SCHEDULE_CONSUMER_SUITE_RUN = 'suite_run' as const
 export const SCHEDULE_CONSUMER_KNOWLEDGE_ANALYSIS = 'knowledge_analysis' as const
+export const SCHEDULE_CONSUMER_MAP_INGEST = 'map_ingest' as const
 export const SCHEDULE_CONSUMER_TYPES = [
   SCHEDULE_CONSUMER_SCENARIO_RUN,
   SCHEDULE_CONSUMER_SUITE_RUN,
   SCHEDULE_CONSUMER_KNOWLEDGE_ANALYSIS,
+  SCHEDULE_CONSUMER_MAP_INGEST,
 ] as const
 export type ScheduleConsumerType = (typeof SCHEDULE_CONSUMER_TYPES)[number]
 export const scheduleConsumerTypeSchema = z.enum(SCHEDULE_CONSUMER_TYPES)
@@ -67,6 +69,7 @@ export const SCHEDULE_SKIP_REASONS = [
   'ANALYSIS_BUDGET_EXHAUSTED',
   'ANALYSIS_CONFIG_INVALID',
   'DUPLICATE_ANALYSIS_SCOPE',
+  'NO_ENABLED_ENTRIES',
 ] as const
 export type ScheduleSkipReason = (typeof SCHEDULE_SKIP_REASONS)[number]
 export const scheduleSkipReasonSchema = z.enum(SCHEDULE_SKIP_REASONS)
@@ -222,10 +225,18 @@ export const knowledgeAnalysisScheduleConsumerSchema = z.strictObject({
 })
 export type KnowledgeAnalysisScheduleConsumer = z.infer<typeof knowledgeAnalysisScheduleConsumerSchema>
 
+export const mapIngestScheduleConsumerSchema = z.strictObject({
+  type: z.literal(SCHEDULE_CONSUMER_MAP_INGEST),
+  targetId: entityIdSchema,
+  targetAccountId: entityIdSchema.optional(),
+})
+export type MapIngestScheduleConsumer = z.infer<typeof mapIngestScheduleConsumerSchema>
+
 export const scheduleConsumerSchema = z.discriminatedUnion('type', [
   scenarioRunScheduleConsumerSchema,
   suiteRunScheduleConsumerSchema,
   knowledgeAnalysisScheduleConsumerSchema,
+  mapIngestScheduleConsumerSchema,
 ])
 export type ScheduleConsumer = z.infer<typeof scheduleConsumerSchema>
 
@@ -551,6 +562,7 @@ export function scheduledAnalysisCommandKey(occurrenceId: string): string {
 }
 
 export function scheduleIdentityGuard(consumer: ScheduleConsumer): string | null {
+  if (consumer.type === SCHEDULE_CONSUMER_MAP_INGEST) return `map_ingest:${consumer.targetId}`
   if (consumer.type === SCHEDULE_CONSUMER_KNOWLEDGE_ANALYSIS) {
     const digest = [
       consumer.mode,
@@ -564,6 +576,7 @@ export function scheduleIdentityGuard(consumer: ScheduleConsumer): string | null
 
 export function consumerTargetAccountId(consumer: ScheduleConsumer): string | null {
   if (consumer.type === SCHEDULE_CONSUMER_SCENARIO_RUN) return consumer.accountBinding.targetAccountId ?? null
+  if (consumer.type === SCHEDULE_CONSUMER_MAP_INGEST) return consumer.targetAccountId ?? null
   return null
 }
 
@@ -839,9 +852,13 @@ export const SCHEDULE_CONSUMER_LABELS: Record<ScheduleConsumerType, string> = {
   scenario_run: '场景执行',
   suite_run: '场景集执行',
   knowledge_analysis: '知识分析',
+  map_ingest: '地图采集',
 }
 
 export const ANALYSIS_MODE_LABELS: Record<AnalysisMode, string> = {
   map_quality: '地图质量分析',
   run_incremental: '运行增量提炼',
 }
+
+export * from './schedule-skip-reasons.js'
+

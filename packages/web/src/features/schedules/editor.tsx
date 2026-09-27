@@ -95,7 +95,7 @@ function getScheduleSummaryText({
   const dayLabels = WEEKDAYS.filter((d) => weekdays.includes(d.value)).map(
     (d) => d.label
   )
-  let dayDesc = ''
+  let dayDesc: string
   if (dayLabels.length === 7) {
     dayDesc = '每天'
   } else if (
@@ -674,6 +674,18 @@ export function ScheduleEditorDialog({
       }),
     [ruleKind, weekdays, windowStart, windowEnd, intervalMin, extraWindows]
   )
+  const missingTarget = !targetId
+  const missingObject =
+    (type === 'scenario_run' && !scenarioId) ||
+    (type === 'suite_run' && !suiteId)
+  const missingVersion =
+    definition.consumer.type === 'scenario_run'
+      ? Boolean(scenarioId) && !definition.consumer.scenarioVersionId
+      : definition.consumer.type === 'suite_run'
+        ? Boolean(suiteId) && !definition.consumer.suiteVersionId
+        : false
+  const canSubmit = !missingTarget && !missingObject && !missingVersion &&
+    !(type === 'scenario_run' && inputError)
 
   const previewMutation = useMutation({
     mutationFn: () => previewSchedule({ definition }),
@@ -793,12 +805,17 @@ export function ScheduleEditorDialog({
                 disabled={!canWrite}
                 onChange={(event) => setName(event.target.value)}
               />
+              {!name.trim() ? (
+                <p className='text-label text-muted-foreground'>留空时自动使用任务类型或所选对象名称。</p>
+              ) : null}
             </div>
           </div>
           <div className='grid gap-1'>
-            <Label htmlFor='schedule-target'>目标系统</Label>
+            <Label htmlFor='schedule-target'>目标系统<span aria-hidden='true' className='text-destructive'> *</span></Label>
             <SelectField
               id='schedule-target'
+              aria-invalid={missingTarget}
+              aria-describedby={missingTarget ? 'schedule-target-error' : undefined}
 
               disabled={Boolean(existing) || Boolean(context) || !canWrite}
               value={targetId}
@@ -825,13 +842,16 @@ export function ScheduleEditorDialog({
                 </SelectFieldOption>
               ))}
             </SelectField>
+            {missingTarget ? <p id='schedule-target-error' className='text-label text-destructive'>请选择目标系统。</p> : null}
           </div>
           {type === 'scenario_run' ? (
             <div className='grid gap-2 md:grid-cols-2'>
               <div className='grid gap-1'>
-                <Label htmlFor='schedule-scenario'>场景</Label>
+                <Label htmlFor='schedule-scenario'>场景<span aria-hidden='true' className='text-destructive'> *</span></Label>
                 <SelectField
                   id='schedule-scenario'
+                  aria-invalid={!scenarioId || missingVersion}
+                  aria-describedby={!scenarioId || missingVersion ? 'schedule-scenario-error' : undefined}
 
                   disabled={Boolean(context) || !canWrite}
                   value={scenarioId}
@@ -852,6 +872,11 @@ export function ScheduleEditorDialog({
                     </SelectFieldOption>
                   ))}
                 </SelectField>
+                {!scenarioId || missingVersion ? (
+                  <p id='schedule-scenario-error' className='text-label text-destructive'>
+                    {!scenarioId ? '请选择场景。' : '所选场景没有可固定的已发布版本。'}
+                  </p>
+                ) : null}
               </div>
               <div className='grid gap-1'>
                 <Label htmlFor='schedule-account'>目标账号</Label>
@@ -874,9 +899,11 @@ export function ScheduleEditorDialog({
           ) : null}
           {type === 'suite_run' ? (
             <div className='grid gap-1'>
-              <Label htmlFor='schedule-suite'>场景集</Label>
+              <Label htmlFor='schedule-suite'>场景集<span aria-hidden='true' className='text-destructive'> *</span></Label>
               <SelectField
                 id='schedule-suite'
+                aria-invalid={!suiteId || missingVersion}
+                aria-describedby={!suiteId || missingVersion ? 'schedule-suite-error' : undefined}
 
                 disabled={Boolean(context) || !canWrite}
                 value={suiteId}
@@ -897,6 +924,11 @@ export function ScheduleEditorDialog({
                   </SelectFieldOption>
                 ))}
               </SelectField>
+              {!suiteId || missingVersion ? (
+                <p id='schedule-suite-error' className='text-label text-destructive'>
+                  {!suiteId ? '请选择场景集。' : '所选场景集没有可固定的已发布版本。'}
+                </p>
+              ) : null}
               <p className='text-label text-muted-foreground'>
                 成员版本和账号映射随集合修订冻结，不会追随新的默认账号。
               </p>
@@ -1365,9 +1397,7 @@ export function ScheduleEditorDialog({
             type='button'
             variant='outline'
             onClick={() => previewMutation.mutate()}
-            disabled={
-              !targetId || (type === 'scenario_run' && Boolean(inputError))
-            }
+            disabled={!canSubmit}
           >
             预览执行时间
           </Button>
@@ -1386,7 +1416,7 @@ export function ScheduleEditorDialog({
                 !canWrite ||
                 saveMutation.isPending ||
                 enableMutation.isPending ||
-                (type === 'scenario_run' && Boolean(inputError))
+                !canSubmit
               }
               onClick={() => saveMutation.mutate()}
             >
@@ -1398,7 +1428,7 @@ export function ScheduleEditorDialog({
                 !canWrite ||
                 enableMutation.isPending ||
                 saveMutation.isPending ||
-                (type === 'scenario_run' && Boolean(inputError))
+                !canSubmit
               }
               onClick={() => enableMutation.mutate()}
             >
