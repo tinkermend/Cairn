@@ -126,4 +126,42 @@ describe('TargetFormDialog', () => {
     await expect.element(getByText('运行时装配')).toBeInTheDocument()
     await expect.element(getByText('可选', { exact: true })).toBeInTheDocument()
   })
+
+  it('编辑态下双列分别呈现身份入口与运行装配，无初始账号输入，可更新目标', async () => {
+    const currentTarget = {
+      id: 'target-1',
+      code: 'target-one',
+      name: '现有系统',
+      status: 'active' as const,
+      entryUrl: 'https://existing.test',
+      loginUrl: 'https://existing.test/login',
+      authMethod: 'password' as const,
+      captchaMode: 'none' as const,
+      iconKey: 'globe',
+      accentKey: 'pine',
+      createdAt: '2026-09-01T00:00:00Z',
+      updatedAt: '2026-09-20T00:00:00Z',
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { getByRole, getByLabelText, getByText } = await render(
+      <QueryClientProvider client={client}>
+        <TargetFormDialog open onOpenChange={vi.fn()} current={currentTarget as any} />
+      </QueryClientProvider>
+    )
+
+    await expect.element(getByRole('heading', { name: '编辑目标系统' })).toBeInTheDocument()
+    await expect.element(getByText('系统身份与入口')).toBeInTheDocument()
+    await expect.element(getByText('运行准入与装配')).toBeInTheDocument()
+    await expect.element(getByLabelText(/编码/)).toBeDisabled()
+    await expect.element(getByText('系统唯一标识，创建后不可修改。')).toBeInTheDocument()
+
+    const nameInput = getByLabelText(/名称/)
+    await nameInput.fill('更新后的系统')
+    await getByRole('button', { name: '保存' }).click()
+
+    await expect.poll(() => apiMocks.updateTarget.mock.calls[0]?.[1]).toMatchObject({
+      name: '更新后的系统',
+      entryUrl: 'https://existing.test',
+    })
+  })
 })

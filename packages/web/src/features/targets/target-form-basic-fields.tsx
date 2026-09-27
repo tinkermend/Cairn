@@ -5,10 +5,9 @@ import {
   CAPTCHA_MODES,
   TARGET_STATUSES,
 } from '@cairn/shared'
-import { ChevronDown, ShieldAlert } from 'lucide-react'
+import { ChevronDown, HelpCircle, ShieldAlert } from 'lucide-react'
 import {
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -24,6 +23,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   AUTH_METHOD_LABELS,
   CAPTCHA_MODE_LABELS,
   TARGET_STATUS_LABELS,
@@ -31,113 +35,144 @@ import {
 import type { TargetFormValues } from './target-form-schema'
 import { TargetFormIdentityFields } from './target-form-identity-fields'
 
+function FieldHelp({ content }: { content: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type='button'
+          className='inline-flex size-4 items-center justify-center rounded text-muted-foreground transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-ring cursor-help'
+          aria-label='查看说明'
+        >
+          <HelpCircle className='size-3.5' />
+          <span className='sr-only'>{content}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side='top' className='max-w-xs text-label leading-relaxed'>
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 type TargetFormBasicFieldsProps = {
   form: UseFormReturn<TargetFormValues>
   isEdit: boolean
+  section?: 'all' | 'identity' | 'runtime'
   onAuthMethodChange?: (method: string) => void
 }
 
 export function TargetFormBasicFields({
   form,
   isEdit,
+  section = 'all',
   onAuthMethodChange,
 }: TargetFormBasicFieldsProps) {
   const [securityOpen, setSecurityOpen] = useState(
     Boolean(form.getValues('sensitiveSelectors')?.trim())
   )
 
+  const showIdentity = section === 'all' || section === 'identity'
+  const showRuntime = section === 'all' || section === 'runtime'
+
   return (
     <div className='space-y-3.5'>
-      <FormField
-        control={form.control}
-        name='name'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>
-              名称 <span className='text-destructive font-bold' aria-hidden='true'>*</span>
-            </FormLabel>
-            <FormControl>
-              <Input {...field} placeholder='例如：铁塔视联' />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      {showIdentity && (
+        <>
+          <FormField
+            control={form.control}
+            name='name'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  名称 <span className='text-destructive font-bold' aria-hidden='true'>*</span>
+                </FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder='例如：铁塔视联' />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-      <FormField
-        control={form.control}
-        name='code'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>
-              编码 <span className='text-label font-normal text-muted-foreground'>（创建后不可改）</span>
-            </FormLabel>
-            <FormControl>
-              <Input
-                {...field}
-                disabled={isEdit}
-                placeholder='tower-preprod'
-              />
-            </FormControl>
-            <FormDescription>
-              {isEdit
-                ? '创建后不可改。'
-                : '小写字母开头的 slug，2–63 字符，创建后不可改。'}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+          <FormField
+            control={form.control}
+            name='code'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className='inline-flex items-center gap-1.5'>
+                  <span>编码</span>
+                  {!isEdit && <span className='text-destructive font-bold' aria-hidden='true'>*</span>}
+                  <FieldHelp
+                    content={isEdit
+                      ? '系统唯一标识，创建后不可修改。'
+                      : '小写字母开头的 slug，2–63 字符，创建后不可改。'}
+                  />
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    disabled={isEdit}
+                    placeholder='tower-preprod'
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-      <TargetFormIdentityFields form={form} />
+          <TargetFormIdentityFields form={form} />
 
-      <FormField
-        control={form.control}
-        name='entryUrl'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>
-              入口 URL <span className='text-destructive font-bold' aria-hidden='true'>*</span>
-            </FormLabel>
-            <FormControl>
-              <Input {...field} placeholder='https://example.com/#/home' />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+          <FormField
+            control={form.control}
+            name='entryUrl'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  入口 URL <span className='text-destructive font-bold' aria-hidden='true'>*</span>
+                </FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder='https://example.com/#/home' />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-      <FormField
-        control={form.control}
-        name='loginUrl'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>
-              登录 URL <span className='text-label font-normal text-muted-foreground'>（可选）</span>
-            </FormLabel>
-            <FormControl>
-              <Input {...field} placeholder='留空则与入口相同' />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+          <FormField
+            control={form.control}
+            name='loginUrl'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  登录 URL <span className='text-label font-normal text-muted-foreground'>（可选）</span>
+                </FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder='留空则与入口相同' />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </>
+      )}
+
+      {showRuntime && (
+        <>
 
       <FormField
         control={form.control}
         name='loginLeaveTimeoutSeconds'
         render={({ field }) => (
           <FormItem>
-            <FormLabel>
-              提交后等待离开登录页
+            <FormLabel className='inline-flex items-center gap-1.5'>
+              <span>提交后等待离开登录页</span>
               <span className='text-label font-normal text-muted-foreground'>（秒，可选）</span>
+              <FieldHelp content='自动填写提交后，等多久仍停在登录页才判未完成。跳转慢的系统加大；不填用平台配置。' />
             </FormLabel>
             <FormControl>
               <Input {...field} type='number' min={1} step={1} placeholder='留空则用平台默认' />
             </FormControl>
-            <FormDescription>
-              自动填写提交后，等多久仍停在登录页才判未完成。跳转慢的系统加大；不填用平台配置。
-            </FormDescription>
             <FormMessage />
           </FormItem>
         )}
@@ -149,7 +184,10 @@ export function TargetFormBasicFields({
           name='landingSettleMode'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>登录后整理</FormLabel>
+              <FormLabel className='inline-flex items-center gap-1.5'>
+                <span>登录后整理</span>
+                <FieldHelp content='关掉后，换节点自动登录也不会关欢迎层。' />
+              </FormLabel>
               <Select value={field.value} onValueChange={field.onChange}>
                 <FormControl>
                   <SelectTrigger>
@@ -161,9 +199,6 @@ export function TargetFormBasicFields({
                   <SelectItem value='off'>不自动整理</SelectItem>
                 </SelectContent>
               </Select>
-              <FormDescription>
-                关掉后，换节点自动登录也不会关欢迎层。
-              </FormDescription>
               <FormMessage />
             </FormItem>
           )}
@@ -173,16 +208,14 @@ export function TargetFormBasicFields({
           name='landingSettleTimeoutSeconds'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>
-                整理预算
+              <FormLabel className='inline-flex items-center gap-1.5'>
+                <span>整理预算</span>
                 <span className='text-label font-normal text-muted-foreground'>（秒，可选）</span>
+                <FieldHelp content='覆盖平台整理预算。不填用平台配置。' />
               </FormLabel>
               <FormControl>
                 <Input {...field} type='number' min={1} step={1} placeholder='留空则用平台默认' />
               </FormControl>
-              <FormDescription>
-                覆盖平台整理预算。不填用平台配置。
-              </FormDescription>
               <FormMessage />
             </FormItem>
           )}
@@ -297,7 +330,10 @@ export function TargetFormBasicFields({
               name='sensitiveSelectors'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel className='sr-only'>敏感区域选择器</FormLabel>
+                  <FormLabel className='inline-flex items-center gap-1.5 text-label font-medium text-text-secondary'>
+                    <span>选择器规则</span>
+                    <FieldHelp content='截图与录像在这些元素可见时遮罩像素，不改页面值。用于“显示密码”后的明文框、证件号等。' />
+                  </FormLabel>
                   <FormControl>
                     <Textarea
                       rows={3}
@@ -305,9 +341,6 @@ export function TargetFormBasicFields({
                       {...field}
                     />
                   </FormControl>
-                  <FormDescription>
-                    截图与录像在这些元素可见时遮罩像素，不改页面值。用于“显示密码”后的明文框、证件号等。
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -315,6 +348,8 @@ export function TargetFormBasicFields({
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }

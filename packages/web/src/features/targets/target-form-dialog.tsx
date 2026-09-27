@@ -175,18 +175,19 @@ function TargetFormFields({
           className='flex flex-1 flex-col min-h-0 overflow-hidden'
           onSubmit={form.handleSubmit(onSubmit)}
         >
-          <div className='flex-1 overflow-y-auto px-6 py-5'>
+          <div className='flex-1 overflow-y-auto px-6 pt-5 pb-8'>
             <div className='grid grid-cols-1 md:grid-cols-[1.15fr_1fr] gap-6 items-start'>
               {/* 左列：系统身份与核心准入 */}
               <div className='space-y-4'>
                 <div className='flex items-center justify-between pb-1.5 border-b border-border-divider'>
                   <h4 className='text-body font-semibold text-text-primary'>
-                    系统准入
+                    {isEdit ? '系统身份与入口' : '系统准入'}
                   </h4>
                 </div>
                 <TargetFormBasicFields
                   form={form}
                   isEdit={isEdit}
+                  section={isEdit ? 'identity' : 'all'}
                   onAuthMethodChange={(method) => {
                     if (!isEdit && method === 'password') {
                       setActiveAccordion('account')
@@ -195,11 +196,11 @@ function TargetFormFields({
                 />
               </div>
 
-              {/* 右列：运行时装配（手风琴互斥，避免左右高度失衡） */}
+              {/* 右列：运行时装配（编辑态承接运行策略，保持左右平衡） */}
               <div className='space-y-4'>
                 <div className='flex items-center justify-between pb-1.5 border-b border-border-divider'>
                   <h4 className='text-body font-semibold text-text-primary'>
-                    运行时装配
+                    {isEdit ? '运行准入与装配' : '运行时装配'}
                   </h4>
                   <span className='rounded-sm bg-surface-subtle px-1.5 py-0.5 text-label text-muted-foreground'>
                     可选
@@ -214,9 +215,11 @@ function TargetFormFields({
                     allowCredential={canWriteInitialCredential}
                   />
                 ) : (
-                  <div className='rounded-lg border border-border-divider bg-surface-subtle/30 p-3 text-label text-muted-foreground'>
-                    目标账号已在详情页的独立列表管理。如需维护账号请在创建后前往详情页。
-                  </div>
+                  <TargetFormBasicFields
+                    form={form}
+                    isEdit={isEdit}
+                    section='runtime'
+                  />
                 )}
 
                 <TargetFormLocatorSection
@@ -228,7 +231,7 @@ function TargetFormFields({
             </div>
           </div>
 
-          <DialogFooter className='shrink-0 border-t border-border bg-surface-header/90 px-6 py-3.5 backdrop-blur-sm sm:justify-end gap-2.5'>
+          <DialogFooter className='shrink-0 border-t border-border bg-card px-6 py-3.5 sm:justify-end gap-2.5'>
             <Button
               type='button'
               variant='outline'

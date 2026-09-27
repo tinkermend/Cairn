@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
 
 let routeSearch: Record<string, unknown> = { selected: 'target-a' }
 
-vi.mock('./target-form-dialog', () => ({ TargetFormDialog: () => null }))
+vi.mock('./target-form-dialog', () => ({
+  TargetFormDialog: ({ open, current }: { open: boolean; current?: { id: string; name: string } }) =>
+    open ? <div data-testid='target-form-dialog' data-current-id={current?.id ?? 'new'}>目标系统表单</div> : null,
+}))
 vi.mock('@/lib/targets-api', () => ({
   fetchTargetOverview: mocks.fetchTargetOverview,
   previewDeleteTarget: mocks.previewDeleteTarget,
@@ -258,17 +261,36 @@ it('390px 且无会话权限时仍显示系统启停状态', async () => {
   await expect.element(screen.getByRole('table').getByText('启用', { exact: true })).toBeVisible()
 })
 
-it('窄屏折叠次要列后，可在预览 Sheet 查看账号、场景和活动', async () => {
+it('窄屏折叠次要列后，可在预览 Sheet 查看账号与关联资产', async () => {
   await page.viewport(390, 844)
   const screen = await mount()
   const previewButton = screen.getByRole('button', { name: '预览智慧运维管理系统' })
   await previewButton.click()
   await expect.element(screen.getByRole('dialog')).toBeInTheDocument()
-  await expect.element(screen.getByRole('dialog').getByText('业务账号就绪')).toBeInTheDocument()
+  await expect.element(screen.getByRole('dialog').getByText('目标账号')).toBeInTheDocument()
   await expect.element(screen.getByRole('dialog').getByText('值班员')).toBeInTheDocument()
   await expect.element(screen.getByRole('dialog').getByRole('link', { name: /关联场景/ })).toHaveAttribute('href', '/scenarios?targetId=target-a')
-  await expect.element(screen.getByRole('dialog').getByText('日常巡检开始执行')).toBeInTheDocument()
   await screen.getByRole('dialog').getByRole('button', { name: '关闭' }).click()
   await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
   await expect.element(previewButton).toHaveFocus()
+})
+
+it('有写入权限时右侧卡片头部展示编辑和详情入口，点击编辑就地呼出弹窗', async () => {
+  useAuthStore.getState().auth.setUser({
+    id: 'u1', displayName: '测试', email: null, roles: [],
+    permissions: ['target:read', 'target:write', 'session:read', 'workflow:read', 'run:read'],
+    targetScopes: [{ roleId: 'admin', mode: 'all', targetIds: [] }],
+    targetScopePermissions: [{ roleId: 'admin', permissions: ['target:read', 'target:write', 'session:read', 'workflow:read', 'run:read'] }],
+  })
+  const screen = await mount()
+  const detailLink = screen.getByRole('complementary', { name: '系统概览' }).getByRole('link', { name: '详情', exact: true })
+  await expect.element(detailLink).toHaveAttribute('href', '/targets/target-a')
+
+  const editButton = screen.getByRole('complementary', { name: '系统概览' }).getByRole('button', { name: '编辑', exact: true })
+  await expect.element(editButton).toBeInTheDocument()
+  await editButton.click()
+
+  const dialog = screen.getByTestId('target-form-dialog')
+  await expect.element(dialog).toBeInTheDocument()
+  await expect.element(dialog).toHaveAttribute('data-current-id', 'target-a')
 })

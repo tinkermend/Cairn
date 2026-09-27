@@ -6,6 +6,12 @@
   grid-template-columns: minmax(0, 1fr) minmax(350px, 365px);
 }
 
+.target-overview-aside {
+  position: sticky;
+  top: 1rem;
+  align-self: start;
+}
+
 .target-overview-table .target-col-system { width: 29%; }
 .target-overview-table .target-col-readiness { width: 22%; }
 .target-overview-table .target-col-accounts { width: 17%; }
