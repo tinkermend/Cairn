@@ -165,7 +165,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     }
     const requiresVisualModel = step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert'
     if (requiresVisualModel && resolution.locatorDocument && !locatorReadiness(resolution.locatorDocument).visionReady) {
-      add(diagnostics, 'SCENARIO_AI_UNAVAILABLE', 'error',
+      add(diagnostics, 'SCENARIO_AI_UNAVAILABLE', release ? 'error' : 'warning',
         `步骤「${step.name}」${step.type === 'ai_action' ? '是视觉操作' : '可能回退到视觉模型'}，请先在平台配置中启用并完善浏览器 AI 视觉模型及绑定密钥`,
         { stepId: step.id, fieldPath: ['type'] })
     } else if (!(executable as readonly string[]).includes(step.type)) {
@@ -472,6 +472,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       )
     }
     if (document.outputs.summaryTemplate) {
+      const summaryKeys = new Set([...available, ...(document.outputs.metrics ?? []).map((metric) => metric.key)])
       const matches = document.outputs.summaryTemplate.matchAll(/\$\{([^}]+)\}/g)
       for (const match of matches) {
         const token = match[1]
@@ -483,12 +484,12 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
             `业务输出结论模板包含非法的变量插值「\${${token}}」`,
             { fieldPath: ['outputs', 'summaryTemplate'] },
           )
-        } else if (!available.has(token)) {
+        } else if (!summaryKeys.has(token)) {
           add(
             diagnostics,
             'OUTPUT_VARIABLE_UNRESOLVED',
             release ? 'error' : 'warning',
-            `业务输出结论模板引用的变量「${token}」未在输入或任何步骤的 outputKey 中定义`,
+            `业务输出结论模板引用的变量「${token}」未在输入、步骤输出或业务指标中定义`,
             { fieldPath: ['outputs', 'summaryTemplate'] },
           )
         }

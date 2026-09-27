@@ -115,4 +115,30 @@ describe('访问范围卡片', () => {
       })
     )
   })
+
+  it('提交核实依据与精确 XHR 请求规则，不把它加入放行列表', async () => {
+    const screen = await renderCard()
+    await screen.getByLabelText('请求来源站点').fill('https://metrics.example/other')
+    await screen.getByLabelText('请求精确路径').fill('/collect?x=1')
+    await screen.getByLabelText('核实依据').fill('已核对前端调用，仅上报访问统计，不参与页面内容')
+    await expect.element(screen.getByRole('button', { name: '添加核实规则' })).toBeDisabled()
+    await screen.getByLabelText('请求来源站点').fill('https://metrics.example')
+    await screen.getByLabelText('请求精确路径').fill('/collect')
+    await screen.getByRole('button', { name: '添加核实规则' }).click()
+    expect(mocks.updateTargetAccessPolicy).toHaveBeenCalledWith(TARGET_ID, expect.objectContaining({
+      readOnlyRequests: [],
+      verifiedNonContentRequests: [{ method: 'POST', resourceType: 'xhr', origin: 'https://metrics.example',
+        pathPattern: '/collect', evidence: '已核对前端调用，仅上报访问统计，不参与页面内容' }],
+    }))
+  })
+
+  it('显式启用平衡模式并说明推断不等于已证明只读', async () => {
+    const screen = await renderCard()
+    await expect.element(screen.getByText(/推断不等于已证明只读/)).toBeVisible()
+    await page.viewport(390, 844)
+    await expect.element(screen.getByRole('button', { name: '启用平衡模式' })).toBeVisible()
+    await screen.getByRole('button', { name: '启用平衡模式' }).click()
+    expect(mocks.updateTargetAccessPolicy).toHaveBeenCalledWith(TARGET_ID,
+      expect.objectContaining({ postReadMode: 'balanced' }))
+  })
 })

@@ -77,6 +77,7 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
       'workflow:read',
       'workflow:write',
       'run:execute',
+      'run:read',
     ])
     actor = {
       id: actorId,
@@ -84,7 +85,7 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
       email: `studio-${actorId}@example.com`,
       status: 'active',
       roles: [],
-      permissions: ['target:read', 'target:write', 'workflow:write', 'run:execute'],
+      permissions: ['target:read', 'target:write', 'workflow:write', 'run:execute', 'run:read'],
     }
     targets = new TargetsService(handle, new LocalSecretProvider(credentialKeyFromEnv(DEV_CREDENTIAL_KEY)))
     scenarios = new ScenariosService(handle)
@@ -239,7 +240,7 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
     expect(authoringSteps(after.draft!.document).map((step) => step.outputKey)).toEqual([undefined, 'extracted2'])
 
     const runs = new RunsService(handle)
-    const live = await runs.get(first.detail.id)
+    const live = await runs.get(first.detail.id, actor.id)
     expect(live.snapshot.steps).toHaveLength(1)
     expect(live.snapshot.steps[0]).toMatchObject({ name: '打开页面', type: 'navigate' })
     expect(live.scenarioVersionId).toBe(first.detail.scenarioVersionId)

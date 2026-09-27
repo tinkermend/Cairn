@@ -534,6 +534,20 @@ describe('compileScenarioDocument', () => {
     expect(published.diagnostics.find((item) => item.code === 'OUTPUT_VARIABLE_UNRESOLVED')?.severity).toBe('error')
   })
 
+  it('发布时允许业务结论模板引用已声明的指标 key', () => {
+    const source = {
+      ...document([echo(ids.a, '读取商品数', { value: '42', outputKey: 'count' })]),
+      outputs: {
+        summaryTemplate: '巡检完成，在售商品 ${item_count} 件',
+        metrics: [{ key: 'item_count', name: '商品数', fromContextKey: 'count' }],
+        dataRowFields: [],
+      },
+    }
+    const result = compileScenarioDocument(source, { mode: 'release' })
+    expect(result.ok).toBe(true)
+    expect(result.diagnostics.some((item) => item.code === 'OUTPUT_VARIABLE_UNRESOLVED')).toBe(false)
+  })
+
   it('活跃步骤引用已停用步骤的输出变量产生 SCENARIO_DISABLED_STEP_OUTPUT_REFERENCED 警告', () => {
     const disabledExtract: Step = {
       id: ids.a,

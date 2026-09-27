@@ -93,8 +93,8 @@ export function OutcomeListEditor({
       </div>
       <p className='text-caption text-muted-foreground'>
         {scope === 'scenario'
-          ? '微文案引导：评估整套业务的最终结果（如订单是否真实创建）。'
-          : '微文案引导：检查本动作是否成功执行（如按钮已点击、弹窗已出现）。'}
+          ? '评估整套业务的最终结果（如订单是否真实创建）。'
+          : '检查本动作是否成功执行（如按钮已点击、弹窗已出现）。'}
       </p>
       {outcomes.length === 0 ? (
         <div className='rounded-md border border-dashed border-border-divider p-3 text-caption text-muted-foreground bg-muted/20'>

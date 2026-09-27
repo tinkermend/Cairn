@@ -115,7 +115,7 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     // 点击「更多」后，次要操作出现在下拉菜单中
     await moreBtn.click()
     await expect.element(screen.getByRole('menuitem', { name: '定时任务' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('menuitem', { name: '结果通知' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('menuitem', { name: '结果推送' })).toBeInTheDocument()
     // AI 助手快捷提问已从顶栏解耦，不再占用更多菜单
     expect(screen.getByRole('menuitem', { name: '解释当前步骤' }).elements()).toHaveLength(0)
     expect(screen.getByRole('menuitem', { name: '修改建议' }).elements()).toHaveLength(0)
@@ -128,7 +128,7 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
 
     // 快捷按钮直接在外部工具栏平铺展开
     await expect.element(screen.getByTestId('object-schedules-btn')).toBeInTheDocument()
-    await expect.element(screen.getByRole('link', { name: /结果通知/ })).toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: /结果推送/ })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '保存草稿' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '试跑' })).toBeInTheDocument()
     // AI 助手快捷提问已从顶栏解耦，不再占用外部工具栏
@@ -139,7 +139,7 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     const moreBtn = screen.getByRole('button', { name: '更多' })
     await moreBtn.click()
     expect(screen.getByRole('menuitem', { name: '定时任务' }).elements()).toHaveLength(0)
-    expect(screen.getByRole('menuitem', { name: '结果通知' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('menuitem', { name: '结果推送' }).elements()).toHaveLength(0)
     // 但常规操作（如“运行已发布版本”）依然在更多菜单中
     await expect.element(screen.getByRole('menuitem', { name: '运行已发布版本' })).toBeInTheDocument()
   })

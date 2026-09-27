@@ -4,7 +4,7 @@ import { runInputSchema, type RunDetailDto, type ScenarioInputDecl } from '@cair
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { fetchScenarioCapabilities, trialScenario } from '@/lib/scenarios-api'
-import { inheritCaptureLabel } from '@/features/platform-config/labels'
+import { CAPTURE_MODE_LABELS } from '@/features/platform-config/labels'
 import { fetchTargetAccounts } from '@/lib/targets-api'
 import { AccountSessionHint } from '@/features/runs/account-session-hint'
 import {
@@ -13,6 +13,7 @@ import {
   unusableAccountCopy,
   unusableAccountReason,
 } from '@/features/runs/target-account'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -64,6 +65,13 @@ function trialFailure(error: unknown): { message: string; diagnostics: string[] 
 function newIdempotencyKey(): string {
   const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}`
   return `trial-${id}`
+}
+
+function captureModeLabel(mode: string | undefined): string {
+  if (mode && mode in CAPTURE_MODE_LABELS) {
+    return CAPTURE_MODE_LABELS[mode as keyof typeof CAPTURE_MODE_LABELS]
+  }
+  return mode || '默认'
 }
 
 export function TrialDialog({
@@ -146,13 +154,18 @@ export function TrialDialog({
               <p className='text-label text-muted-foreground'>{unusableAccountCopy(emptyAccountReason)}</p>
             ) : null}
           </div>
-          <p className='text-label text-muted-foreground'>
-            试跑继承平台默认证据策略
-            {inheritScreenshot || inheritVideo || inheritTrace
-              ? `：截图 ${inheritCaptureLabel(inheritScreenshot, '平台默认')}，录像 ${inheritCaptureLabel(inheritVideo, '平台默认')}，Trace ${inheritCaptureLabel(inheritTrace, '平台默认')}`
-              : '。'}
-            本次不单独覆盖。
-          </p>
+          <div className='flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
+            <span>默认证据：</span>
+            <Badge variant='outline' className='font-normal text-label text-muted-foreground'>
+              截图（{captureModeLabel(inheritScreenshot)}）
+            </Badge>
+            <Badge variant='outline' className='font-normal text-label text-muted-foreground'>
+              录像（{captureModeLabel(inheritVideo)}）
+            </Badge>
+            <Badge variant='outline' className='font-normal text-label text-muted-foreground'>
+              Trace（{captureModeLabel(inheritTrace)}）
+            </Badge>
+          </div>
           {inputs.map((input) => (
             <div key={input.key} className='space-y-2'>
               <Label htmlFor={`trial-${input.key}`}>{input.label}</Label>
@@ -177,6 +190,14 @@ export function TrialDialog({
           ) : null}
         </div>
         <DialogFooter>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={saving}
+            onClick={() => onOpenChange(false)}
+          >
+            取消
+          </Button>
           <Button
             loading={saving}
             disabled={accounts.isPending || (needsAccount && !targetAccountId) || Boolean(targetAccountId && !accounts.data?.items.some(item => item.id === targetAccountId && item.status === 'active'))}

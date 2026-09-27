@@ -53,12 +53,34 @@ describe('TrialDialog', () => {
         />
       </QueryClientProvider>,
     )
-    await expect
-      .element(screen.getByText(/试跑继承平台默认证据策略：截图 继承平台默认（始终），录像 继承平台默认（始终），Trace 继承平台默认（关闭）/))
-      .toBeInTheDocument()
+    await expect.element(screen.getByText('默认证据：')).toBeInTheDocument()
+    await expect.element(screen.getByText('截图（始终）')).toBeInTheDocument()
+    await expect.element(screen.getByText('录像（始终）')).toBeInTheDocument()
+    await expect.element(screen.getByText('Trace（关闭）')).toBeInTheDocument()
     await screen.getByRole('button', { name: '开始试跑' }).click()
     await vi.waitFor(() => expect(mocks.trialScenario).toHaveBeenCalledTimes(1))
     expect(mocks.trialScenario.mock.calls[0]![1]).not.toHaveProperty('evidencePolicy')
+  })
+
+  it('点击取消按钮触发 onOpenChange(false)', async () => {
+    const onOpenChange = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <TrialDialog
+          open
+          onOpenChange={onOpenChange}
+          scenarioId={SCENARIO_ID}
+          targetId={TARGET_ID}
+          revision={1}
+          inputs={[]}
+          onCreated={vi.fn()}
+          onConflict={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '取消' }).click()
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
   it('支持 pauseBeforeStepId 断点试跑模式', async () => {

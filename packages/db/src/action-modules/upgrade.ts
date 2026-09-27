@@ -482,9 +482,12 @@ export async function upgradeScenarioModuleDraft(
 export async function batchUpgradeModuleDrafts(
   db: Db,
   moduleId: string,
-  input: { toVersionId: string; scenarioIds: string[]; idempotencyKey: string; actor: ExecutionActor },
+  input: { toVersionId: string; scenarioIds: string[]; idempotencyKey: string; actor: ExecutionActor; scopeActorId?: string; scopePermission?: string },
 ): Promise<ModuleBatchUpgradeResponse> {
-  await requireModule(db, moduleId)
+  const module = await requireModule(db, moduleId)
+  if (input.scopeActorId) {
+    await assertTargetPermission(db, input.scopeActorId, module.targetId, input.scopePermission ?? 'module:write')
+  }
   const parsed = moduleBatchUpgradeBodySchema.parse({
     toVersionId: input.toVersionId,
     scenarioIds: input.scenarioIds,
@@ -547,7 +550,13 @@ export async function batchUpgradeModuleDrafts(
             results.push({ scenarioId, status: 'skipped', code: 'MODULE_UPGRADE_CONFIRMATION_REQUIRED', reason: confirm })
             continue
           }
-          await saveScenarioDraft(db, scenarioId, { revision, document: next, actor: input.actor })
+          await saveScenarioDraft(db, scenarioId, {
+            revision,
+            document: next,
+            actor: input.actor,
+            scopeActorId: input.scopeActorId,
+            scopePermission: input.scopePermission ?? 'module:write',
+          })
           results.push({ scenarioId, status: 'upgraded' })
         } catch (error) {
           const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: string }).code) : 'MODULE_UPGRADE_BLOCKED'

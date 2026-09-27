@@ -269,7 +269,7 @@ export function collectVariableSources(
             description: `第 ${currentOrdinal} 步 · ${node.step.name || '步骤'} (${node.step.outputKey})`,
             stepIndex: currentOrdinal - 1,
             stepName: node.step.name,
-            nodeId: node.id,
+            nodeId: node.step.id,
           })
         }
       } else if (node.kind === 'module') {

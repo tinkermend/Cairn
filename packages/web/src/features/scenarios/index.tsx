@@ -141,7 +141,7 @@ export function ScenariosPage() {
                 {
                   label: '本页场景',
                   value: items.length,
-                  description: '当前页已加载，不是全部总量',
+                  description: '可在下方查看与管理',
                   icon: <Workflow className='size-4' />,
                 },
                 {

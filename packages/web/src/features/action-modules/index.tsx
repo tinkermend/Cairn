@@ -10,7 +10,6 @@ import type { ActionModuleSummary } from '@cairn/shared'
 import {
   CheckCircle2,
   Clock,
-  Filter,
   Globe2,
   Link2,
   Play,
@@ -552,9 +551,9 @@ export function ActionModulesPage() {
                               'font-normal',
                               mod.effectCeiling === 'READ_ONLY' &&
                                 'border-status-success-accent/40 bg-status-success-background text-status-success-foreground',
-                              mod.effectCeiling === 'WITH_SIDE_EFFECTS' &&
+                              mod.effectCeiling === 'IDEMPOTENT' &&
                                 'border-status-warning-accent/40 bg-status-warning-background text-status-warning-foreground',
-                              mod.effectCeiling === 'CRITICAL_MUTATION' &&
+                              mod.effectCeiling === 'SIDE_EFFECT' &&
                                 'border-status-error-accent/40 bg-status-error-background text-status-error-foreground'
                             )}
                           >

@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import {
   DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME,
   RECORDING_NORMALIZER_VERSION,
+  type ApplyDemonstrationBody,
+  type RecordingDisposition,
   type RecordingInsertAnchor,
   type DemonstrationPlacement,
 } from '@cairn/shared'
@@ -14,10 +16,8 @@ import {
   CheckCircle2,
   ChevronRight,
   ExternalLink,
-  Layers,
   ListTree,
   Plus,
-  Sparkles,
 } from 'lucide-react'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -29,7 +29,6 @@ import {
 } from '@/lib/scenarios-api'
 import {
   applyDemonstrationImport,
-  fetchDemonstration,
   newDemonstrationId,
   previewDemonstrationImport,
 } from '@/lib/demonstrations-api'
@@ -85,6 +84,7 @@ export function RecordingHandoffDialog({
   const [newScenarioName, setNewScenarioName] = useState(recordingName)
   const [creating, setCreating] = useState(false)
   const [applyingDirectly, setApplyingDirectly] = useState(false)
+  const directAttempt = useRef<{ fingerprint: string; key: string } | null>(null)
 
   // 插入位置与锚点决策
   const [anchorMode, setAnchorMode] = useState<'end' | 'after_step' | 'start' | 'replace'>('end')
@@ -125,7 +125,7 @@ export function RecordingHandoffDialog({
 
   const targetScenario = targetScenarioQuery.data
   const existingSteps = targetScenario?.steps ?? []
-  const lastStep = existingSteps.at(-1)
+  const lastStep = existingSteps[existingSteps.length - 1]
   const firstStep = existingSteps[0]
   const currentRevision = targetScenario?.draft?.revision ?? 1
 
@@ -161,8 +161,7 @@ export function RecordingHandoffDialog({
       return
     }
     onOpenChange(false)
-    const placementParam =
-      currentPlacement.kind === 'replace' ? 'replace' : 'after'
+    const placementParam = currentPlacement.kind
     const nodeIdParam =
       'nodeId' in currentPlacement ? currentPlacement.nodeId : undefined
 
@@ -193,11 +192,15 @@ export function RecordingHandoffDialog({
           baseRevision: currentRevision,
           placement: currentPlacement,
         })
-        const decisions = preview.suggestions.map((s) => ({
-          id: s.id,
-          disposition: s.status === 'mapped' ? ('accept' as const) : ('discard' as const),
-          reason: s.status === 'mapped' ? undefined : '待处理项已在就地回填中忽略',
-        }))
+        if (preview.suggestions.length === 0) throw new Error('没有可回填的步骤')
+        const decisions: ApplyDemonstrationBody['decisions'] = preview.suggestions.map((suggestion) =>
+          suggestion.status === 'mapped'
+            ? { id: suggestion.id, disposition: 'accept' }
+            : { id: suggestion.id, disposition: 'discard', reason: '待处理项已在就地回填中忽略' },
+        )
+        const fingerprint = JSON.stringify({ effectiveScenarioId, recordingId, preview, decisions })
+        if (directAttempt.current?.fingerprint !== fingerprint)
+          directAttempt.current = { fingerprint, key: newDemonstrationId() }
         const result = await applyDemonstrationImport(effectiveScenarioId, {
           protocolVersion: 'demonstration@1',
           recordingDraftId: recordingId,
@@ -206,9 +209,11 @@ export function RecordingHandoffDialog({
           factDigest: preview.factDigest,
           suggestionDigest: preview.suggestionDigest,
           adapterVersion: preview.adapterVersion,
-          dispositions: decisions,
-          idempotencyKey: newDemonstrationId(),
+          ruleVersion: preview.ruleVersion,
+          decisions,
+          idempotencyKey: directAttempt.current.key,
         })
+        directAttempt.current = null
         toast.success(
           `已成功将 ${result.receipt.insertedStepIds.length} 个步骤回填至「${targetScenario?.name ?? '目标场景'}」`
         )
@@ -219,20 +224,27 @@ export function RecordingHandoffDialog({
           baseRevision: currentRevision,
           insertAnchor: currentAnchor,
         })
-        const dispositions = preview.items.map((item) => ({
-          sourceIndexes: item.sourceIndexes,
-          disposition: item.ready ? ('accept' as const) : ('discard' as const),
-          reason: item.ready ? undefined : '待处理项已在就地回填中忽略',
-        }))
+        if (preview.items.length === 0) throw new Error('没有可回填的步骤')
+        const dispositions: RecordingDisposition[] = preview.items.map((item) =>
+          item.outcomeCandidate
+            ? { sourceIndexes: item.sourceIndexes, disposition: 'discard', reason: '未确认为成功条件' }
+            : item.ready
+              ? { sourceIndexes: item.sourceIndexes, disposition: 'accept' }
+              : { sourceIndexes: item.sourceIndexes, disposition: 'discard', reason: '待处理项已在就地回填中忽略' },
+        )
+        const fingerprint = JSON.stringify({ effectiveScenarioId, recordingId, preview, dispositions })
+        if (directAttempt.current?.fingerprint !== fingerprint)
+          directAttempt.current = { fingerprint, key: newDemonstrationId() }
         const result = await applyRecordingImport(effectiveScenarioId, {
-          idempotencyKey: `direct-import-${recordingId}`,
-          baseRevision: currentRevision,
+          idempotencyKey: directAttempt.current.key,
+          baseRevision: preview.currentRevision,
           recordingDraftId: recordingId,
           normalizerVersion: RECORDING_NORMALIZER_VERSION,
           sourceDigest: preview.sourceDigest,
           insertAnchor: currentAnchor,
           dispositions,
         })
+        directAttempt.current = null
         toast.success(
           `已成功将 ${result.receipt.insertedStepIds.length} 个步骤追加至「${targetScenario?.name ?? '目标场景'}」`
         )
@@ -242,7 +254,7 @@ export function RecordingHandoffDialog({
       void queryClient.invalidateQueries({ queryKey: ['recordings'] })
       void queryClient.invalidateQueries({ queryKey: ['recordings', recordingId] })
     } catch (err) {
-      toast.error(err instanceof ApiRequestError ? err.message : '就地回填失败，可尝试进入 Studio 手动合入')
+      toast.error(err instanceof Error ? err.message : '就地回填失败，可尝试进入 Studio 手动合入')
     } finally {
       setApplyingDirectly(false)
     }
@@ -453,7 +465,7 @@ export function RecordingHandoffDialog({
                           setSelectedReplaceStepId(existingSteps[0].id)
                         }
                       }}
-                      disabled={existingSteps.length === 0}
+                      disabled={existingSteps.length === 0 || sourceProtocol !== 'demonstration@1'}
                       className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-all ${
                         anchorMode === 'replace'
                           ? 'border-primary bg-primary/5 text-primary shadow-xs'
@@ -467,7 +479,7 @@ export function RecordingHandoffDialog({
                         替换已有特定步骤
                       </div>
                       <p className='text-label text-muted-foreground'>
-                        用于修正失效步骤或重放覆盖
+                        {sourceProtocol === 'demonstration@1' ? '用于修正失效步骤或重放覆盖' : '仅示教草稿支持替换已有步骤'}
                       </p>
                     </button>
                   </div>

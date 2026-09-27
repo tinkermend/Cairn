@@ -1740,15 +1740,14 @@ describe('Scenario Studio', () => {
     ])
   })
 
-  it('右侧面板可通过Tab直接切换到输入参数并添加参数', async () => {
+  it('可通过顶栏场景配置打开整个场景工作区并添加参数，返回后聚焦原步骤', async () => {
     const { screen } = await renderPage()
     // 默认在步骤配置
-    await expect.element(screen.getByRole('tab', { name: /步骤配置/ })).toHaveAttribute('aria-selected', 'true')
     await expect.element(screen.getByLabelText('页面地址')).toBeInTheDocument()
 
-    // 点击输入参数 Tab
-    await screen.getByRole('tab', { name: /输入参数/ }).click()
-    await expect.element(screen.getByRole('tab', { name: /输入参数/ })).toHaveAttribute('aria-selected', 'true')
+    // 点击顶栏的「场景配置」
+    await screen.getByRole('button', { name: '场景配置', exact: true }).click()
+    await expect.element(screen.getByRole('heading', { name: '整个场景' })).toBeInTheDocument()
     await expect.element(screen.getByRole('heading', { name: '场景输入' })).toBeInTheDocument()
     await expect.element(screen.getByText('定义场景运行时接收的输入参数及 Mock 数据生成规则')).toBeInTheDocument()
 
@@ -1756,27 +1755,25 @@ describe('Scenario Studio', () => {
     await screen.getByRole('button', { name: '添加输入' }).click()
     await expect.element(screen.getByLabelText('输入键 1')).toBeInTheDocument()
 
-    // 切回步骤配置
-    await screen.getByRole('tab', { name: /步骤配置/ }).click()
+    // 点击返回步骤编辑
+    await screen.getByRole('button', { name: /返回步骤编辑/ }).click()
     await expect.element(screen.getByLabelText('页面地址')).toBeInTheDocument()
   })
 
-  it('输入参数面板不包含场景默认定位顺序，可通过顶栏场景配置打开并调整', async () => {
+  it('场景配置工作区分区展示：输入参数不含定位策略，高级设置包含定位顺序', async () => {
     const { screen } = await renderPage()
 
-    // 切换到输入参数 Tab，验证其纯粹性
-    await screen.getByRole('tab', { name: /输入参数/ }).click()
-    await expect.element(screen.getByRole('heading', { name: '场景输入' })).toBeInTheDocument()
-    await expect.element(screen.getByText('场景默认定位顺序')).not.toBeInTheDocument()
-
-    // 点击顶栏的「更多」->「场景配置」
-    await screen.getByRole('button', { name: '更多' }).click()
-    await screen.getByRole('menuitem', { name: '场景配置' }).click()
-    await expect.element(screen.getByRole('heading', { name: '场景配置' })).toBeInTheDocument()
+    // 点击顶栏的「场景配置」
+    await screen.getByRole('button', { name: '场景配置', exact: true }).click()
+    await expect.element(screen.getByRole('heading', { name: '整个场景' })).toBeInTheDocument()
+    await expect.element(screen.getByText('运行输入 (Inputs)')).toBeInTheDocument()
+    await expect.element(screen.getByText('高级设置 (Settings)')).toBeInTheDocument()
     await expect.element(screen.getByText('场景默认定位顺序')).toBeInTheDocument()
 
-    // 关闭弹窗
-    await screen.getByRole('button', { name: '完成' }).click()
-    await expect.element(screen.getByRole('heading', { name: '场景配置' })).not.toBeInTheDocument()
+    // 验证分区 Tab 切换
+    await screen.getByRole('tab', { name: /高级设置/ }).click()
+    await expect.element(screen.getByRole('tab', { name: /高级设置/ })).toHaveAttribute('aria-selected', 'true')
+    await screen.getByRole('tab', { name: /运行输入/ }).click()
+    await expect.element(screen.getByRole('tab', { name: /运行输入/ })).toHaveAttribute('aria-selected', 'true')
   })
 })

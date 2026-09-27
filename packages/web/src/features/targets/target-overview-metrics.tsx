@@ -70,10 +70,10 @@ export function TargetOverviewMetrics({
       {canReadSessions ? <div className='flex items-center justify-between p-3.5'>
         <div className='min-w-0'>
           <div className='flex items-center gap-1.5'>
-            <span className='text-label text-muted-foreground'>浏览器会话</span>
+            <span className='text-label text-muted-foreground'>账号会话</span>
             <Link
-              to='/sessions/$targetId'
-              params={{ targetId: target.id }}
+              to='/sessions'
+              search={{ view: 'systems', targetId: target.id }}
               className='inline-flex items-center text-label text-link hover:underline'
             >
               总览

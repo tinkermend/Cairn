@@ -12,11 +12,12 @@ import { ACCOUNT_SESSION_STATUS_LABELS, ACCOUNT_SESSION_STATUS_TONE } from '@/fe
 import { type TargetOverviewItem, formatOverviewTime } from './target-overview-display'
 
 export function TargetOverviewPanel({
-  item, onDelete, onEdit, compact = false,
+  item, onDelete, onEdit, editing = false, compact = false,
 }: {
   item: TargetOverviewItem
   onDelete: (item: TargetOverviewItem) => void
   onEdit?: (item: TargetOverviewItem) => void
+  editing?: boolean
   compact?: boolean
 }) {
   const { target } = item
@@ -53,6 +54,8 @@ export function TargetOverviewPanel({
               variant='outline'
               size='sm'
               className='h-7 gap-1 px-2 text-label'
+              loading={editing}
+              disabled={editing}
               onClick={() => onEdit(item)}
             >
               <Pencil className='size-3' />
@@ -177,6 +180,8 @@ export function TargetOverviewPanel({
             variant='outline'
             size='sm'
             onClick={() => onEdit(item)}
+            loading={editing}
+            disabled={editing}
           >
             <Pencil className='size-3.5' />
             编辑系统

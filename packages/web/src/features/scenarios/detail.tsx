@@ -231,6 +231,10 @@ export function ScenarioDetailPage() {
   const importPlacementParam = (search as { importPlacement?: unknown }).importPlacement
   const importNodeIdParam = entityIdSchema.optional().safeParse((search as { importNodeId?: unknown }).importNodeId).data
   const initialImportPlacement = useMemo<DemonstrationPlacement | undefined>(() => {
+    if (importPlacementParam === 'start') return { kind: 'start' }
+    if (importPlacementParam === 'after' && importNodeIdParam) {
+      return { kind: 'after', nodeId: importNodeIdParam }
+    }
     if (importPlacementParam === 'replace_sequence' && importNodeIdParam) {
       return { kind: 'replace_sequence', nodeId: importNodeIdParam }
     }
@@ -258,6 +262,7 @@ export function ScenarioDetailPage() {
   const canWrite = useCan('workflow:write')
   const canDelete = useCan('workflow:delete')
   const canAssist = useCan('ai:assist')
+  const canReadRun = useCan('run:read')
   const capabilities = useAssistantStore((state) => state.capabilities)
   const registerAdoptHandler = useAssistantStore((state) => state.registerAdoptHandler)
   const registerRollbackHandler = useAssistantStore((state) => state.registerRollbackHandler)
@@ -345,6 +350,7 @@ export function ScenarioDetailPage() {
         canAssist,
         canWrite,
         canReadTarget,
+        canReadRun,
       },
     })
   }, [
@@ -356,6 +362,7 @@ export function ScenarioDetailPage() {
     canAssist,
     canWrite,
     canReadTarget,
+    canReadRun,
   ])
 
   useAssistantContextBinding(
@@ -860,6 +867,10 @@ export function ScenarioDetailPage() {
   }
 
   const currentInsertAnchor: RecordingInsertAnchor = useMemo(() => {
+    if (importDraftId && importPlacementParam === 'start') return { kind: 'start' }
+    if (importDraftId && importPlacementParam === 'after' && importNodeIdParam) {
+      return { kind: 'after', stepId: importNodeIdParam }
+    }
     if (draft.selectedId) {
       return { kind: 'after', stepId: draft.selectedId }
     }
@@ -869,7 +880,7 @@ export function ScenarioDetailPage() {
       return { kind: 'after', stepId: lastStep.id }
     }
     return { kind: 'start' }
-  }, [draft.selectedId, document])
+  }, [draft.selectedId, document, importDraftId, importPlacementParam, importNodeIdParam])
 
   function setImportSearch(next: string | undefined) {
     void navigate({

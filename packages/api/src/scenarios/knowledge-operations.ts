@@ -1,6 +1,7 @@
 import {
   DomainError, completeKnowledgeProposal, findKnowledgeProposalRequest, getScenario,
   listPublishedModuleKnowledge, listTerminologyForCompose, loadKnowledgeMapContext,
+  getTargetKnowledgeContext,
   newId, startKnowledgeProposal, validateKnowledgeSources, type DbHandle,
 } from '@cairn/db'
 import { composeKnowledgeSuggestion, matchPublishedModules, matchTerminologyCandidates, redactKnowledgeQuestion } from '@cairn/map'
@@ -27,6 +28,8 @@ export async function composeScenarioKnowledge(db: DbHandle, scenarioId: string,
     ? await listPublishedModuleKnowledge(db, detail.targetId, body.selectedModuleVersionIds ?? []) : []
   if ((body.selectedModuleVersionIds ?? []).some(id => !modules.some(module => module.moduleVersionId === id))) throw new DomainError('not_found', 'KNOWLEDGE_NOT_FOUND', '选定做法不可用')
   const mapContext = await loadKnowledgeMapContext(db, detail.targetId, body.mapReleaseId)
+  const targetKnowledge = hasPermission(account.permissions, 'map:read')
+    ? await getTargetKnowledgeContext(db, detail.targetId, { intent: body.question, maxPages: 3 }) : undefined
   const matchedTerms = selectedTermIds.length ? terms.filter(term => selectedTermIds.includes(term.termId)) : matchTerminologyCandidates(body.question, terms)
   const matchedModules = body.selectedModuleVersionIds?.length ? modules : matchPublishedModules(body.question, modules)
   const started = await startKnowledgeProposal(db, scenarioId, body, { kind: 'console', id: account.id }, {
@@ -37,7 +40,7 @@ export async function composeScenarioKnowledge(db: DbHandle, scenarioId: string,
   })
   if (started.replay) return requireProposalAccess(db, started.proposal, account)
   try {
-    const composed = composeKnowledgeSuggestion({ question: input.question, targetId: detail.targetId, draft: started.document!, terms, modules, mapAssets: mapContext.assets, selectedTermIds, selectedModuleVersionIds: body.selectedModuleVersionIds, mapReleaseId: mapContext.publishedReleaseId, nextId: newId })
+    const composed = composeKnowledgeSuggestion({ question: input.question, targetId: detail.targetId, draft: started.document!, terms, modules, mapAssets: mapContext.assets, targetKnowledge, selectedTermIds, selectedModuleVersionIds: body.selectedModuleVersionIds, mapReleaseId: mapContext.publishedReleaseId, nextId: newId })
     if (body.attemptId) composed.sources = [...composed.sources, { kind: 'attempt', attemptId: body.attemptId }]
     return await completeKnowledgeProposal(db, scenarioId, started.proposal.proposalId, composed)
   } catch (error) {

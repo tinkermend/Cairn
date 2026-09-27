@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { mapIngestCursorSchema, mapIngestScopeSchema, mapMenuEntrySchema } from './map-ingest.js'
+import { mapJobPolicySchema } from './map-jobs.js'
 import { assertExpectSchema, extractManySchema, type ExtractMany } from './browser-command.js'
 import { pageAfterSchema } from './managed-browser.js'
 import { aiOutputSchemaSchema, outputFieldNameSchema } from './output-schema.js'
@@ -34,6 +36,7 @@ export const BROWSER_STEP_TYPES = [
   'download',
   'upload',
   'probe',
+  'map_ingest',
 ] as const
 export const AI_STEP_TYPES = ['ai_action', 'ai_extract', 'ai_assert'] as const
 export const SYSTEM_STEP_TYPES = ['verify_context', 'decide', 'compute', 'loop'] as const
@@ -605,6 +608,23 @@ export const probeStepSchema = z.strictObject({
   input: probeInputSchema,
 })
 
+export const mapIngestStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('map_ingest'),
+  effectType: z.literal('READ_ONLY'),
+  input: z.strictObject({
+    jobId: entityIdSchema,
+    startUrl: z.string().url().max(2048),
+    scope: mapIngestScopeSchema,
+    entries: z.array(mapMenuEntrySchema).max(64),
+    cursor: mapIngestCursorSchema.nullable(),
+    policy: mapJobPolicySchema,
+    allowedSpaHashPrefixes: z.array(z.string().min(1).max(64)).max(16).default(['#/']),
+    ignoreQueryParams: z.array(z.string().min(1).max(64)).max(64).optional(),
+    sliceWorkSeconds: z.number().int().min(5).max(20),
+  }),
+})
+
 export const decideInputSchema = z.strictObject({
   blockId: entityIdSchema,
   condition: conditionSchema,
@@ -705,6 +725,7 @@ export const stepSchema = z
     aiAssertStepSchema,
     verifyContextStepSchema,
     probeStepSchema,
+    mapIngestStepSchema,
     decideStepSchema,
     computeStepSchema,
     loopStepSchema,
@@ -750,6 +771,7 @@ export type AiActionStep = z.infer<typeof aiActionStepSchema>
 export type AiExtractStep = z.infer<typeof aiExtractStepSchema>
 export type AiAssertStep = z.infer<typeof aiAssertStepSchema>
 export type ProbeStep = z.infer<typeof probeStepSchema>
+export type MapIngestStep = z.infer<typeof mapIngestStepSchema>
 export type DecideStep = z.infer<typeof decideStepSchema>
 export type ComputeStep = z.infer<typeof computeStepSchema>
 export type Step = z.infer<typeof stepSchema>

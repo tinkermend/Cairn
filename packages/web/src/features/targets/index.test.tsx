@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { TargetsPage } from './index'
 
 const mocks = vi.hoisted(() => ({
+  fetchTarget: vi.fn(),
   fetchTargetOverview: vi.fn(),
   previewDeleteTarget: vi.fn(),
   deleteTarget: vi.fn(),
@@ -17,10 +18,11 @@ const mocks = vi.hoisted(() => ({
 let routeSearch: Record<string, unknown> = { selected: 'target-a' }
 
 vi.mock('./target-form-dialog', () => ({
-  TargetFormDialog: ({ open, current }: { open: boolean; current?: { id: string; name: string } }) =>
-    open ? <div data-testid='target-form-dialog' data-current-id={current?.id ?? 'new'}>目标系统表单</div> : null,
+  TargetFormDialog: ({ open, current }: { open: boolean; current?: { id: string; name: string; loginUrl?: string | null; loginFields?: { username?: { value: string } } } }) =>
+    open ? <div data-testid='target-form-dialog' data-current-id={current?.id ?? 'new'} data-login-url={current?.loginUrl ?? ''} data-username-locator={current?.loginFields?.username?.value ?? ''}>目标系统表单</div> : null,
 }))
 vi.mock('@/lib/targets-api', () => ({
+  fetchTarget: mocks.fetchTarget,
   fetchTargetOverview: mocks.fetchTargetOverview,
   previewDeleteTarget: mocks.previewDeleteTarget,
   deleteTarget: mocks.deleteTarget,
@@ -77,6 +79,13 @@ beforeEach(async () => {
   await page.viewport(1440, 900)
   routeSearch = { selected: 'target-a' }
   mocks.navigate.mockReset()
+  mocks.fetchTarget.mockReset().mockResolvedValue({
+    ...item('target-a', '智慧运维管理系统').target,
+    loginUrl: 'https://target-a.example.test/login',
+    loginFields: { username: { by: 'css', value: '#username' } },
+    sensitiveSelectors: ['#password'],
+    accountCount: 1,
+  })
   mocks.fetchTargetOverview.mockReset().mockResolvedValue(response())
   signIn(['target:read', 'session:read', 'workflow:read', 'run:read', 'map:read'])
 })
@@ -293,4 +302,7 @@ it('有写入权限时右侧卡片头部展示编辑和详情入口，点击编�
   const dialog = screen.getByTestId('target-form-dialog')
   await expect.element(dialog).toBeInTheDocument()
   await expect.element(dialog).toHaveAttribute('data-current-id', 'target-a')
+  await expect.element(dialog).toHaveAttribute('data-login-url', 'https://target-a.example.test/login')
+  await expect.element(dialog).toHaveAttribute('data-username-locator', '#username')
+  expect(mocks.fetchTarget).toHaveBeenCalledWith('target-a')
 })

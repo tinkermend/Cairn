@@ -3,7 +3,9 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { getRouteApi } from '@tanstack/react-router'
 import type { TargetDto, TargetOverviewQuery, TargetOverviewResponse } from '@cairn/shared'
 import { Plus, RefreshCw, Search, X } from 'lucide-react'
-import { fetchTargetOverview, previewDeleteTarget, deleteTarget } from '@/lib/targets-api'
+import { toast } from 'sonner'
+import { ApiRequestError } from '@/lib/api-client'
+import { fetchTarget, fetchTargetOverview, previewDeleteTarget, deleteTarget } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
 import { canCreateTarget } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
@@ -46,6 +48,7 @@ export function TargetsPage() {
   const canReadSession = useCan('session:read')
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<TargetDto | null>(null)
+  const [editLoadingId, setEditLoadingId] = useState<string | null>(null)
   const [removing, setRemoving] = useState<TargetOverviewItem | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [selectionMissing, setSelectionMissing] = useState(Boolean(search.selected))
@@ -177,6 +180,18 @@ export function TargetsPage() {
       setPreviewOpen(true)
     }
   }
+  const openEdit = async (id: string) => {
+    if (editLoadingId) return
+    setEditLoadingId(id)
+    try {
+      // 概览仅返回身份字段，编辑表单必须使用完整目标配置。
+      setEditing(await fetchTarget(id))
+    } catch (error) {
+      toast.error(error instanceof ApiRequestError ? error.message : '无法加载目标系统配置')
+    } finally {
+      setEditLoadingId(null)
+    }
+  }
 
   return <>
     <Main ref={mainRef} className='target-overview-page flex min-w-0 flex-1 flex-col gap-4'>
@@ -197,11 +212,11 @@ export function TargetsPage() {
             {items.length === 0 ? <EmptyState title={data.summary.totalTargets === 0 ? '还没有目标系统' : '没有匹配的目标系统'} description={data.summary.totalTargets === 0 ? canCreate ? '登记第一个业务系统，之后可按场景需要添加目标账号。' : '请联系有权限的成员登记业务系统。' : '调整搜索词或筛选条件后重试。'} action={data.summary.totalTargets === 0 ? canCreate ? <Button onClick={() => setCreateOpen(true)}>新建系统</Button> : undefined : <Button variant='outline' onClick={clearFilters}>清除筛选</Button>} /> : <TargetOverviewList items={visibleItems} selectedId={selected?.target.id} sort={sort} onSort={selectSort} onSelect={(id, trigger) => selectTarget(id, trigger)} onPreview={(id, trigger) => selectTarget(id, trigger, true)} />}
             <div className='flex flex-wrap items-center justify-between gap-3 border-t border-border-divider px-4 py-2 text-label text-muted-foreground'><span>第 {currentPage} / {pageCount} 页 · 本页 {visibleItems.length} 条</span><CursorPagination pageIndex={currentPage - 1} pageSize={pageSize as typeof pageSizes[number]} hasPreviousPage={currentPage > 1} hasNextPage={currentPage < pageCount} updating={query.isFetching && query.isPlaceholderData} onPageSizeChange={(size) => updateSearch({ pageSize: size, page: 1 })} onPreviousPage={() => updateSearch({ page: currentPage - 1 })} onNextPage={() => updateSearch({ page: currentPage + 1 })} /></div>
           </section>
-          <div className='target-overview-aside min-w-0'>{selected ? <TargetOverviewPanel key={selected.target.id} item={selected} onDelete={setRemoving} onEdit={(item) => setEditing(item.target)} /> : <div className='rounded-xl border border-border-card bg-card p-5 text-small text-muted-foreground'>{selectionMissing ? '选中的系统不在当前结果中，请重新选择。' : '选择一条系统记录，查看运行准备与下一步操作。'}</div>}</div>
+          <div className='target-overview-aside min-w-0'>{selected ? <TargetOverviewPanel key={selected.target.id} item={selected} onDelete={setRemoving} onEdit={(item) => void openEdit(item.target.id)} editing={editLoadingId === selected.target.id} /> : <div className='rounded-xl border border-border-card bg-card p-5 text-small text-muted-foreground'>{selectionMissing ? '选中的系统不在当前结果中，请重新选择。' : '选择一条系统记录，查看运行准备与下一步操作。'}</div>}</div>
         </div>
       </> : null}
     </Main>
-    <Sheet open={previewOpen} onOpenChange={setPreviewOpen}><SheetContent side='right' className='target-overview-sheet w-full max-w-md gap-0 overflow-y-auto p-0' onCloseAutoFocus={(event) => { event.preventDefault(); if (previewTriggerRef.current?.isConnected) previewTriggerRef.current.focus() }}><SheetHeader className='border-b border-border-divider'><SheetTitle>系统概览</SheetTitle></SheetHeader>{selected ? <TargetOverviewPanel key={selected.target.id} item={selected} onDelete={setRemoving} onEdit={(item) => setEditing(item.target)} compact /> : null}</SheetContent></Sheet>
+    <Sheet open={previewOpen} onOpenChange={setPreviewOpen}><SheetContent side='right' className='target-overview-sheet w-full max-w-md gap-0 overflow-y-auto p-0' onCloseAutoFocus={(event) => { event.preventDefault(); if (previewTriggerRef.current?.isConnected) previewTriggerRef.current.focus() }}><SheetHeader className='border-b border-border-divider'><SheetTitle>系统概览</SheetTitle></SheetHeader>{selected ? <TargetOverviewPanel key={selected.target.id} item={selected} onDelete={setRemoving} onEdit={(item) => void openEdit(item.target.id)} editing={editLoadingId === selected.target.id} compact /> : null}</SheetContent></Sheet>
     <TargetFormDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(target) => { void navigate({ to: '/targets/$targetId', params: { targetId: target.id } }) }} />
     <TargetFormDialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null) }} current={editing ?? undefined} />
     <ResourceDeleteDialog open={Boolean(removing)} onOpenChange={(next) => { if (!next) setRemoving(null) }} resourceId={removing?.target.id ?? ''} resourceName={removing ? removing.target.name + '（' + removing.target.code + '）' : ''} resourceType='target' previewFn={removing ? () => previewDeleteTarget(removing.target.id) : undefined} deleteFn={(body) => removing ? deleteTarget(removing.target.id, body) : Promise.resolve()} onSuccess={async () => { setRemoving(null); await queryClient.invalidateQueries({ queryKey: ['targets', 'overview'] }) }} />

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowLeft,
-  Bell,
+  Send,
   CalendarClock,
   ChevronDown,
   Edit2,
@@ -328,9 +328,9 @@ export function StudioToolbar({
                 }}
               />
               <Button variant='outline' size='sm' asChild>
-                <Link to='/notifications' search={{ tab: 'results', scenarioId: scenario.id }}>
-                  <Bell className='size-3.5 mr-1' />
-                  结果通知
+                <Link to='/outbound' search={{ tab: 'results', scenarioId: scenario.id }}>
+                  <Send className='size-3.5 mr-1' />
+                  结果推送
                 </Link>
               </Button>
             </>
@@ -453,9 +453,9 @@ export function StudioToolbar({
                     )}
                   />
                   <DropdownMenuItem asChild>
-                    <Link to='/notifications' search={{ tab: 'results', scenarioId: scenario.id }}>
-                      <Bell className='mr-2 size-3.5' />
-                      结果通知
+                    <Link to='/outbound' search={{ tab: 'results', scenarioId: scenario.id }}>
+                      <Send className='mr-2 size-3.5' />
+                      结果推送
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />

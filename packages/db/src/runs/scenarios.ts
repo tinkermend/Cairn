@@ -861,18 +861,22 @@ export async function appendScenarioVersion(
 export async function saveScenarioDraft(
   db: Db,
   scenarioId: string,
-  input: { revision: number; document: unknown; actor: AuditActor },
+  input: { revision: number; document: unknown; actor: AuditActor; scopeActorId?: string; scopePermission?: string },
 ): Promise<ScenarioDetailDto> {
   const { scenarioDrafts, scenarios } = schemaFor(db)
   const document = normalizeAuthoringDocument(input.document)
   const now = new Date()
   try {
     await db.transaction(async (tx) => {
+      if (input.scopeActorId) await lockConsoleAuthorization(tx as unknown as Db, input.scopeActorId)
       const [current] = await locked(
         tx,
         tx.select().from(scenarios).where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt))).limit(1),
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+      if (input.scopeActorId) {
+        await assertTargetPermission(tx as unknown as Db, input.scopeActorId, current.targetId, input.scopePermission ?? 'workflow:write')
+      }
       const [draft] = await locked(
         tx,
         tx.select().from(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId)).limit(1),

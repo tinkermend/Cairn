@@ -3,12 +3,13 @@ import { DomainError } from '@cairn/db'
 import { composeScenarioKnowledge } from './knowledge-operations'
 import { requireProposalAccess } from '../map/knowledge-access'
 
-const mocks = vi.hoisted(() => ({ find: vi.fn(), scenario: vi.fn(), terms: vi.fn(), modules: vi.fn(), context: vi.fn(), start: vi.fn(), complete: vi.fn(), validate: vi.fn(), id: vi.fn() }))
+const mocks = vi.hoisted(() => ({ find: vi.fn(), scenario: vi.fn(), terms: vi.fn(), modules: vi.fn(), context: vi.fn(), targetKnowledge: vi.fn(), start: vi.fn(), complete: vi.fn(), validate: vi.fn(), id: vi.fn() }))
 vi.mock('@cairn/db', async importOriginal => ({
   ...await importOriginal<typeof import('@cairn/db')>(),
   findKnowledgeProposalRequest: mocks.find, getScenario: mocks.scenario,
   listTerminologyForCompose: mocks.terms, listPublishedModuleKnowledge: mocks.modules,
-  loadKnowledgeMapContext: mocks.context, startKnowledgeProposal: mocks.start,
+  loadKnowledgeMapContext: mocks.context, getTargetKnowledgeContext: mocks.targetKnowledge,
+  startKnowledgeProposal: mocks.start,
   completeKnowledgeProposal: mocks.complete, validateKnowledgeSources: mocks.validate, newId: mocks.id,
 }))
 const targetId = '11111111-1111-4111-8111-111111111111'
@@ -28,6 +29,7 @@ describe('知识编排 API 边界', () => {
     mocks.terms.mockResolvedValue([])
     mocks.modules.mockResolvedValue([])
     mocks.context.mockResolvedValue({ assets: [], publishedReleaseId: undefined })
+    mocks.targetKnowledge.mockResolvedValue({ targetId, releaseId: null, generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], pages: [], truncated: false })
     mocks.start.mockResolvedValue({ replay: false, proposal: { proposalId }, document })
     mocks.complete.mockImplementation(async (_db, _scenario, _proposal, result) => ({ ...result, proposalStatus: result.status }))
     mocks.validate.mockResolvedValue(undefined)
@@ -47,6 +49,7 @@ describe('知识编排 API 边界', () => {
     mocks.find.mockResolvedValue(saved)
     expect(await composeScenarioKnowledge(db, scenarioId, body, account, 99)).toEqual(saved)
     expect(mocks.context).not.toHaveBeenCalled()
+    expect(mocks.targetKnowledge).not.toHaveBeenCalled()
     expect(mocks.start).not.toHaveBeenCalled()
   })
 

@@ -46,6 +46,8 @@ export const targetDescriptorSchema = z
     framePath: z.array(frameStepSchema).max(MAX_FRAME_DEPTH).default([]),
     candidates: z.array(locatorCandidateSchema).max(MAX_LOCATOR_CANDIDATES).default([]),
     anchor: relativeAnchorSchema.optional(),
+    /** 知识地图对象键；定位仍由 candidates/semantic 执行。 */
+    assetRef: z.string().trim().min(8).max(192).optional(),
     /** 自然语言目标描述，供 AI 语义定位与人阅读；不是候选的一档。 */
     semantic: z.string().trim().min(1).max(MAX_SEMANTIC_LENGTH).optional(),
   })
@@ -116,4 +118,3 @@ export function cssAttrEscape(value: string): string {
 export function resolvedSelector(token: string): string {
   return `[${RESOLVED_ATTRIBUTE}="${cssAttrEscape(token)}"]`
 }
-

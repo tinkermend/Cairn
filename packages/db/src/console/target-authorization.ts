@@ -134,7 +134,7 @@ export async function authorizeTargetRequest(db: Db, actorId: string, input: {
   if (input.targetIncidentId) targetIds.push((await db.select({ id: reliabilityIncidents.targetId }).from(reliabilityIncidents).where(eq(reliabilityIncidents.id, input.targetIncidentId)).limit(1))[0]?.id)
   for (const targetId of new Set(targetIds.filter((id): id is string => !!id))) {
     await assertTargetPermission(db, actorId, targetId)
-    for (const permission of input.permissions.filter((permission) => /^(target|session|credential|run|workflow|map|schedule|module|notification|suite|report|dataset|batch|reliability):/.test(permission))) {
+    for (const permission of input.permissions.filter((permission) => /^(target|session|credential|run|workflow|map|schedule|module|outbound|notification|suite|report|dataset|batch|reliability):/.test(permission))) {
       await assertTargetPermission(db, actorId, targetId, permission)
     }
   }

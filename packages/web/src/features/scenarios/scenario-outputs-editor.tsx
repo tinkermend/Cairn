@@ -157,7 +157,7 @@ export function ScenarioOutputsEditor({
   }
 
   return (
-    <div className='space-y-6'>
+    <div data-testid='scenario-outputs-editor' className='space-y-6'>
       {/* 头部介绍 */}
       <div>
         <h3 className='text-small font-semibold text-foreground'>场景业务输出与指标声明</h3>

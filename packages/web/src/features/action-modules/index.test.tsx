@@ -95,6 +95,31 @@ describe('ActionModulesPage', () => {
     await expect.element(screen.getByText('健康')).toBeInTheDocument()
     await expect.element(screen.getByText('样本不足')).toBeInTheDocument()
   })
+
+  it('副作用上限按只读、可重入、有副作用显示对应状态色', async () => {
+    const base = dummyList.items[0]!
+    mocks.fetchActionModules.mockResolvedValue({
+      ...dummyList,
+      items: [
+        { ...base, id: '11111111-1111-4111-8111-111111111111', effectCeiling: 'READ_ONLY' },
+        { ...base, id: '11111111-1111-4111-8111-111111111112', effectCeiling: 'IDEMPOTENT' },
+        { ...base, id: '11111111-1111-4111-8111-111111111113', effectCeiling: 'SIDE_EFFECT' },
+      ],
+      total: 3,
+    })
+    const screen = await renderPage()
+
+    for (const [label, color] of [
+      ['只读', 'bg-status-success-background'],
+      ['可重入', 'bg-status-warning-background'],
+      ['有副作用', 'bg-status-error-background'],
+    ] as const) {
+      const badge = screen.getByText(label, { exact: true })
+      await expect.element(badge).toBeVisible()
+      expect(badge.element().className).toContain(color)
+    }
+  })
+
   it('服务器分页与筛选参数，筛选后回到第一页', async () => {
     mocks.fetchActionModules.mockResolvedValue({ ...dummyList, total: 42 })
     const screen = await renderPage()
@@ -142,4 +167,3 @@ describe('ActionModulesPage', () => {
       .toBeVisible()
   })
 })
-

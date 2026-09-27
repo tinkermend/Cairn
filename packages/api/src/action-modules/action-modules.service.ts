@@ -132,7 +132,7 @@ export class ActionModulesService {
   }
 
   batchUpgrade(id: string, body: ModuleBatchUpgradeBody, actor: RequestAccount) {
-    return batchUpgradeModuleDrafts(this.db, id, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+    return batchUpgradeModuleDrafts(this.db, id, { ...body, actor: { id: actor.id }, scopeActorId: actor.id }).catch(rethrowDomain)
   }
 
   updatePublication(id: string, versionId: string, body: ModulePublicationBody, actor: RequestAccount) {
