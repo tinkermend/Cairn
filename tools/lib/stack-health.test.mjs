@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  aggregateWorkerNodeHealth,
   decideVerdict,
   decodeInternalSecret,
   isFailure,
@@ -65,7 +66,7 @@ describe('decideVerdict', () => {
     workerListen: true,
     webListen: true,
     apiHealth: { ok: true, value: okHealth },
-    workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: true } },
+    workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: true, database: 'up', status: 'ok' } },
     webPage: { ok: true },
     webHealth: { ok: true },
   }
@@ -107,10 +108,21 @@ describe('decideVerdict', () => {
     const verdict = decideVerdict({
       ...healthy,
       workerListen: true,
-      workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: false } },
+      workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: false, database: 'up' } },
     })
     assert.equal(verdict.result, 'STACK_UNHEALTHY')
     assert.match(verdict.fail, /loopAlive/)
+  })
+
+  it('仅检查 Worker 时，其数据库断开也必须 UNHEALTHY', () => {
+    const verdict = decideVerdict({
+      ...healthy,
+      requireApi: false,
+      requireWeb: false,
+      workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: true, database: 'down', status: 'ok' } },
+    })
+    assert.equal(verdict.result, 'STACK_UNHEALTHY')
+    assert.match(verdict.fail, /worker 数据库不可用/)
   })
 
   it('RMC07/RMC18 节点健康失败不得回退成只看监听', () => {
@@ -139,6 +151,16 @@ describe('decideVerdict', () => {
     assert.ok(strict.fail)
     assert.equal(isFailure(strict.result, true), true)
   })
+
+  it('Worker 领取循环降级会反映为 STACK_DEGRADED', () => {
+    const input = {
+      ...healthy,
+      workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: true, database: 'up', status: 'degraded' } },
+    }
+    assert.equal(decideVerdict(input).result, 'STACK_DEGRADED')
+    assert.equal(decideVerdict(input).note, 'Worker 节点降级')
+    assert.equal(isFailure(decideVerdict(input).result, true), true)
+  })
 })
 
 describe('parseWorkerNodeHealth', () => {
@@ -154,6 +176,8 @@ describe('parseWorkerNodeHealth', () => {
     )
     assert.equal(parsed.ok, true)
     assert.equal(parsed.value.loopAlive, true)
+    assert.equal(parsed.value.database, 'up')
+    assert.equal(parsed.value.status, 'ok')
     assert.equal(
       parseWorkerNodeHealth(
         JSON.stringify({
@@ -165,6 +189,32 @@ describe('parseWorkerNodeHealth', () => {
       ).ok,
       false,
     )
+  })
+})
+
+describe('aggregateWorkerNodeHealth', () => {
+  const healthy = (role) => ({ role, ok: true, value: {
+    service: 'cairn-worker', loopAlive: true, database: 'up', status: 'ok',
+  } })
+
+  it('任一角色的数据库断开即判定 Worker 不健康，并指出角色', () => {
+    const health = aggregateWorkerNodeHealth([
+      healthy('executor'),
+      { ...healthy('scheduler'), value: { ...healthy('scheduler').value, database: 'down' } },
+      healthy('analyst'),
+      healthy('maintenance'),
+    ])
+    assert.deepEqual(health, { ok: false, error: 'scheduler: database=down' })
+  })
+
+  it('所有角色正常时保留节点降级信息', () => {
+    const health = aggregateWorkerNodeHealth([
+      healthy('executor'),
+      { ...healthy('maintenance'), value: { ...healthy('maintenance').value, status: 'degraded' } },
+    ])
+    assert.equal(health.ok, true)
+    assert.equal(health.value.database, 'up')
+    assert.equal(health.value.status, 'degraded')
   })
 })
 

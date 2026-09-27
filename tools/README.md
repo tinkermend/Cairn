@@ -24,7 +24,7 @@
 | S2 | `GET /health` 契约与数据库；Worker 节点健康 `loopAlive` | 控制面在听但库不可用，或 Worker 只在听但事件循环已停 |
 | S3 | Web 页面 + 经 Web 代理的 `/health` | 页面在，前后端没接通 |
 
-范围：`all`（默认）、`backend`、`api`、`worker`、`web`。`web` 仍会探 api。`--strict` 把控制面降级也判失败。不启动进程；功能开发默认 `./scripts/dev.sh` 或 `pnpm dev`，验证已编译产物才用 `./scripts/stack.sh` 或 `pnpm start`。
+范围：`all`（默认）、`backend`、`api`、`worker`、`web`。`web` 仍会探 api。角色模式启动后，`worker` 探活会自动覆盖四个角色及各自的签名节点健康；缺任一角色均失败。`--strict` 把控制面或 Worker 降级也判失败。不启动进程；功能开发默认 `./scripts/dev.sh` 或 `pnpm dev`，验证已编译产物才用 `./scripts/stack.sh` 或 `pnpm start`。
 
 `STACK_OK` 不是功能验收，更不是核心生命周期验收。判定细节见 `.cursor/skills/shitu-stack-acceptance/SKILL.md`。
 

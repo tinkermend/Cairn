@@ -130,9 +130,14 @@ import { ObjectService } from "../objects/object.service";
 import { countManagedBrowserProcesses, scanManagedBrowserProcesses } from "./browser-processes";
 import { sampleProfileDisk, type DiskSample } from "./disk-sample";
 import { sampleProcessResources } from "./process-sample";
+import { SingleFlightTasks } from "./single-flight-tasks.js";
 
 const TICK_INTERVAL_MS = 1_000;
 const CLAIM_FILL_BUDGET = 16;
+const CLAIM_TIMEOUT_MS = 30_000;
+const CLAIM_SLOW_LOG_MS = 5_000;
+const WORKSPACE_CLEANUP_INTERVAL_MS = 60_000;
+const BACKGROUND_SHUTDOWN_GRACE_MS = 2_000;
 
 function timerJitter(baseMs: number, maxJitterMs = 200): number {
   return baseMs + Math.floor(Math.random() * maxJitterMs);
@@ -161,6 +166,9 @@ export class LifecycleService
   private instanceId = randomUUID();
   private readonly inFlight = new Map<string, InFlight>();
   private readonly exportHeartbeats = new Set<() => Promise<void>>();
+  private readonly auxiliaryTasks = new SingleFlightTasks<
+    "reports.generate" | "reports.export" | "reports.ai"
+  >();
   private tick: NodeJS.Timeout | undefined;
   private scheduleTick: NodeJS.Timeout | undefined;
   private analysisTick: NodeJS.Timeout | undefined;
@@ -169,6 +177,8 @@ export class LifecycleService
   private reliabilityTask: Promise<void> | undefined;
   private heartbeatTick: NodeJS.Timeout | undefined;
   private cleanupTick: NodeJS.Timeout | undefined;
+  private workspaceCleanupTick: NodeJS.Timeout | undefined;
+  private workspaceCleanupTask: Promise<void> | undefined;
   private reaperTick: NodeJS.Timeout | undefined;
   private notificationTick: NodeJS.Timeout | undefined;
   private notificationTask: Promise<void> | undefined;
@@ -178,6 +188,8 @@ export class LifecycleService
   private videoMediaTask: Promise<void> | undefined;
   private readonly notificationAbort = new AbortController();
   private maintenanceTick: NodeJS.Timeout | undefined;
+  private operationTask: Promise<void> | undefined;
+  private backgroundMaintenanceTask: Promise<void> | undefined;
   private diskTick: NodeJS.Timeout | undefined;
   private sampleTick: NodeJS.Timeout | undefined;
   private probeTick: NodeJS.Timeout | undefined;
@@ -200,7 +212,7 @@ export class LifecycleService
   private refillPendingAt: number | null = null;
   private lastRefillDelayMs: number | null = null;
   private claimTask: Promise<void> | undefined;
-  private pendingClaim: AbortController | undefined;
+  private claimStartedAt: number | null = null;
   private cleanupInFlight: Promise<{ purged: number }> | undefined;
   private reaperInFlight:
     Promise<{ leasesExpired: number; sessionsClosed: number }> | undefined;
@@ -268,6 +280,7 @@ export class LifecycleService
       if (this.shutdownCalled || this.stopped) return;
       if (roles.executor) {
         this.startClaiming();
+        this.startWorkspaceCleanup();
         this.claimTask = this.pump();
         void this.pumpOperation();
         this.videoMediaTick = setInterval(
@@ -408,6 +421,32 @@ export class LifecycleService
     }, timerJitter(TICK_INTERVAL_MS));
   }
 
+  private startWorkspaceCleanup(): void {
+    if (this.workspaceCleanupTick || this.shutdownCalled) return;
+    this.workspaceCleanupTick = setInterval(() => {
+      void this.runWorkspaceCleanup();
+    }, timerJitter(WORKSPACE_CLEANUP_INTERVAL_MS));
+  }
+
+  private runWorkspaceCleanup(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.workspaceCleanupTask) return this.workspaceCleanupTask;
+    const task = cleanupRunFileWorkspaces()
+      .then((removed) => {
+        if (removed > 0) this.logger.log({ removed }, "已清理过期 Run 临时目录");
+      })
+      .catch((error) => {
+        this.logger.warn(
+          error instanceof Error ? error.message : error,
+          "Run 临时目录清理失败",
+        );
+      });
+    this.workspaceCleanupTask = task.finally(() => {
+      this.workspaceCleanupTask = undefined;
+    });
+    return this.workspaceCleanupTask;
+  }
+
   private startMaintenance(): void {
     if (this.maintenanceTick || this.shutdownCalled) return;
     this.maintenanceTick = setInterval(() => {
@@ -418,9 +457,23 @@ export class LifecycleService
   private startScheduling(): void {
     if (this.scheduleTick || this.shutdownCalled) return;
     this.scheduleTick = setInterval(() => {
+      this.startReportGeneration();
       if (!this.scheduleTask) this.scheduleTask = this.runScheduleTick().finally(() => { this.scheduleTask = undefined });
     }, timerJitter(SCHEDULE_TICK_INTERVAL_MS));
+    this.startReportGeneration();
     this.scheduleTask = this.runScheduleTick().finally(() => { this.scheduleTask = undefined });
+  }
+
+  private startReportGeneration(): void {
+    if (this.stopped) return;
+    this.auxiliaryTasks.start(
+      "reports.generate",
+      () => this.stopped ? undefined : generateDueReports(this.handle),
+      (error) => this.logger.error(
+        error instanceof Error ? error.message : error,
+        "自动报告生成失败",
+      ),
+    );
   }
 
   private startAnalysis(): void {
@@ -494,7 +547,6 @@ export class LifecycleService
       await expireClosedScheduleWindows(this.handle);
       await expireScheduledMapJobs(this.handle);
       await advanceDueSuiteRuns(this.handle);
-      await generateDueReports(this.handle);
       const materialized = await materializeDueSchedules(this.handle);
       const recovered = await listPendingScheduleAdmits(this.handle);
       const seen = new Set<string>();
@@ -539,17 +591,14 @@ export class LifecycleService
       clearInterval(this.scheduleTick);
       this.scheduleTick = undefined;
     }
-    await this.scheduleTask?.catch(() => undefined);
     if (this.analysisTick) {
       clearInterval(this.analysisTick);
       this.analysisTick = undefined;
     }
-    await this.analysisTask?.catch(() => undefined);
     if (this.reliabilityTick) {
       clearInterval(this.reliabilityTick);
       this.reliabilityTick = undefined;
     }
-    await this.reliabilityTask?.catch(() => undefined);
     if (this.notificationTick) {
       clearInterval(this.notificationTick);
       this.notificationTick = undefined;
@@ -562,10 +611,9 @@ export class LifecycleService
       clearInterval(this.videoMediaTick);
       this.videoMediaTick = undefined;
     }
-    await this.videoMediaTask?.catch(() => undefined);
     this.notificationAbort.abort();
-    await this.notificationTask;
-    await this.serviceWebhookTask;
+    for (const item of this.inFlight.values()) item.controller.abort();
+    const auxiliaryClose = this.auxiliaryTasks.close();
     await markWorkerDraining(
       this.handle,
       config.CAIRN_WORKER_ID,
@@ -582,6 +630,10 @@ export class LifecycleService
     if (this.cleanupTick) {
       clearInterval(this.cleanupTick);
       this.cleanupTick = undefined;
+    }
+    if (this.workspaceCleanupTick) {
+      clearInterval(this.workspaceCleanupTick);
+      this.workspaceCleanupTick = undefined;
     }
     if (this.reaperTick) {
       clearInterval(this.reaperTick);
@@ -603,21 +655,40 @@ export class LifecycleService
       clearInterval(this.probeTick);
       this.probeTick = undefined;
     }
-    this.pendingClaim?.abort();
-    for (const item of this.inFlight.values()) item.controller.abort();
-    // 自愈可能正在重新注册：等它结束，别让停机与注册交错。
-    await this.healing?.catch(() => undefined);
-    const claiming = this.claimTask;
     const cleanup = this.cleanupInFlight;
     const reaper = this.reaperInFlight;
     const owned = [...this.inFlight.values()];
-    if (claiming) await claiming;
     await Promise.all(owned.map((item) => item.done));
-    if (cleanup) await cleanup;
-    if (reaper) await reaper;
     for (const item of owned) {
       await yieldUnfinishedRun(this.handle, item.grant).catch(() => undefined);
     }
+    // 在途 DB claim 返回后会在 pump() 里检查 stopped 并交回 grant；
+    // 停机不能为等待它而卡住，若连接未能关闭则领取 watchdog 会让进程退出。
+    // 自愈可能正在重新注册：等它结束，别让停机与注册交错。
+    await this.healing?.catch(() => undefined);
+    // 后台工作不得拖住 Run 租约交回。给予短暂收尾时间后继续停机；
+    // 未完成的数据库领取由进程退出和租约超时恢复。
+    const background = Promise.allSettled([
+      this.scheduleTask,
+      this.analysisTask,
+      this.reliabilityTask,
+      this.videoMediaTask,
+      this.notificationTask,
+      this.serviceWebhookTask,
+      auxiliaryClose,
+      this.workspaceCleanupTask,
+      cleanup,
+      reaper,
+    ]);
+    let backgroundTimer: NodeJS.Timeout | undefined;
+    const backgroundDrained = await Promise.race([
+      background.then(() => true),
+      new Promise<boolean>((resolve) => {
+        backgroundTimer = setTimeout(() => resolve(false), BACKGROUND_SHUTDOWN_GRACE_MS);
+      }),
+    ]);
+    if (backgroundTimer) clearTimeout(backgroundTimer);
+    if (!backgroundDrained) this.logger.warn("后台周期任务停机等待超时，继续关闭 Worker");
     await markWorkerStopped(
       this.handle,
       config.CAIRN_WORKER_ID,
@@ -895,38 +966,64 @@ export class LifecycleService
       blockedHosts: webhookControlPlaneHosts(),
       store,
     });
-    if (store) {
-      await dispatchExportJobs(
-        this.handle,
-        store,
-        {
-          workerId: config.CAIRN_WORKER_ID,
-          instanceId: this.instanceId,
-          signal: this.notificationAbort.signal,
-        },
-        (renew) => {
-          this.exportHeartbeats.add(renew);
-          return () => {
-            this.exportHeartbeats.delete(renew);
-          };
-        },
-      );
-      await dispatchReportAiJobs(
-        this.handle,
-        store,
-        {
-          workerId: config.CAIRN_WORKER_ID,
-          instanceId: this.instanceId,
-          signal: this.notificationAbort.signal,
-        },
-        this.secrets,
-      ).catch((error) => {
-        this.logger.error(
-          error instanceof Error ? error.message : error,
-          "报告 AI 解读调度失败",
+  }
+
+  private startReportDispatch(): void {
+    this.auxiliaryTasks.start(
+      "reports.export",
+      async () => {
+        if (this.stopped) return;
+        const store = typeof this.objects?.objectStore === "function" ? this.objects.objectStore() : undefined;
+        if (!store) return;
+        await dispatchExportJobs(
+          this.handle,
+          store,
+          {
+            workerId: config.CAIRN_WORKER_ID,
+            instanceId: this.instanceId,
+            signal: this.notificationAbort.signal,
+          },
+          (renew) => {
+            this.exportHeartbeats.add(renew);
+            return () => {
+              this.exportHeartbeats.delete(renew);
+            };
+          },
         );
-      });
-    }
+      },
+      (error) => this.logger.error(
+        error instanceof Error ? error.message : error,
+        "报告导出调度失败",
+      ),
+    );
+    this.auxiliaryTasks.start(
+      "reports.ai",
+      async () => {
+        if (this.stopped) return;
+        const store = typeof this.objects?.objectStore === "function" ? this.objects.objectStore() : undefined;
+        if (!store) return;
+        await dispatchReportAiJobs(
+          this.handle,
+          store,
+          {
+            workerId: config.CAIRN_WORKER_ID,
+            instanceId: this.instanceId,
+            signal: this.notificationAbort.signal,
+          },
+          this.secrets,
+          (renew) => {
+            this.exportHeartbeats.add(renew);
+            return () => {
+              this.exportHeartbeats.delete(renew);
+            };
+          },
+        );
+      },
+      (error) => this.logger.error(
+        error instanceof Error ? error.message : error,
+        "报告 AI 解读调度失败",
+      ),
+    );
   }
 
   private startVideoMediaDispatch(): void {
@@ -946,17 +1043,20 @@ export class LifecycleService
   }
 
   private startNotificationDispatch(): void {
-    if (this.stopped || this.notificationTask) return;
-    this.notificationTask = this.dispatchNotifications()
-      .catch((error) => {
-        this.logger.error(
-          error instanceof Error ? error.message : error,
-          "通知维护周期失败",
-        );
-      })
-      .finally(() => {
-        this.notificationTask = undefined;
-      });
+    if (this.stopped) return;
+    if (!this.notificationTask) {
+      this.notificationTask = this.dispatchNotifications()
+        .catch((error) => {
+          this.logger.error(
+            error instanceof Error ? error.message : error,
+            "通知维护周期失败",
+          );
+        })
+        .finally(() => {
+          this.notificationTask = undefined;
+        });
+    }
+    this.startReportDispatch();
   }
 
   private async dispatchServiceWebhooks(): Promise<void> {
@@ -1020,7 +1120,6 @@ export class LifecycleService
         await this.healing;
         return;
       }
-      await Promise.all([...this.exportHeartbeats].map((renew) => renew()));
       for (const item of this.inFlight.values()) {
         const expiresAt = await renewRunLease(
           this.handle,
@@ -1049,6 +1148,16 @@ export class LifecycleService
           item.controller.abort();
         }
       }
+      // 导出与 AI 回调各自防重；一个续租挂起不能占住心跳单飞锁，
+      // 也不能阻止其他报告续租。Run 租约已在上方优先续期。
+      for (const renew of this.exportHeartbeats) {
+        void Promise.resolve().then(renew).catch((error) => {
+          this.logger.warn(
+            error instanceof Error ? error.message : error,
+            "报告任务续租失败",
+          );
+        });
+      }
     } catch (error) {
       this.logger.error(
         error instanceof Error ? error.message : error,
@@ -1062,7 +1171,6 @@ export class LifecycleService
   /** 本实例不再领取；已在途的 Run 中止，等租约过期后由同伴接管。 */
   private fenceSelf(): void {
     this.stopped = true;
-    this.pendingClaim?.abort();
     for (const item of this.inFlight.values()) item.controller.abort();
     if (this.tick) {
       clearInterval(this.tick);
@@ -1419,8 +1527,10 @@ export class LifecycleService
     const loopAlive = Boolean(
       lastTickAt && Date.now() - lastTickAt.getTime() <= staleMs,
     );
+    const claimStalled = this.roles().executor && this.claimStartedAt !== null &&
+      Date.now() - this.claimStartedAt > staleMs;
     return workerNodeHealthResponseSchema.parse({
-      status: loopAlive && !this.shutdownCalled ? "ok" : "degraded",
+      status: loopAlive && !claimStalled && !this.shutdownCalled ? "ok" : "degraded",
       service: "cairn-worker",
       uptimeSeconds: this.uptimeSeconds(),
       checks: {
@@ -1475,10 +1585,7 @@ export class LifecycleService
       this.lastRefillDelayMs = Date.now() - this.refillPendingAt;
       this.refillPendingAt = null;
     }
-    const controller = new AbortController();
-    this.pendingClaim = controller;
     try {
-      await cleanupRunFileWorkspaces().catch(() => undefined);
       let claimed = 0;
       while (
         !this.stopped &&
@@ -1486,13 +1593,43 @@ export class LifecycleService
         this.inFlight.size < config.CAIRN_WORKER_CAPACITY &&
         claimed < CLAIM_FILL_BUDGET
       ) {
-        const claim = await claimRunWithCursor(this.handle, {
-          workerId: config.CAIRN_WORKER_ID,
-          instanceId: this.instanceId,
-          leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
-          excludeRunIds: placementYieldExcludes(),
-          cursor: this.claimCursor,
-        });
+        const startedAt = Date.now();
+        const claimInstanceId = this.instanceId;
+        this.claimStartedAt = startedAt;
+        // DbHandle 没有可取消的领取接口。超时后必须终止本进程，让数据库连接
+        // 断开并回滚；不能用 Promise.race 释放 claiming 后再发起并发领取。
+        const watchdog = setTimeout(() => {
+          if (this.claimStartedAt !== startedAt) return;
+          this.logger.error(
+            { elapsedMs: Date.now() - startedAt, timeoutMs: CLAIM_TIMEOUT_MS },
+            "Run 领取超时，停手并退出进程以取消在途数据库操作",
+          );
+          this.fenceSelf();
+          this.exitProcess(1);
+        }, CLAIM_TIMEOUT_MS);
+        let claim: Awaited<ReturnType<typeof claimRunWithCursor>>;
+        try {
+          claim = await claimRunWithCursor(this.handle, {
+            workerId: config.CAIRN_WORKER_ID,
+            instanceId: claimInstanceId,
+            leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+            excludeRunIds: placementYieldExcludes(),
+            cursor: this.claimCursor,
+          });
+        } finally {
+          clearTimeout(watchdog);
+          if (this.claimStartedAt === startedAt) this.claimStartedAt = null;
+          const elapsedMs = Date.now() - startedAt;
+          if (elapsedMs >= CLAIM_SLOW_LOG_MS && !this.stopped) {
+            this.logger.warn({ elapsedMs }, "Run 领取耗时偏高");
+          }
+        }
+        if (this.instanceId !== claimInstanceId) {
+          if (claim.grant) {
+            await yieldUnfinishedRun(this.handle, claim.grant).catch(() => undefined);
+          }
+          break;
+        }
         this.claimCursor = claim.cursor;
         const grant = claim.grant;
         if (!grant) {
@@ -1539,7 +1676,6 @@ export class LifecycleService
         "领取失败",
       );
     } finally {
-      if (this.pendingClaim === controller) this.pendingClaim = undefined;
       this.claiming = false;
       if (this.refillRequested && !this.stopped && !this.shutdownCalled) {
         this.refillRequested = false;
@@ -1564,7 +1700,16 @@ export class LifecycleService
     });
   }
 
-  private async pumpOperation(): Promise<void> {
+  private pumpOperation(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.operationTask) return this.operationTask;
+    this.operationTask = this.runOperationPump().finally(() => {
+      this.operationTask = undefined;
+    });
+    return this.operationTask;
+  }
+
+  private async runOperationPump(): Promise<void> {
     this.markTick();
     if (this.stopped) return;
     try {
@@ -1603,7 +1748,16 @@ export class LifecycleService
     }
   }
 
-  private async enqueueBackgroundMaintenance(): Promise<void> {
+  private enqueueBackgroundMaintenance(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.backgroundMaintenanceTask) return this.backgroundMaintenanceTask;
+    this.backgroundMaintenanceTask = this.runBackgroundMaintenance().finally(() => {
+      this.backgroundMaintenanceTask = undefined;
+    });
+    return this.backgroundMaintenanceTask;
+  }
+
+  private async runBackgroundMaintenance(): Promise<void> {
     if (this.stopped) return;
     try {
       const due = await listDueRetainedSessions(

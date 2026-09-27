@@ -64,6 +64,37 @@ API ──HTTPS + HMAC──► 每 Worker 专用 TLS 入口 ──同机 loopba
 
 Worker 启动后向数据库自注册其内部通信地址（`internalBaseUrl`）。跨机、跨容器网络或经由反向代理时，可显式设置 `CAIRN_WORKER_ADVERTISE_URL`（支持 HTTP 与 HTTPS，由具体部署架构与用户需求自主决定），API 将始终以数据库自注册记录作为动态路由与反向寻址的事实源。Worker 进程默认监听 `127.0.0.1:$CAIRN_WORKER_INTERNAL_PORT`。
 
+### 单机按角色拆分 Worker
+
+本机进程脚本可将 `executor`、`scheduler`、`analyst`、`maintenance` 启为四个独立进程。默认 `./scripts/dev.sh start` 和 `./scripts/stack.sh start` 仍使用原来的单 Worker，`CAIRN_WORKER_ROLES=all`。角色模式与单 Worker 不能同时启动；切换时先停旧模式：
+
+```bash
+# 功能开发：保留 API / Web 的热重载进程，仅切换 Worker
+./scripts/dev.sh stop worker
+./scripts/dev.sh start worker-roles
+./scripts/dev.sh status
+pnpm check:stack
+
+# 回到单 Worker
+./scripts/dev.sh stop worker-roles
+./scripts/dev.sh start worker
+
+# 验证已编译产物时，用 stack.sh 的同名目标；启动前先完成 Worker 构建
+pnpm --filter @cairn/worker build
+./scripts/stack.sh start worker-roles
+```
+
+`start|stop|restart|status|clean|logs` 都支持 `worker-roles` 和单角色目标（如 `worker-executor`、`worker-maintenance`）；`all` / `backend` 会沿用正在运行的 Worker 模式。开发角色模式只运行一个共享 TypeScript watch，四个 Node 进程分别热重启。角色 PID 和日志分别写在 `.run/worker-<角色>.pid`、`logs/worker-<角色>.log`。`pnpm check:stack` 自动识别本机角色进程，并逐个验证签名节点健康；少一个角色或有节点卡顿降级都会在结果中反映。
+
+| 角色 | 默认 Worker ID | 默认 loopback 端口 |
+| --- | --- | --- |
+| `executor` | `local-worker-executor` | `8092` |
+| `scheduler` | `local-worker-scheduler` | `8093` |
+| `analyst` | `local-worker-analyst` | `8094` |
+| `maintenance` | `local-worker-maintenance` | `8095` |
+
+多主机共用数据库时，每台主机设置不同的 `CAIRN_WORKER_ROLE_ID_PREFIX`，或分别配置 `CAIRN_WORKER_EXECUTOR_ID` 等四个 ID；也可用对应的 `CAIRN_WORKER_EXECUTOR_PORT` 等变量改端口。ID 与端口在同一实例组内必须唯一。每个角色继承同一份数据库与密钥配置。若单 Worker 配置了 `CAIRN_WORKER_ADVERTISE_URL`，角色模式必须分别设置 `CAIRN_WORKER_EXECUTOR_ADVERTISE_URL` 等四个独立的专用入口，避免多个节点广告同一个地址；未配置广告入口时沿用现有“不可反向寻址”的行为。应用迁移和正式多主机部署仍按现有升级流程执行。
+
 代理须保留内部签名头和原始请求体，关闭 SSE 缓冲，超时不短于连接 3s / 响应头 10s / 认证 POST 30s。不要把多个 Worker 随机负载均衡到同一个广告 origin，也不要关闭证书校验。HMAC 密钥继续走 `CAIRN_INTERNAL_AUTH_SECRET`，不要写进广告 URL。
 
 排查：治理页「执行节点」看登记是否 READY、心跳是否新鲜、`routeAvailability`；库内入口无效或过期时 API 不会改去猜另一个地址。控制面入口只解决浏览器到 API，Worker 专用入口失败不要先改 CORS。

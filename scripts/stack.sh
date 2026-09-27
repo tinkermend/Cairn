@@ -58,16 +58,41 @@ recorded_pid() {
   return 1
 }
 
+worker_roles_active() {
+  local role
+  for role in executor scheduler analyst maintenance; do
+    if recorded_pid "worker-$role" >/dev/null; then return 0; fi
+  done
+  return 1
+}
+
+worker_target() {
+  if worker_roles_active; then
+    echo "worker-executor worker-scheduler worker-analyst worker-maintenance"
+  else
+    echo "worker"
+  fi
+}
+
+is_worker_role() {
+  case "$1" in
+    worker-executor|worker-scheduler|worker-analyst|worker-maintenance) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 resolve_services() {
   local target="${1:-all}"
   case "$target" in
-    all)             echo "api worker web" ;;
-    backend)         echo "api worker" ;;
+    all)             echo "api $(worker_target) web" ;;
+    backend)         echo "api $(worker_target)" ;;
     frontend|web)    echo "web" ;;
     api)             echo "api" ;;
     worker)          echo "worker" ;;
+    worker-roles)    echo "worker-executor worker-scheduler worker-analyst worker-maintenance" ;;
+    worker-executor|worker-scheduler|worker-analyst|worker-maintenance) echo "$target" ;;
     *)
-      echo "未知服务目标: $target (可选: api, worker, web, backend, all)" >&2
+      echo "未知服务目标: $target (可选: api, worker, worker-roles, worker-<角色>, web, backend, all)" >&2
       exit 1
       ;;
   esac
@@ -96,6 +121,14 @@ spawn_detached() {
 
 start_one() {
   local svc="$1"
+  if is_worker_role "$svc"; then
+    "$ROOT/scripts/worker-roles.sh" stable start "$svc"
+    return
+  fi
+  if [[ "$svc" == worker ]] && worker_roles_active; then
+    echo "  ✗ 分角色 Worker 正在运行；先停止 worker-roles 再启动单 Worker" >&2
+    return 1
+  fi
   local port; port="$(port_of "$svc")"
   local rec_pid=""
 
@@ -158,6 +191,10 @@ start_one() {
 
 stop_one() {
   local svc="$1"
+  if is_worker_role "$svc"; then
+    "$ROOT/scripts/worker-roles.sh" stable stop "$svc"
+    return
+  fi
   local pid_path; pid_path="$(pid_file "$svc")"
   local m_file; m_file="$(mode_file "$svc")"
   local port; port="$(port_of "$svc")"
@@ -202,6 +239,10 @@ stop_one() {
 
 status_one() {
   local svc="$1"
+  if is_worker_role "$svc"; then
+    "$ROOT/scripts/worker-roles.sh" stable status "$svc"
+    return
+  fi
   local port; port="$(port_of "$svc")"
   local port_desc=""
   [[ -n "$port" ]] && port_desc="(port $port)"
@@ -226,6 +267,10 @@ status_one() {
 
 clean_one() {
   local svc="$1"
+  if is_worker_role "$svc"; then
+    "$ROOT/scripts/worker-roles.sh" stable clean "$svc"
+    return
+  fi
   local pid_path; pid_path="$(pid_file "$svc")"
   local m_file; m_file="$(mode_file "$svc")"
   local port; port="$(port_of "$svc")"
@@ -322,8 +367,9 @@ case "$cmd" in
     for s in $(resolve_services "$target"); do stop_one "$s"; done
     ;;
   restart)
-    for s in $(resolve_services "$target"); do stop_one "$s"; done
-    for s in $(resolve_services "$target"); do start_one "$s"; done
+    services="$(resolve_services "$target")"
+    for s in $services; do stop_one "$s"; done
+    for s in $services; do start_one "$s"; done
     ;;
   status)
     status_cmd "$target"
@@ -343,16 +389,19 @@ case "$cmd" in
 用法: $0 {start|stop|restart|status|clean|logs} [服务目标]
 
 服务目标 (可选):
-  all        所有服务 (api, worker, web) [默认]
-  backend    后端服务 (api, worker)
+  all        所有服务 (api, worker, web) [默认；若角色进程在运行则沿用角色模式]
+  backend    后端服务 (api + 当前 Worker 模式)
   api        仅控制面 API
   worker     仅执行面 Worker
+  worker-roles              四个独立角色 Worker
+  worker-<角色>             单个角色：executor / scheduler / analyst / maintenance
   web        仅前端 Web (Preview 产物)
 
 常用示例:
   $0 start              # 启动全部构建好的服务
   $0 start backend      # 仅启动后端 (api + worker)
   $0 stop worker        # 仅停止 worker
+  $0 start worker-roles # 启动四个独立角色；先停止单 Worker
   $0 status             # 查看服务状态（含 PID 及端口占用检查）
   $0 clean              # 强制清理并释放所有端口残留
   $0 logs api 100       # 查看 api 最近 100 行日志并跟踪 (logs/api.log)

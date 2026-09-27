@@ -5,7 +5,7 @@
  * 只探正在跑的进程，不负责启动。测试通过不能代替本命令。
  * 本命令通过也不能代替功能验收或核心生命周期验收。
  */
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,9 +19,11 @@ import {
   looksLikeHtml,
   parseHealthBody,
   parseWorkerNodeHealth,
+  aggregateWorkerNodeHealth,
   resolveScope,
   signWorkerNodeHealthHeaders,
 } from './lib/stack-health.mjs'
+import { WORKER_ROLE_NAMES, resolveWorkerRoleConfig } from './lib/worker-role-config.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const envFile = resolve(root, '.env')
@@ -115,11 +117,34 @@ const ports = {
   web: envPort('CAIRN_WEB_PORT', DEFAULT_PORTS.web),
 }
 
-const [apiListen, workerListen, webListen] = await Promise.all([
+function rolePidActive(role) {
+  try {
+    const pid = Number(readFileSync(resolve(root, '.run', `worker-${role}.pid`), 'utf8').trim())
+    if (!Number.isInteger(pid) || pid < 1) return false
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const roleMode = scope.worker && WORKER_ROLE_NAMES.some(rolePidActive)
+let workerTargets = [{ role: 'worker', id: (process.env.CAIRN_WORKER_ID ?? '').trim() || 'local-worker', port: ports.worker }]
+if (roleMode) {
+  try {
+    workerTargets = resolveWorkerRoleConfig(process.env)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error)
+    process.exit(2)
+  }
+}
+
+const [apiListen, workerListens, webListen] = await Promise.all([
   scope.api ? probeListen(host, ports.api, timeoutMs) : Promise.resolve(false),
-  scope.worker ? probeListen(host, ports.worker, timeoutMs) : Promise.resolve(false),
+  scope.worker ? Promise.all(workerTargets.map(({ port }) => probeListen(host, port, timeoutMs))) : Promise.resolve([]),
   scope.web ? probeListen(host, ports.web, timeoutMs) : Promise.resolve(false),
 ])
+const workerListen = workerListens.every(Boolean)
 
 const apiUrl = `http://${host}:${ports.api}/health`
 const webUrl = `http://${host}:${ports.web}/`
@@ -140,24 +165,21 @@ if (scope.api && apiListen) {
 }
 
 let workerHealth
-if (scope.worker && workerListen) {
+if (scope.worker) {
   const secret = decodeInternalSecret(process.env.CAIRN_INTERNAL_AUTH_SECRET ?? '')
-  const workerId = (process.env.CAIRN_WORKER_ID ?? '').trim() || 'local-worker'
   if (!secret) {
     workerHealth = { ok: false, error: '缺少可用的 CAIRN_INTERNAL_AUTH_SECRET，禁止回退 TCP' }
   } else {
-    const headers = signWorkerNodeHealthHeaders(secret, workerId, Math.floor(Date.now() / 1000) + 20)
-    const res = await fetchText(`http://${host}:${ports.worker}${WORKER_NODE_HEALTH_PATH}`, timeoutMs, headers)
-    if (res.error) {
-      workerHealth = { ok: false, error: res.error }
-    } else if (res.status !== 200) {
-      workerHealth = { ok: false, error: `HTTP ${res.status}` }
-    } else {
-      workerHealth = parseWorkerNodeHealth(res.text)
-    }
+    const healths = await Promise.all(workerTargets.map(async ({ role, id, port }, index) => {
+      if (!workerListens[index]) return { role, ok: false, error: '未监听' }
+      const headers = signWorkerNodeHealthHeaders(secret, id, Math.floor(Date.now() / 1000) + 20)
+      const res = await fetchText(`http://${host}:${port}${WORKER_NODE_HEALTH_PATH}`, timeoutMs, headers)
+      if (res.error) return { role, ok: false, error: res.error }
+      if (res.status !== 200) return { role, ok: false, error: `HTTP ${res.status}` }
+      return { role, ...parseWorkerNodeHealth(res.text) }
+    }))
+    workerHealth = aggregateWorkerNodeHealth(healths)
   }
-} else if (scope.worker) {
-  workerHealth = { ok: false, error: '未监听' }
 }
 
 let webPage
@@ -200,7 +222,7 @@ const verdict = decideVerdict({
 
 const s1 = [
   scope.api ? `api:${mark(apiListen)} :${ports.api}` : 'api:skip',
-  scope.worker ? `worker:${mark(workerListen)} :${ports.worker}` : 'worker:skip',
+  scope.worker ? workerTargets.map(({ role, port }, index) => `${role}:${mark(workerListens[index])} :${port}`).join(' ') : 'worker:skip',
   scope.web ? `web:${mark(webListen)} :${ports.web}` : 'web:skip',
 ].join('  ')
 
@@ -209,7 +231,7 @@ const healthDetail = apiHealth?.ok
   : apiHealth?.error ?? 'skip'
 
 const workerDetail = workerHealth?.ok
-  ? `service=${workerHealth.value.service} loopAlive=${workerHealth.value.loopAlive}`
+  ? `service=${workerHealth.value.service} loopAlive=${workerHealth.value.loopAlive} database=${workerHealth.value.database} status=${workerHealth.value.status}`
   : workerHealth?.error ?? 'skip'
 const s2 = [
   scope.api ? `api:${mark(Boolean(apiHealth?.ok && apiHealth.value?.checks.database === 'up'))} ${healthDetail}` : 'api:skip',
@@ -231,7 +253,7 @@ if (verdict.result === 'STACK_DOWN') {
 } else if (verdict.result === 'STACK_UNHEALTHY') {
   console.error('进程在听，但健康检查或前后端接线失败。先看 logs/ 或对应 dev 终端，不要宣称服务正常。')
 } else if (verdict.result === 'STACK_DEGRADED') {
-  console.error('进程可访问，但控制面处于降级。功能验收可以继续，不得把状态写成全部正常。')
+  console.error('进程可访问，但控制面或 Worker 处于降级。查看节点健康与领取状态，不得把状态写成全部正常。')
 }
 
 if (isFailure(verdict.result, strict)) process.exit(1)

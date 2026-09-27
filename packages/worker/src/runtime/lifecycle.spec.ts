@@ -21,6 +21,10 @@ vi.mock("./service-webhook-delivery", () => ({
   deliverServiceWebhooks: vi.fn(async () => 0),
 }));
 
+vi.mock("../engine/run-file-workspace.js", () => ({
+  cleanupRunFileWorkspaces: vi.fn(async () => 0),
+}));
+
 vi.mock("@cairn/db", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@cairn/db")>();
   const mockClaimRun = vi.fn(async (..._args: unknown[]) => null as import('@cairn/shared').RunGrant | null);
@@ -274,6 +278,9 @@ describe("LifecycleService", () => {
     });
     vi.mocked(claimNotificationDeliveries).mockReset();
     vi.mocked(claimNotificationDeliveries).mockResolvedValue([]);
+    const { cleanupRunFileWorkspaces } = await import("../engine/run-file-workspace.js");
+    vi.mocked(cleanupRunFileWorkspaces).mockReset();
+    vi.mocked(cleanupRunFileWorkspaces).mockResolvedValue(0);
     const { deliverServiceWebhooks } = await import("./service-webhook-delivery");
     vi.mocked(deliverServiceWebhooks).mockReset();
     vi.mocked(deliverServiceWebhooks).mockResolvedValue(0);
@@ -614,6 +621,53 @@ describe("LifecycleService", () => {
     expect(abort).toHaveBeenCalledOnce();
   });
 
+  it("报告任务续租挂起时仍继续 Run 续租和下一轮心跳", async () => {
+    const { renewRunLease, heartbeatWorker } = await import("@cairn/db");
+    const svc = await buildLifecycle();
+    injectInFlight(svc);
+    vi.mocked(renewRunLease).mockClear();
+    vi.mocked(heartbeatWorker).mockClear();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const renewReport = vi.fn(() => blocked);
+    const renewOtherReport = vi.fn(async () => undefined);
+    const heartbeats = (svc as unknown as { exportHeartbeats: Set<() => Promise<void>> }).exportHeartbeats;
+    heartbeats.add(renewReport);
+    heartbeats.add(renewOtherReport);
+    try {
+      await beat(svc);
+      await vi.waitFor(() => expect(renewReport).toHaveBeenCalledOnce());
+      await beat(svc);
+      await vi.waitFor(() => expect(renewOtherReport).toHaveBeenCalledTimes(2));
+      expect(renewRunLease).toHaveBeenCalledTimes(2);
+      expect(heartbeatWorker).toHaveBeenCalledTimes(2);
+    } finally {
+      heartbeats.delete(renewReport);
+      heartbeats.delete(renewOtherReport);
+      release();
+    }
+  });
+
+  it("报表任务挂起时停机先交回在途 Run 租约", async () => {
+    const { yieldUnfinishedRun } = await import("@cairn/db");
+    const svc = await buildLifecycle();
+    injectInFlight(svc);
+    vi.mocked(yieldUnfinishedRun).mockClear();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const tasks = (svc as unknown as {
+      auxiliaryTasks: { start: (key: string, run: () => Promise<void>, onError: (error: unknown) => void) => boolean };
+    }).auxiliaryTasks;
+    await vi.waitFor(() => expect(tasks.start("reports.generate", () => blocked, () => undefined)).toBe(true));
+    const closing = svc.onApplicationShutdown("SIGTERM");
+    try {
+      await vi.waitFor(() => expect(yieldUnfinishedRun).toHaveBeenCalledOnce());
+    } finally {
+      release();
+      await closing;
+    }
+  });
+
   it("身份被另一实例接管：不抢回，退出进程", async () => {
     const { heartbeatWorker, registerWorker } = await import("@cairn/db");
     const svc = await buildLifecycle();
@@ -738,6 +792,139 @@ describe("LifecycleService", () => {
 
     // 默认容量 1，已有一条在途
     expect(claimRun).not.toHaveBeenCalled();
+  });
+
+  it("临时目录清理慢时仍可领取，清理自身保持单飞", async () => {
+    const { claimRun } = await import("@cairn/db");
+    const { cleanupRunFileWorkspaces } = await import("../engine/run-file-workspace.js");
+    const svc = await buildLifecycle();
+    await (svc as unknown as { claimTask?: Promise<void> }).claimTask;
+    expect(cleanupRunFileWorkspaces).not.toHaveBeenCalled();
+    let release!: () => void;
+    vi.mocked(cleanupRunFileWorkspaces).mockImplementationOnce(
+      () => new Promise<number>((resolve) => { release = () => resolve(0); }),
+    );
+    const cleanup = (svc as unknown as { runWorkspaceCleanup: () => Promise<void> }).runWorkspaceCleanup();
+    expect((svc as unknown as { runWorkspaceCleanup: () => Promise<void> }).runWorkspaceCleanup()).toBe(cleanup);
+    vi.mocked(claimRun).mockClear();
+    await (svc as unknown as { pump: () => Promise<void> }).pump();
+    expect(claimRun).toHaveBeenCalledOnce();
+    expect(cleanupRunFileWorkspaces).toHaveBeenCalledOnce();
+    release();
+    await cleanup;
+  });
+
+  it("领取长挂时降级健康、超时停手退出，且不发起第二次领取", async () => {
+    const { claimRun } = await import("@cairn/db");
+    const svc = await buildLifecycle();
+    await (svc as unknown as { claimTask?: Promise<void> }).claimTask;
+    let release!: () => void;
+    vi.mocked(claimRun).mockReset();
+    vi.mocked(claimRun).mockImplementationOnce(
+      () => new Promise((resolve) => {
+        release = () => resolve({
+          runId: "run-after-timeout",
+          leaseId: "lease-after-timeout",
+          fencingToken: 1,
+          holderWorkerId: "local-worker",
+          expiresAt: new Date().toISOString(),
+        });
+      }),
+    );
+    const exit = vi.fn();
+    svc.exitProcess = exit;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const pending = (svc as unknown as { pump: () => Promise<void> }).pump();
+      await vi.waitFor(() => expect(claimRun).toHaveBeenCalledOnce());
+      await (svc as unknown as { pump: () => Promise<void> }).pump();
+      expect(claimRun).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(16_000);
+      (svc as unknown as { lastTickAt: Date }).lastTickAt = new Date();
+      const health = await (svc as unknown as { nodeHealth: () => Promise<{ status: string; node: { loopAlive: boolean } }> }).nodeHealth();
+      expect(health.node.loopAlive).toBe(true);
+      expect(health.status).toBe("degraded");
+      await vi.advanceTimersByTimeAsync(14_000);
+      expect(exit).toHaveBeenCalledOnce();
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(svc.isRunning()).toBe(false);
+      await (svc as unknown as { pump: () => Promise<void> }).pump();
+      expect(claimRun).toHaveBeenCalledOnce();
+      release();
+      await pending;
+      const { yieldUnfinishedRun } = await import("@cairn/db");
+      expect(yieldUnfinishedRun).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ runId: "run-after-timeout" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("在途领取挂起时停机仍完成，迟到的 grant 不被执行并尝试交回", async () => {
+    const { claimRun, markWorkerStopped, yieldUnfinishedRun } = await import("@cairn/db");
+    const svc = await buildLifecycle();
+    await (svc as unknown as { claimTask?: Promise<void> }).claimTask;
+    let release!: () => void;
+    vi.mocked(claimRun).mockReset();
+    vi.mocked(claimRun).mockImplementationOnce(
+      () => new Promise((resolve) => {
+        release = () => resolve({
+          runId: "run-late-shutdown",
+          leaseId: "lease-late-shutdown",
+          fencingToken: 1,
+          holderWorkerId: "local-worker",
+          expiresAt: new Date().toISOString(),
+        });
+      }),
+    );
+    const pending = (svc as unknown as { pump: () => Promise<void> }).pump();
+    await vi.waitFor(() => expect(claimRun).toHaveBeenCalledOnce());
+    vi.mocked(markWorkerStopped).mockClear();
+    vi.mocked(yieldUnfinishedRun).mockClear();
+    await svc.onApplicationShutdown("SIGTERM");
+    expect(markWorkerStopped).toHaveBeenCalledOnce();
+    release();
+    await pending;
+    expect((svc as unknown as { engine: { execute: ReturnType<typeof vi.fn> } }).engine.execute).not.toHaveBeenCalled();
+    expect(yieldUnfinishedRun).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ runId: "run-late-shutdown" }),
+    );
+  });
+
+  it("会话操作领取与后台维护在多次 tick 间各自单飞", async () => {
+    const { hasQueuedSessionCreateOperation, listDueRetainedSessions } = await import("@cairn/db");
+    const svc = await buildLifecycle();
+    await (svc as unknown as { backgroundMaintenanceTask?: Promise<void> }).backgroundMaintenanceTask;
+    let releaseOperation!: () => void;
+    vi.mocked(hasQueuedSessionCreateOperation).mockClear();
+    vi.mocked(hasQueuedSessionCreateOperation).mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => { releaseOperation = () => resolve(false); }),
+    );
+    const operationPump = svc as unknown as { pumpOperation: () => Promise<void> };
+    const operation = operationPump.pumpOperation();
+    expect(operationPump.pumpOperation()).toBe(operation);
+    expect(hasQueuedSessionCreateOperation).toHaveBeenCalledOnce();
+    releaseOperation();
+    await operation;
+    await operationPump.pumpOperation();
+    expect(hasQueuedSessionCreateOperation).toHaveBeenCalledTimes(2);
+
+    let releaseMaintenance!: () => void;
+    vi.mocked(listDueRetainedSessions).mockClear();
+    vi.mocked(listDueRetainedSessions).mockImplementationOnce(
+      () => new Promise((resolve) => { releaseMaintenance = () => resolve([]); }),
+    );
+    const maintenancePump = svc as unknown as { enqueueBackgroundMaintenance: () => Promise<void> };
+    const maintenance = maintenancePump.enqueueBackgroundMaintenance();
+    expect(maintenancePump.enqueueBackgroundMaintenance()).toBe(maintenance);
+    expect(listDueRetainedSessions).toHaveBeenCalledOnce();
+    releaseMaintenance();
+    await maintenance;
+    await maintenancePump.enqueueBackgroundMaintenance();
+    expect(listDueRetainedSessions).toHaveBeenCalledTimes(2);
   });
 
   /** S6：同 ID 双开是本地最先踩到的错误路径，必须给出可读原因且不带凭证。 */

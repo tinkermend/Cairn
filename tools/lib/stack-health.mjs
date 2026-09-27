@@ -118,6 +118,7 @@ export function signWorkerNodeHealthHeaders(secret, workerId, expiresUnix) {
  *   status: 'ok' | 'degraded',
  *   service: 'cairn-worker',
  *   loopAlive: boolean,
+ *   database: 'up' | 'down',
  * } } | { ok: false, error: string }}
  */
 export function parseWorkerNodeHealth(text) {
@@ -142,6 +143,27 @@ export function parseWorkerNodeHealth(text) {
       status: parsed.value.status,
       service: parsed.value.service,
       loopAlive: node.loopAlive,
+      database: parsed.value.checks.database,
+    },
+  }
+}
+
+/** Aggregate the health of every local worker role. */
+export function aggregateWorkerNodeHealth(healths) {
+  const failed = healths.find(({ ok, value }) =>
+    !ok || value?.loopAlive !== true || value?.database !== 'up')
+  if (failed) {
+    const reason = failed.error ??
+      (failed.value?.loopAlive !== true ? 'loopAlive=false' : 'database=down')
+    return { ok: false, error: `${failed.role}: ${reason}` }
+  }
+  return {
+    ok: true,
+    value: {
+      service: 'cairn-worker',
+      loopAlive: true,
+      database: 'up',
+      status: healths.some(({ value }) => value.status === 'degraded') ? 'degraded' : 'ok',
     },
   }
 }
@@ -162,7 +184,7 @@ export function looksLikeHtml(text, status) {
  *   workerListen: boolean,
  *   webListen: boolean,
  *   apiHealth?: { ok: boolean, value?: { status: string, checks: { database: string, changeHint: string } }, error?: string },
- *   workerHealth?: { ok: boolean, value?: { service?: string, loopAlive?: boolean }, error?: string },
+ *   workerHealth?: { ok: boolean, value?: { service?: string, loopAlive?: boolean, database?: string, status?: string }, error?: string },
  *   webPage?: { ok: boolean, error?: string },
  *   webHealth?: { ok: boolean, error?: string },
  * }} input
@@ -195,6 +217,9 @@ export function decideVerdict(input) {
     if (input.workerHealth.value.loopAlive !== true) {
       return { result: 'STACK_UNHEALTHY', fail: 'worker loopAlive=false' }
     }
+    if (input.workerHealth.value.database !== 'up') {
+      return { result: 'STACK_UNHEALTHY', fail: 'worker 数据库不可用' }
+    }
   }
   if (input.requireWeb) {
     if (!input.webPage?.ok) {
@@ -207,9 +232,12 @@ export function decideVerdict(input) {
 
   const degraded =
     input.apiHealth?.value?.status === 'degraded' ||
-    input.apiHealth?.value?.checks.changeHint === 'down'
+    input.apiHealth?.value?.checks.changeHint === 'down' ||
+    input.workerHealth?.value?.status === 'degraded'
   if (degraded) {
-    const note = '控制面降级（常见于 changeHint 未接通）'
+    const note = input.workerHealth?.value?.status === 'degraded'
+      ? 'Worker 节点降级'
+      : '控制面降级（常见于 changeHint 未接通）'
     if (input.strict) return { result: 'STACK_DEGRADED', fail: note, note }
     return { result: 'STACK_DEGRADED', fail: null, note }
   }
