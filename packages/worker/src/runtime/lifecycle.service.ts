@@ -96,7 +96,7 @@ import {
   BrowserSessionManager,
   SECRET_PROVIDER,
 } from "../browser/session-manager";
-import { deliverNotifications } from "./notification-delivery";
+import { deliverOutbound } from "./outbound-delivery";
 import { deliverServiceWebhooks } from "./service-webhook-delivery";
 import { dispatchExportJobs } from "./report-render";
 import { dispatchReportAiJobs } from "./report-ai-runner";
@@ -180,13 +180,13 @@ export class LifecycleService
   private workspaceCleanupTick: NodeJS.Timeout | undefined;
   private workspaceCleanupTask: Promise<void> | undefined;
   private reaperTick: NodeJS.Timeout | undefined;
-  private notificationTick: NodeJS.Timeout | undefined;
-  private notificationTask: Promise<void> | undefined;
+  private outboundTick: NodeJS.Timeout | undefined;
+  private outboundTask: Promise<void> | undefined;
   private serviceWebhookTick: NodeJS.Timeout | undefined;
   private serviceWebhookTask: Promise<void> | undefined;
   private videoMediaTick: NodeJS.Timeout | undefined;
   private videoMediaTask: Promise<void> | undefined;
-  private readonly notificationAbort = new AbortController();
+  private readonly outboundAbort = new AbortController();
   private maintenanceTick: NodeJS.Timeout | undefined;
   private operationTask: Promise<void> | undefined;
   private backgroundMaintenanceTask: Promise<void> | undefined;
@@ -300,11 +300,11 @@ export class LifecycleService
       }
       if (roles.maintenance) {
         this.startMaintenance();
-        this.notificationTick = setInterval(
-          () => this.startNotificationDispatch(),
+        this.outboundTick = setInterval(
+          () => this.startOutboundDispatch(),
           timerJitter(5_000),
         );
-        this.startNotificationDispatch();
+        this.startOutboundDispatch();
         this.serviceWebhookTick = setInterval(
           () => this.startServiceWebhookDispatch(),
           timerJitter(5_000),
@@ -599,9 +599,9 @@ export class LifecycleService
       clearInterval(this.reliabilityTick);
       this.reliabilityTick = undefined;
     }
-    if (this.notificationTick) {
-      clearInterval(this.notificationTick);
-      this.notificationTick = undefined;
+    if (this.outboundTick) {
+      clearInterval(this.outboundTick);
+      this.outboundTick = undefined;
     }
     if (this.serviceWebhookTick) {
       clearInterval(this.serviceWebhookTick);
@@ -611,7 +611,7 @@ export class LifecycleService
       clearInterval(this.videoMediaTick);
       this.videoMediaTick = undefined;
     }
-    this.notificationAbort.abort();
+    this.outboundAbort.abort();
     for (const item of this.inFlight.values()) item.controller.abort();
     const auxiliaryClose = this.auxiliaryTasks.close();
     await markWorkerDraining(
@@ -673,7 +673,7 @@ export class LifecycleService
       this.analysisTask,
       this.reliabilityTask,
       this.videoMediaTask,
-      this.notificationTask,
+      this.outboundTask,
       this.serviceWebhookTask,
       auxiliaryClose,
       this.workspaceCleanupTask,
@@ -866,7 +866,7 @@ export class LifecycleService
     }
     // 投递是逐条 CAS 领取的工作队列，所有权由条目领取保证，不进周期槽位：
     // 槽位只会把每实例 5 秒 tick 压成全舰队约 15 秒一批。网络等待另起单飞任务，不拖回收 tick。
-    this.startNotificationDispatch();
+    this.startOutboundDispatch();
     this.startServiceWebhookDispatch();
     return session;
   }
@@ -955,14 +955,14 @@ export class LifecycleService
     });
   }
 
-  private async dispatchNotifications(): Promise<void> {
+  private async dispatchOutbound(): Promise<void> {
     const store = typeof this.objects?.objectStore === "function" ? this.objects.objectStore() : undefined;
-    await deliverNotifications({
+    await deliverOutbound({
       db: this.handle,
       secrets: this.secrets,
       workerId: config.CAIRN_WORKER_ID,
       instanceId: this.instanceId,
-      signal: this.notificationAbort.signal,
+      signal: this.outboundAbort.signal,
       blockedHosts: webhookControlPlaneHosts(),
       store,
     });
@@ -981,7 +981,7 @@ export class LifecycleService
           {
             workerId: config.CAIRN_WORKER_ID,
             instanceId: this.instanceId,
-            signal: this.notificationAbort.signal,
+            signal: this.outboundAbort.signal,
           },
           (renew) => {
             this.exportHeartbeats.add(renew);
@@ -1008,7 +1008,7 @@ export class LifecycleService
           {
             workerId: config.CAIRN_WORKER_ID,
             instanceId: this.instanceId,
-            signal: this.notificationAbort.signal,
+            signal: this.outboundAbort.signal,
           },
           this.secrets,
           (renew) => {
@@ -1042,18 +1042,18 @@ export class LifecycleService
       });
   }
 
-  private startNotificationDispatch(): void {
+  private startOutboundDispatch(): void {
     if (this.stopped) return;
-    if (!this.notificationTask) {
-      this.notificationTask = this.dispatchNotifications()
+    if (!this.outboundTask) {
+      this.outboundTask = this.dispatchOutbound()
         .catch((error) => {
           this.logger.error(
             error instanceof Error ? error.message : error,
-            "通知维护周期失败",
+            "消息推送维护周期失败",
           );
         })
         .finally(() => {
-          this.notificationTask = undefined;
+          this.outboundTask = undefined;
         });
     }
     this.startReportDispatch();
@@ -1065,7 +1065,7 @@ export class LifecycleService
       secrets: this.secrets,
       workerId: config.CAIRN_WORKER_ID,
       instanceId: this.instanceId,
-      signal: this.notificationAbort.signal,
+      signal: this.outboundAbort.signal,
       blockedHosts: webhookControlPlaneHosts(),
     });
   }

@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SERVICE_DELIVERY_POLICY,
   LEGACY_SERVICE_DELIVERY_POLICY,
+  externalRunOutputSchema,
   projectExternalRunOutput,
   serviceDeliveryPolicySchema,
 } from '../service-delivery.js'
-import type { RunOutput, ScenarioOutputDecl } from '../run-output.js'
+import { projectRunOutput, type RunOutput, type ScenarioOutputDecl } from '../run-output.js'
 
 describe('serviceDeliveryPolicySchema', () => {
   it('validates delivery policy shapes', () => {
@@ -134,5 +135,20 @@ describe('projectExternalRunOutput', () => {
 
     const projected = projectExternalRunOutput(sampleRunOutput, decl)
     expect(projected?.summary).toBeNull()
+  })
+
+  it('对外 RunOutput 契约承载业务未判定状态', () => {
+    const decl: ScenarioOutputDecl = {
+      summaryTemplate: '业务结果待核查',
+      metrics: [],
+      dataRowFields: [],
+    }
+    const projected = projectExternalRunOutput(
+      projectRunOutput(sampleRunOutput, 'FAILED', 'NOT_EVALUATED'),
+      decl,
+    )
+    expect(projected?.status).toBe('UNDETERMINED')
+    expect(projected?.summary).toBe('执行过程中断。')
+    expect(externalRunOutputSchema.parse(projected)).toEqual(projected)
   })
 })

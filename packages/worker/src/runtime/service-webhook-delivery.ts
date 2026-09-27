@@ -16,9 +16,9 @@ import {
   SERVICE_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS,
   SERVICE_WEBHOOK_TIMEOUT_MS,
 } from '@cairn/shared'
-import { resolveNotificationDestination } from './notification-delivery'
+import { resolveOutboundDestination } from './outbound-delivery'
 
-type Destination = Awaited<ReturnType<typeof resolveNotificationDestination>>[number]
+type Destination = Awaited<ReturnType<typeof resolveOutboundDestination>>[number]
 type SendResult = {
   ok: boolean
   retryable?: boolean
@@ -211,7 +211,7 @@ export type ServiceWebhookDeliveryDeps = {
   signal?: AbortSignal
   blockedHosts?: readonly string[]
   /** Tests can pin resolver output; production always uses the DNS-guarded resolver. */
-  resolveDestination?: typeof resolveNotificationDestination
+  resolveDestination?: typeof resolveOutboundDestination
 }
 
 export async function deliverServiceWebhooks(
@@ -235,7 +235,7 @@ export async function deliverServiceWebhooks(
           AbortSignal.timeout(SERVICE_WEBHOOK_TIMEOUT_MS),
           ...(input.signal ? [input.signal] : []),
         ])
-        const addresses = await (input.resolveDestination ?? resolveNotificationDestination)(
+        const addresses = await (input.resolveDestination ?? resolveOutboundDestination)(
           job.webhook.url,
           input.blockedHosts,
         )

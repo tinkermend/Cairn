@@ -480,6 +480,8 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     const detail = await getWorkerDetail(handle.db, readyId, { limit: 1 }, fleetOptions)
     expect(detail.worker.counts.occupiedSlots).toBe(1)
     expect(detail.sessions.items).toHaveLength(1)
+    expect(detail.sessions.items[0]?.targetName).toBeDefined()
+    expect(detail.sessions.items[0]?.accountDisplayName).toBeDefined()
     const filtered = await getWorkerDetail(handle.db, readyId, { limit: 1, status: 'CLOSED' }, fleetOptions)
     expect(filtered.worker.counts.occupiedSlots).toBe(1)
     expect(filtered.sessions.items).toHaveLength(0)

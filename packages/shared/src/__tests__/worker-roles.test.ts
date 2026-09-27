@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NOTIFICATION_WORKER_PROTOCOL } from '../notifications.js'
+import { OUTBOUND_WORKER_PROTOCOL } from '../outbound.js'
 import { EXPORT_ARTIFACTS_PROTOCOL } from '../reports.js'
 import { KNOWLEDGE_ANALYSIS_PROTOCOL } from '../analysis-jobs.js'
 import { MAP_SCHEDULER_PROTOCOL, UNIFIED_SCHEDULER_PROTOCOL } from '../schedules.js'
@@ -26,7 +26,7 @@ describe('Worker 角色', () => {
       SUITE_SCHEDULER_PROTOCOL,
     ])
     expect(protocolCapabilitiesForRoles(parseWorkerRoles('maintenance'))).toEqual([
-      NOTIFICATION_WORKER_PROTOCOL,
+      OUTBOUND_WORKER_PROTOCOL,
       SERVICE_WEBHOOK_DELIVERY_PROTOCOL,
       EXPORT_ARTIFACTS_PROTOCOL,
     ])

@@ -34,48 +34,48 @@ describe("SingleFlightTasks", () => {
   });
 
   it("contains a failed job and permits that job type on the next tick", async () => {
-    const tasks = new SingleFlightTasks<"notifications" | "exports">();
+    const tasks = new SingleFlightTasks<"outbound" | "exports">();
     const error = new Error("delivery unavailable");
     const onError = vi.fn();
     const exportDone = deferred();
     const runExports = vi.fn(() => exportDone.promise);
-    const runNotifications = vi.fn().mockRejectedValueOnce(error).mockResolvedValue(undefined);
+    const runOutbound = vi.fn().mockRejectedValueOnce(error).mockResolvedValue(undefined);
 
-    expect(tasks.start("notifications", runNotifications, onError)).toBe(true);
+    expect(tasks.start("outbound", runOutbound, onError)).toBe(true);
     expect(tasks.start("exports", runExports, onError)).toBe(true);
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error));
     expect(runExports).toHaveBeenCalledTimes(1);
-    expect(tasks.start("notifications", runNotifications, onError)).toBe(true);
-    await vi.waitFor(() => expect(runNotifications).toHaveBeenCalledTimes(2));
+    expect(tasks.start("outbound", runOutbound, onError)).toBe(true);
+    await vi.waitFor(() => expect(runOutbound).toHaveBeenCalledTimes(2));
 
     exportDone.resolve();
     await tasks.close();
   });
 
   it("reports synchronous failures without blocking an unrelated job", async () => {
-    const tasks = new SingleFlightTasks<"reports" | "notifications">();
+    const tasks = new SingleFlightTasks<"reports" | "outbound">();
     const error = new Error("report failed");
     const onError = vi.fn();
-    const runNotifications = vi.fn(async () => undefined);
+    const runOutbound = vi.fn(async () => undefined);
     tasks.start("reports", () => { throw error; }, onError);
-    tasks.start("notifications", runNotifications, onError);
+    tasks.start("outbound", runOutbound, onError);
     await tasks.close();
     expect(onError).toHaveBeenCalledWith(error);
-    expect(runNotifications).toHaveBeenCalledTimes(1);
+    expect(runOutbound).toHaveBeenCalledTimes(1);
   });
 
   it("waits for all jobs during close and rejects later starts", async () => {
-    const tasks = new SingleFlightTasks<"notifications" | "exports">();
-    const notifications = deferred();
+    const tasks = new SingleFlightTasks<"outbound" | "exports">();
+    const outbound = deferred();
     const exports = deferred();
     const onError = vi.fn();
-    tasks.start("notifications", () => notifications.promise, onError);
+    tasks.start("outbound", () => outbound.promise, onError);
     tasks.start("exports", () => exports.promise, onError);
 
     let closed = false;
     const closing = tasks.close().then(() => { closed = true; });
-    expect(tasks.start("notifications", vi.fn(), onError)).toBe(false);
-    notifications.resolve();
+    expect(tasks.start("outbound", vi.fn(), onError)).toBe(false);
+    outbound.resolve();
     await Promise.resolve();
     expect(closed).toBe(false);
     exports.resolve();

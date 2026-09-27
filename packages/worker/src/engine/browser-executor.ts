@@ -72,7 +72,7 @@ function guessMimeType(fileName: string): string {
 }
 
 export class BrowserStepExecutor implements StepExecutor {
-  readonly supportedTypes: readonly string[] = [...BROWSER_STEP_TYPES]
+  readonly supportedTypes: readonly string[] = BROWSER_STEP_TYPES.filter(type => type !== 'map_ingest')
 
   constructor(
     private readonly handle: DbHandle,

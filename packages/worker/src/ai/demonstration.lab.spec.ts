@@ -270,6 +270,14 @@ describe('demonstration sources × real Engine / Chromium', { timeout: 240_000 }
       { id: actorId },
       (document) => ({
         ...document,
+        browserAi: {
+          ...document.browserAi,
+          enabled: true,
+          baseUrl: 'http://127.0.0.1:9999/v1',
+          model: 'gpt-4o',
+          modelFamily: 'openai',
+          secretRef: { provider: 'local', secretId },
+        },
         sessionAuth: { ...document.sessionAuth, autoLoginMaxPerWindow: 20 },
         runAuthRecovery: { maxAutoRecoveriesPerRun: 0, maxManualRecoveriesPerRun: 0 },
       }),

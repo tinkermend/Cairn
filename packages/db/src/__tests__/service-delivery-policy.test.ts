@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import {
   createAccountBodySchema,
@@ -184,22 +184,30 @@ describe.each(DRIVERS)('%s 服务自动化调用交付与证据策略分级测�
     const grant = await forceGrantForRun(f.handle, run.detail.id, worker.workerId)
     const { stepRuns, evidences } = schemaFor(f.handle.db)
     const [step] = await f.handle.db.select().from(stepRuns).where(eq(stepRuns.runId, run.detail.id))
-    const started = await api.startAttempt(f.db, {
-      runId: run.detail.id,
-      stepRunId: step!.id,
-      inputPayload: { value: 'val' },
-      grant,
-    })
-
-    await api.finishAttempt(f.db, {
-      runId: run.detail.id,
-      attemptId: started!.attemptId,
-      attemptStatus: 'SUCCEEDED',
-      output: { count: 42, status: 'NORMAL' },
-      stepRunStatus: 'SUCCEEDED',
-      runStatus: 'SUCCEEDED',
-      grant,
-    })
+    const started = await (async () => {
+      // 模拟 Worker 主机时钟落后数据库；Run 终态和 Webhook 启用水位必须同源。
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() - 60_000 })
+      try {
+        const attempt = await api.startAttempt(f.db, {
+          runId: run.detail.id,
+          stepRunId: step!.id,
+          inputPayload: { value: 'val' },
+          grant,
+        })
+        await api.finishAttempt(f.db, {
+          runId: run.detail.id,
+          attemptId: attempt!.attemptId,
+          attemptStatus: 'SUCCEEDED',
+          output: { count: 42, status: 'NORMAL' },
+          stepRunStatus: 'SUCCEEDED',
+          runStatus: 'SUCCEEDED',
+          grant,
+        })
+        return attempt
+      } finally {
+        vi.useRealTimers()
+      }
+    })()
 
     // 注入一条未经人工放行的内部步骤 output 证据
     await f.handle.db.insert(evidences).values({
@@ -217,8 +225,12 @@ describe.each(DRIVERS)('%s 服务自动化调用交付与证据策略分级测�
     const { runs } = schemaFor(f.handle.db)
     await f.handle.db
       .update(runs)
-      .set({ context: { count: 42, status: 'NORMAL' }, finishedAt: new Date() })
+      .set({ context: { count: 42, status: 'NORMAL' } })
       .where(eq(runs.id, run.detail.id))
+
+    const [finishedRun] = await f.handle.db.select({ finishedAt: runs.finishedAt }).from(runs).where(eq(runs.id, run.detail.id))
+    const [webhook] = await f.handle.db.select({ enabledAt: schemaFor(f.handle.db).serviceWebhooks.enabledAt }).from(schemaFor(f.handle.db).serviceWebhooks)
+    expect(finishedRun.finishedAt!.getTime()).toBeGreaterThanOrEqual(webhook.enabledAt!.getTime())
 
     // 3. 结算 run output
     await api.settleRunOutput(f.db, run.detail.id)

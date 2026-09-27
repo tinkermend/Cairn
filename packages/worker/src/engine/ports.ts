@@ -97,11 +97,22 @@ export type BrowserPort = {
       maxCandidates?: number
     },
     signal?: AbortSignal,
-  ): Promise<import('../browser/explore-candidate-collector.js').SurfaceExplorationResult>
+  ): Promise<unknown>
   installExploreGuard?(
     grant: SessionGrant,
     options: import('../browser/explore-network-guard.js').ExploreGuardOptions,
   ): Promise<import('../browser/explore-network-guard.js').ExploreGuardController>
+  ingestMapSlice?(
+    grant: SessionGrant,
+    input: {
+      step: import('@cairn/shared').MapIngestStep['input']
+      targetId: string
+      targetAccountId: string
+      accessPolicy: import('@cairn/shared').TargetAccessPolicy
+      signal: AbortSignal
+      onProgress: (cursor: import('@cairn/shared').MapIngestCursor, page?: import('@cairn/shared').MapIngestPageSnapshot) => Promise<void>
+    },
+  ): Promise<import('../browser/map-ingest-collector.js').IngestSliceResult>
 }
 
 export type AiLocateInput = {

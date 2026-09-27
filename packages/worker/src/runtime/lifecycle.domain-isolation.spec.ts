@@ -8,7 +8,7 @@ import { BrowserSessionManager } from "../browser/session-manager.js";
 import { ExecutionEngine } from "../engine/engine.js";
 import { EvidenceSettleService } from "../evidence/settle.service.js";
 import { ObjectService } from "../objects/object.service.js";
-import { deliverNotifications } from "./notification-delivery.js";
+import { deliverOutbound } from "./outbound-delivery.js";
 import { dispatchExportJobs } from "./report-render.js";
 import { dispatchReportAiJobs } from "./report-ai-runner.js";
 import { LifecycleService } from "./lifecycle.service.js";
@@ -29,8 +29,8 @@ vi.mock("@cairn/db", async (importOriginal) => {
   };
 });
 
-vi.mock("./notification-delivery", () => ({
-  deliverNotifications: vi.fn(async () => 0),
+vi.mock("./outbound-delivery", () => ({
+  deliverOutbound: vi.fn(async () => 0),
 }));
 vi.mock("./report-render", () => ({
   dispatchExportJobs: vi.fn(async () => 0),
@@ -60,16 +60,16 @@ type SchedulingAccess = {
   startScheduling(): void;
   scheduleTick: NodeJS.Timeout | undefined;
 };
-type NotificationAccess = {
-  startNotificationDispatch(): void;
+type OutboundAccess = {
+  startOutboundDispatch(): void;
 };
 
 afterEach(() => {
   vi.mocked(generateDueReports).mockReset();
   vi.mocked(generateDueReports).mockResolvedValue(0);
   vi.mocked(materializeDueSchedules).mockClear();
-  vi.mocked(deliverNotifications).mockReset();
-  vi.mocked(deliverNotifications).mockResolvedValue(0);
+  vi.mocked(deliverOutbound).mockReset();
+  vi.mocked(deliverOutbound).mockResolvedValue(0);
   vi.mocked(dispatchExportJobs).mockClear();
   vi.mocked(dispatchReportAiJobs).mockClear();
 });
@@ -90,15 +90,15 @@ describe("LifecycleService 领域周期隔离", () => {
     }
   });
 
-  it("通知与导出悬挂时仍启动报告 AI", async () => {
-    const delivery = deferred<Awaited<ReturnType<typeof deliverNotifications>>>();
+  it("消息推送与导出悬挂时仍启动报告 AI", async () => {
+    const delivery = deferred<Awaited<ReturnType<typeof deliverOutbound>>>();
     const exports = deferred<Awaited<ReturnType<typeof dispatchExportJobs>>>();
-    vi.mocked(deliverNotifications).mockImplementation(() => delivery.promise);
+    vi.mocked(deliverOutbound).mockImplementation(() => delivery.promise);
     vi.mocked(dispatchExportJobs).mockImplementation(() => exports.promise);
     const service = lifecycle();
     try {
-      (service as unknown as NotificationAccess).startNotificationDispatch();
-      await vi.waitFor(() => expect(deliverNotifications).toHaveBeenCalled());
+      (service as unknown as OutboundAccess).startOutboundDispatch();
+      await vi.waitFor(() => expect(deliverOutbound).toHaveBeenCalled());
       await vi.waitFor(() => expect(dispatchExportJobs).toHaveBeenCalled());
       await vi.waitFor(() => expect(dispatchReportAiJobs).toHaveBeenCalled());
     } finally {

@@ -33,6 +33,7 @@ import {
   type LoginAttemptResult,
 } from './captcha/index.js'
 import { generateTotp } from './totp.js'
+import { SessionLeaseError } from './session-error.js'
 
 const occupancy = new AsyncLocalStorage<SessionGrant>()
 
@@ -281,15 +282,22 @@ export async function injectStorageState(
     origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>
   }
   if (Array.isArray(raw.cookies) && raw.cookies.length > 0) {
-    await context.addCookies(raw.cookies as any).catch(() => {})
+    try {
+      await context.addCookies(raw.cookies as any)
+    } catch (error) {
+      throw new SessionLeaseError(
+        'AUTH_STORAGE_STATE_INVALID',
+        `Cookie 注入失败: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
   }
   if (Array.isArray(raw.origins) && raw.origins.length > 0) {
     for (const originEntry of raw.origins) {
       if (!originEntry.origin || !Array.isArray(originEntry.localStorage)) continue
       const origin = originEntry.origin
       const entries = originEntry.localStorage
-      await context
-        .addInitScript(
+      try {
+        await context.addInitScript(
           `if (window.location.origin === ${JSON.stringify(origin)}) {
             const flagKey = '__cairn_storage_injected__';
             if (!window.localStorage.getItem(flagKey)) {
@@ -301,7 +309,12 @@ export async function injectStorageState(
             }
           }`,
         )
-        .catch(() => {})
+      } catch (error) {
+        throw new SessionLeaseError(
+          'AUTH_STORAGE_STATE_INVALID',
+          `LocalStorage 脚本注入失败: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
   }
 }
@@ -348,7 +361,12 @@ export async function openDedicatedSession(
       ...common,
     })
     if (opts.storageState) {
-      await injectStorageState(context, opts.storageState)
+      try {
+        await injectStorageState(context, opts.storageState)
+      } catch (error) {
+        await context.close().catch(() => {})
+        throw error
+      }
     }
     const basePage = context.pages()[0] ?? (await context.newPage())
     return {
@@ -359,6 +377,9 @@ export async function openDedicatedSession(
       profileDir,
     }
   } catch (error) {
+    if (error instanceof SessionLeaseError) {
+      throw error
+    }
     const message = error instanceof Error ? error.message : String(error)
     if (/SingletonLock|user data directory is already in use|ProcessSingleton/i.test(message)) {
       throw new BrowserRuntimeError('PROFILE_LOCKED', message)
@@ -376,13 +397,12 @@ export async function openSharedSession(
 ): Promise<BrowserHandle> {
   if ((restartAuthority.getStore()?.expiresAt ?? 0) <= Date.now()) requireOccupancy('launchSession')
   const common = buildContextOptions(opts)
+  let context: import('playwright').BrowserContext | undefined
   try {
-    const context = await host.browser.newContext({
-      ...common,
-      ...(opts.storageState && typeof opts.storageState === 'object'
-        ? { storageState: opts.storageState as any }
-        : {}),
-    })
+    context = await host.browser.newContext(common)
+    if (opts.storageState) {
+      await injectStorageState(context, opts.storageState)
+    }
     const basePage = await context.newPage()
     return {
       context,
@@ -392,6 +412,12 @@ export async function openSharedSession(
       profileDir: null,
     }
   } catch (error) {
+    if (context) {
+      await context.close().catch(() => {})
+    }
+    if (error instanceof SessionLeaseError) {
+      throw error
+    }
     const message = error instanceof Error ? error.message : String(error)
     throw new BrowserRuntimeError('BROWSER_LAUNCH_FAILED', message)
   }
@@ -625,6 +651,15 @@ export async function attemptLoginCredentials(
     await waitForLoginForm(handle.basePage, fields, Math.min(15_000, timeoutMs))
     const resolved = await resolveLoginFieldsOnPage(handle.basePage, fields)
     if (!resolved) {
+      return { authenticated: false, submit: 'not_attempted' }
+    }
+    if (resolved.password && credential.password.length === 0) {
+      console.error(
+        JSON.stringify({
+          event: 'login.empty_password_blocked',
+          reason: '页面存在密码框但凭据密码为空，拒绝提交以保护账号安全',
+        }),
+      )
       return { authenticated: false, submit: 'not_attempted' }
     }
     const user = resolved.username

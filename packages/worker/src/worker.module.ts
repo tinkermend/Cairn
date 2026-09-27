@@ -11,6 +11,7 @@ import { ChangeHintModule } from './observe/change-hint.module'
 import { ExecutionEngine } from './engine/engine'
 import { AI_PORT, BROWSER_PORT, type AiPort, type BrowserPort } from './engine/ports'
 import { BrowserStepExecutor } from './engine/browser-executor'
+import { MapIngestExecutor } from './engine/map-ingest-executor'
 import { FixtureStepExecutor } from './engine/fixture-executor'
 import { AiStepExecutor } from './engine/ai-executor'
 import { STEP_EXECUTOR_REGISTRY, StepExecutorRegistry } from './engine/step-executor'
@@ -73,6 +74,7 @@ import { createAiPort } from './ai/port'
         const executors = [
           new FixtureStepExecutor(),
           new BrowserStepExecutor(handle, browser, ai, undefined, objects),
+          new MapIngestExecutor(handle, browser),
         ]
         if (ai) executors.push(new AiStepExecutor(ai))
         return new StepExecutorRegistry(executors)

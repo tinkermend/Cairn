@@ -161,17 +161,17 @@ vi.mock("@cairn/db", async (importOriginal) => {
     reapSessionLeases: vi.fn(async () => ({ settled: 0, scanned: 0 })),
     scanCredentialReminders: vi.fn(async () => ({ opened: 0, closed: 0 })),
     reapServiceRequestLogs: vi.fn(async () => ({ scanned: 0, deleted: 0 })),
-    claimNotificationDeliveries: vi.fn(async () => []),
+    claimOutboundDeliveries: vi.fn(async () => []),
     claimRunVideoMediaJobs: vi.fn(async () => []),
     enqueueRunVideoMediaJob: vi.fn(async () => ({ id: "job" })),
     finishRunVideoMediaJob: vi.fn(async () => ({ ok: true })),
-    importLegacyNotificationNotices: vi.fn(async () => undefined),
-    reconcileNotificationSuppressions: vi.fn(async () => undefined),
-    purgeNotificationHistory: vi.fn(async () => 0),
-    beginNotificationSubmission: vi.fn(async () => true),
-    finishNotificationDelivery: vi.fn(async () => undefined),
-    prepareNotificationEvents: vi.fn(async () => undefined),
-    repairNotificationIntents: vi.fn(async () => undefined),
+    importLegacyOutboundNotices: vi.fn(async () => undefined),
+    reconcileOutboundSuppressions: vi.fn(async () => undefined),
+    purgeOutboundHistory: vi.fn(async () => 0),
+    beginOutboundSubmission: vi.fn(async () => true),
+    finishOutboundDelivery: vi.fn(async () => undefined),
+    prepareOutboundEvents: vi.fn(async () => undefined),
+    repairOutboundIntents: vi.fn(async () => undefined),
     claimDueAlertDeliveries: vi.fn(async () => []),
     finishAlertDelivery: vi.fn(async () => undefined),
     loadSecretCiphertext: vi.fn(async () => null),
@@ -258,7 +258,7 @@ describe("LifecycleService", () => {
       finishPeriodicSlot,
       scanCredentialReminders,
       reapServiceRequestLogs,
-      claimNotificationDeliveries,
+      claimOutboundDeliveries,
     } = await import("@cairn/db");
     vi.mocked(collectPlatformSamples).mockReset();
     vi.mocked(collectPlatformSamples).mockResolvedValue([]);
@@ -276,8 +276,8 @@ describe("LifecycleService", () => {
       scanned: 0,
       deleted: 0,
     });
-    vi.mocked(claimNotificationDeliveries).mockReset();
-    vi.mocked(claimNotificationDeliveries).mockResolvedValue([]);
+    vi.mocked(claimOutboundDeliveries).mockReset();
+    vi.mocked(claimOutboundDeliveries).mockResolvedValue([]);
     const { cleanupRunFileWorkspaces } = await import("../engine/run-file-workspace.js");
     vi.mocked(cleanupRunFileWorkspaces).mockReset();
     vi.mocked(cleanupRunFileWorkspaces).mockResolvedValue(0);
@@ -1472,11 +1472,11 @@ describe("LifecycleService", () => {
         }>;
       }
     ).runReaper();
-    const { evaluateAlerts, claimNotificationDeliveries, reapSessionLeases } =
+    const { evaluateAlerts, claimOutboundDeliveries, reapSessionLeases } =
       await import("@cairn/db");
     expect(evaluateAlerts).toHaveBeenCalled();
     await vi.waitFor(() =>
-      expect(claimNotificationDeliveries).toHaveBeenCalled(),
+      expect(claimOutboundDeliveries).toHaveBeenCalled(),
     );
     expect(reapSessionLeases).toHaveBeenCalled();
     expect(touchRuntimeWatermark).toHaveBeenCalledWith(
@@ -1618,8 +1618,8 @@ describe("LifecycleService", () => {
     await svc.onApplicationShutdown();
   });
 
-  it("慢通知任务单独执行，不阻塞下一轮回收与凭据维护", async () => {
-    const { scanCredentialReminders, claimNotificationDeliveries } =
+  it("慢消息推送任务单独执行，不阻塞下一轮回收与凭据维护", async () => {
+    const { scanCredentialReminders, claimOutboundDeliveries } =
       await import("@cairn/db");
     const calls: string[] = [];
     vi.mocked(scanCredentialReminders).mockImplementation(async () => {
@@ -1630,7 +1630,7 @@ describe("LifecycleService", () => {
     const waiting = new Promise<void>((resolve) => {
       release = resolve;
     });
-    vi.mocked(claimNotificationDeliveries).mockImplementation(async () => {
+    vi.mocked(claimOutboundDeliveries).mockImplementation(async () => {
       calls.push("deliver");
       await waiting;
       return [];

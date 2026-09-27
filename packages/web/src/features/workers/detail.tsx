@@ -40,6 +40,8 @@ import { StatusBadge } from '@/components/status-badge'
 import {
   MISMATCH_LABELS,
   ROUTE_REASON_LABELS,
+  SESSION_AUTH_STATE_LABELS,
+  SESSION_HEALTH_LABELS,
   SESSION_STATUS_LABELS,
   workerLifecycle,
 } from './labels'
@@ -275,25 +277,33 @@ export function WorkerDetailPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sessions.map((session) => (
-                      <TableRow key={session.id}>
-                        <TableCell>
-                          <Link
-                            className='font-mono text-label break-all underline'
-                            to='/sessions/$targetId/$accountId'
-                            params={{ targetId: session.targetId, accountId: session.targetAccountId }}
-                          >
-                            {session.profileKey}
-                          </Link>
-                        </TableCell>
-                        <TableCell>
-                          <StatusBadge tone={session.status === 'LOST' ? 'warning' : 'neutral'}>
-                            {SESSION_STATUS_LABELS[session.status]}
-                          </StatusBadge>
-                        </TableCell>
-                        <TableCell>{session.health}</TableCell>
-                        <TableCell>{session.authState}</TableCell>
-                        <TableCell>
+                    {sessions.map((session) => {
+                      const statusLabel = SESSION_STATUS_LABELS[session.status] ?? session.status
+                      const subline = `槽位 #${session.accountSlot ?? 1} · ${statusLabel} · 代次 #${session.generation}`
+                      return (
+                        <TableRow key={session.id}>
+                          <TableCell>
+                            <div>
+                              <Link
+                                className='font-medium text-text-primary underline hover:text-link'
+                                to='/sessions/$targetId/$accountId'
+                                params={{ targetId: session.targetId, accountId: session.targetAccountId }}
+                              >
+                                {session.targetName || '未知系统'} · {session.accountDisplayName || '未知账号'}
+                              </Link>
+                            </div>
+                            <div className='text-label text-muted-foreground'>
+                              {subline}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={session.status === 'LOST' ? 'warning' : 'neutral'}>
+                              {statusLabel}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell>{SESSION_HEALTH_LABELS[session.health] ?? session.health}</TableCell>
+                          <TableCell>{SESSION_AUTH_STATE_LABELS[session.authState] ?? session.authState}</TableCell>
+                          <TableCell>
                           <Can permission='session:dispose'>
                             {session.disposable ? (
                               <Button
@@ -308,7 +318,8 @@ export function WorkerDetailPage() {
                           </Can>
                         </TableCell>
                       </TableRow>
-                    ))}
+                    )
+                  })}
                   </TableBody>
                 </Table>
               )}

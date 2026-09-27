@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { getCACertificates, setDefaultCACertificates } from 'node:tls'
 import { randomUUID } from 'node:crypto'
 import type { ServiceWebhookJob } from '@cairn/db'
-import { resolveNotificationDestination } from './notification-delivery.js'
+import { resolveOutboundDestination } from './outbound-delivery.js'
 import {
   sanitizeServiceWebhookResponse,
   sendServiceWebhook,
@@ -217,7 +217,7 @@ describe('服务 Webhook 真实 HTTPS 投递与签名', () => {
       responseCode: 503,
       responseBody: '{"token":"[REDACTED]"}',
     })
-    await expect(resolveNotificationDestination('https://127.0.0.1/callback')).rejects.toMatchObject({
+    await expect(resolveOutboundDestination('https://127.0.0.1/callback')).rejects.toMatchObject({
       code: 'destination_blocked',
     })
   })

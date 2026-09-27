@@ -9,6 +9,7 @@ import {
   openIsolatedDb,
   registerWorker,
   targets,
+  adjustPlatformConfig,
   type DbHandle,
 } from '@cairn/db/testing'
 import type { SessionGrant, Step } from '@cairn/shared'
@@ -87,6 +88,22 @@ describe('ExecutionEngine × AI 边界', { timeout: 60_000 }, () => {
       lostAfterSeconds: 60,
       protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
+    await adjustPlatformConfig(
+      handle,
+      { id: actorId },
+      (document) => ({
+        ...document,
+        browserAi: {
+          ...document.browserAi,
+          enabled: true,
+          baseUrl: 'http://127.0.0.1:9999/v1',
+          model: 'gpt-4o',
+          modelFamily: 'openai',
+          secretRef: { provider: 'local', secretId: newId() },
+        },
+      }),
+      'test browser ai config',
+    )
   })
 
   afterAll(async () => {

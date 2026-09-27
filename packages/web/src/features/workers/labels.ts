@@ -28,11 +28,23 @@ export const WORKER_STATUS_FILTER_LABELS: Record<WorkerStatus, string> = {
 }
 
 export const SESSION_STATUS_LABELS: Record<SessionStatus, string> = {
-  CREATING: '创建中',
-  OPEN: '打开',
+  CREATING: '启动中',
+  OPEN: '已打开',
   CLOSING: '关闭中',
   CLOSED: '已关闭',
-  LOST: '已隔离',
+  LOST: '会话失联',
+}
+
+export const SESSION_HEALTH_LABELS: Record<string, string> = {
+  HEALTHY: '健康',
+  UNHEALTHY: '异常',
+  UNKNOWN: '未知',
+}
+
+export const SESSION_AUTH_STATE_LABELS: Record<string, string> = {
+  AUTHENTICATED: '已登录',
+  EXPIRED: '已过期',
+  UNKNOWN: '未核验',
 }
 
 export const ROUTE_REASON_LABELS: Record<WorkerRouteReason, string> = {

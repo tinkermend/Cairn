@@ -262,10 +262,16 @@ export const workerSessionListQuerySchema = z.object({
 })
 export type WorkerSessionListQuery = z.infer<typeof workerSessionListQuerySchema>
 
+export const workerSessionItemSchema = sessionDtoSchema.extend({
+  targetName: z.string().min(1),
+  accountDisplayName: z.string().min(1),
+})
+export type WorkerSessionItem = z.infer<typeof workerSessionItemSchema>
+
 export const workerDetailResponseSchema = z.object({
   worker: workerSummarySchema,
   sessions: z.object({
-    items: z.array(sessionDtoSchema),
+    items: z.array(workerSessionItemSchema),
     nextCursor: nextCursorSchema,
   }),
   asOf: utcInstantSchema,

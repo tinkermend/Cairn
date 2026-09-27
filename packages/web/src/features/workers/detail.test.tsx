@@ -92,6 +92,8 @@ it('详情展示内部入口与可处置占用，页头不用会话', async () =
           closeReason: 'owner_instance_replaced',
           createdAt: '2026-09-14T00:00:00.000Z',
           updatedAt: '2026-09-14T00:00:00.000Z',
+          targetName: '测试系统',
+          accountDisplayName: '管理员账号',
           activeLease: null,
           disposable: true,
         },
@@ -108,6 +110,9 @@ it('详情展示内部入口与可处置占用，页头不用会话', async () =
   await expect.element(screen.getByRole('heading', { name: 'worker-a' })).toBeInTheDocument()
   await expect.element(screen.getByText('已停止')).toBeInTheDocument()
   await expect.element(screen.getByText('http://127.0.0.1:8091')).toBeInTheDocument()
+  await expect.element(screen.getByText('测试系统 · 管理员账号')).toBeInTheDocument()
+  await expect.element(screen.getByText('槽位 #1 · 会话失联 · 代次 #1')).toBeInTheDocument()
+  await expect.element(screen.getByText('会话失联', { exact: true })).toBeInTheDocument()
   await expect.element(screen.getByRole('button', { name: '处置' })).toBeInTheDocument()
   const headings = [...screen.container.querySelectorAll('h1, h2')].map((node) => node.textContent ?? '')
   expect(headings.join('')).not.toContain('会话')

@@ -58,6 +58,9 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
     async installExploreGuard(grant, options) {
       return manager.installExploreGuard(grant, options)
     },
+    async ingestMapSlice(grant, input) {
+      return manager.ingestMapSlice(grant, input)
+    },
     async captureFinalScreenshot(grant, evidence) {
       if (!objects) return
       const page = manager.pageForGrant(grant)

@@ -41,6 +41,7 @@ import { SECRET_PROVIDER } from '../tokens.js'
 import { systemClock } from './clock.js'
 import { BROWSER_PORT, MAP_OBSERVATION_PORT, type BrowserPort, type PassiveMapObservationPort } from './ports.js'
 import { BrowserStepExecutor } from './browser-executor.js'
+import { MapIngestExecutor } from './map-ingest-executor.js'
 import { FixtureStepExecutor } from './fixture-executor.js'
 import { STEP_EXECUTOR_REGISTRY, StepExecutorRegistry } from './step-executor.js'
 import { DebugHoldRegistry } from './debug-hold.js'
@@ -106,6 +107,7 @@ export class ExecutionEngine {
       new StepExecutorRegistry([
         new FixtureStepExecutor(),
         new BrowserStepExecutor(this.handle, this.browser, undefined, undefined, objects),
+        new MapIngestExecutor(this.handle, this.browser),
       ])
     this.holds = holds ?? new DebugHoldRegistry()
   }
