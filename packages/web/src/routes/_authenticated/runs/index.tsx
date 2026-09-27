@@ -29,6 +29,9 @@ export const Route = createFileRoute('/_authenticated/runs/')({
     if (!user || !hasPermission(user.permissions, 'run:read')) {
       throw redirect({ to: '/403' })
     }
+    if (search.view === 'suites') {
+      throw redirect({ to: '/suite-runs' })
+    }
     if (search.view === 'reports' && !hasPermission(user.permissions, 'report:read')) {
       throw redirect({ to: '/403' })
     }

@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { RunsNavTabs, type RunViewTab } from './runs-nav-tabs'
 import {
   RUN_EXECUTE_ALL_OF,
   RUN_STATUSES,
@@ -289,26 +289,13 @@ export function RunsPage() {
             </Can>
           }
         />
-        <Tabs
-          value={currentView}
-          onValueChange={(val) => {
-            patch({ view: val as RunsPageSearch['view'] })
+        <RunsNavTabs
+          activeTab={currentView as RunViewTab}
+          targetId={targetId}
+          onTabChange={(view) => {
+            patch({ view })
           }}
-        >
-          <TabsList>
-            <TabsTrigger value='runs'>独立运行</TabsTrigger>
-            <TabsTrigger value='suites' asChild>
-              <Link to='/suite-runs'>场景集运行</Link>
-            </TabsTrigger>
-            {canReadReports ? (
-              <TabsTrigger value='reports'>交付报告</TabsTrigger>
-            ) : null}
-            <TabsTrigger value='materials'>材料检索</TabsTrigger>
-            {canDelete ? (
-              <TabsTrigger value='retention'>留存与清理</TabsTrigger>
-            ) : null}
-          </TabsList>
-        </Tabs>
+        />
         {currentView === 'reports' ? (
           <ReportsCenterPanel
             key={[
@@ -849,3 +836,5 @@ export function RunsPage() {
     </>
   )
 }
+
+export { RunsNavTabs, type RunViewTab } from './runs-nav-tabs'

@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { RunsNavTabs } from '@/features/runs/runs-nav-tabs'
 import {
   SUITE_RUN_STATUS_LABELS,
   SUITE_VERDICT_LABELS,
@@ -70,14 +70,7 @@ export function SuiteRunsPage() {
         title='运行记录'
         description='独立运行与场景集运行分开查看。进度不会自动更新，点筛选条右侧的「刷新」取最新；集合编排结束不等于全部通过。'
       />
-      <Tabs value='suites' className='space-y-4'>
-        <TabsList>
-          <TabsTrigger value='runs' asChild>
-            <Link to='/runs'>独立运行</Link>
-          </TabsTrigger>
-          <TabsTrigger value='suites'>场景集运行</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <RunsNavTabs activeTab='suites' targetId={targetId} />
       {query.isPending ? (
         <PageSkeleton />
       ) : query.isError ? (
