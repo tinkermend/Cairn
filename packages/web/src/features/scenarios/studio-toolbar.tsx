@@ -422,18 +422,12 @@ export function StudioToolbar({
           {/* 更多下拉菜单（挂载助手/笔记本/窄屏下承接次要操作，大屏承接高级操作） */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size='sm' variant='outline' className='relative'>
+              <Button size='sm' variant='outline'>
                 更多
                 <ChevronDown className='size-3.5 ml-1' />
-                {pendingImportDraftId ? (
-                  <span
-                    className='absolute -top-1 -right-1 size-2 rounded-full bg-primary ring-2 ring-card'
-                    data-testid='toolbar-more-badge'
-                  />
-                ) : null}
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align='end' className='w-48'>
+            <DropdownMenuContent align='end' className='w-52'>
               {/* 空间不足时（如挂载侧边栏或小屏）收纳进菜单的操作 */}
               {!showExpandedShortcuts ? (
                 <>
@@ -447,62 +441,48 @@ export function StudioToolbar({
                     }}
                     trigger={({ onClick }) => (
                       <DropdownMenuItem onSelect={onClick}>
-                        <CalendarClock className='mr-2 size-3.5' />
-                        定时任务
+                        <CalendarClock className='mr-2 size-3.5 shrink-0' />
+                        <span className='whitespace-nowrap'>定时任务</span>
                       </DropdownMenuItem>
                     )}
                   />
                   <DropdownMenuItem asChild>
                     <Link to='/outbound' search={{ tab: 'results', scenarioId: scenario.id }}>
-                      <Send className='mr-2 size-3.5' />
-                      结果推送
+                      <Send className='mr-2 size-3.5 shrink-0' />
+                      <span className='whitespace-nowrap'>结果推送</span>
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>
               ) : null}
 
-              {/* 常规操作项 */}
-              {onOpenSettings ? (
-                <DropdownMenuItem onClick={onOpenSettings}>
-                  <Settings className='mr-2 size-3.5' />
-                  场景配置
-                </DropdownMenuItem>
-              ) : null}
+              {/* 常规操作项（场景配置在顶栏已有常驻入口，此处不再重复呈现） */}
               {canWrite && !dirty && !unpublishedDraft ? (
                 <DropdownMenuItem disabled={!canPublish || publishing} onClick={onPublish}>
-                  发布
+                  <span className='whitespace-nowrap'>发布</span>
                 </DropdownMenuItem>
               ) : null}
               <DropdownMenuItem disabled={!canStartFormalRun} onClick={onOpenRun}>
-                运行已发布版本
+                <span className='whitespace-nowrap'>运行已发布版本</span>
               </DropdownMenuItem>
               {canRecord ? (
                 <DropdownMenuItem
                   disabled={disabled}
-                  onClick={pendingImportDraftId && onPreviewImportDraft ? onPreviewImportDraft : onOpenImport}
-                  className='flex items-center justify-between'
+                  onClick={onOpenImport}
                   data-testid='toolbar-more-import-item'
                 >
-                  <span className='flex items-center'>
-                    <Zap className='mr-2 size-3.5 text-primary' />
-                    导入已有录制
-                  </span>
-                  {pendingImportDraftId ? (
-                    <span className='ml-2 rounded bg-primary/15 px-1.5 py-0.5 text-label font-medium text-primary leading-none'>
-                      待导入
-                    </span>
-                  ) : null}
+                  <Zap className='mr-2 size-3.5 text-primary shrink-0' />
+                  <span className='whitespace-nowrap'>导入已有录制</span>
                 </DropdownMenuItem>
               ) : null}
               {canWrite ? (
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={onOpenRename}>
-                    重命名
+                    <span className='whitespace-nowrap'>重命名</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem disabled={disabled} onClick={onToggleStatus}>
-                    {scenario?.status === 'active' ? '停用' : '启用'}
+                    <span className='whitespace-nowrap'>{scenario?.status === 'active' ? '停用' : '启用'}</span>
                   </DropdownMenuItem>
                 </>
               ) : null}
@@ -510,7 +490,7 @@ export function StudioToolbar({
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem className='text-destructive' onClick={onOpenRemove}>
-                    删除
+                    <span className='whitespace-nowrap'>删除</span>
                   </DropdownMenuItem>
                 </>
               ) : null}

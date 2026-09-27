@@ -7,6 +7,7 @@ import {
   targetDescriptorSchema,
   type DemonstrationPlacement,
   type RecordingDisposition,
+  type RecordingDraftDto,
   type RecordingImportPreview,
   type RecordingImportPreviewItem,
   type RecordingInsertAnchor,
@@ -15,7 +16,22 @@ import {
   type Step,
   type TargetDescriptor,
 } from '@cairn/shared'
-import { CircleCheck, CircleHelp, CircleX } from 'lucide-react'
+import {
+  Activity,
+  AlertTriangle,
+  ArrowLeft,
+  ChevronRight,
+  CircleCheck,
+  CircleHelp,
+  CircleX,
+  Clock,
+  Info,
+  Layers,
+  Loader2,
+  Search,
+  Video,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -43,6 +59,23 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { StatusBadge } from '@/components/status-badge'
+
+function formatRecordingTime(isoString?: string | null): string {
+  if (!isoString) return '未知时间'
+  try {
+    const d = new Date(isoString)
+    if (isNaN(d.getTime())) return isoString
+    return d.toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  } catch {
+    return isoString
+  }
+}
 
 const DEFAULT_DISCARD_REASON = '用户在回填时选择忽略'
 
@@ -95,14 +128,29 @@ function LegacyRecordingImportPanel({
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
   const [choices, setChoices] = useState<Record<string, LocalDisposition>>({})
-  const [available, setAvailable] = useState<{ id: string; name: string }[]>([])
+  const [availableDrafts, setAvailableDrafts] = useState<RecordingDraftDto[]>([])
+  const [loadingDrafts, setLoadingDrafts] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => {
     if (!open) return
+    setLoadingDrafts(true)
     void fetchRecordingImports(scenarioId)
-      .then((list) => setAvailable(list.drafts.map((item) => ({ id: item.id, name: item.name }))))
-      .catch(() => setAvailable([]))
+      .then((list) => setAvailableDrafts(list.drafts))
+      .catch(() => setAvailableDrafts([]))
+      .finally(() => setLoadingDrafts(false))
   }, [open, scenarioId])
+
+  const filteredDrafts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return availableDrafts
+    return availableDrafts.filter(
+      (item) =>
+        item.name.toLowerCase().includes(q) ||
+        item.id.toLowerCase().includes(q) ||
+        (item.targetName && item.targetName.toLowerCase().includes(q)),
+    )
+  }, [availableDrafts, searchQuery])
 
   useEffect(() => {
     if (!open || !recordingDraftId) {
@@ -239,40 +287,199 @@ function LegacyRecordingImportPanel({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side='right' className='flex w-full flex-col gap-4 sm:max-w-xl'>
-        <SheetHeader>
-          <SheetTitle>录制回填预览</SheetTitle>
-          <SheetDescription>
-            将源操作写入当前草稿。判定类事件只会变成成功条件候选，确认后才进入定义。
+      <SheetContent
+        side='right'
+        className='flex w-full flex-col gap-0 p-0 sm:max-w-xl md:max-w-2xl'
+      >
+        <SheetHeader className='p-6 pb-4 border-b border-border-divider shrink-0'>
+          <SheetTitle className='text-title font-semibold'>
+            {recordingDraftId ? '录制回填预览' : '导入已有录制'}
+          </SheetTitle>
+          <SheetDescription className='text-label text-muted-foreground'>
+            {recordingDraftId
+              ? '将源操作写入当前草稿。判定类事件只会变成成功条件候选，确认后才进入定义。'
+              : '选择当前目标系统的录制批次，转换为场景操作步骤进行预览与回填。'}
           </SheetDescription>
         </SheetHeader>
+
         {!recordingDraftId ? (
-          <div className='space-y-2 text-body'>
-            <p className='text-muted-foreground'>选择一个同目标系统的录制批次进行预览。</p>
-            {available.length === 0 ? (
-              <p className='text-label text-muted-foreground'>没有可导入的录制批次。</p>
-            ) : (
-              <ul className='space-y-2'>
-                {available.map((item) => (
-                  <li key={item.id}>
-                    <Button variant='outline' size='sm' onClick={() => onSelectDraft(item.id)}>
-                      {item.name}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
+          <div className='p-6 flex-1 flex flex-col gap-4 min-h-0 overflow-hidden'>
+            {/* 上下文提示 */}
+            {availableDrafts.length > 0 && availableDrafts[0]?.targetName ? (
+              <div className='flex items-center gap-2 rounded-md bg-primary/5 border border-primary/15 px-3 py-2 text-label text-muted-foreground shrink-0'>
+                <Info className='size-3.5 text-primary shrink-0' />
+                <span className='truncate'>
+                  所属系统：<strong className='text-foreground'>{availableDrafts[0].targetName}</strong>
+                  <span className='mx-2 text-muted-foreground/40'>|</span>
+                  仅展示与当前系统匹配的录制批次
+                </span>
+              </div>
+            ) : null}
+
+            {/* 搜索与过滤栏 */}
+            <div className='flex items-center justify-between gap-3 shrink-0'>
+              <div className='relative flex-1'>
+                <Search className='absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none' />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder='搜索录制名称或批次标识…'
+                  className='h-8 pl-8 pr-7 text-label bg-surface-subtle'
+                  aria-label='搜索录制批次'
+                />
+                {searchQuery ? (
+                  <button
+                    type='button'
+                    onClick={() => setSearchQuery('')}
+                    className='absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-0.5'
+                    title='清空搜索'
+                  >
+                    <X className='size-3' />
+                  </button>
+                ) : null}
+              </div>
+              <span className='text-label text-muted-foreground whitespace-nowrap shrink-0'>
+                {searchQuery
+                  ? `匹配 ${filteredDrafts.length} / ${availableDrafts.length} 项`
+                  : `共 ${availableDrafts.length} 个录制批次`}
+              </span>
+            </div>
+
+            {/* 列表主体区域 */}
+            <div className='flex-1 overflow-y-auto min-h-0 pr-1'>
+              {loadingDrafts ? (
+                <div className='flex flex-col items-center justify-center py-16 text-center text-muted-foreground gap-2'>
+                  <Loader2 className='size-6 animate-spin text-primary' />
+                  <p className='text-body font-medium'>正在加载录制批次…</p>
+                </div>
+              ) : availableDrafts.length === 0 ? (
+                <div className='flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border-card bg-surface-subtle/50 p-6'>
+                  <div className='size-10 rounded-full bg-muted flex items-center justify-center mb-3'>
+                    <Video className='size-5 text-muted-foreground' />
+                  </div>
+                  <p className='text-body font-medium text-foreground'>暂无同目标系统的录制批次</p>
+                  <p className='text-label text-muted-foreground mt-1 max-w-xs'>
+                    当前系统尚未录制任何业务流程，你可以使用录制扩展录制，或在左侧手动编排步骤。
+                  </p>
+                </div>
+              ) : filteredDrafts.length === 0 ? (
+                <div className='flex flex-col items-center justify-center py-12 text-center rounded-lg border border-dashed border-border-card bg-surface-subtle/50 p-6'>
+                  <Search className='size-5 text-muted-foreground mb-2' />
+                  <p className='text-body font-medium text-foreground'>未找到匹配的录制</p>
+                  <p className='text-label text-muted-foreground mt-1'>
+                    没有找到包含 “{searchQuery}” 的录制批次
+                  </p>
+                  <Button
+                    variant='ghost'
+                    size='sm'
+                    className='mt-3 text-label text-primary'
+                    onClick={() => setSearchQuery('')}
+                  >
+                    清空搜索条件
+                  </Button>
+                </div>
+              ) : (
+                <div className='space-y-2.5'>
+                  {filteredDrafts.map((item) => (
+                    <div
+                      key={item.id}
+                      role='button'
+                      tabIndex={0}
+                      onClick={() => onSelectDraft(item.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          onSelectDraft(item.id)
+                        }
+                      }}
+                      className='group relative flex flex-col gap-2 rounded-lg border border-border-card bg-surface-card p-3.5 hover:border-primary/40 hover:bg-surface-subtle transition-colors cursor-pointer shadow-2xs text-left'
+                      data-testid={`recording-draft-item-${item.id}`}
+                    >
+                      <div className='flex items-start justify-between gap-2'>
+                        <div className='flex items-center gap-2 min-w-0'>
+                          <Video className='size-4 text-primary shrink-0' />
+                          <span
+                            className='font-medium text-foreground text-body group-hover:text-primary transition-colors truncate'
+                            title={item.name}
+                          >
+                            {item.name}
+                          </span>
+                        </div>
+                        <div className='flex items-center gap-1.5 shrink-0'>
+                          {item.imported ? (
+                            <span className='rounded bg-muted px-1.5 py-0.5 text-label font-medium text-muted-foreground'>
+                              已导入过
+                            </span>
+                          ) : (
+                            <span className='rounded bg-primary/10 border border-primary/20 px-1.5 py-0.5 text-label font-medium text-primary'>
+                              待回填
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className='flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+                        <span className='flex items-center gap-1 bg-surface-subtle px-2 py-0.5 rounded border border-border-divider'>
+                          <Layers className='size-3 text-muted-foreground' />
+                          <span>{item.itemCount ?? 0} 个步骤</span>
+                        </span>
+                        <span className='flex items-center gap-1 bg-surface-subtle px-2 py-0.5 rounded border border-border-divider'>
+                          <Activity className='size-3 text-muted-foreground' />
+                          <span>{item.eventCount ?? 0} 原始事件</span>
+                        </span>
+                        {item.unresolvedCount > 0 ? (
+                          <span className='flex items-center gap-1 bg-status-warning-background text-status-warning-foreground border border-status-warning-foreground/20 px-2 py-0.5 rounded'>
+                            <AlertTriangle className='size-3' />
+                            <span>{item.unresolvedCount} 项需人工确认</span>
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className='flex items-center justify-between text-label text-muted-foreground pt-1 border-t border-border-divider/50'>
+                        <span className='flex items-center gap-1.5'>
+                          <Clock className='size-3 text-muted-foreground' />
+                          <span>{formatRecordingTime(item.createdAt)}</span>
+                          {item.targetName ? (
+                            <span className='text-muted-foreground/60'>· {item.targetName}</span>
+                          ) : null}
+                        </span>
+                        <span className='flex items-center text-primary text-label font-medium opacity-0 group-hover:opacity-100 transition-opacity'>
+                          预览导入
+                          <ChevronRight className='size-3.5 ml-0.5 group-hover:translate-x-0.5 transition-transform' />
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ) : loading || !preview ? (
-          <p className='text-body text-muted-foreground'>正在生成预览…</p>
+          <div className='p-6 flex-1 flex flex-col items-center justify-center text-center text-muted-foreground gap-2'>
+            <Loader2 className='size-6 animate-spin text-primary' />
+            <p className='text-body font-medium'>正在生成导入预览…</p>
+          </div>
         ) : (
-          <>
-            <p className='text-label text-muted-foreground'>
+          <div className='p-6 flex-1 flex flex-col gap-4 min-h-0 overflow-hidden'>
+            {/* 返回重选按钮 */}
+            <div className='flex items-center justify-between pb-1 border-b border-border-divider shrink-0'>
+              <Button
+                variant='ghost'
+                size='sm'
+                className='h-7 -ml-2 text-label text-muted-foreground hover:text-foreground'
+                onClick={() => onSelectDraft('')}
+              >
+                <ArrowLeft className='size-3.5 mr-1' />
+                重新选择录制批次
+              </Button>
+            </div>
+
+            <p className='text-label text-muted-foreground shrink-0'>
               {preview.recordingName} · 将插入 {insertCount} 步，保留原 {stepCount} 步，还可再加{' '}
               {preview.remainingStepCapacity} 步
             </p>
             {preview.metrics && (
-              <div className='flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 p-2 text-label'>
+              <div className='flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 p-2 text-label shrink-0'>
                 <span>总计 <strong>{preview.metrics.totalCount}</strong> 步</span>
                 <span className='text-muted-foreground'>·</span>
                 <span className='text-status-success-foreground'>已就绪 <strong>{preview.metrics.mappedCount}</strong></span>
@@ -291,12 +498,12 @@ function LegacyRecordingImportPanel({
               </div>
             )}
             {preview.metrics && !preview.metrics.hasAssertions && (
-              <div className='rounded-md border border-status-warning-foreground/30 bg-status-warning-background p-2.5 text-label text-status-warning-foreground'>
+              <div className='rounded-md border border-status-warning-foreground/30 bg-status-warning-background p-2.5 text-label text-status-warning-foreground shrink-0'>
                 ⚠️ <strong>流程缺少业务检查点</strong>：当前录制仅包含操作动作，未捕获断言。建议回填后在流程末尾补充检查点（如校验“提交成功”提示）。
               </div>
             )}
             {/* 批量决策工具栏 */}
-            <div className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-border-card bg-muted/20 px-3 py-2 text-label'>
+            <div className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-border-card bg-muted/20 px-3 py-2 text-label shrink-0'>
               <span className='text-label text-muted-foreground'>批量决策：</span>
               <div className='flex items-center gap-2'>
                 <Button
@@ -332,7 +539,7 @@ function LegacyRecordingImportPanel({
                 />
               ))}
             </ol>
-            <SheetFooter>
+            <SheetFooter className='p-0 pt-2 border-t border-border-divider shrink-0 flex flex-row items-center justify-end gap-2'>
               <Button variant='outline' onClick={() => onOpenChange(false)}>
                 取消
               </Button>
@@ -344,7 +551,7 @@ function LegacyRecordingImportPanel({
                 {insertCount === 0 ? '放弃导入' : `回填 ${insertCount} 项`}
               </Button>
             </SheetFooter>
-          </>
+          </div>
         )}
       </SheetContent>
     </Sheet>

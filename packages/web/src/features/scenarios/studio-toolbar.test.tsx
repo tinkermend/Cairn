@@ -353,7 +353,9 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     expect(onPreviewImportDraft).toHaveBeenCalledTimes(1)
   })
 
-  it('当存在 pendingImportDraftId 时，更多按钮带有徽标提示，下拉项包含待导入状态', async () => {
+  it('更多下拉菜单不重复展示顶栏已有的场景配置，导入已有录制项触发 onOpenImport 且无冗余徽章干扰', async () => {
+    const onOpenImport = vi.fn()
+    const onOpenSettings = vi.fn()
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
@@ -384,27 +386,39 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
             onPublish={() => {}}
             onStartTrial={() => {}}
             onOpenRun={() => {}}
-            onOpenImport={() => {}}
+            onOpenImport={onOpenImport}
             onOpenRename={() => {}}
             onToggleStatus={() => {}}
             onOpenRemove={() => {}}
+            onOpenSettings={onOpenSettings}
             onLeave={() => {}}
           />
         </div>
       </QueryClientProvider>
     )
 
-    // 更多按钮带有小圆点徽标
-    await expect.element(screen.getByTestId('toolbar-more-badge')).toBeInTheDocument()
+    // 顶栏外层已有高亮草稿导入入口，更多按钮不再打扰显示小圆点徽标
+    expect(screen.getByTestId('toolbar-more-badge').query()).toBeNull()
+
+    // 顶栏有常驻场景配置按钮
+    const topSettingsBtn = screen.getByTestId('toolbar-scenario-config')
+    await expect.element(topSettingsBtn).toBeInTheDocument()
 
     // 点击更多按钮打开下拉菜单
     const moreBtn = screen.getByRole('button', { name: '更多' })
     await moreBtn.click()
 
-    // 菜单项包含「导入已有录制」及「待导入」状态
+    // 更多下拉菜单中不再重复包含「场景配置」
+    expect(screen.getByRole('menuitem', { name: '场景配置' }).elements()).toHaveLength(0)
+
+    // 更多下拉项包含通用的「导入已有录制」，不带冗余的「待导入」状态，且点击触发 onOpenImport
     const importItem = screen.getByTestId('toolbar-more-import-item')
     await expect.element(importItem).toBeInTheDocument()
-    await expect.element(importItem).toHaveTextContent('待导入')
+    await expect.element(importItem).toHaveTextContent('导入已有录制')
+    expect(await (await importItem.element()).textContent).not.toContain('待导入')
+
+    await importItem.click()
+    expect(onOpenImport).toHaveBeenCalledTimes(1)
   })
 })
 

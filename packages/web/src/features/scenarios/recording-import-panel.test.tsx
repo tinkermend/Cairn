@@ -208,4 +208,89 @@ describe('录制草稿回填面板 (LegacyRecordingImportPanel)', () => {
     await screen.getByRole('button', { name: '选择已有参数' }).click()
     await expect.element(screen.getByLabelText('输入密码 绑定参数')).toBeVisible()
   })
+
+  it('当 recordingDraftId 为 null 时，展示优雅的录制批次微卡片列表与元数据，支持即时搜索与选择', async () => {
+    const onSelectDraft = vi.fn()
+    const mockDrafts = [
+      {
+        id: 'draft-order-01',
+        name: '订单创建流程录制-批次A',
+        targetId: 'target-01',
+        targetName: '电商后台系统',
+        recordingId: 'rec-01',
+        sourceVersion: 'v1',
+        eventCount: 28,
+        itemCount: 9,
+        unresolvedCount: 0,
+        createdBy: { kind: 'user' as const, id: 'u1', name: '测试员' },
+        imported: false,
+        createdAt: '2026-09-25T10:00:00Z',
+        updatedAt: '2026-09-25T10:00:00Z',
+      },
+      {
+        id: 'draft-login-02',
+        name: '统一登录与权限校验',
+        targetId: 'target-01',
+        targetName: '电商后台系统',
+        recordingId: 'rec-02',
+        sourceVersion: 'v1',
+        eventCount: 15,
+        itemCount: 4,
+        unresolvedCount: 1,
+        createdBy: { kind: 'user' as const, id: 'u1', name: '测试员' },
+        imported: true,
+        createdAt: '2026-09-24T08:00:00Z',
+        updatedAt: '2026-09-24T08:00:00Z',
+      },
+    ]
+    mocks.fetchRecordingImports.mockResolvedValue({ drafts: mockDrafts })
+
+    const screen = await renderPanel({
+      recordingDraftId: null,
+      onSelectDraft,
+    })
+
+    // 抽屉主标题与所属系统上下文
+    await expect.element(screen.getByText('导入已有录制')).toBeVisible()
+    await expect.element(screen.getByText(/所属系统：/)).toBeVisible()
+    await expect.element(screen.getByText('电商后台系统', { exact: true })).toBeVisible()
+
+    // 录制列表卡片与元数据
+    await expect.element(screen.getByText('订单创建流程录制-批次A')).toBeVisible()
+    await expect.element(screen.getByText('9 个步骤')).toBeVisible()
+    await expect.element(screen.getByText('28 原始事件')).toBeVisible()
+    await expect.element(screen.getByText('待回填')).toBeVisible()
+
+    await expect.element(screen.getByText('统一登录与权限校验')).toBeVisible()
+    await expect.element(screen.getByText('4 个步骤')).toBeVisible()
+    await expect.element(screen.getByText('已导入过')).toBeVisible()
+    await expect.element(screen.getByText('1 项需人工确认')).toBeVisible()
+
+    // 搜索过滤测试
+    const searchInput = screen.getByRole('textbox', { name: '搜索录制批次' })
+    await searchInput.fill('统一登录')
+
+    // 只有匹配项可见，非匹配项被过滤
+    await expect.element(screen.getByText('统一登录与权限校验')).toBeVisible()
+    expect(screen.getByText('订单创建流程录制-批次A').elements()).toHaveLength(0)
+
+    // 点击卡片选择该草稿进入预览
+    const card = screen.getByTestId('recording-draft-item-draft-login-02')
+    await card.click()
+    expect(onSelectDraft).toHaveBeenCalledWith('draft-login-02')
+  })
+
+  it('在预览状态下，点击重新选择录制批次按钮可触发 onSelectDraft("") 返回列表', async () => {
+    const onSelectDraft = vi.fn()
+    const screen = await renderPanel({
+      recordingDraftId: draftId,
+      onSelectDraft,
+    })
+
+    const backBtn = screen.getByRole('button', { name: '重新选择录制批次' })
+    await expect.element(backBtn).toBeVisible()
+
+    await backBtn.click()
+    expect(onSelectDraft).toHaveBeenCalledWith('')
+  })
 })
