@@ -204,4 +204,36 @@ describe('StepPipelineRail', () => {
     // step-2 有自愈候选，展示自愈就绪徽标
     await expect.element(screen.getByTestId('step-locator-health-step-2')).toHaveTextContent('自愈就绪 (20%)')
   })
+
+  it('步骤编号处使用顺序流向箭头标识前后关系，末尾节点无箭头，且已消除多余灰色竖线', async () => {
+    const screen = await render(
+      <div className='h-[600px] w-[320px] flex flex-col'>
+        <StepPipelineRail
+          document={sampleDoc}
+          selectedId='step-1'
+          canWrite={true}
+          disabled={false}
+          editableTypes={['navigate', 'extract']}
+          onSelect={vi.fn()}
+          onAddStep={vi.fn()}
+        />
+      </div>,
+    )
+
+    // 步骤 1 和 步骤 2 均渲染顺序流向箭头
+    await expect.element(screen.getByTestId('step-flow-arrow-step-1')).toBeInTheDocument()
+    await expect.element(screen.getByTestId('step-flow-arrow-step-2')).toBeInTheDocument()
+
+    // 最后一个节点（模块）为终止步骤，不渲染箭头
+    expect(screen.container.querySelector('[data-testid="step-flow-arrow-mod-inv-1"]')).toBeNull()
+
+    // 确认已移除原先生硬且错位遮挡复选框的 before:left-[19px] 灰色竖线类
+    const railItems = screen.container.querySelectorAll('[data-list-step]')
+    expect(railItems.length).toBe(3)
+    railItems.forEach((item) => {
+      expect(item.className).not.toContain('before:left-[19px]')
+      expect(item.className).not.toContain('before:bg-border-divider')
+    })
+  })
 })
+

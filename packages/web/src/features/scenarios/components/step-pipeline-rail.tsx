@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
@@ -657,20 +658,34 @@ export function StepPipelineRail({
                     className={cn(
                       'relative flex min-w-0 items-start gap-2 pl-1',
                       depthClass,
-                      'before:absolute before:left-[19px] before:top-3 before:w-0.5 before:bg-border-divider',
-                      isLast ? 'before:h-3' : 'before:bottom-0',
                     )}
                   >
-                    <span
-                      className={cn(
-                        'relative z-10 flex size-5 shrink-0 items-center justify-center rounded-full border text-3xs font-mono font-medium transition-colors mt-2',
-                        isSelected
-                          ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
-                          : 'border-primary/40 bg-primary/5 text-primary',
+                    <div className='flex flex-col items-center shrink-0 mt-2'>
+                      <span
+                        className={cn(
+                          'relative z-10 flex size-5 shrink-0 items-center justify-center rounded-full border text-3xs font-mono font-medium transition-colors',
+                          isSelected
+                            ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
+                            : 'border-primary/40 bg-primary/5 text-primary',
+                        )}
+                      >
+                        {item.displayNumber}
+                      </span>
+                      {!isLast && (
+                        <div
+                          aria-hidden='true'
+                          className='flex items-center justify-center pt-1.5 pb-0.5'
+                        >
+                          <ArrowDown
+                            data-testid={`step-flow-arrow-${key}`}
+                            className={cn(
+                              'size-3 shrink-0 transition-colors',
+                              isSelected ? 'text-primary/70' : 'text-primary/40',
+                            )}
+                          />
+                        </div>
                       )}
-                    >
-                      {item.displayNumber}
-                    </span>
+                    </div>
 
                     <div
                       role='button'
@@ -798,8 +813,6 @@ export function StepPipelineRail({
                   className={cn(
                     'relative flex min-w-0 items-start gap-2 pl-1',
                     depthClass,
-                    'before:absolute before:left-[19px] before:top-3 before:w-0.5 before:bg-border-divider',
-                    isLast ? 'before:h-3' : 'before:bottom-0',
                   )}
                 >
                   {(actionModulesEnabled || (onWrapSelection && canWrite)) &&
@@ -821,20 +834,42 @@ export function StepPipelineRail({
                       />
                     )}
 
-                  <span
-                    className={cn(
-                      'relative z-10 flex size-5 shrink-0 items-center justify-center rounded-full border text-3xs font-mono font-medium transition-colors mt-2',
-                      isSelected
-                        ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
-                        : isHolding
-                          ? 'border-status-warning bg-status-warning text-white'
-                          : isDisabled
-                            ? 'border-dashed border-border-default bg-muted/40 text-muted-foreground/60'
-                            : 'border-border-default bg-surface-subtle text-muted-foreground',
+                  <div className='flex flex-col items-center shrink-0 mt-2'>
+                    <span
+                      className={cn(
+                        'relative z-10 flex size-5 shrink-0 items-center justify-center rounded-full border text-3xs font-mono font-medium transition-colors',
+                        isSelected
+                          ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
+                          : isHolding
+                            ? 'border-status-warning bg-status-warning text-white'
+                            : isDisabled
+                              ? 'border-dashed border-border-default bg-muted/40 text-muted-foreground/60'
+                              : 'border-border-default bg-surface-subtle text-muted-foreground',
+                      )}
+                    >
+                      {item.displayNumber}
+                    </span>
+                    {!isLast && (
+                      <div
+                        aria-hidden='true'
+                        className='flex items-center justify-center pt-1.5 pb-0.5'
+                      >
+                        <ArrowDown
+                          data-testid={`step-flow-arrow-${key}`}
+                          className={cn(
+                            'size-3 shrink-0 transition-colors',
+                            isSelected
+                              ? 'text-primary/70'
+                              : isHolding
+                                ? 'text-status-warning/70'
+                                : isDisabled
+                                  ? 'text-muted-foreground/20'
+                                  : 'text-muted-foreground/40',
+                          )}
+                        />
+                      </div>
                     )}
-                  >
-                    {item.displayNumber}
-                  </span>
+                  </div>
 
                   <button
                     type='button'
