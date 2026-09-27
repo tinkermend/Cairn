@@ -20,11 +20,42 @@ import {
   createAssistantTurnBodySchema,
   assistantQuoteContextSchema,
   assistantPageContextSchema,
+  PAGE_LANDMARK_MANIFESTS,
+  packAssistantResultEnvelope,
+  unpackAssistantResultEnvelopeDetailed,
   type FillInput,
   type RunObservation,
   type ScenarioDocument,
   type Step,
 } from '../index.js'
+
+describe('助手公开结果边界', () => {
+  it('旧轮次中的原始思考文本不进入公开结果，新结果也不再写入', () => {
+    const result = { kind: 'unsupported' as const, reasonCode: 'TASK_UNSUPPORTED', message: '暂不支持' }
+    const legacy = unpackAssistantResultEnvelopeDetailed({
+      version: 2,
+      result,
+      thinkingText: '内部模型推理原文',
+      thinkingDurationMs: 1234,
+    })
+    expect(legacy?.thinkingText).toBeUndefined()
+    expect(legacy?.thinkingDurationMs).toBe(1234)
+    expect(packAssistantResultEnvelope(result, 2, undefined, '内部模型推理原文', 1234)).toEqual({
+      version: 2,
+      result,
+      thinkingDurationMs: 1234,
+    })
+  })
+
+  it('仅为已注册页面监听器的动作提供快捷按钮', () => {
+    const actions = Object.values(PAGE_LANDMARK_MANIFESTS).flatMap((page) =>
+      page.regions.flatMap((region) => region.actions),
+    )
+    expect(actions.filter((action) => action.actionKey).map((action) => action.actionKey)).toEqual([
+      'open-add-step-menu',
+    ])
+  })
+})
 
 const fillTarget = {
   framePath: [],
@@ -494,4 +525,3 @@ describe('单步候选构造', () => {
     }
   })
 })
-

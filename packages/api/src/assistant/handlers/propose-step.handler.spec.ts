@@ -6,6 +6,7 @@ import {
 
 vi.mock('@cairn/db', () => ({
   getScenario: vi.fn(),
+  getTargetKnowledgeContext: vi.fn(),
   newId: vi.fn(() => '99999999-9999-4999-8999-999999999999'),
   DomainError: class DomainError extends Error {
     constructor(public kind: string, public code: string, message: string) {
@@ -18,7 +19,7 @@ vi.mock('./common.js', () => ({
   requireVisibleTarget: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { getScenario } from '@cairn/db'
+import { getScenario, getTargetKnowledgeContext } from '@cairn/db'
 import { handleScenarioProposeStep } from './propose-step.handler.js'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 
@@ -112,6 +113,135 @@ describe('propose-step.handler 场景编排结构化提议', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getScenario).mockResolvedValue(sampleScenarioV2())
+  })
+
+  it('将真实地图定位与资产引用传给编排模型，并拒绝伪造的引用', async () => {
+    const targetKnowledge = {
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:tokens', menuPath: ['令牌'], title: '令牌列表', urlPattern: 'https://example.com/tokens',
+        views: [{ viewStateKey: 'view:tokens', label: 'default', elements: [{
+          assetRef: 'p:page:o:button:i:default:d:1', category: 'action_button', name: '搜索', stability: 'high',
+          locator: { framePath: [], candidates: [{ by: 'role', value: 'button', name: '搜索' }] },
+        }] }] }],
+    }
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue(targetKnowledge as never)
+    const generated = vi.fn(async () => ({ operations: [{
+      kind: 'insert_step', id: 'temp', step: { id: 'step', name: '点击搜索', type: 'click',
+        input: { target: { assetRef: 'p:invented:o:button:i:default:d:1', framePath: [],
+          candidates: [{ by: 'role', value: 'button', name: '搜索' }] } } },
+    }] }))
+    const base = mockContext()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      session: { generateScenarioAuthoringProposal: generated } as never,
+    }))
+    expect(getTargetKnowledgeContext).toHaveBeenCalledWith(expect.anything(), targetKnowledge.targetId,
+      expect.objectContaining({ maxPages: 3 }))
+    expect(generated).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ targetKnowledge }), undefined)
+    expect(result).toMatchObject({ kind: 'unsupported', reasonCode: 'MAP_ASSET_UNKNOWN' })
+  })
+
+  it('用户明确指定页面与表格列时使用已观测资产生成只读断言提议', async () => {
+    const assetRef = 'p:page:o:column:i:default:d:1'
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:keys', menuPath: ['API Keys'], title: 'API Keys',
+        urlPattern: 'https://example.com/keys', views: [{ viewStateKey: 'view:keys', label: 'default',
+          elements: [{ assetRef, category: 'table_column', name: 'API Key', stability: 'medium',
+            locator: { framePath: [], candidates: [{ by: 'role', value: 'columnheader', name: 'API Key' }] } }] }] }],
+    } as never)
+    const model = { generateScenarioAuthoringProposal: vi.fn() }
+    const base = mockContext()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      slots: { ...base.slots, stepId: '11111111-1111-4111-8111-111111111111' },
+      question: '在当前步骤之后增加一个断言步骤，确认 API Keys 页面表格存在 API Key 列。',
+      session: model as never,
+    }))
+    expect(result.kind).toBe('authoring_proposal')
+    if (result.kind === 'authoring_proposal') expect(result.operations[0]).toMatchObject({
+      kind: 'insert_step', anchorStepId: '11111111-1111-4111-8111-111111111111',
+      step: { type: 'assert', effectType: 'READ_ONLY', input: {
+        target: { assetRef, candidates: [{ by: 'role', value: 'columnheader', name: 'API Key' }] },
+        expect: { kind: 'exists' },
+      } },
+    })
+    expect(model.generateScenarioAuthoringProposal).not.toHaveBeenCalled()
+  })
+
+  it('对非英文列名也按唯一的已观测资产生成断言', async () => {
+    const assetRef = 'p:orders:o:order-number:i:default:d:1'
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:orders', menuPath: ['订单'], title: '订单列表',
+        urlPattern: 'https://example.com/orders', views: [{ viewStateKey: 'view:orders', label: 'default',
+          elements: [{ assetRef, category: 'table_column', name: '订单号', stability: 'medium',
+            locator: { framePath: [], candidates: [{ by: 'role', value: 'columnheader', name: '订单号' }] } }] }] }],
+    } as never)
+    const base = mockContext()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      slots: { ...base.slots, stepId: '11111111-1111-4111-8111-111111111111' },
+      question: '在当前步骤之后确认订单表格包含订单号列。',
+      session: { generateScenarioAuthoringProposal: vi.fn() } as never,
+    }))
+    expect(result).toMatchObject({ kind: 'authoring_proposal', operations: [{
+      step: { type: 'assert', effectType: 'READ_ONLY', input: { target: { assetRef }, expect: { kind: 'exists' } } },
+    }] })
+  })
+
+  it('明确指定的页面没有该列时不借用其他页面的同名列', async () => {
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [
+        { pageKey: 'page:orders', menuPath: ['订单'], title: '订单列表',
+          urlPattern: 'https://example.com/orders', views: [] },
+        { pageKey: 'page:customers', menuPath: ['客户'], title: '客户列表',
+          urlPattern: 'https://example.com/customers', views: [{ viewStateKey: 'view:customers', label: 'default',
+            elements: [{ assetRef: 'p:customers:o:order-number:i:default:d:1', category: 'table_column',
+              name: '订单号', stability: 'medium',
+              locator: { framePath: [], candidates: [{ by: 'role', value: 'columnheader', name: '订单号' }] } }] }] },
+      ],
+    } as never)
+    const generate = vi.fn()
+    const base = mockContext()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      slots: { ...base.slots, stepId: '11111111-1111-4111-8111-111111111111' },
+      question: '确认订单列表的表格包含订单号列。',
+      session: { generateScenarioAuthoringProposal: generate } as never,
+    }))
+    expect(generate).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ kind: 'unsupported', reasonCode: 'MAP_COLUMN_NOT_OBSERVED' })
+  })
+
+  it('多个页面有同名列且问句未指定页面时不猜测资产', async () => {
+    const column = (assetRef: string) => ({ assetRef, category: 'table_column', name: '状态',
+      stability: 'medium', locator: { framePath: [], candidates: [{ by: 'role', value: 'columnheader', name: '状态' }] } })
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [
+        { pageKey: 'page:orders', menuPath: ['订单'], title: '订单列表', urlPattern: 'https://example.com/orders',
+          views: [{ viewStateKey: 'view:orders', label: 'default', elements: [column('p:orders:o:status:i:default:d:1')] }] },
+        { pageKey: 'page:customers', menuPath: ['客户'], title: '客户列表', urlPattern: 'https://example.com/customers',
+          views: [{ viewStateKey: 'view:customers', label: 'default', elements: [column('p:customers:o:status:i:default:d:1')] }] },
+      ],
+    } as never)
+    const generate = vi.fn()
+    const base = mockContext()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      slots: { ...base.slots, stepId: '11111111-1111-4111-8111-111111111111' },
+      question: '确认表格包含状态列。',
+      session: { generateScenarioAuthoringProposal: generate } as never,
+    }))
+    expect(generate).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ kind: 'unsupported', reasonCode: 'MAP_COLUMN_AMBIGUOUS' })
   })
 
   it('缺少 workflow:write 权限时诚实拒绝并说明', async () => {

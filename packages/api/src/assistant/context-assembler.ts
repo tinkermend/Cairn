@@ -70,9 +70,10 @@ const MAX_AUTHORING_CONTEXT_CHARS = 200_000 // AIF-17 hard limit
 export async function assembleDiagnoseContext(
   db: DbHandle,
   runId: string,
-  options: { stepId?: string; focus?: DiagnosticFocus | string; quote?: AssistantQuoteContext } = {},
+  options: { stepId?: string; focus?: DiagnosticFocus | string; quote?: AssistantQuoteContext },
+  actorId: string,
 ): Promise<{ observation: RunObservation; pack: DiagnoseFactPack }> {
-  const observation = await loadRunObservation(db, runId)
+  const observation = await loadRunObservation(db, runId, actorId)
   if (!observation) {
     throw new DomainError('not_found', 'RUN_NOT_FOUND', '运行不存在')
   }
@@ -379,14 +380,15 @@ export async function assembleRunCompareContext(
   db: DbHandle,
   baseRunId: string,
   targetRunId: string,
+  actorId: string,
 ): Promise<{
   baseObservation: RunObservation
   targetObservation: RunObservation
   pack: RunCompareFactPack
 }> {
   const [baseObservation, targetObservation] = await Promise.all([
-    loadRunObservation(db, baseRunId),
-    loadRunObservation(db, targetRunId),
+    loadRunObservation(db, baseRunId, actorId),
+    loadRunObservation(db, targetRunId, actorId),
   ])
 
   if (!baseObservation) {
@@ -658,4 +660,3 @@ export function validateGrounding<T extends { text?: string; citations: Assistan
 
   return { valid, invalid, invalidReasons }
 }
-

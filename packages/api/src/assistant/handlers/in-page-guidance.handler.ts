@@ -2,8 +2,11 @@ import {
   type AssistantInPageGuidance,
   type AssistantResult,
   PAGE_LANDMARK_MANIFESTS,
+  hasPermission,
 } from '@cairn/shared'
+import { authorizeTargetRequest, getTargetKnowledgeContext } from '@cairn/db'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
+import { requireVisibleTarget } from './common.js'
 
 export async function handleInPageGuidance(
   ctx: AssistantCapabilityHandlerContext,
@@ -64,6 +67,14 @@ export async function handleInPageGuidance(
   // 若未直接命中且具有 LLM 会话，基于地标元数据进行语义生成
   if (ctx.session) {
     await onProgress?.('generating', '正在调用模型推理当前页面动线指引...')
+    const targetId = body.pageContext?.targetId
+    const targetKnowledge = targetId && hasPermission(ctx.actor.permissions, 'target:read')
+      && hasPermission(ctx.actor.permissions, 'map:read')
+      ? await (async () => {
+          await authorizeTargetRequest(ctx.db, ctx.actor.id, { targetId, permissions: ['map:read'] })
+          await requireVisibleTarget(ctx.actor, targetId, ctx.targets, ctx.db)
+          return getTargetKnowledgeContext(ctx.db, targetId, { intent: question, maxPages: 3 })
+        })() : undefined
     const { z } = await import('zod')
     const llmResult = await ctx.session.completeJson(
       'in_page_guidance',
@@ -79,7 +90,8 @@ export async function handleInPageGuidance(
 【规则】
 1. 回答要精准、言简意赅，指出具体区域、按钮名称与触发方式；
 2. visualPath 给出 2~3 个按序指引步骤；
-3. 输出 JSON: {"directAnswer": "...", "visualPath": ["1. ...", "2. ..."], "shortcutHint": "可选快捷键"}。`,
+3. 若 targetKnowledge 中有匹配的目标系统页面，使用其菜单路径、页面及已观测元素名称；缺少证据时不要编造目标系统路径或按钮；
+4. 输出 JSON: {"directAnswer": "...", "visualPath": ["1. ...", "2. ..."], "shortcutHint": "可选快捷键"}。`,
         },
         {
           role: 'user',
@@ -87,6 +99,7 @@ export async function handleInPageGuidance(
             question,
             page: manifest.pageTitle,
             landmarks: manifest.regions,
+            targetKnowledge,
           }),
         },
       ],

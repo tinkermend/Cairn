@@ -1,14 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { AssistantFact } from '@cairn/shared'
 import { Clock, ExternalLink, ShieldCheck } from 'lucide-react'
 import { StatusBadge } from '@/components/status-badge'
 import { cn } from '@/lib/utils'
+import { citationDisplayLabel } from '../citation-label'
 
 export interface AssistantFactItemProps {
   fact: AssistantFact
   defaultExpanded?: boolean
   className?: string
   onNavigateCitation?: (citation: string) => void
+  canNavigateCitation?: (citation: string) => boolean
 }
 
 export function AssistantFactItem({
@@ -16,12 +18,18 @@ export function AssistantFactItem({
   defaultExpanded = false,
   className,
   onNavigateCitation,
+  canNavigateCitation,
 }: AssistantFactItemProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
-
-  const isExpired = fact.validUntil
-    ? new Date(fact.validUntil).getTime() < Date.now()
-    : false
+  const [isExpired, setIsExpired] = useState<boolean | null>(null)
+  useEffect(() => {
+    const validUntil = fact.validUntil
+    if (!validUntil) return
+    const updateExpiry = () => setIsExpired(new Date(validUntil).getTime() < Date.now())
+    updateExpiry()
+    const timer = window.setInterval(updateExpiry, 60_000)
+    return () => window.clearInterval(timer)
+  }, [fact.validUntil])
 
   const citations = fact.citations ?? []
 
@@ -59,7 +67,7 @@ export function AssistantFactItem({
                 </StatusBadge>
               ) : null}
 
-              {fact.validUntil ? (
+              {fact.validUntil && isExpired !== null ? (
                 isExpired ? (
                   <StatusBadge tone='warning' className='text-label py-0 px-1.5'>
                     时效已过期
@@ -96,20 +104,28 @@ export function AssistantFactItem({
         <div className='mt-2 pt-2 border-t border-border-divider space-y-1'>
           <div className='text-label font-medium text-text-muted'>事实证据链：</div>
           <div className='flex flex-wrap gap-1'>
-            {citations.map((cite) => (
-              <span
-                key={cite}
-                onClick={() => onNavigateCitation?.(cite)}
-                className={cn(
-                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-label font-mono bg-surface-subtle border border-border-default text-text-secondary',
-                  onNavigateCitation && 'cursor-pointer hover:border-primary-400 hover:text-primary-600',
-                )}
-                title={cite}
-              >
-                {cite}
-                {onNavigateCitation ? <ExternalLink className='size-2.5' /> : null}
-              </span>
-            ))}
+            {citations.map((cite) => {
+              const navigable = Boolean(onNavigateCitation && canNavigateCitation?.(cite))
+              const label = citationDisplayLabel(cite)
+              const citationClass = 'inline-flex items-center gap-1 rounded border border-border-default bg-surface-subtle px-1.5 py-0.5 text-label text-text-secondary'
+              return navigable ? (
+                <button
+                  key={cite}
+                  type='button'
+                  onClick={() => onNavigateCitation?.(cite)}
+                  className={cn(citationClass, 'hover:border-primary-400 hover:text-primary-600')}
+                  title={cite}
+                  aria-label={`打开${label}`}
+                >
+                  {label}
+                  <ExternalLink className='size-2.5' aria-hidden='true' />
+                </button>
+              ) : (
+                <span key={cite} className={citationClass} title={cite}>
+                  {label}
+                </span>
+              )
+            })}
           </div>
         </div>
       ) : null}

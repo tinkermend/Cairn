@@ -9,15 +9,28 @@ import {
   SCHEDULE_SKIP_REASON_METAS,
   resolveSkipReasonAction,
   type ScheduleSkipReason,
+  describeAuthIssue,
+  type RunListQuery,
+  INCIDENT_STATUSES,
+  runListQuerySchema,
 } from '@cairn/shared'
 import {
   DomainError,
+  authorizeTargetRequest,
+  getRun,
   loadRunObservation,
   getScenario,
   getSessionDto,
   getSchedule,
   listScheduleOccurrences,
   getDataset,
+  readAccountSessionCap,
+  findLiveSessions,
+  listQueuedRunsForAccount,
+  getAccountSessionDetail,
+  listRuns,
+  loadRunFailureSummaries,
+  listIncidents,
 } from '@cairn/db'
 import { z } from 'zod'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
@@ -26,6 +39,76 @@ import { requireVisibleTarget } from './common.js'
 import { extractStepStructureFacts } from './step-structure-facts.js'
 
 const MAX_FACT_CHARS = 12_000
+const FAILURE_DIGEST_LIMIT = 50
+const FAILURE_DIGEST_INTENT_PATTERN =
+  /同一个原因|同因|同样的原因|归并|失败归并|老失败|经常失败|最近.*失败|这些失败|为何老失败|多次失败|失败分析|失败聚集|失败聚类|为什么.*失败|为什么老|主要失败原因/i
+const RUN_DIGEST_FILTER_SCHEMA = runListQuerySchema.omit({ limit: true, cursor: true })
+const OPEN_INCIDENT_STATUSES = INCIDENT_STATUSES.filter(
+  (status) => status !== 'RESOLVED' && status !== 'DISMISSED',
+)
+
+function shiftLocalDate(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00.000Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+function localToday(timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
+  } catch {
+    return new Date().toISOString().slice(0, 10)
+  }
+}
+
+function formatInTimezone(iso: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(iso))
+  } catch {
+    return iso
+  }
+}
+
+/** 解析问题里的相对日期范围，按调度时区的本地日期计算。 */
+function parseScheduleDateRange(
+  question: string,
+  timezone: string,
+): { from: string; to: string; label: string } | null {
+  const today = localToday(timezone)
+  if (/前天/.test(question)) {
+    const day = shiftLocalDate(today, -2)
+    return { from: day, to: day, label: '前天' }
+  }
+  if (/昨天|昨晚|昨日|昨夜/.test(question)) {
+    const day = shiftLocalDate(today, -1)
+    return { from: day, to: day, label: '昨天' }
+  }
+  if (/今天|今日|今晚|今早/.test(question)) {
+    return { from: today, to: today, label: '今天' }
+  }
+  const days = parseRecentDays(question)
+  if (days) {
+    return { from: shiftLocalDate(today, -(days - 1)), to: today, label: `最近 ${days} 天` }
+  }
+  if (/本周|这周|这一周|这个星期/.test(question)) {
+    return { from: shiftLocalDate(today, -6), to: today, label: '最近 7 天' }
+  }
+  return null
+}
+
+function parseRecentDays(question: string): number | null {
+  const match = /(?:最近|近)\s*(\d{1,3})\s*天|(\d{1,3})\s*天内/.exec(question)
+  const days = Number(match?.[1] ?? match?.[2])
+  return Number.isInteger(days) && days > 0 ? Math.min(days, 90) : null
+}
 
 interface FactItem {
   citation: string
@@ -36,7 +119,8 @@ interface FactItem {
 export async function handleKnowledgeAnswer(
   ctx: AssistantCapabilityHandlerContext,
 ): Promise<AssistantKnowledgeAnswerResult> {
-  const { actor, slots, question, body, session, db, targets, signal, onProgress } = ctx
+  const { actor, slots, body, session, db, targets, signal, onProgress } = ctx
+  const question = (body?.question || ctx.question || '').trim()
 
   if (!session) {
     throw new DomainError('forbidden', 'ASSISTANT_MODEL_DISABLED', '当前未配置或未启用 AI 模型，无法提供问答服务')
@@ -50,6 +134,7 @@ export async function handleKnowledgeAnswer(
   const factItems: FactItem[] = []
   const missingList: AssistantKnowledgeAnswerMissing[] = []
   const nextActions: AssistantNextAction[] = []
+  const helpNextActions: AssistantNextAction[] = []
 
   // 1. 检索已发布的帮助文档知识片段
   const helpSnippets = retrieveHelpSnippets(question, {
@@ -68,28 +153,28 @@ export async function handleKnowledgeAnswer(
     })
 
     if (snippet.category === 'studio') {
-      nextActions.push({
+      helpNextActions.push({
         kind: 'studio.step',
         label: '前往场景工作室',
         href: snippet.pageRoute,
         citations: [],
       })
     } else if (snippet.category === 'run') {
-      nextActions.push({
+      helpNextActions.push({
         kind: 'run.review',
         label: '前往运行列表复盘',
         href: snippet.pageRoute,
         citations: [],
       })
     } else if (snippet.category === 'target' || snippet.category === 'session') {
-      nextActions.push({
+      helpNextActions.push({
         kind: 'target.accounts',
         label: '查看目标系统与账号',
         href: snippet.pageRoute,
         citations: [],
       })
     } else if (snippet.category === 'platform') {
-      nextActions.push({
+      helpNextActions.push({
         kind: 'platform.config',
         label: '前往平台配置',
         href: snippet.pageRoute,
@@ -112,6 +197,7 @@ export async function handleKnowledgeAnswer(
   if (runId) {
     if (hasAllPermissions(actor.permissions, ['run:read'])) {
       try {
+        await getRun(db, runId, actor.id)
         const obs = await loadRunObservation(db, runId, actor.id)
         if (obs) {
           if (obs.run.targetId) {
@@ -208,6 +294,7 @@ export async function handleKnowledgeAnswer(
   if (scenarioId) {
     if (hasAllPermissions(actor.permissions, ['workflow:read'])) {
       try {
+        await authorizeTargetRequest(db, actor.id, { scenarioId, permissions: ['workflow:read'] })
         const scenario = await getScenario(db, scenarioId)
         await requireVisibleTarget(actor, scenario.targetId, targets, db)
         const scCitation = `scenario:${scenario.id}`
@@ -294,6 +381,237 @@ export async function handleKnowledgeAnswer(
     }
   }
 
+  // CQ-16: 跨运行失败归并与可靠性事件背景。只在运行列表页、或未选中步骤的场景页触发，
+  // 避免把其他运行的失败混进单次运行或单个步骤的问答。
+  const pageKind = pageContext?.pageKind ?? pageContext?.page
+  const focusedStepId =
+    pageContext?.stepId ||
+    (pageContext?.view?.selectedRef?.kind === 'step' ? pageContext.view.selectedRef.id : '')
+  const isRunListPage = pageKind === 'run' && !runId
+  const isScenarioOverview =
+    (pageKind === 'studio' || pageKind === 'scenario') && Boolean(scenarioId) && !focusedStepId
+  const rawRunFilters = pageContext?.view?.filters ?? {}
+  const hasFailureDigestIntent = FAILURE_DIGEST_INTENT_PATTERN.test(question)
+  const shouldPerformFailureDigest =
+    (isRunListPage &&
+      (hasFailureDigestIntent ||
+        (rawRunFilters.status === 'FAILED' && /失败|报错|异常|运行|问题|怎么回事|分析|总结|为什么/i.test(question)))) ||
+    (isScenarioOverview && hasFailureDigestIntent)
+
+  if (shouldPerformFailureDigest) {
+    let runQuery: RunListQuery | null = null
+    if (isRunListPage) {
+      // 与运行列表共用同一份查询 schema，保证助手分析的范围就是页面当前筛选出的范围
+      const parsedFilters = RUN_DIGEST_FILTER_SCHEMA.safeParse(rawRunFilters)
+      if (!parsedFilters.success) {
+        missingList.push({
+          key: 'run_filters',
+          reason: 'invalid_filters',
+          description: '运行列表的筛选条件无法识别，未进行失败归并',
+        })
+      } else if (parsedFilters.data.status && parsedFilters.data.status !== 'FAILED') {
+        missingList.push({
+          key: 'run_filters',
+          reason: 'status_not_failed',
+          description: `当前运行列表按「${parsedFilters.data.status}」状态筛选，筛选结果中没有失败运行可供归并`,
+        })
+      } else {
+        runQuery = { ...parsedFilters.data, status: 'FAILED', limit: FAILURE_DIGEST_LIMIT }
+      }
+    } else {
+      const days = parseRecentDays(question) ?? 7
+      runQuery = {
+        scenarioId,
+        status: 'FAILED',
+        limit: FAILURE_DIGEST_LIMIT,
+        from: new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString(),
+      }
+    }
+
+    if (runQuery && !hasAllPermissions(actor.permissions, ['run:read'])) {
+      missingList.push({
+        key: 'runs',
+        reason: 'permission_denied',
+        description: '缺少 run:read 权限，无法读取运行记录进行失败归并分析',
+      })
+    } else if (runQuery) {
+      try {
+        const runListResp = await listRuns(db, runQuery, actor.id)
+        const runsList = runListResp.items ?? []
+
+        if (runsList.length === 0) {
+          missingList.push({
+            key: 'runs',
+            reason: 'no_failed_runs',
+            description: '当前筛选条件与权限范围内未检索到任何失败的运行记录',
+          })
+        } else {
+          const runIds = runsList.map((r) => r.id)
+          const summaries = await loadRunFailureSummaries(db, runIds)
+          const summaryMap = new Map(summaries.map((s) => [s.runId, s]))
+
+          interface FailureCluster {
+            scenarioName: string
+            stepName: string
+            errorDescription: string
+            sampleMessage?: string
+            count: number
+            firstSeenAt: string
+            lastSeenAt: string
+            sampleRunIds: string[]
+          }
+
+          const clusterMap = new Map<string, FailureCluster>()
+
+          for (const run of runsList) {
+            const summary = summaryMap.get(run.id)
+            const scName = run.scenarioName || run.scenarioId || '未知场景'
+            const stName =
+              summary?.stepName ||
+              summary?.stepId ||
+              (summary?.cancelReason ? '取消终止' : '未知步骤')
+            // 只使用错误码与脱敏后的 safeMessage，原始错误信息不进入模型上下文
+            const errText =
+              summary?.errorCode ||
+              (summary?.errorSafeMessage ? summary.errorSafeMessage.slice(0, 80).trim() : null) ||
+              (summary?.cancelReason ? `运行已取消 (${summary.cancelReason})` : null) ||
+              '执行失败'
+
+            const groupKey = `${scName}::${stName}::${errText}`
+            const rawTime = run.createdAt || summary?.finishedAt
+            const timestamp =
+              rawTime instanceof Date
+                ? rawTime.toISOString()
+                : typeof rawTime === 'string'
+                  ? rawTime
+                  : new Date().toISOString()
+
+            let cluster = clusterMap.get(groupKey)
+            if (!cluster) {
+              cluster = {
+                scenarioName: scName,
+                stepName: stName,
+                errorDescription: errText,
+                sampleMessage: summary?.errorSafeMessage?.slice(0, 120).trim() || undefined,
+                count: 0,
+                firstSeenAt: timestamp,
+                lastSeenAt: timestamp,
+                sampleRunIds: [],
+              }
+              clusterMap.set(groupKey, cluster)
+            }
+
+            cluster.count++
+            if (new Date(timestamp) < new Date(cluster.firstSeenAt)) cluster.firstSeenAt = timestamp
+            if (new Date(timestamp) > new Date(cluster.lastSeenAt)) cluster.lastSeenAt = timestamp
+            if (cluster.sampleRunIds.length < 3 && !cluster.sampleRunIds.includes(run.id)) {
+              cluster.sampleRunIds.push(run.id)
+            }
+          }
+
+          const clusters = Array.from(clusterMap.values()).sort((a, b) => b.count - a.count)
+          const truncationNotice =
+            runsList.length >= FAILURE_DIGEST_LIMIT
+              ? `（已达单批上限 ${FAILURE_DIGEST_LIMIT} 条，仅分析最近 ${FAILURE_DIGEST_LIMIT} 次失败）`
+              : ''
+
+          const runActions: AssistantNextAction[] = []
+          for (const cluster of clusters) {
+            for (const sampleId of cluster.sampleRunIds) {
+              allowedCitations.add(`run:${sampleId}`)
+            }
+            const topSampleId = cluster.sampleRunIds[0]
+            if (topSampleId && runActions.length < 3) {
+              runActions.push({
+                kind: 'run.detail',
+                label: `查看代表性失败运行 (${topSampleId.slice(0, 8)})`,
+                href: `/runs/${topSampleId}`,
+                citations: [`run:${topSampleId}`],
+              })
+            }
+          }
+
+          const topRunId = runsList[0]?.id ?? ''
+          const primaryCit = `run:${topRunId}`
+          allowedCitations.add(primaryCit)
+          factItems.push({
+            citation: primaryCit,
+            label: `失败运行归并总览 (${runsList.length}条运行)`,
+            fact: `共检索到 ${runsList.length} 条失败运行记录${truncationNotice}，按「场景 + 失败步骤 + 错误」确定性分组为 ${clusters.length} 组。`,
+          })
+
+          for (const cluster of clusters) {
+            const repCit = `run:${cluster.sampleRunIds[0] || topRunId}`
+            allowedCitations.add(repCit)
+            factItems.push({
+              citation: repCit,
+              label: `失败聚类: ${cluster.stepName} (${cluster.count}次)`,
+              fact: `场景: ${cluster.scenarioName}, 步骤: ${cluster.stepName}, 错误: ${cluster.errorDescription}${
+                cluster.sampleMessage && cluster.sampleMessage !== cluster.errorDescription
+                  ? `, 错误说明示例: ${cluster.sampleMessage}`
+                  : ''
+              }, 出现次数: ${cluster.count} 次 (最早: ${cluster.firstSeenAt}, 最近: ${cluster.lastSeenAt}), 样例运行: ${cluster.sampleRunIds.join(', ')}`,
+            })
+          }
+
+          const incidentActions: AssistantNextAction[] = []
+          if (hasAllPermissions(actor.permissions, ['reliability:read'])) {
+            try {
+              const allTargetIds = Array.from(
+                new Set(runsList.map((r) => r.targetId).filter((tid): tid is string => Boolean(tid))),
+              )
+              for (const tid of allTargetIds.slice(0, 3)) {
+                const incResp = await listIncidents(
+                  db,
+                  { targetId: tid, statuses: [...OPEN_INCIDENT_STATUSES], limit: 2 },
+                  actor.id,
+                )
+                for (const inc of incResp.items ?? []) {
+                  const incCit = `incident:${inc.id}`
+                  allowedCitations.add(incCit)
+                  factItems.push({
+                    citation: incCit,
+                    label: `目标可靠性事件 (${inc.id.slice(0, 8)})`,
+                    fact: `关联目标系统存在未关闭的可靠性事件: ${inc.title}，严重级别: ${inc.severity}，状态: ${inc.status}，摘要: ${inc.summary}${inc.lastSeenAt ? `，最近活跃时点: ${inc.lastSeenAt}` : ''}`,
+                  })
+                  incidentActions.push({
+                    kind: 'incident.detail',
+                    label: `查看关联可靠性事件 (${inc.id.slice(0, 8)})`,
+                    href: `/maintenance/incidents/${inc.id}`,
+                    citations: [incCit],
+                  })
+                }
+              }
+            } catch {
+              // 可靠性事件读取失败不阻断核心聚类
+            }
+          } else {
+            missingList.push({
+              key: 'reliability_incidents',
+              reason: 'permission_denied',
+              description: '缺少 reliability:read 权限，未读取关联目标系统的可靠性事件背景',
+            })
+          }
+
+          // 结果最多展示 3 个处置入口：保证第一个是最主要失败组的运行，其后是事件，再是其余运行
+          const digestActions = [
+            ...runActions.slice(0, 1),
+            ...incidentActions.slice(0, 1),
+            ...runActions.slice(1),
+            ...incidentActions.slice(1),
+          ]
+          nextActions.unshift(...digestActions)
+        }
+      } catch {
+        missingList.push({
+          key: 'runs',
+          reason: 'access_denied_or_not_found',
+          description: '检索失败运行或提取错误事实时发生异常',
+        })
+      }
+    }
+  }
+
   // CQ-12: Session 受管会话事实与跨账号多活实例隔离
   const sessionId = String(
     pageContext?.primaryRef?.kind === 'session'
@@ -305,6 +623,7 @@ export async function handleKnowledgeAnswer(
   if (sessionId) {
     if (hasAllPermissions(actor.permissions, ['target:read'])) {
       try {
+        await authorizeTargetRequest(db, actor.id, { sessionId, permissions: ['session:read'] })
         const sessionDto = await getSessionDto(db, sessionId)
         if (!sessionDto) {
           missingList.push({
@@ -340,15 +659,111 @@ export async function handleKnowledgeAnswer(
           } else {
             const sessionCitation = `session:${sessionDto.id}`
             allowedCitations.add(sessionCitation)
+
+            // 1. 活跃租约与占用情况
+            let leaseFact = '租约持有: 空闲无租约'
+            const activeLease = sessionDto.activeLease
+            const legacyWorkerId = sessionDto.ownerWorkerId || (sessionDto as any).leaseOwnerWorkerId
+            if (activeLease) {
+              const elapsedMinutes = Math.max(
+                0,
+                Math.floor((Date.now() - new Date(activeLease.acquiredAt).getTime()) / 60000),
+              )
+              leaseFact = `租约已被占用: Worker ${activeLease.holderWorkerId}${activeLease.runId ? `，运行 ID ${activeLease.runId}` : ''}，用途 ${activeLease.purpose}，已占用约 ${elapsedMinutes} 分钟 (自 ${activeLease.acquiredAt})`
+              if (activeLease.runId && hasAllPermissions(actor.permissions, ['run:read'])) {
+                const runCit = `run:${activeLease.runId}`
+                allowedCitations.add(runCit)
+                nextActions.push({
+                  kind: 'run.detail',
+                  label: '查看占用该会话的运行',
+                  href: `/runs/${activeLease.runId}`,
+                  citations: [runCit],
+                })
+              }
+            } else if (legacyWorkerId) {
+              leaseFact = `租约持有: Worker ${legacyWorkerId}`
+            }
+
+            // 2. 最近认证错误与失败分析
+            let authFact = `认证状态: ${sessionDto.authState ?? '未知'}`
+            if (sessionDto.lastAuthError) {
+              const issueDesc = describeAuthIssue(sessionDto.lastAuthError)
+              authFact = `认证状态: ${sessionDto.authState ?? '未知'}, 最近认证失败: 错误代码 ${sessionDto.lastAuthError}${issueDesc ? ` (${issueDesc})` : ''}${sessionDto.lastAuthCheckedAt ? `，检查于 ${sessionDto.lastAuthCheckedAt}` : ''}${sessionDto.lastAuthSuccessAt ? `，上次成功认证: ${sessionDto.lastAuthSuccessAt}` : ''}`
+            } else if (sessionDto.lastAuthSuccessAt) {
+              authFact = `认证状态: ${sessionDto.authState ?? '未知'}，上次成功认证: ${sessionDto.lastAuthSuccessAt}`
+            }
+
+            // 3. 账号模式与并发容量
+            let capFact = ''
+            let liveCount = 1
+            let effectiveCap = 1
+            if (sessionDto.targetId && sessionDto.targetAccountId) {
+              try {
+                const cap = await readAccountSessionCap(db, {
+                  targetId: sessionDto.targetId,
+                  targetAccountId: sessionDto.targetAccountId,
+                })
+                effectiveCap = cap.effectiveCap
+                const liveSessions = await findLiveSessions(db, {
+                  targetId: sessionDto.targetId,
+                  targetAccountId: sessionDto.targetAccountId,
+                })
+                liveCount = liveSessions.length
+                capFact = `账号会话模式: ${cap.mode === 'exclusive' ? 'exclusive (独占单活)' : 'concurrent (多活并发)'}，最大有效并发实例上限: ${cap.effectiveCap}，当前活跃会话数: ${liveCount}`
+              } catch {
+                // 忽略配额读取异常
+              }
+            }
+
+            // 4. 排队等待中的运行分析
+            let queueFact = '排队运行: 当前该账号无排队等待的运行'
+            if (sessionDto.targetAccountId) {
+              try {
+                const queuedRuns = await listQueuedRunsForAccount(db, sessionDto.targetAccountId, 5)
+                if (queuedRuns.length > 0) {
+                  let queueReason = '未能从现有数据确定具体原因'
+                  if (activeLease) {
+                    queueReason = '当前会话正被其他运行独占占用'
+                  } else if (liveCount >= effectiveCap) {
+                    queueReason = '账号活跃会话实例已达上限'
+                  } else if (sessionDto.authState !== 'AUTHENTICATED') {
+                    queueReason = '账号认证尚未就绪'
+                  }
+                  const runIds = queuedRuns.map((r) => r.id.slice(0, 8)).join(', ')
+                  queueFact = `排队等待运行: 该账号下有 ${queuedRuns.length} 条运行排队中 (${runIds})，可能原因（根据当前占用与认证状态推断）: ${queueReason}`
+                  if (hasAllPermissions(actor.permissions, ['run:read'])) {
+                    for (const r of queuedRuns.slice(0, 3)) {
+                      allowedCitations.add(`run:${r.id}`)
+                    }
+                  }
+                }
+              } catch {
+                // 忽略排队读取异常
+              }
+            }
+
+            const factParts = [
+              `会话ID: ${sessionDto.id}`,
+              `目标系统ID: ${sessionDto.targetId}`,
+              `账号ID: ${sessionDto.targetAccountId}`,
+              `状态: ${sessionDto.status}`,
+              authFact,
+              `健康状态: ${sessionDto.health ?? '未知'}`,
+              leaseFact,
+            ]
+            if (capFact) factParts.push(capFact)
+            if (queueFact) factParts.push(queueFact)
+
             factItems.push({
               citation: sessionCitation,
               label: `受管会话事实 (${sessionDto.id.slice(0, 8)})`,
-              fact: `会话ID: ${sessionDto.id}, 目标系统ID: ${sessionDto.targetId}, 账号ID: ${sessionDto.targetAccountId}, 状态: ${sessionDto.status}, 认证状态: ${sessionDto.authState ?? '未知'}, 健康状态: ${sessionDto.health ?? '未知'}, 租约持有: ${sessionDto.ownerWorkerId ? 'Worker ' + sessionDto.ownerWorkerId : '空闲无租约'}`,
+              fact: factParts.join(', '),
             })
+
             if (sessionDto.targetId && sessionDto.targetAccountId) {
               nextActions.push({
                 kind: 'target.accounts',
-                label: '查看当前会话与账号',
+                label: sessionDto.authState !== 'AUTHENTICATED' ? '前往账号重新认证' : '查看当前会话与账号',
                 href: `/sessions/${sessionDto.targetId}/${sessionDto.targetAccountId}`,
                 citations: [sessionCitation],
               })
@@ -368,6 +783,82 @@ export async function handleKnowledgeAnswer(
         reason: 'permission_denied',
         description: '缺少 target:read 权限，无法读取当前受管会话事实',
       })
+    }
+  } else if (
+    (pageContext?.page === 'session' || pageContext?.pageKind === 'session') &&
+    (pageContext?.targetId || pageContext?.scopeRefs?.some((r) => r.kind === 'target'))
+  ) {
+    const targetId = String(
+      pageContext?.targetId ??
+        pageContext?.scopeRefs?.find((r) => r.kind === 'target')?.id ??
+        slots.targetId ??
+        '',
+    )
+    const targetAccountId = String(
+      pageContext?.scopeRefs?.find((r) => r.kind === 'account' || (r.kind as string) === 'target_account')?.id ??
+        (pageContext?.primaryRef?.kind === 'account' ? pageContext.primaryRef.id : undefined) ??
+        slots.targetAccountId ??
+        '',
+    )
+    if (targetId && targetAccountId) {
+      if (hasAllPermissions(actor.permissions, ['target:read'])) {
+        try {
+          await requireVisibleTarget(actor, targetId, targets, db)
+          const detail = await getAccountSessionDetail(db, { targetId, targetAccountId })
+          const targetCitation = `target:${targetId}`
+          allowedCitations.add(targetCitation)
+
+          const authFact = detail.lastAuthError
+            ? `最近认证失败: 错误代码 ${detail.lastAuthError} (${describeAuthIssue(detail.lastAuthError) ?? '认证异常'})`
+            : `账号会话状态: ${detail.status}`
+          const capFact = `有效并发实例上限: ${detail.effectiveCap}，当前活跃实例数: ${detail.liveCount}`
+
+          let queueFact = '排队运行: 当前该账号无排队等待的运行'
+          const queuedRuns = await listQueuedRunsForAccount(db, targetAccountId, 5)
+          if (queuedRuns.length > 0) {
+            const runIdsStr = queuedRuns.map((r) => r.id.slice(0, 8)).join(', ')
+            const queueReason =
+              detail.liveCount >= detail.effectiveCap
+                ? '账号活跃会话实例已达上限'
+                : detail.lastAuthError
+                  ? '账号最近认证失败，会话尚未就绪'
+                  : detail.liveCount === 0
+                    ? '账号当前没有活跃的会话实例'
+                    : '未能从现有数据确定具体原因'
+            queueFact = `排队运行: 该账号当前有 ${queuedRuns.length} 条运行处于排队中 (${runIdsStr})，可能原因（根据实例数与认证状态推断）: ${queueReason}`
+            if (hasAllPermissions(actor.permissions, ['run:read'])) {
+              for (const r of queuedRuns.slice(0, 3)) {
+                allowedCitations.add(`run:${r.id}`)
+              }
+            }
+          }
+
+          factItems.push({
+            citation: targetCitation,
+            label: `账号会话事实 (${detail.accountDisplayName || detail.accountUsername})`,
+            fact: `目标系统: ${detail.targetName}, 账号: ${detail.accountDisplayName || detail.accountUsername}, 账号状态: ${detail.accountStatus}, ${authFact}, ${capFact}, ${queueFact}`,
+          })
+
+          nextActions.push({
+            kind: 'target.accounts',
+            label: '前往账号进行登录与维护',
+            href: `/sessions/${targetId}/${targetAccountId}`,
+            citations: [targetCitation],
+          })
+        } catch {
+          missingList.push({
+            key: 'session',
+            reason: 'access_denied_or_not_found',
+            description: '关联的目标账号会话不存在或当前用户无权访问',
+          })
+        }
+      } else {
+        missingList.push({
+          key: 'session',
+          reason: 'permission_denied',
+          description: '缺少 target:read 权限，无法读取当前受管会话事实',
+        })
+      }
     }
   }
 
@@ -395,11 +886,37 @@ export async function handleKnowledgeAnswer(
             }`,
           })
 
-          // 读取最近 20 条触发记录 (Occurrences) 并注入事实与统计
+          // 触发记录：按问题中的时间范围（调度时区下的本地日期）筛选，并说明是否截断
           try {
-            const occurrencesResp = await listScheduleOccurrences(db, sId, { limit: 20 })
-            const occurrences = occurrencesResp.items ?? []
-            if (occurrences.length > 0) {
+            const timezone = schedule.definition?.timezone || 'Asia/Shanghai'
+            const range = parseScheduleDateRange(question, timezone)
+            const fetchLimit = range ? 60 : 20
+            const occurrencesResp = await listScheduleOccurrences(db, sId, { limit: fetchLimit })
+            const fetched = occurrencesResp.items ?? []
+            const occurrences = range
+              ? fetched.filter((item) => item.localStartDate >= range.from && item.localStartDate <= range.to)
+              : fetched
+            const oldestFetched = fetched.at(-1)?.localStartDate
+            const truncated = Boolean(occurrencesResp.nextCursor) &&
+              (!range || (oldestFetched !== undefined && oldestFetched >= range.from))
+            const scopeText = range
+              ? `${range.label}（${range.from} 至 ${range.to}，${timezone}）`
+              : `最近 ${occurrences.length} 次`
+            const truncationText = truncated
+              ? range
+                ? `；仅读取了最近 ${fetchLimit} 条触发记录，该时间范围内可能还有更早的记录未纳入`
+                : `；仅分析最近 ${fetchLimit} 次触发，更早的记录未纳入`
+              : ''
+
+            if (occurrences.length === 0) {
+              factItems.push({
+                citation: scCit,
+                label: '调度触发记录范围',
+                fact: range
+                  ? `${scopeText}内没有触发记录${truncationText}`
+                  : '该调度尚无触发记录',
+              })
+            } else {
               let admittedCount = 0
               let skippedCount = 0
               let failedCount = 0
@@ -422,15 +939,19 @@ export async function handleKnowledgeAnswer(
                   ? `跳过原因: ${meta?.label ?? item.reason} [${item.reason}]${meta?.explanation ? ` (${meta.explanation})` : ''}`
                   : ''
                 const refText = item.runId ? `, 关联运行: ${item.runId}` : item.suiteRunId ? `, 关联集合运行: ${item.suiteRunId}` : ''
+                const slotText = item.windowStartUtc
+                  ? `应触发时刻: ${formatInTimezone(item.windowStartUtc, timezone)}${
+                      item.windowEndUtc ? ` 至 ${formatInTimezone(item.windowEndUtc, timezone)}` : ''
+                    } (${timezone})`
+                  : `应触发日期: ${item.localStartDate}（未记录具体时刻）`
 
                 factItems.push({
                   citation: occCit,
                   label: `调度触发记录 (${item.localStartDate})`,
-                  fact: `触发记录ID: ${item.occurrenceId}, 应触发时间: ${item.localStartDate}, 准入状态: ${item.admissionStatus}${reasonText ? `, ${reasonText}` : ''}${refText}`,
+                  fact: `触发记录ID: ${item.occurrenceId}, ${slotText}, 来源: ${item.source === 'manual' ? '手动触发' : '定时触发'}, 准入状态: ${item.admissionStatus}${reasonText ? `, ${reasonText}` : ''}${refText}`,
                 })
               }
 
-              // 统计汇总
               let topReason = ''
               let topReasonCount = 0
               for (const [r, count] of skipReasonCounts.entries()) {
@@ -440,16 +961,15 @@ export async function handleKnowledgeAnswer(
                 }
               }
               const topMeta = topReason ? SCHEDULE_SKIP_REASON_METAS[topReason as ScheduleSkipReason] : null
-              const summaryFact = `最近 ${occurrences.length} 次触发统计: 已准入 ${admittedCount} 次, 已跳过 ${skippedCount} 次, 准入失败 ${failedCount} 次${
-                topReason ? `。主要跳过原因: ${topMeta?.label ?? topReason} (${topReasonCount} 次)` : ''
-              }`
               factItems.push({
                 citation: scCit,
-                label: `调度近期触发汇总统计`,
-                fact: summaryFact,
+                label: '调度触发汇总统计',
+                fact: `${scopeText}触发统计: 已准入 ${admittedCount} 次, 已跳过 ${skippedCount} 次, 准入失败 ${failedCount} 次${
+                  topReason ? `。主要跳过原因: ${topMeta?.label ?? topReason} (${topReasonCount} 次)` : ''
+                }${truncationText}`,
               })
 
-              // listScheduleOccurrences 按创建时间倒序。只有最近一条本身被跳过才给出处置入口。
+              // 列表按生成时间倒序。只有范围内最近一条本身被跳过才给出处置入口。
               const latest = occurrences[0]
               if (latest?.admissionStatus === 'SKIPPED' && latest.reason) {
                 const action = resolveSkipReasonAction(latest.reason as ScheduleSkipReason, {
@@ -612,8 +1132,9 @@ export async function handleKnowledgeAnswer(
    - human_confirmed: 来自已发布的官方帮助文档、规则或配置规范；
    - inferred: 基于已知前提所做的合理推断，必须在 premises 中列出依据的已知事实，并在 citations 中引用对应 key。
 4. 如果用户提问涉及特定时间范围（如「昨晚」「本周」），请结合当前时间（currentTime）与触发记录中的时间进行语义匹配与聚焦；若用户询问的时间范围超出所提供触发记录的覆盖范围，必须在回答中明确说明“所查阅的历史触发记录仅包含最近 20 次，更早的记录已被截断”，严禁推测或编造未提供的历史事实。
-5. 如果提供的材料不足以完整回答用户的问题，必须在 missing 列表中诚实登记缺失项（key, reason, description），不能凭空臆造。
-6. 保持解答专业、清晰、条理分明。`,
+5. 如果用户提问涉及失败运行归并、聚类分析或多次失败原因归纳：严格基于聚合事实中的分组统计（包括各分组的错误原因、步骤与发生次数）进行归纳说明，严禁臆造未给出的运行、分组或关联事件；涉及的具体分组必须引用对应的样例运行 ID（run:<id>）或关联事件 ID（incident:<id>）。如果分析的失败运行达到 50 条上限，请在回答中明确提及该结果基于最近 50 条已截断记录。
+6. 如果提供的材料不足以完整回答用户的问题，必须在 missing 列表中诚实登记缺失项（key, reason, description），不能凭空臆造。
+7. 保持解答专业、清晰、条理分明。`,
       },
       {
         role: 'user',
@@ -702,6 +1223,15 @@ export async function handleKnowledgeAnswer(
     })
   }
 
+  // 实体操作优先于通用帮助目录链接
+  const finalNextActions = [...nextActions]
+  for (const helpAction of helpNextActions) {
+    if (finalNextActions.length >= 3) break
+    if (!finalNextActions.some((a) => a.kind === helpAction.kind)) {
+      finalNextActions.push(helpAction)
+    }
+  }
+
   await onProgress?.('persisting', '正在整理最终回答...')
 
   return {
@@ -710,6 +1240,6 @@ export async function handleKnowledgeAnswer(
     claims: validatedClaims,
     missing: validatedMissing,
     asOf: new Date().toISOString(),
-    nextActions: nextActions.slice(0, 3),
+    nextActions: finalNextActions.slice(0, 3),
   }
 }

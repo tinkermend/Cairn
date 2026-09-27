@@ -120,6 +120,13 @@ export function observeAssistantTurn(
   const url = `/api/assistant/conversations/${conversationId}/turns/${turnId}/observe`
   const controller = new AbortController()
   const token = useAuthStore.getState().auth.accessToken
+  let terminalReceived = false
+  let errorReported = false
+  const reportError = (error: Error) => {
+    if (controller.signal.aborted || errorReported) return
+    errorReported = true
+    handlers.onError?.(error)
+  }
 
   void (async () => {
     try {
@@ -131,7 +138,7 @@ export function observeAssistantTurn(
         },
       })
       if (!res.ok || !res.body) {
-        handlers.onError?.(new Error(`SSE connection failed with status ${res.status}`))
+        reportError(new Error(`SSE connection failed with status ${res.status}`))
         return
       }
 
@@ -151,15 +158,22 @@ export function observeAssistantTurn(
               handlers.onOutput?.(data.delta ?? '')
             } else if (frame.event === 'turn') {
               const data = assistantTurnSchema.parse(JSON.parse(frame.data))
+              terminalReceived = data.status !== 'RUNNING' && data.status !== 'QUEUED'
               handlers.onTurn?.(data)
+            } else if (frame.event === 'error') {
+              const data = JSON.parse(frame.data) as { message?: string }
+              reportError(new Error(data.message || '实时进度连接已中断'))
             }
-          } catch {}
+          } catch {
+            // Ignore malformed frames; a missing terminal snapshot is reconciled at EOF.
+          }
         },
         controller.signal,
       )
+      if (!terminalReceived) reportError(new Error('实时进度连接已中断'))
     } catch (err) {
       if (!controller.signal.aborted) {
-        handlers.onError?.(err instanceof Error ? err : new Error(String(err)))
+        reportError(err instanceof Error ? err : new Error(String(err)))
       }
     }
   })()

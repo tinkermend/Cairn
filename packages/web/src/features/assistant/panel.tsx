@@ -60,6 +60,8 @@ function ContextCapsule({
   const canAssist = useCan('ai:assist')
   const canWrite = useCan('workflow:write')
   const canReadTarget = useCan('target:read')
+  const canReadSchedule = useCan('schedule:read')
+  const canReadRun = useCan('run:read')
 
   const isGlobal = !boundContext && !pageContext
   const toneDot =
@@ -93,9 +95,9 @@ function ContextCapsule({
       boundContext,
       pageContext,
       capabilities,
-      permissions: { canAssist, canWrite, canReadTarget },
+      permissions: { canAssist, canWrite, canReadTarget, canReadSchedule, canReadRun },
     })
-  }, [boundContext, pageContext, capabilities, canAssist, canWrite, canReadTarget])
+  }, [boundContext, pageContext, capabilities, canAssist, canWrite, canReadTarget, canReadSchedule, canReadRun])
 
   return (
     <div
@@ -180,6 +182,8 @@ export function AssistantPanel({
   const mode = useAssistantStore((state) => state.mode)
   const activeQuote = useAssistantStore((state) => state.activeQuote)
   const boundContext = useAssistantStore((state) => state.boundContext)
+  const routeContext = useAssistantStore((state) => state.routeContext)
+  const effectiveBoundContext = boundContext ?? routeContext
   const newConversation = useAssistantStore((state) => state.newConversation)
   const historyOpen = useAssistantStore((state) => state.historyOpen)
   const setHistoryOpen = useAssistantStore((state) => state.setHistoryOpen)
@@ -319,7 +323,7 @@ export function AssistantPanel({
 
       {/* 深度上下文感知状态胶囊 */}
       <ContextCapsule
-        boundContext={boundContext}
+        boundContext={effectiveBoundContext}
         pageContext={pageContext}
         capabilities={capabilities}
         onChipClick={handleChipClick}
@@ -333,7 +337,7 @@ export function AssistantPanel({
         {turns.length === 0 && !busy && capabilities?.modelEnabled ? (
           <PromptCards
             pageContext={pageContext}
-            boundContext={boundContext}
+            boundContext={effectiveBoundContext}
             capabilities={capabilities}
             onSelectPrompt={(q, capabilityHint) => {
               openPanel({

@@ -92,13 +92,15 @@ export const ASSISTANT_CITATION_KINDS = [
   'occurrence',
   'schedule',
   'dataset',
+  'session',
+  'incident',
 ] as const
 export type AssistantCitationKind = (typeof ASSISTANT_CITATION_KINDS)[number]
 
 export const assistantCitationKeySchema = z
   .string()
   .regex(
-    /^(run|stepRun|attempt|evidence|step|occurrence|schedule|dataset):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    /^(run|stepRun|attempt|evidence|step|occurrence|schedule|dataset|session|incident):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     '引用键须为 kind:uuid',
   )
 export type AssistantCitationKey = z.infer<typeof assistantCitationKeySchema>
@@ -113,6 +115,7 @@ export const ASSISTANT_NEXT_ACTION_KINDS = [
   'target.detail',
   'worker.list',
   'schedule.edit',
+  'incident.detail',
   'platform.config',
 ] as const
 export type AssistantNextActionKind = (typeof ASSISTANT_NEXT_ACTION_KINDS)[number]
@@ -143,6 +146,7 @@ export const ASSISTANT_OBJECT_REF_KINDS = [
   'run',
   'scenario',
   'target',
+  'account',
   'session',
   'schedule',
   'dataset',
@@ -948,7 +952,6 @@ export const PAGE_LANDMARK_MANIFESTS: Record<string, PageLandmarkDefinition> = {
             name: '添加账号',
             trigger: '点击「+ 添加账号」按钮',
             description: '录入目标系统的登录身份与密码/凭据',
-            actionKey: 'open-add-account',
           },
           {
             name: '测试连接',
@@ -964,7 +967,6 @@ export const PAGE_LANDMARK_MANIFESTS: Record<string, PageLandmarkDefinition> = {
             name: '连接会话',
             trigger: '点击会话卡片上的「连接」按钮',
             description: '打开或接管目标系统的受管浏览器会话',
-            actionKey: 'connect-target-session',
           },
           {
             name: '强制回收',
@@ -1001,7 +1003,6 @@ export const PAGE_LANDMARK_MANIFESTS: Record<string, PageLandmarkDefinition> = {
             name: '配置平台 AI',
             trigger: '在平台 AI 卡片中填入模型提供商、Base URL、Model 与 API Key',
             description: '启用并配置赋能识途助手的底层大模型接入凭据',
-            actionKey: 'open-platform-ai-config',
           },
           {
             name: '测试 AI 连接',
@@ -1074,9 +1075,9 @@ export function unpackAssistantResultEnvelopeDetailed(raw: unknown): {
   if ('version' in raw && 'result' in raw) {
     const parsed = assistantResultEnvelopeSchema.safeParse(raw)
     if (parsed.success) {
+      // Legacy envelopes may contain raw provider reasoning; never expose it.
       return {
         result: parsed.data.result,
-        thinkingText: parsed.data.thinkingText,
         thinkingDurationMs: parsed.data.thinkingDurationMs,
       }
     }
@@ -1094,14 +1095,14 @@ export function packAssistantResultEnvelope(
   result: AssistantResult,
   version: 1 | 2 = 2,
   sourceDigest?: string,
-  thinkingText?: string,
+  _thinkingText?: string,
   thinkingDurationMs?: number,
 ): AssistantResultEnvelope {
+  // The fourth argument remains for older DB callers, but raw reasoning is never persisted.
   return {
     version,
     result,
     ...(sourceDigest ? { sourceDigest } : {}),
-    ...(thinkingText ? { thinkingText } : {}),
     ...(thinkingDurationMs != null ? { thinkingDurationMs } : {}),
   }
 }

@@ -245,4 +245,214 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     expect(chips.some((c) => c.capabilityHint === 'scenario.propose-step')).toBe(false)
     expect(chips.map((c) => c.label)).toEqual(['📖 解释此步骤'])
   })
+
+  it('列表页推荐修正：运行列表页缺少 runId 时安全回退全局，不展示单次运行推荐 (Acceptance Criterion 3)', () => {
+    // 列表页仅有 routeContext（page: 'run'，无 runId）
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'run' },
+      pageContext: { page: 'run' },
+      capabilities: mockCapabilities(),
+      permissions: defaultPermissions,
+    })
+
+    expect(chips.some((c) => c.id === 'run-perf-bottleneck')).toBe(false)
+    expect(chips.some((c) => c.id === 'run-diagnose-rca')).toBe(false)
+    expect(chips.map((c) => c.label)).toEqual([
+      '🚀 快速上手编排',
+      '📊 查看近期异常运行',
+      '📋 常用功能导航',
+    ])
+  })
+
+  it('列表页推荐修正：目标列表页缺少 targetId 时安全回退全局，不展示单个目标推荐 (Acceptance Criterion 3)', () => {
+    // 列表页仅有 routeContext（page: 'target'，无 targetId / entityId）
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'target' },
+      pageContext: { page: 'target' },
+      capabilities: mockCapabilities(),
+      permissions: defaultPermissions,
+    })
+
+    expect(chips.some((c) => c.id === 'target-account-health')).toBe(false)
+    expect(chips.some((c) => c.id === 'target-menu-map')).toBe(false)
+    expect(chips.map((c) => c.label)).toEqual([
+      '🚀 快速上手编排',
+      '📊 查看近期异常运行',
+      '📋 常用功能导航',
+    ])
+  })
+
+  it('调度聚焦：有 scheduleId 且有 schedule:read 权限时展示调度排查推荐', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'schedule', entityId: 'sched-1' },
+      pageContext: { page: 'schedule' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadSchedule: true },
+    })
+
+    expect(chips.map((c) => c.id)).toEqual(['schedule-why-not-run', 'schedule-recent-summary'])
+    expect(chips.map((c) => c.label)).toEqual(['⏱️ 为什么没按时运行', '📋 最近触发情况汇总'])
+    expect(chips[0].capabilityHint).toBe('knowledge.answer')
+  })
+
+  it('V2 页面上下文提供调度引用时，即使绑定上下文没有实体 ID 也能给出调度推荐', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'schedule' },
+      pageContext: {
+        version: 2,
+        routeKey: 'schedules.detail',
+        pageKind: 'schedule',
+        page: 'schedule',
+        primaryRef: { kind: 'schedule', id: '11111111-1111-4111-8111-111111111111' },
+      },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadSchedule: true },
+    })
+
+    expect(chips.map((chip) => chip.id)).toEqual(['schedule-why-not-run', 'schedule-recent-summary'])
+  })
+
+  it('调度权限闸门：无 schedule:read 权限或缺少 scheduleId 时不展示调度排查推荐', () => {
+    // 缺少权限
+    const chipsNoPerm = resolveContextRecommendations({
+      boundContext: { page: 'schedule', entityId: 'sched-1' },
+      pageContext: { page: 'schedule' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadSchedule: false },
+    })
+    expect(chipsNoPerm.some((c) => c.id.startsWith('schedule-'))).toBe(false)
+    expect(chipsNoPerm.map((c) => c.label)).toEqual([
+      '🚀 快速上手编排',
+      '📊 查看近期异常运行',
+      '📋 常用功能导航',
+    ])
+
+    // 列表页无 scheduleId
+    const chipsNoId = resolveContextRecommendations({
+      boundContext: { page: 'schedule' },
+      pageContext: { page: 'schedule' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadSchedule: true },
+    })
+    expect(chipsNoId.some((c) => c.id.startsWith('schedule-'))).toBe(false)
+  })
+
+  it('会话聚焦：在 session 页面且具备 targetId 与 canReadTarget 权限时展示会话排查卡片', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'session', targetId: 'tgt-1', targetAccountId: 'acc-1' },
+      pageContext: { page: 'session' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadTarget: true },
+    })
+
+    expect(chips.map((c) => c.id)).toEqual([
+      'session-auth-failure-reason',
+      'session-occupied-by-whom',
+      'session-queue-waiting-reason',
+    ])
+    expect(chips.map((c) => c.label)).toEqual([
+      '🔑 为什么登录失效',
+      '🔒 会话被谁占用',
+      '⌛ 为什么开跑一直在等会话',
+    ])
+    expect(chips[0].capabilityHint).toBe('knowledge.answer')
+  })
+
+  it('会话聚焦权限闸门：无 canReadTarget 权限时不展示会话排查卡片', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'session', targetId: 'tgt-1' },
+      pageContext: { page: 'session' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadTarget: false },
+    })
+
+    expect(chips.some((c) => c.id.startsWith('session-'))).toBe(false)
+  })
+
+  it('场景工作区未选中步骤时：具备 canReadRun 权限推荐「📉 这个场景最近为什么老失败」', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'studio', scenarioId: 'sc-1' },
+      pageContext: { page: 'studio' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadRun: true },
+    })
+
+    expect(chips.some((c) => c.id === 'studio-scenario-failure-history')).toBe(true)
+    const failureChip = chips.find((c) => c.id === 'studio-scenario-failure-history')
+    expect(failureChip?.label).toBe('📉 这个场景最近为什么老失败')
+    expect(failureChip?.capabilityHint).toBe('knowledge.answer')
+
+    // 无 canReadRun 时不展示
+    const chipsNoRunPerm = resolveContextRecommendations({
+      boundContext: { page: 'studio', scenarioId: 'sc-1' },
+      pageContext: { page: 'studio' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadRun: false },
+    })
+    expect(chipsNoRunPerm.some((c) => c.id === 'studio-scenario-failure-history')).toBe(false)
+  })
+
+  it('运行列表排查：无 runId 且具备 canReadRun 权限时推荐「🧩 这些失败是同一个原因吗」', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: { page: 'run', filters: { status: 'FAILED' } },
+      pageContext: { page: 'run' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadRun: true },
+    })
+
+    expect(chips.some((c) => c.id === 'run-list-failure-digest')).toBe(true)
+    const failureChip = chips.find((c) => c.id === 'run-list-failure-digest')
+    expect(failureChip?.label).toBe('🧩 这些失败是同一个原因吗')
+    expect(failureChip?.capabilityHint).toBe('knowledge.answer')
+
+    // 无 canReadRun 时不展示
+    const chipsNoRunPerm = resolveContextRecommendations({
+      boundContext: { page: 'run', filters: { status: 'FAILED' } },
+      pageContext: { page: 'run' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadRun: false },
+    })
+    expect(chipsNoRunPerm.some((c) => c.id === 'run-list-failure-digest')).toBe(false)
+  })
+
+  it('V2 页面筛选可触发运行列表排查，V1 运行详情仍保留 runId', () => {
+    const listChips = resolveContextRecommendations({
+      boundContext: null,
+      pageContext: {
+        version: 2,
+        routeKey: 'runs.list',
+        pageKind: 'run',
+        page: 'run',
+        view: { filters: { status: 'FAILED', limit: 20 } },
+      },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadRun: true },
+    })
+    expect(listChips.map((chip) => chip.id)).toContain('run-list-failure-digest')
+
+    const legacyDetailChips = resolveContextRecommendations({
+      boundContext: null,
+      pageContext: { page: 'run', runId: '11111111-1111-4111-8111-111111111111' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadRun: true },
+    })
+    expect(legacyDetailChips.map((chip) => chip.id)).toContain('run-perf-bottleneck')
+    expect(legacyDetailChips.map((chip) => chip.id)).not.toContain('run-list-failure-digest')
+  })
+
+  it('运行列表排查：只在筛选结果里确实有失败时展示归并推荐', () => {
+    const resolve = (bound: Parameters<typeof resolveContextRecommendations>[0]['boundContext']) =>
+      resolveContextRecommendations({
+        boundContext: bound,
+        pageContext: { page: 'run' },
+        capabilities: mockCapabilities(),
+        permissions: { ...defaultPermissions, canReadRun: true },
+      }).some((c) => c.id === 'run-list-failure-digest')
+
+    // 未按状态筛选：取决于当前列表里有没有失败运行
+    expect(resolve({ page: 'run', filters: {}, listHasFailures: true })).toBe(true)
+    expect(resolve({ page: 'run', filters: {}, listHasFailures: false })).toBe(false)
+    // 按其他状态筛选：即使列表标记有失败也不展示
+    expect(resolve({ page: 'run', filters: { status: 'SUCCEEDED' }, listHasFailures: true })).toBe(false)
+  })
 })

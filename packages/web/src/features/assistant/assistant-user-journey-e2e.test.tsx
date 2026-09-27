@@ -1,5 +1,4 @@
 import '@/styles/index.css'
-import type { AssistantTurn } from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
@@ -250,18 +249,24 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
     it('正例：进入会话管理页，自动适配目标与会话运维推荐 Chips', async () => {
       routeState.pathname = '/sessions'
       useAssistantStore.setState({
-        boundContext: null,
+        boundContext: {
+          page: 'session',
+          targetId: '01920000-0000-7000-8000-000000000002',
+        },
         pageContext: {
           page: 'session',
+          targetId: '01920000-0000-7000-8000-000000000002',
         },
       })
 
       render(<AssistantHost />)
 
-      const accountHealthChip = page.getByRole('button', { name: '🔑 检查账号健康度', exact: true })
-      const mapChip = page.getByRole('button', { name: '🗺️ 目标菜单地图覆盖', exact: true })
-      await expect.element(accountHealthChip).toBeVisible()
-      await expect.element(mapChip).toBeVisible()
+      const authReasonChip = page.getByRole('button', { name: '🔑 为什么登录失效', exact: true })
+      const occupiedChip = page.getByRole('button', { name: '🔒 会话被谁占用', exact: true })
+      const queueChip = page.getByRole('button', { name: '⌛ 为什么开跑一直在等会话', exact: true })
+      await expect.element(authReasonChip).toBeVisible()
+      await expect.element(occupiedChip).toBeVisible()
+      await expect.element(queueChip).toBeVisible()
     })
   })
 

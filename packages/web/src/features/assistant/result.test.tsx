@@ -1,5 +1,5 @@
 import '@/styles/index.css'
-import type { AssistantProposal } from '@cairn/shared'
+import type { AssistantProposal, AssistantResult } from '@cairn/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { assistantHrefTo, AssistantResultView } from './result'
@@ -104,10 +104,12 @@ describe('AssistantResultView 结构化提案比对与采纳', () => {
       .element(screen.getByText(/建议修改步骤 · step-cli…/))
       .toBeInTheDocument()
 
-    // 检查字段路径展示
-    await expect.element(screen.getByText('selector.value')).toBeInTheDocument()
-    await expect.element(screen.getByText('timeoutMs')).toBeInTheDocument()
-    await expect.element(screen.getByText('legacyAttr')).toBeInTheDocument()
+    // 主视图使用字段含义，未知技术字段可按需展开核对
+    await expect.element(screen.getByText('页面元素定位 · 匹配内容')).toBeInTheDocument()
+    await expect.element(screen.getByText('超时时间（毫秒）')).toBeInTheDocument()
+    await expect.element(screen.getByText('其他设置')).toBeInTheDocument()
+    await screen.getByText('查看技术字段').click()
+    await expect.element(screen.getByText('legacyAttr')).toBeVisible()
 
     // 检查新旧值呈现
     await expect.element(screen.getByText('- #old-btn')).toBeInTheDocument()
@@ -226,7 +228,7 @@ describe('AssistantResultView 诊断结果与已确认事实呈现', () => {
           citations: [],
         },
       ],
-    } as any
+    } as unknown as AssistantResult
 
     const screen = await render(<AssistantResultView result={diagnosis} />)
 
@@ -246,9 +248,17 @@ describe('AssistantResultView 诊断结果与已确认事实呈现', () => {
     const expandBtn = screen.getByRole('button', { name: '1 处依据 展开' })
     await expandBtn.click()
     await expect.element(screen.getByText('事实证据链：')).toBeInTheDocument()
-    await expect
-      .element(screen.getByText('run:11111111-1111-4111-8111-111111111111'))
-      .toBeInTheDocument()
+    const runCitation = screen.getByRole('button', { name: '打开运行记录 · 11111111' })
+    await expect.element(runCitation).toBeInTheDocument()
+    await runCitation.click()
+    expect(navigateMock).toHaveBeenCalledWith({
+      to: '/runs/$runId',
+      params: { runId: '11111111-1111-4111-8111-111111111111' },
+    })
+
+    await screen.getByRole('button', { name: '2 处依据 展开' }).click()
+    await expect.element(screen.getByText('执行尝试 · 22222222')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: /打开执行尝试/ })).not.toBeInTheDocument()
   })
 })
 
@@ -278,7 +288,7 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
         availability: 'available',
       },
     ],
-  } as any
+  } as unknown as AssistantResult
 
   it('展示紧凑首行（图标+标题+状态小圆点）、截断文本与进入按钮', async () => {
     navigateMock.mockClear()
@@ -424,11 +434,54 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
     const screen = await render(<AssistantResultView result={knowledgeResult} />)
     await expect.element(screen.getByTestId('knowledge-answer-card')).toBeInTheDocument()
     await expect.element(screen.getByText(/在 Studio 中可以配置每个确定性步骤/)).toBeInTheDocument()
-    await expect.element(screen.getByText('官方规则/文档')).toBeInTheDocument()
+    await expect.element(screen.getByText('已确认资料')).toBeInTheDocument()
     await expect.element(screen.getByText('系统观测')).toBeInTheDocument()
-    await expect.element(screen.getByText('help:studio-retry')).toBeInTheDocument()
-    await expect.element(screen.getByText('run:01920000-0000-7000-8000-000000000100')).toBeInTheDocument()
+    await expect.element(screen.getByText('帮助资料 · studio-r')).toBeInTheDocument()
+    await expect.element(screen.getByText('运行记录 · 01920000')).toBeInTheDocument()
     await expect.element(screen.getByTestId('knowledge-missing-list')).toBeInTheDocument()
+    await expect.element(screen.getByText('该步骤未配置显式超时时间')).toBeInTheDocument()
+    await expect.element(screen.getByText(/step_timeout/)).not.toBeVisible()
     await expect.element(screen.getByRole('button', { name: '前往场景工作室' })).toBeInTheDocument()
+  })
+})
+
+describe('AssistantResultView 面向用户的状态与差异标签', () => {
+  it.each([
+    ['TASK_CANCELLED', '本次任务已取消'],
+    ['PERMISSION_DENIED', '无访问权限'],
+    ['TURN_FAILED', '处理失败'],
+    ['TASK_UNSUPPORTED', '暂不支持此操作'],
+  ])('%s 显示对应原因', async (reasonCode, expectedTitle) => {
+    const screen = await render(
+      <AssistantResultView result={{ kind: 'unsupported', reasonCode, message: '请稍后重试' }} />,
+    )
+    await expect.element(screen.getByText(expectedTitle)).toBeInTheDocument()
+  })
+
+  it('新增步骤使用中文类型名称，并保留差异内容', async () => {
+    const screen = await render(
+      <AssistantResultView result={{
+        kind: 'authoring_proposal',
+        operations: [{ kind: 'insert_step', step: { id: 'step-1', name: '打开详情' } }],
+        diffs: [{ type: 'add', stepName: '打开详情', stepType: 'click', detail: '点击详情按钮' }],
+        executable: true,
+      } as unknown as AssistantResult} />,
+    )
+    await expect.element(screen.getByText('+ 新增节点：打开详情 (点击)')).toBeInTheDocument()
+    await expect.element(screen.getByText('点击详情按钮')).toBeInTheDocument()
+  })
+
+  it('运行对比把步骤状态转为业务标签', async () => {
+    const screen = await render(
+      <AssistantResultView result={{
+        kind: 'compare',
+        summary: '两次运行存在差异',
+        differences: [{ stepName: '打开页面', baseStatus: 'FAILED', targetStatus: 'SUCCEEDED' }],
+        nextActions: [],
+      } as unknown as AssistantResult} />,
+    )
+    await expect.element(screen.getByText('失败')).toBeInTheDocument()
+    await expect.element(screen.getByText('成功')).toBeInTheDocument()
+    await expect.element(screen.getByText('FAILED')).not.toBeInTheDocument()
   })
 })

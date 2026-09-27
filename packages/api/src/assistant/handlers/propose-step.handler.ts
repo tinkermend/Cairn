@@ -6,11 +6,13 @@ import {
   type AuthoringOperation,
   type ScenarioAuthoringDocumentV2,
   type ScenarioDocument,
+  type TargetKnowledgeContext,
   applyStepProposal,
   authoringDocumentDigest,
   authoringSteps,
   compareCompileDiagnostics,
   entityIdSchema,
+  hasPermission,
   isAuthoringDocumentV2,
   parseScenarioDocument,
   scenarioDocumentDigest,
@@ -18,7 +20,7 @@ import {
   toAuthoringDocumentV2,
 } from '@cairn/shared'
 import { applyAuthoringOperations, compileForAssistant } from '@cairn/authoring'
-import { DomainError, getScenario, newId } from '@cairn/db'
+import { DomainError, getScenario, getTargetKnowledgeContext, newId } from '@cairn/db'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 import { buildAuthoringSlice } from '../context-assembler.js'
 import { generateScenarioAuthoringProposal, generateStepChange } from '../model-session.js'
@@ -87,6 +89,66 @@ function hasSensitiveLiteral(ops: AuthoringOperation[]): boolean {
   return false
 }
 
+function invalidAssetReference(ops: AuthoringOperation[], context?: TargetKnowledgeContext): boolean {
+  const known = new Map<string, TargetKnowledgeContext['pages'][number]['views'][number]['elements']>()
+  for (const page of context?.pages ?? []) for (const view of page.views) for (const element of view.elements) {
+    if (!element.assetRef) continue
+    const list = known.get(element.assetRef) ?? []
+    list.push(element)
+    known.set(element.assetRef, list)
+  }
+  for (const op of ops) {
+    const input = op.kind === 'insert_step' ? op.step.input : op.kind === 'update_step' ? op.patch.input : undefined
+    const target = input && typeof input === 'object' ? (input as Record<string, unknown>).target : undefined
+    if (!target || typeof target !== 'object') continue
+    const descriptor = target as { assetRef?: unknown; candidates?: unknown }
+    if (descriptor.assetRef === undefined) continue
+    if (typeof descriptor.assetRef !== 'string') return true
+    const matches = known.get(descriptor.assetRef) ?? []
+    if (!matches.length || !Array.isArray(descriptor.candidates)) return true
+    const candidates = descriptor.candidates.filter(candidate => candidate && typeof candidate === 'object')
+    if (!matches.some(element => candidates.some(candidate => element.locator.candidates.some(
+      observed => observed.by === (candidate as { by?: unknown }).by
+        && observed.value === (candidate as { value?: unknown }).value
+        && observed.name === (candidate as { name?: unknown }).name,
+    )))) return true
+  }
+  return false
+}
+
+function knownColumnAssertion(question: string, context: TargetKnowledgeContext | undefined,
+  anchorStepId: string): AuthoringOperation | Extract<AssistantResult, { kind: 'unsupported' }> | null {
+  if (!context || !anchorStepId) return null
+  const requested = /表格.*?(?:存在|包含|有)\s*[「“"']?([\p{L}][\p{L}\p{N} _-]{0,64}?)\s*[」”"']?\s*列/u.exec(question)?.[1]?.trim()
+  if (!requested) return null
+  const found = context.pages.flatMap(page => page.views.flatMap(view => view.elements
+    .filter(element => element.category === 'table_column' && element.assetRef
+      && element.name.toLocaleLowerCase() === requested.toLocaleLowerCase())
+    .map(element => ({ page, element }))))
+  const normalizedQuestion = question.toLocaleLowerCase()
+  const mentionedTitles = context.pages.filter(page =>
+    page.title.trim() && normalizedQuestion.includes(page.title.toLocaleLowerCase()))
+  const mentionedPaths = context.pages.filter(page => page.menuPath.some(segment =>
+    segment.trim() && normalizedQuestion.includes(segment.toLocaleLowerCase())))
+  const mentionedPages = mentionedTitles.length ? mentionedTitles : mentionedPaths
+  const candidates = mentionedPages.length
+    ? found.filter(({ page }) => mentionedPages.includes(page))
+    : found
+  if (candidates.length !== 1) return {
+    kind: 'unsupported',
+    reasonCode: candidates.length ? 'MAP_COLUMN_AMBIGUOUS' : 'MAP_COLUMN_NOT_OBSERVED',
+    message: candidates.length
+      ? `当前知识上下文中「${requested}」列存在多个定位，请明确页面或视图`
+      : `当前知识上下文中指定页面没有已观测的「${requested}」列`,
+  }
+  const column = candidates[0]!.element
+  return {
+    kind: 'insert_step', id: newId(), anchorStepId,
+    step: { id: newId(), name: `确认 ${column.name} 列存在`, type: 'assert', effectType: 'READ_ONLY',
+      input: { target: { ...column.locator, assetRef: column.assetRef! }, expect: { kind: 'exists' } } },
+  }
+}
+
 export async function handleScenarioProposeStep(
   ctx: AssistantCapabilityHandlerContext,
 ): Promise<AssistantResult> {
@@ -132,6 +194,8 @@ export async function handleScenarioProposeStep(
 
   const detail = await getScenario(db, scenarioId)
   await requireVisibleTarget(actor, detail.targetId, targets, db)
+  const targetKnowledge = session && hasPermission(actor.permissions, 'map:read')
+    ? await getTargetKnowledgeContext(db, detail.targetId, { intent: question, maxPages: 3 }) : undefined
 
   if (draftRevision !== undefined && detail.draft && detail.draft.revision !== draftRevision) {
     throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新生成')
@@ -166,8 +230,12 @@ export async function handleScenarioProposeStep(
   if (isV2) {
     // V2 结构化编排提议处理
     let rawOps: AuthoringOperation[] = []
+    const knownAssertion = knownColumnAssertion(question, targetKnowledge, stepId)
 
-    if (session) {
+    if (knownAssertion?.kind === 'unsupported') return knownAssertion
+    if (knownAssertion) {
+      rawOps = [knownAssertion]
+    } else if (session) {
       await onProgress?.('generating', '大模型正在生成结构化编排操作...')
       const flatDoc: ScenarioDocument = {
         schemaVersion: 1,
@@ -177,13 +245,13 @@ export async function handleScenarioProposeStep(
       const generated = typeof (session as any).generateScenarioAuthoringProposal === 'function'
         ? await (session as any).generateScenarioAuthoringProposal(
             question,
-            scenarioFactsForModel(flatDoc, stepId || undefined),
+            { ...scenarioFactsForModel(flatDoc, stepId || undefined), targetKnowledge },
             signal,
           )
         : await generateScenarioAuthoringProposal(
             session,
             question,
-            scenarioFactsForModel(flatDoc, stepId || undefined),
+            { ...scenarioFactsForModel(flatDoc, stepId || undefined), targetKnowledge },
             signal,
           )
 
@@ -277,6 +345,11 @@ export async function handleScenarioProposeStep(
         reasonCode: 'TASK_UNSUPPORTED',
         message: '未能根据输入生成受限编排操作，请指明具体的步骤操作目标',
       }
+    }
+
+    if (invalidAssetReference(rawOps, targetKnowledge)) return {
+      kind: 'unsupported', reasonCode: 'MAP_ASSET_UNKNOWN',
+      message: '步骤引用的地图资产与已观测定位不一致，请重新选择目标元素。',
     }
 
     // N08: 敏感凭据/口令明文字面量拦截
@@ -412,7 +485,7 @@ export async function handleScenarioProposeStep(
     const generated = await generateStepChange(
       session,
       question,
-      scenarioFactsForModel(slicedDoc, stepId),
+      { ...scenarioFactsForModel(slicedDoc, stepId), targetKnowledge },
       signal,
     )
     if (generated.change) {

@@ -22,6 +22,7 @@ import {
   fetchAssistantTurn,
   fetchAssistantTurns,
 } from '@/lib/assistant-api'
+import { toPageContext, type AssistantRouteContext } from '@/features/assistant/route-context'
 
 export function summarizeConversationTitle(question: string, maxLen = 30): string {
   const clean = question.replace(/\s+/g, ' ').trim()
@@ -42,10 +43,14 @@ export type AssistantWindowMode = 'floating' | 'docked'
 
 export interface AssistantBoundContext {
   page: AssistantPageContext['page']
+  filters?: Record<string, string | number | boolean>
+  listHasFailures?: boolean
   entityId?: string
   runId?: string
   scenarioId?: string
   targetId?: string
+  targetAccountId?: string
+  sessionId?: string
   selectedStepId?: string
   selectedStepFailed?: boolean
   hasCssSelector?: boolean
@@ -90,6 +95,7 @@ type AssistantState = {
   dockWidth: number
   activeQuote: AssistantQuoteContext | null
   boundContext: AssistantBoundContext | null
+  routeContext: AssistantRouteContext | null
   currentBindingOwnerToken: string | null
 
   // 进阶二业务协同控制
@@ -130,6 +136,7 @@ type AssistantState = {
   clearQuote: () => void
   bindPageContext: (context: AssistantBoundContext | null, ownerToken?: string) => void
   unbindPageContext: (ownerToken?: string) => void
+  setRouteContext: (routeContext: AssistantRouteContext | null) => void
 
   setTrackedRunId: (runId: string | null) => void
   setPreviewStepId: (stepId: string | null) => void
@@ -215,6 +222,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   dockWidth: getSavedDockWidth(),
   activeQuote: null,
   boundContext: null,
+  routeContext: null,
   currentBindingOwnerToken: null,
 
   trackedRunId: null,
@@ -287,17 +295,32 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     set({ activeQuote, open: true })
   },
   clearQuote: () => set({ activeQuote: null }),
-  bindPageContext: (boundContext, ownerToken) =>
-    set({ boundContext, currentBindingOwnerToken: ownerToken ?? null }),
+  bindPageContext: (boundContext, ownerToken) => {
+    const effective = boundContext ?? get().routeContext
+    set({
+      boundContext,
+      currentBindingOwnerToken: ownerToken ?? null,
+      pageContext: toPageContext(effective),
+    })
+  },
   unbindPageContext: (ownerToken) => {
     const currentToken = get().currentBindingOwnerToken
     if (!ownerToken || currentToken === ownerToken) {
+      const routeContext = get().routeContext
       set({
         boundContext: null,
         currentBindingOwnerToken: null,
-        pageContext: null,
+        pageContext: toPageContext(routeContext),
       })
     }
+  },
+  setRouteContext: (routeContext) => {
+    const boundContext = get().boundContext
+    const effective = boundContext ?? routeContext
+    set({
+      routeContext,
+      pageContext: toPageContext(effective),
+    })
   },
 
   submit: async (options?: { selectedOptionId?: string; replyToTurnId?: string }) => {
@@ -365,10 +388,12 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }
 
       // Merge quote into pageContext if quote is set
-      const finalPageContext: AssistantPageContext | undefined = pageContext
+      const effectiveContext = get().boundContext ?? get().routeContext
+      const effectivePageContext = pageContext ?? toPageContext(effectiveContext) ?? undefined
+      const finalPageContext: AssistantPageContext | undefined = effectivePageContext
         ? {
-            ...pageContext,
-            quote: activeQuote ?? pageContext.quote,
+            ...effectivePageContext,
+            quote: activeQuote ?? effectivePageContext.quote,
           }
         : activeQuote
           ? {

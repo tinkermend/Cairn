@@ -37,7 +37,7 @@ function formatRelativeTime(dateStr: string): string {
 export function groupConversationsByDate(items: AssistantConversation[]) {
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const startOfYesterday = startOfToday - 86400 * 1000
+  const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime()
 
   const today: AssistantConversation[] = []
   const yesterday: AssistantConversation[] = []
@@ -57,7 +57,7 @@ export function groupConversationsByDate(items: AssistantConversation[]) {
   return [
     { label: '今天', items: today },
     { label: '昨天', items: yesterday },
-    { label: '近 5 天内', items: earlier },
+    { label: '更早', items: earlier },
   ].filter((g) => g.items.length > 0)
 }
 
@@ -65,6 +65,11 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
   const conversations = useAssistantStore((state) => state.conversations)
   const currentConversationId = useAssistantStore((state) => state.conversationId)
   const historyLoading = useAssistantStore((state) => state.historyLoading)
+  const historyLoadingMore = useAssistantStore((state) => state.historyLoadingMore)
+  const historyNextCursor = useAssistantStore((state) => state.historyNextCursor)
+  const historyError = useAssistantStore((state) => state.historyError)
+  const fetchRecentConversations = useAssistantStore((state) => state.fetchRecentConversations)
+  const fetchMoreConversations = useAssistantStore((state) => state.fetchMoreConversations)
   const switchConversation = useAssistantStore((state) => state.switchConversation)
   const newConversation = useAssistantStore((state) => state.newConversation)
   const deleteConversation = useAssistantStore(
@@ -96,7 +101,7 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
           <History className='size-4 text-primary-600' aria-hidden='true' />
           <h3 className='text-body font-semibold text-text-primary'>会话历史</h3>
           <span className='rounded-full bg-surface-subtle px-2 py-0.5 text-label font-normal text-text-muted'>
-            保留最近 5 天
+            按最近活动排序
           </span>
         </div>
         <div className='flex items-center gap-1'>
@@ -136,14 +141,28 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
           </div>
         ) : null}
 
-        {!historyLoading && groups.length === 0 ? (
+        {historyError ? (
+          <div role='alert' className='rounded-md bg-status-error-background p-3 text-label text-status-error-foreground'>
+            {historyError}
+            <Button
+              type='button'
+              variant='ghost'
+              size='sm'
+              onClick={() => void (historyNextCursor ? fetchMoreConversations() : fetchRecentConversations())}
+            >
+              重试
+            </Button>
+          </div>
+        ) : null}
+
+        {!historyLoading && !historyError && groups.length === 0 ? (
           <div className='flex flex-col items-center justify-center py-16 text-center text-text-muted px-4 space-y-2'>
             <div className='flex size-10 items-center justify-center rounded-full bg-surface-subtle'>
               <Clock className='size-5 text-text-muted' aria-hidden='true' />
             </div>
-            <p className='text-small font-medium text-text-primary'>暂无最近 5 天的会话记录</p>
+            <p className='text-small font-medium text-text-primary'>暂无会话记录</p>
             <p className='text-label text-text-muted'>
-              发起新对话后，将在此保留最近 5 天的上下文记录供随时回溯。
+              发起新对话后，可在这里找回已保存的会话。
             </p>
           </div>
         ) : null}
@@ -159,16 +178,20 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
                 return (
                   <div
                     key={conv.id}
-                    data-testid={`history-item-${conv.id}`}
                     className={cn(
-                      'group relative flex items-center justify-between rounded-lg border px-3 py-2 text-start transition-colors cursor-pointer select-none',
+                      'group relative flex items-center justify-between rounded-lg border text-start transition-colors',
                       isActive
                         ? 'border-primary-300 bg-primary-50/60 text-primary-950 font-medium'
                         : 'border-transparent bg-surface-card hover:bg-surface-subtle hover:border-border-default text-text-secondary hover:text-text-primary'
                     )}
-                    onClick={() => handleSelect(conv.id)}
                   >
-                    <div className='flex items-center gap-2 min-w-0 flex-1 pr-2'>
+                    <button
+                      type='button'
+                      data-testid={`history-item-${conv.id}`}
+                      aria-pressed={isActive}
+                      onClick={() => handleSelect(conv.id)}
+                      className='flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
+                    >
                       <MessageSquare
                         className={cn(
                           'size-3.5 shrink-0',
@@ -179,9 +202,9 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
                       <span className='truncate text-small leading-tight'>
                         {conv.title || '新会话'}
                       </span>
-                    </div>
+                    </button>
 
-                    <div className='flex items-center gap-2 shrink-0'>
+                    <div className='flex items-center gap-2 shrink-0 pe-3'>
                       <span className='text-label text-text-muted tabular-nums'>
                         {formatRelativeTime(conv.updatedAt || conv.createdAt)}
                       </span>
@@ -190,11 +213,8 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
                         data-testid={`delete-conv-${conv.id}`}
                         aria-label='删除此会话'
                         title='删除此会话'
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void deleteConversation(conv.id)
-                        }}
-                        className='opacity-0 group-hover:opacity-100 p-0.5 rounded text-text-muted hover:text-status-error-foreground hover:bg-surface-subtle transition-opacity'
+                        onClick={() => void deleteConversation(conv.id)}
+                        className='opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-text-muted hover:text-status-error-foreground hover:bg-surface-subtle transition-opacity'
                       >
                         <Trash2 className='size-3.5' aria-hidden='true' />
                       </button>
@@ -205,12 +225,20 @@ export function HistoryDrawer({ onClose }: { onClose: () => void }) {
             </div>
           </div>
         ))}
+        {historyNextCursor ? (
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            className='w-full'
+            loading={historyLoadingMore}
+            disabled={historyLoadingMore}
+            onClick={() => void fetchMoreConversations()}
+          >
+            加载更多会话
+          </Button>
+        ) : null}
       </div>
-
-      {/* 底部提示 */}
-      <footer className='shrink-0 border-t border-border-default bg-surface-subtle px-4 py-2 text-center text-label text-text-muted'>
-        仅保留最近 5 天内的活动记录，超期记录自动归档
-      </footer>
     </div>
   )
 }

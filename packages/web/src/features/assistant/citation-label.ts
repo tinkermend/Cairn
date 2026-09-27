@@ -8,7 +8,9 @@ const CITATION_LABELS: Record<string, string> = {
   target: '目标系统',
   session: '会话记录',
   schedule: '调度配置',
+  occurrence: '触发记录',
   dataset: '数据集',
+  incident: '可靠性事件',
   help: '帮助资料',
 }
 

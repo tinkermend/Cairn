@@ -69,6 +69,7 @@ export function AssistantDockSidebar({
   if (isNarrow) {
     return createPortal(
       <div
+        data-assistant-sidebar='true'
         className='fixed inset-0 z-50 flex justify-end bg-scrim/30 backdrop-blur-xs transition-opacity'
         onClick={(e) => {
           if (e.target === e.currentTarget) onClose()
@@ -90,6 +91,7 @@ export function AssistantDockSidebar({
   // 宽屏模式：常规文档流中的右侧停靠伴随栏
   return (
     <aside
+      data-assistant-sidebar='true'
       role='region'
       aria-label='识途助手伴随侧栏'
       style={{ width: dockWidth }}

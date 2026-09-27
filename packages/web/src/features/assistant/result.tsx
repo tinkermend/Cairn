@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import type { AssistantAuthoringProposal, AssistantProposal, AssistantResult } from '@cairn/shared'
+import type { AssistantAuthoringProposal, AssistantClarifyOption, AssistantProposal, AssistantResult } from '@cairn/shared'
 import {
   AlertTriangle,
   ArrowRight,
@@ -21,7 +21,67 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { stepTypeLabel } from '@/features/authoring/labels'
+import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS } from '@/features/scenarios/labels'
 import { AssistantFactItem } from './components/assistant-fact-badge'
+import { citationDisplayLabel } from './citation-label'
+
+const FIELD_LABELS: Record<string, string> = {
+  input: '步骤输入',
+  output: '步骤输出',
+  outputs: '步骤输出',
+  selector: '页面元素定位',
+  value: '匹配内容',
+  timeoutMs: '超时时间（毫秒）',
+  waitAfter: '操作后等待',
+  retry: '重试设置',
+  maxAttempts: '最多尝试次数',
+  instruction: '操作说明',
+  expect: '成功条件',
+  name: '步骤名称',
+  type: '步骤类型',
+  effect: '操作影响',
+  from: '引用来源',
+  fromField: '引用字段',
+}
+
+function DiffFieldHeading({ fieldPath }: { fieldPath: string[] }) {
+  const label = fieldPath.map((segment) => FIELD_LABELS[segment] ?? '其他设置').join(' · ')
+  const hasUnknownSegment = fieldPath.some((segment) => !FIELD_LABELS[segment])
+  return (
+    <div className='font-sans text-label text-text-muted'>
+      <span className='font-medium'>{label || '步骤设置'}</span>
+      {hasUnknownSegment ? (
+        <details className='mt-0.5'>
+          <summary className='w-fit cursor-pointer text-text-muted'>查看技术字段</summary>
+          <code className='break-all'>{fieldPath.join('.')}</code>
+        </details>
+      ) : null}
+    </div>
+  )
+}
+
+function statusLabel(status?: string): string {
+  if (!status) return '无记录'
+  return STEP_RUN_STATUS_LABELS[status as keyof typeof STEP_RUN_STATUS_LABELS]
+    ?? RUN_STATUS_LABELS[status as keyof typeof RUN_STATUS_LABELS]
+    ?? '状态待确认'
+}
+
+function unsupportedTitle(reasonCode: string): string {
+  if (reasonCode === 'TASK_CANCELLED') return '本次任务已取消'
+  if (['PERMISSION_DENIED', 'TARGET_FORBIDDEN', 'CAPABILITY_FORBIDDEN', 'GUIDE_UNAVAILABLE'].includes(reasonCode)) return '无访问权限'
+  if (['TURN_FAILED', 'REQUEST_LOST_ON_RESTART', 'MODEL_UNAVAILABLE', 'MODEL_TIMEOUT', 'MODEL_INVALID_OUTPUT', 'BUDGET_EXHAUSTED', 'COMPILER_REGRESSION'].includes(reasonCode)) return '处理失败'
+  if (['TASK_UNSUPPORTED', 'STEP_TYPE_UNSUPPORTED', 'CAPABILITY_NOT_FOUND', 'INTENT_UNSUPPORTED'].includes(reasonCode)) return '暂不支持此操作'
+  return '暂时无法完成'
+}
+
+function missingInfoLabel(key: string): string {
+  if (key === 'knowledge_base') return '未找到相关知识资料'
+  if (key === 'model_inference') return '答复生成未完成'
+  if (key === 'step_timeout') return '步骤超时设置待确认'
+  return '仍缺少相关信息'
+}
 
 function formatDiffValue(val: unknown): string {
   if (val === undefined || val === null) return ''
@@ -142,7 +202,8 @@ function ProposalDiffViewer({
             proposal.diffs.map((diff, idx) => {
               if (diff.type === 'add') {
                 const name = diff.stepName
-                const type = diff.stepType
+                const resolvedType = stepTypeLabel(diff.stepType)
+                const type = resolvedType === diff.stepType ? '其他类型' : resolvedType
                 return (
                   <div key={idx} className='space-y-1 rounded border border-border-divider bg-surface-card p-2'>
                     <div className='font-sans text-label font-medium text-status-success-foreground'>
@@ -164,10 +225,9 @@ function ProposalDiffViewer({
                 )
               }
               if (diff.type === 'modify') {
-                const path = diff.fieldPath.join('.')
                 return (
                   <div key={idx} className='space-y-1 rounded border border-border-divider bg-surface-card p-2'>
-                    <div className='font-sans text-label font-medium text-text-muted'>{path}</div>
+                    <DiffFieldHeading fieldPath={diff.fieldPath} />
                     <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through whitespace-pre-wrap'>
                       - {formatDiffValue(diff.from)}
                     </div>
@@ -205,9 +265,7 @@ function ProposalDiffViewer({
                   key={`${path}-${idx}`}
                   className='space-y-1 rounded border border-border-divider bg-surface-card p-2'
                 >
-                  <div className='font-sans text-label font-medium text-text-muted'>
-                    {path}
-                  </div>
+                  <DiffFieldHeading fieldPath={item.fieldPath} />
                   {changeType === 'remove' ? (
                     <div className='rounded bg-status-error-background px-2 py-1 break-all text-status-error-foreground line-through whitespace-pre-wrap'>
                       - {formatDiffValue(item.from)}
@@ -372,7 +430,7 @@ export function AssistantResultView({
   onAdopt?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
   onRollback?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
   onPreviewStep?: (stepId: string) => void
-  onClarify?: (optionId: string, option?: any) => void
+  onClarify?: (optionId: string, option?: AssistantClarifyOption) => void
   onCancelTask?: () => void
   onNextPage?: (nextCursor: string) => void
   onNavigate?: () => void
@@ -451,7 +509,7 @@ export function AssistantResultView({
       >
         <AlertTriangle className='size-4 shrink-0 mt-0.5' aria-hidden='true' />
         <div className='space-y-1 min-w-0 flex-1'>
-          <p className='font-medium leading-tight'>暂不支持此操作</p>
+          <p className='font-medium leading-tight'>{unsupportedTitle(result.reasonCode)}</p>
           <p className='text-label leading-normal opacity-90'>{result.message}</p>
         </div>
       </div>
@@ -611,8 +669,9 @@ export function AssistantResultView({
               <AssistantFactItem
                 key={item.id}
                 fact={item}
+                canNavigateCitation={(cite) => /^run:[0-9a-f-]{36}$/i.test(cite)}
                 onNavigateCitation={(cite) => {
-                  const runMatch = /^run:([0-9a-f-]{36})$/.exec(cite)
+                  const runMatch = /^run:([0-9a-f-]{36})$/i.exec(cite)
                   if (runMatch) {
                     go(`/runs/${runMatch[1]}`)
                   }
@@ -639,9 +698,10 @@ export function AssistantResultView({
                       {item.citations.map((c) => (
                         <span
                           key={c}
-                          className='text-label inline-flex items-center rounded border border-border-default bg-surface-card px-1.5 py-0.5 font-mono text-text-muted'
+                          className='text-label inline-flex items-center rounded border border-border-default bg-surface-card px-1.5 py-0.5 text-text-muted'
+                          title={c}
                         >
-                          {c}
+                          {citationDisplayLabel(c)}
                         </span>
                       ))}
                     </div>
@@ -691,9 +751,9 @@ export function AssistantResultView({
             {result.differences.map((diff, index) => (
               <li key={index} className='flex items-center gap-1.5 font-mono text-label'>
                 <span className='font-sans font-medium'>{diff.stepName}:</span>
-                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{diff.baseStatus ?? '空'}</span>
+                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{statusLabel(diff.baseStatus)}</span>
                 <span>→</span>
-                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{diff.targetStatus ?? '空'}</span>
+                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{statusLabel(diff.targetStatus)}</span>
                 {diff.errorDiff ? <span className='text-status-error-foreground font-sans'>({diff.errorDiff})</span> : null}
               </li>
             ))}
@@ -775,9 +835,10 @@ export function AssistantResultView({
                       </span>
                     ) : null}
                   </div>
-                  <p className='text-label mt-0.5 truncate font-mono text-text-muted'>
-                    ID: {c.id}
-                  </p>
+                  <details className='text-label mt-0.5 text-text-muted'>
+                    <summary className='w-fit cursor-pointer'>查看技术编号</summary>
+                    <code className='break-all'>{c.id}</code>
+                  </details>
                 </div>
                 <Button
                   type='button'
@@ -912,15 +973,16 @@ export function AssistantResultView({
                         )}
                       >
                         {claim.factKind === 'observed' && '系统观测'}
-                        {claim.factKind === 'human_confirmed' && '官方规则/文档'}
+                        {claim.factKind === 'human_confirmed' && '已确认资料'}
                         {claim.factKind === 'inferred' && '合理推断'}
                       </span>
                       {claim.citations?.map((cit, cIdx) => (
                         <span
                           key={cIdx}
-                          className='inline-flex items-center font-mono text-label text-text-muted bg-surface-base px-1.5 py-0.5 rounded border border-border-default/40'
+                          className='inline-flex items-center text-label text-text-muted bg-surface-base px-1.5 py-0.5 rounded border border-border-default/40'
+                          title={cit}
                         >
-                          {cit}
+                          {citationDisplayLabel(cit)}
                         </span>
                       ))}
                     </div>
@@ -947,8 +1009,11 @@ export function AssistantResultView({
                 <ul className='list-disc list-inside text-text-muted space-y-0.5'>
                   {result.missing.map((m, idx) => (
                     <li key={idx}>
-                      <span className='font-mono font-medium text-text-secondary'>{m.key}</span>:{' '}
-                      {m.description || m.reason}
+                      <span className='text-text-secondary'>{m.description || missingInfoLabel(m.key)}</span>
+                      <details className='ms-4 text-text-muted'>
+                        <summary className='w-fit cursor-pointer'>查看技术原因</summary>
+                        <code className='break-all'>{m.key} · {m.reason}</code>
+                      </details>
                     </li>
                   ))}
                 </ul>

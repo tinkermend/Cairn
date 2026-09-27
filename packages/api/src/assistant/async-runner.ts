@@ -275,42 +275,8 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
     }
 
     const access = await this.platformConfig.resolvePlatformAiAccess()
-    let pendingThinkingBuffer = ''
-    let thinkingFlushTimer: NodeJS.Timeout | null = null
-
-    const flushThinkingBuffer = async () => {
-      if (!pendingThinkingBuffer) return
-      const delta = pendingThinkingBuffer
-      pendingThinkingBuffer = ''
-      currentSeq++
-      await this.recordEvent(
-        turnId,
-        'thinking',
-        { delta },
-        currentSeq,
-      ).catch(() => undefined)
-      await this.hints
-        .publish({
-          namespace: this.hints.namespace,
-          eventSeq: currentSeq,
-          objectType: 'assistant_turn',
-          objectId: turnId,
-        })
-        .catch(() => undefined)
-    }
-
-    const onThinkingDelta = (delta: string) => {
-      pendingThinkingBuffer += delta
-      if (!thinkingFlushTimer) {
-        thinkingFlushTimer = setTimeout(() => {
-          thinkingFlushTimer = null
-          void flushThinkingBuffer()
-        }, 50)
-      }
-    }
-
     const session = access
-      ? new AssistantModelSession(this.db, turnId, { ...access, deadlineAt }, this.models, actor.id, onThinkingDelta)
+      ? new AssistantModelSession(this.db, turnId, { ...access, deadlineAt }, this.models, actor.id)
       : null
 
     try {
@@ -333,12 +299,28 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       }
 
       const isResetIntent = /^(换个场景|换一个场景|换场景|不用刚才那个|重新选)$/i.test(body.question.trim())
+      const isNextPageIntent = /^(下一页|继续找|加载更多|查看更多)(?:\s*[/／]\s*继续找)?[！!。.\s]*$/.test(body.question.trim())
 
       let decision: AssistantRouteDecision | null = null
 
       // Check selected option or ordinal reference against parent clarify options or discovery candidates
       if (!isResetIntent && parentResult) {
-        if (parentResult.kind === 'clarify' && parentResult.options?.length) {
+        if (
+          isNextPageIntent &&
+          parentResult.kind === 'discovery' &&
+          parentRecord?.turn.capabilityId === 'scenario.discover' &&
+          parentResult.coverage.nextCursor &&
+          availableIds.includes('scenario.discover')
+        ) {
+          decision = {
+            type: 'dispatch',
+            capabilityId: 'scenario.discover',
+            slots: {
+              ...(parentRecord.slots ?? {}),
+              cursor: parentResult.coverage.nextCursor,
+            },
+          }
+        } else if (parentResult.kind === 'clarify' && parentResult.options?.length) {
           let chosenOpt: (typeof parentResult.options)[number] | null = null
           if (body.selectedOptionId) {
             chosenOpt = parentResult.options.find((o) => o.id === body.selectedOptionId) ?? null
@@ -706,12 +688,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      if (thinkingFlushTimer) {
-        clearTimeout(thinkingFlushTimer)
-        thinkingFlushTimer = null
-      }
-      await flushThinkingBuffer()
-
       await recordStage('persisting')
       const status = result.kind === 'clarify' ? 'CLARIFY' : 'COMPLETED'
       const reasoningInfo = session?.getReasoningInfo()
@@ -723,16 +699,9 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         capabilityId,
         slots,
         result,
-        thinkingText: reasoningInfo?.reasoningText || undefined,
         thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
       })
     } catch (error) {
-      if (thinkingFlushTimer) {
-        clearTimeout(thinkingFlushTimer)
-        thinkingFlushTimer = null
-      }
-      await flushThinkingBuffer()
-
       this.logger.error(`runTurn error:`, error)
       const reasoningInfo = session?.getReasoningInfo()
       if (abortController.signal.aborted) {
@@ -742,7 +711,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
           processingToken,
           status: 'CANCELLED',
           stopReason: 'cancelled',
-          thinkingText: reasoningInfo?.reasoningText || undefined,
           thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
         }).catch(() => undefined)
       } else {
@@ -759,9 +727,8 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
             : {
                 kind: 'unsupported',
                 reasonCode: isDomain ? error.code : 'TURN_FAILED',
-                message: error instanceof Error ? error.message : '助手处理失败',
+                message: isDomain ? error.message : '助手处理失败，请稍后重试',
               },
-          thinkingText: reasoningInfo?.reasoningText || undefined,
           thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
         }).catch(() => undefined)
       }
@@ -781,25 +748,19 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /**
-   * Record a stream event (event / thinking / output) in database.
-   */
+  /** Record a public stage event in database. */
   private async recordEvent(
     turnId: string,
-    channel: 'event' | 'thinking' | 'output',
+    channel: 'event',
     payload: Record<string, unknown>,
     seq = 0,
   ): Promise<void> {
-    // Thinking deltas have 7 days short retention
-    const retainUntil =
-      channel === 'thinking' ? new Date(Date.now() + 7 * 24 * 3600 * 1000) : null
-
     await recordAssistantTurnEvent(this.db, {
       turnId,
       seq,
       channel,
       payload,
-      retainUntil,
+      retainUntil: null,
     })
   }
 

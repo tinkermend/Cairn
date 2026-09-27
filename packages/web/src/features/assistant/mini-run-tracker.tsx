@@ -15,6 +15,7 @@ import { useRunObservation } from '@/features/runs/use-run-observation'
 import { cancelRun } from '@/lib/runs-api'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { useAuthStore } from '@/stores/auth-store'
+import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS } from '@/features/scenarios/labels'
 
 function ActiveMiniRunTracker({ runId }: { runId: string }) {
   const setTrackedRunId = useAssistantStore((state) => state.setTrackedRunId)
@@ -72,7 +73,7 @@ function ActiveMiniRunTracker({ runId }: { runId: string }) {
           </span>
           {run?.status ? (
             <span className='text-small text-text-muted'>
-              ({run.status === 'RUNNING' ? '执行中' : run.status})
+              （{RUN_STATUS_LABELS[run.status as keyof typeof RUN_STATUS_LABELS] ?? '状态待确认'}）
             </span>
           ) : null}
         </div>
@@ -90,7 +91,7 @@ function ActiveMiniRunTracker({ runId }: { runId: string }) {
 
       {run?.stepRuns && run.stepRuns.length > 0 ? (
         <div className='space-y-1 max-h-32 overflow-y-auto overscroll-contain pr-1 text-small font-sans'>
-          {run.stepRuns.map((step: any, idx: number) => {
+          {run.stepRuns.map((step, idx) => {
             const isCurrent = step.status === 'RUNNING'
             const isDone = step.status === 'SUCCEEDED'
             const isFail = step.status === 'FAILED'
@@ -122,6 +123,9 @@ function ActiveMiniRunTracker({ runId }: { runId: string }) {
                   )}
                   <span className='truncate text-text-secondary'>
                     {step.name}
+                  </span>
+                  <span className='shrink-0 text-label text-text-muted'>
+                    {STEP_RUN_STATUS_LABELS[step.status as keyof typeof STEP_RUN_STATUS_LABELS] ?? '待确认'}
                   </span>
                 </div>
                 {step.startedAt && step.finishedAt ? (
@@ -177,7 +181,7 @@ export function MiniRunTracker() {
   const routerState = useRouterState()
 
   // 避免在完整复盘页重复展示时间轴
-  const pathname = (routerState as any)?.location?.pathname ?? ''
+  const pathname = routerState.location.pathname
   const isOnRunPage =
     Boolean(trackedRunId) && pathname.startsWith(`/runs/${trackedRunId}`)
 
@@ -185,4 +189,3 @@ export function MiniRunTracker() {
 
   return <ActiveMiniRunTracker runId={trackedRunId} />
 }
-

@@ -222,6 +222,7 @@ export function AssistantFloatingWindow({
       aria-labelledby='assistant-window-title'
       aria-describedby='assistant-window-description'
       tabIndex={-1}
+      data-assistant-window='true'
       data-dragging={dragging || undefined}
       className='fixed z-40 flex flex-col overflow-hidden rounded-xl border border-border-default bg-surface-card shadow-popover outline-none'
       style={{

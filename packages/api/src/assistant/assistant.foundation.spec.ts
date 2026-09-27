@@ -206,7 +206,7 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
       const spy = vi.spyOn(dbModule, 'loadRunObservation').mockImplementation(mockLoadObservation as any)
 
       try {
-        const { pack } = await assembleRunCompareContext(mockDb, baseRunId, targetRunId)
+        const { pack } = await assembleRunCompareContext(mockDb, baseRunId, targetRunId, 'test-actor')
         expect(pack.differences.length).toBe(2)
 
         const loginDiff = pack.differences.find((d) => d.stepId === 'step-login')
@@ -470,7 +470,7 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
             title: '步骤 #1: 点击按钮',
             summary: 'locator.click: Timeout 5000ms',
           },
-        })
+        }, 'test-actor')
 
         expect(pack.text).toContain('[用户显式引用的焦点对象]')
         expect(pack.text).toContain('步骤 #1: 点击按钮')
@@ -521,7 +521,7 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
 
       try {
         const { assembleDiagnoseContext } = await import('./context-assembler.js')
-        const { pack } = await assembleDiagnoseContext(mockDb, runId, { stepId: stepRunId })
+        const { pack } = await assembleDiagnoseContext(mockDb, runId, { stepId: stepRunId }, 'test-actor')
         expect(pack.missingInformation).not.toContain('指定步骤不在该 Run 的 Snapshot 中')
         expect(pack.text).toContain('TIMEOUT')
       } finally {

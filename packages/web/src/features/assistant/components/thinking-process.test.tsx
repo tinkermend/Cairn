@@ -1,102 +1,46 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render } from 'vitest-browser-react'
+import '@/styles/index.css'
+import { describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
+import { render } from 'vitest-browser-react'
 import { ThinkingProcessBlock } from './thinking-process'
 
-describe('ThinkingProcessBlock 深度思考过程流式与折叠组件', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('实时流式分析初期（无思考文本）：展示对应阶段状态与取消按钮', async () => {
+describe('ThinkingProcessBlock 阶段与耗时摘要', () => {
+  it('实时任务显示当前阶段并允许取消', async () => {
     const onCancel = vi.fn()
     await render(
       <ThinkingProcessBlock
-        isLive={true}
+        isLive
         stage='generating'
-        thinkingText=''
+        thinkingText='供应商返回的内部推理文本'
         onCancel={onCancel}
       />,
     )
 
-    await expect.element(page.getByText('大模型正在思考分析...')).toBeVisible()
+    await expect.element(page.getByText('正在生成答复…')).toBeVisible()
+    await expect.element(page.getByText('供应商返回的内部推理文本')).not.toBeInTheDocument()
     const cancelBtn = page.getByRole('button', { name: '取消' })
-    await expect.element(cancelBtn).toBeVisible()
     await cancelBtn.click()
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
-  it('实时流式思考中：默认展开呈现思考文本与流式指示，支持点击收起与重新展开', async () => {
-    await render(
-      <ThinkingProcessBlock
-        isLive={true}
-        stage='generating'
-        thinkingText='模型思考中：正在对比历史运行中报错步骤的选择器与当前 DOM 结构...'
-      />,
-    )
-
-    // 默认展开呈现
-    await expect
-      .element(page.getByText('模型思考中：正在对比历史运行中报错步骤的选择器与当前 DOM 结构...'))
-      .toBeVisible()
-
-    // 切换折叠（点击收起）
-    const foldBtn = page.getByRole('button', { name: '收起思考过程' })
-    await foldBtn.click()
-    const expandBtn = page.getByRole('button', { name: '展开思考过程' })
-    await expect.element(expandBtn).toBeVisible()
-
-    // 切换展开（点击重新展开）
-    await expandBtn.click()
-    await expect.element(page.getByRole('button', { name: '收起思考过程' })).toBeVisible()
-    await expect
-      .element(page.getByText('模型思考中：正在对比历史运行中报错步骤的选择器与当前 DOM 结构...'))
-      .toBeVisible()
-  })
-
-  it('已完成问答回合：默认折叠呈现已深度思考与耗时，点击展开可复盘思考详情与一键复制', async () => {
-    // 模拟剪贴板
-    const writeTextMock = vi.fn().mockResolvedValue(undefined)
-    if (!navigator.clipboard) {
-      Object.defineProperty(navigator, 'clipboard', {
-        value: { writeText: writeTextMock },
-        configurable: true,
-      })
-    } else {
-      vi.spyOn(navigator.clipboard, 'writeText').mockImplementation(writeTextMock)
-    }
-
-    await render(
+  it('完成后只显示耗时，历史推理文本不可展开或复制', async () => {
+    const screen = await render(
       <ThinkingProcessBlock
         isLive={false}
-        thinkingText='已完成的完整思考链：首先核查账号授权租约，随后比对 step_03 快照，定位由于弹窗遮挡导致的点击超时。'
+        thinkingText='历史保存的完整模型推理文本'
         thinkingDurationMs={3200}
       />,
     )
 
-    // 默认折叠：展示已深度思考与用时秒数
-    await expect.element(page.getByText('已深度思考 (用时 3 秒)')).toBeVisible()
-    await expect.element(page.getByText('点击展开')).toBeVisible()
-
-    // 点击展开
-    const trigger = page.getByRole('button', { name: '展开思考过程' })
-    await trigger.click()
-
-    await expect
-      .element(page.getByText('已完成的完整思考链：首先核查账号授权租约，随后比对 step_03 快照，定位由于弹窗遮挡导致的点击超时。'))
-      .toBeVisible()
-
-    // 点击复制思考过程
-    const copyBtn = page.getByRole('button', { name: '复制思考过程' })
-    await copyBtn.click()
-    expect(writeTextMock).toHaveBeenCalledWith(
-      '已完成的完整思考链：首先核查账号授权租约，随后比对 step_03 快照，定位由于弹窗遮挡导致的点击超时。',
-    )
+    await expect.element(screen.getByText('答复已完成')).toBeVisible()
+    await expect.element(screen.getByText('用时 3 秒')).toBeVisible()
+    await expect.element(screen.getByText('历史保存的完整模型推理文本')).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: /展开|复制/ })).not.toBeInTheDocument()
   })
 
-  it('非实时且无思考文本时静默不渲染', async () => {
+  it('无耗时的历史回合不显示空摘要', async () => {
     const screen = await render(
-      <ThinkingProcessBlock isLive={false} thinkingText='' />,
+      <ThinkingProcessBlock isLive={false} thinkingText='历史推理文本' />,
     )
     expect(screen.container.innerHTML).toBe('')
   })

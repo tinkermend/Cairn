@@ -21,8 +21,8 @@ export async function handleRunCompare(
 
   const { getRun } = await import('@cairn/db')
   const [baseRun, targetRun] = await Promise.all([
-    getRun(db, baseRunId).catch(() => null),
-    getRun(db, targetRunId).catch(() => null),
+    getRun(db, baseRunId, actor.id).catch(() => null),
+    getRun(db, targetRunId, actor.id).catch(() => null),
   ])
 
   if (!baseRun) {
@@ -48,6 +48,7 @@ export async function handleRunCompare(
     db,
     baseRunId,
     targetRunId,
+    actor.id,
   )
 
   return {

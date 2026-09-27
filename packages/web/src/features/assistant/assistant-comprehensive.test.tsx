@@ -80,7 +80,7 @@ vi.mock('@/lib/assistant-api', async (importOriginal) => {
       updatedAt: '2026-09-23T00:00:00.000Z',
     })),
     createAssistantTurn: vi.fn(async () => ({
-      turnId: 'turn-mock-1',
+      turnId: nextTurnToDeliver?.id ?? 'turn-mock-1',
       stage: 'queued',
       queuePosition: 1,
     })),
@@ -351,7 +351,7 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       await openAssistant()
       await expect.element(page.getByText('有什么可以帮你？')).toBeVisible()
 
-      const guideShortcut = page.getByRole('button', { name: /从零编排自动化流程/ })
+      const guideShortcut = page.getByRole('button', { name: /找到场景编排入口/ })
       await expect.element(guideShortcut).toBeVisible()
 
       queueAssistantTurn(
@@ -401,6 +401,7 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       await expect
         .element(page.getByRole('textbox', { name: '向助手提问' }))
         .toBeDisabled()
+      await expect.element(page.getByTestId('assistant-prompt-cards')).not.toBeInTheDocument()
     })
   })
 
@@ -499,7 +500,7 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       const proposalResult: AssistantProposal = {
         kind: 'proposal',
         change: { kind: 'ai_instruction', instruction: '修正提交按钮定位器' },
-        document: { steps: [] } as any,
+        document: { steps: [] } as unknown as AssistantProposal['document'],
         stepId: 'step-submit',
         draftRevision: 1,
         documentDigest: '0'.repeat(64),
@@ -525,6 +526,7 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       useAssistantStore.setState({
         adoptHandler: mockAdopt,
         rollbackHandler: mockRollback,
+        pageContext: { page: 'studio', scenarioId: 'scenario-1' },
         turns: [buildTurn(proposalResult, '修复提交按钮定位失败问题')],
       })
 
@@ -557,7 +559,7 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       expect(mockRollback).toHaveBeenCalledWith(proposalResult)
     })
 
-    it('正例：流式思考阶段指示与可折叠思考原文', async () => {
+    it('流式分析只展示阶段，不公开模型原始推理文本', async () => {
       useAssistantStore.setState({
         busy: true,
         activeStage: 'generating',
@@ -565,21 +567,8 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       })
 
       await openAssistant()
-      await expect.element(page.getByText('大模型正在思考分析...')).toBeVisible()
-
-      // 深度思考在生成阶段默认展开呈现
-      await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).toBeVisible()
-
-      // 支持手动点击折叠
-      const foldBtn = page.getByRole('button', { name: '收起思考过程' })
-      await foldBtn.click()
-      const expandBtn = page.getByRole('button', { name: '展开思考过程' })
-      await expect.element(expandBtn).toBeVisible()
-
-      // 再次点击展开
-      await expandBtn.click()
-      await expect.element(page.getByRole('button', { name: '收起思考过程' })).toBeVisible()
-      await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).toBeVisible()
+      await expect.element(page.getByText('正在生成答复…')).toBeVisible()
+      await expect.element(page.getByText('正在分析网页 DOM 树结构中的表单元素...')).not.toBeInTheDocument()
     })
 
     it('反例：模糊问句触发 Clarify 澄清选项，点击选项继续分派', async () => {

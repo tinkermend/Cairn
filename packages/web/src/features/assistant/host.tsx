@@ -1,12 +1,17 @@
 import { useEffect, useRef } from 'react'
 import { useAssistantStore } from '@/stores/assistant-store'
+import { useKeybindingsStore, serializeKeyboardEvent } from '@/stores/keybindings-store'
 import { Can } from '@/components/rbac/can'
 import { AssistantFloatingWindow } from './floating-window'
 import { AssistantDockSidebar } from './dock-sidebar'
 import { AssistantLauncher } from './launcher'
 import { useAssistantQuoteRouteGuard } from './use-assistant-context-binding'
 
-export function AssistantHost() {
+export function AssistantHost({
+  showFloatingLauncher = true,
+}: {
+  showFloatingLauncher?: boolean
+} = {}) {
   const open = useAssistantStore((state) => state.open)
   const mode = useAssistantStore((state) => state.mode)
   const openPanel = useAssistantStore((state) => state.openPanel)
@@ -16,10 +21,12 @@ export function AssistantHost() {
   // 跨路由清理 Quote
   useAssistantQuoteRouteGuard()
 
-  // 快捷键: Cmd/Ctrl + J 快速切换助手展开/折叠
+  // 快捷键: 动态从 keybindings store 匹配切换助手展开/折叠
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+      const shortcut = serializeKeyboardEvent(e)
+      const effectiveKey = useKeybindingsStore.getState().getEffectiveKey('assistant.toggle')
+      if (shortcut && shortcut === effectiveKey) {
         const target = e.target as HTMLElement | null
         const inInput =
           target &&
@@ -40,21 +47,23 @@ export function AssistantHost() {
 
   return (
     <Can permission='ai:assist'>
-      {!open ? (
-        <AssistantLauncher buttonRef={launcherRef} onOpen={() => openPanel()} />
-      ) : null}
+      <div data-assistant-host='true'>
+        {!open && showFloatingLauncher ? (
+          <AssistantLauncher buttonRef={launcherRef} onOpen={() => openPanel()} />
+        ) : null}
 
-      {mode === 'floating' ? (
-        <AssistantFloatingWindow
-          open={open}
-          onClose={closePanel}
-          onReturnFocus={() =>
-            launcherRef.current?.focus({ preventScroll: true })
-          }
-        />
-      ) : (
-        <AssistantDockSidebar open={open} onClose={closePanel} />
-      )}
+        {mode === 'floating' ? (
+          <AssistantFloatingWindow
+            open={open}
+            onClose={closePanel}
+            onReturnFocus={() =>
+              launcherRef.current?.focus({ preventScroll: true })
+            }
+          />
+        ) : (
+          <AssistantDockSidebar open={open} onClose={closePanel} />
+        )}
+      </div>
     </Can>
   )
 }

@@ -116,8 +116,10 @@ describe('MiniRunTracker 微型运行监控坞', () => {
     const screen = await render(<MiniRunTracker />)
     await expect.element(screen.getByTestId('mini-run-tracker')).toBeInTheDocument()
     await expect.element(screen.getByText(/运行监控 · 11111111…/)).toBeInTheDocument()
+    await expect.element(screen.getByText('（运行中）')).toBeInTheDocument()
     await expect.element(screen.getByText('打开页面')).toBeInTheDocument()
     await expect.element(screen.getByText('点击登录')).toBeInTheDocument()
+    await expect.element(screen.getByText('成功')).toBeInTheDocument()
     await expect.element(screen.getByText('1.2s')).toBeInTheDocument()
 
     // 点击前往完整复盘页
@@ -179,5 +181,6 @@ describe('MiniRunTracker 微型运行监控坞', () => {
 
     const screen2 = await render(<MiniRunTracker />)
     await expect.element(screen2.getByRole('button', { name: /中止运行/ })).not.toBeInTheDocument()
+    await expect.element(screen2.getByText('（成功）').first()).toBeInTheDocument()
   })
 })

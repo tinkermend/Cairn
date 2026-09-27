@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useRouterState } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import type { AssistantPageContext } from '@cairn/shared'
 import {
   useAssistantStore,
   type AssistantBoundContext,
@@ -11,10 +10,14 @@ function bindingSignature(context: AssistantBoundContext | null): string {
   if (!context) return ''
   return JSON.stringify([
     context.page,
+    context.filters ? JSON.stringify(context.filters) : null,
+    Boolean(context.listHasFailures),
     context.entityId ?? null,
     context.runId ?? null,
     context.scenarioId ?? null,
     context.targetId ?? null,
+    context.targetAccountId ?? null,
+    context.sessionId ?? null,
     context.selectedStepId ?? null,
     Boolean(context.selectedStepFailed),
     Boolean(context.hasCssSelector),
@@ -29,66 +32,11 @@ function bindingSignature(context: AssistantBoundContext | null): string {
   ])
 }
 
-function toPageContext(context: AssistantBoundContext): AssistantPageContext {
-  const runId = context.runId ?? (context.page === 'run' ? context.entityId : undefined)
-  const scenarioId = context.scenarioId ?? (context.page === 'studio' ? context.entityId : undefined)
-  const targetId = context.targetId ?? (context.page === 'target' ? context.entityId : undefined)
-  const draftRevision =
-    typeof context.draftRevision === 'number' && context.draftRevision >= 1
-      ? context.draftRevision
-      : undefined
-
-  let primaryRef: { kind: 'run' | 'scenario' | 'target' | 'session' | 'schedule' | 'dataset'; id: string } | undefined
-  if (context.page === 'run' && runId) {
-    primaryRef = { kind: 'run', id: runId }
-  } else if ((context.page === 'studio' || context.page === 'scenario') && scenarioId) {
-    primaryRef = { kind: 'scenario', id: scenarioId }
-  } else if (context.page === 'target' && targetId) {
-    primaryRef = { kind: 'target', id: targetId }
-  } else if (context.page === 'session' && context.entityId) {
-    primaryRef = { kind: 'session', id: context.entityId }
-  } else if (context.page === 'schedule' && context.entityId) {
-    primaryRef = { kind: 'schedule', id: context.entityId }
-  } else if (context.page === 'dataset' && context.entityId) {
-    primaryRef = { kind: 'dataset', id: context.entityId }
-  }
-
-  return {
-    version: 2,
-    routeKey: context.page,
-    pageKind: context.page,
-    page: context.page,
-    ...(primaryRef ? { primaryRef } : {}),
-    ...(runId ? { runId } : {}),
-    ...(scenarioId ? { scenarioId } : {}),
-    ...(targetId ? { targetId } : {}),
-    ...(context.selectedStepId ? { stepId: context.selectedStepId } : {}),
-    ...(draftRevision ? { draftRevision } : {}),
-    ...(context.versionId ? { versionId: context.versionId } : {}),
-    ...(context.isDirty !== undefined || draftRevision !== undefined
-      ? {
-          draft: {
-            isDirty: Boolean(context.isDirty),
-            savedRevision: draftRevision,
-          },
-        }
-      : {}),
-    ...(context.selectedStepId
-      ? {
-          view: {
-            selectedRef: { kind: 'step' as const, id: context.selectedStepId },
-          },
-        }
-      : {}),
-  }
-}
-
 export function useAssistantContextBinding(
   context: AssistantBoundContext | null,
 ) {
   const bindPageContext = useAssistantStore((s) => s.bindPageContext)
   const unbindPageContext = useAssistantStore((s) => s.unbindPageContext)
-  const setPageContext = useAssistantStore((s) => s.setPageContext)
   const signature = bindingSignature(context)
   const contextRef = useRef(context)
   contextRef.current = context
@@ -101,8 +49,7 @@ export function useAssistantContextBinding(
   useEffect(() => {
     const current = contextRef.current
     bindPageContext(current, ownerTokenRef.current)
-    setPageContext(current ? toPageContext(current) : null)
-  }, [signature, bindPageContext, setPageContext])
+  }, [signature, bindPageContext])
 
   useEffect(() => {
     const token = ownerTokenRef.current

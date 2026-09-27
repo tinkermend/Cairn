@@ -178,4 +178,19 @@ describe('AssistantLauncher', () => {
     await screen.getByRole('button', { name: '打开识途助手' }).click()
     expect(onOpen).toHaveBeenCalledOnce()
   })
+
+  it('当右侧 Studio 属性检查器展开时，自动淡出隐退避让表单字段', async () => {
+    const { button } = await setup()
+    expect(button.getAttribute('data-obscured')).toBeNull()
+
+    const inspector = document.createElement('section')
+    inspector.setAttribute('data-testid', 'studio-inspector-host')
+    document.body.appendChild(inspector)
+
+    await expect.poll(() => button.getAttribute('data-obscured')).toBe('true')
+
+    inspector.remove()
+    await expect.poll(() => button.getAttribute('data-obscured')).toBeNull()
+  })
 })
+

@@ -39,6 +39,8 @@ import { listenForSupertest } from '../__tests__/http-app'
 import { AssistantController } from './assistant.controller'
 import { AssistantService } from './assistant.service'
 import { AssistantCapabilityRegistry } from './registry'
+import { handleRunCompare } from './handlers/compare.handler'
+import { handleRunDiagnose } from './handlers/diagnose.handler'
 import { AssistantAsyncRunner } from './async-runner'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
@@ -74,6 +76,7 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
   let currentActor: RequestAccount
   let userA: RequestAccount
   let userB: RequestAccount
+  let scopedReader: RequestAccount
   let targetAId: string
   let targetBId: string
   let scenarioAId: string
@@ -86,6 +89,7 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
   let asyncRunner: AssistantAsyncRunner
   let capabilityRegistry: AssistantCapabilityRegistry
   let platformConfig: PlatformConfigService
+  let targetsService: TargetsService
 
   beforeAll(async () => {
     db = await openIsolatedDb(`cairn_asst_cap_${newId().replaceAll('-', '')}`)
@@ -139,6 +143,29 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
     targetBId = targetB.id
 
     const authorRoleId = (await rbac.listRoles()).items.find((r) => r.key === 'author')!.id
+
+    const extraTargetReadRole = await rbac.createRole(
+      { key: 'assistant_target_b_read', name: '目标乙只读', permissions: ['target:read'] },
+      adminActor,
+    )
+    const scopedAccount = await rbac.createAccount(
+      createAccountBodySchema.parse({
+        email: 'assistant-scoped-reader@example.com',
+        displayName: '运行范围受限用户',
+        password: 'scoped-reader-password',
+        roleIds: [authorRoleId, extraTargetReadRole.id],
+        targetScopes: [
+          { roleId: authorRoleId, mode: 'selected', targetIds: [targetAId] },
+          { roleId: extraTargetReadRole.id, mode: 'selected', targetIds: [targetBId] },
+        ],
+      }),
+      adminActor,
+    )
+    scopedReader = makeAccount(scopedAccount.id, scopedAccount.permissions, {
+      displayName: scopedAccount.displayName,
+      email: scopedAccount.email,
+      roles: scopedAccount.roles,
+    })
 
     // 3. Create User A scoped strictly to Target A
     const accA = await rbac.createAccount(
@@ -211,7 +238,7 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
       maxCallsPerTurn: 4,
       maxOutputTokens: 2000,
     })
-    const targetsService = new TargetsService(db, secrets)
+    targetsService = new TargetsService(db, secrets)
     capabilityRegistry = new AssistantCapabilityRegistry()
     const hintsBus = {
       namespace: 'assistant',
@@ -371,6 +398,27 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
 
       // Since runBId belongs to Target B, TargetScopeGuard rejects with 404/403
       expect([403, 404]).toContain(res.status)
+    })
+
+    it('即使能读 Target B，也不能诊断或对比未获 run:read 授权的 Target B 运行', async () => {
+      const context = {
+        db,
+        actor: scopedReader,
+        targets: targetsService,
+        body: { question: '诊断运行' },
+        question: '诊断运行',
+        session: null,
+      }
+      await expect(handleRunDiagnose({ ...context, slots: { runId: runBId } } as any)).rejects.toMatchObject({
+        code: 'RUN_NOT_FOUND',
+      })
+      await expect(handleRunCompare({
+        ...context,
+        slots: { baseRunId: runAId, compareRunId: runBId },
+      } as any)).rejects.toMatchObject({ code: 'RUN_NOT_FOUND' })
+
+      const allowed = await handleRunDiagnose({ ...context, slots: { runId: runAId } } as any)
+      expect(allowed.kind).toBe('diagnosis')
     })
 
     it('用户甲通过 @Quote 注入 Target B 的 objectRef：被 TargetScopeGuard 早期拦截', async () => {
@@ -598,4 +646,3 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
     })
   })
 })
-

@@ -68,7 +68,7 @@ export async function handleRunDiagnose(
   }
 
   const { getRun } = await import('@cairn/db')
-  const run = await getRun(db, runId).catch(() => null)
+  const run = await getRun(db, runId, actor.id).catch(() => null)
   if (!run) {
     throw new DomainError('not_found', 'RUN_NOT_FOUND', '运行不存在')
   }
@@ -100,7 +100,7 @@ export async function handleRunDiagnose(
       (typeof slots.stepId === 'string' ? slots.stepId : body.pageContext?.stepId),
     focus: typeof slots.focus === 'string' ? slots.focus : 'overview',
     quote,
-  })
+  }, actor.id)
 
   const nextActions: AssistantNextAction[] = [...pack.nextActions]
   if (hasAllPermissions(actor.permissions, ['target:read'])) {

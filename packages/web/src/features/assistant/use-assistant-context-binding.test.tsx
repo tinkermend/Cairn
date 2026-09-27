@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { useState } from 'react'
+import { normalizeAssistantPageContext } from '@cairn/shared'
 import { useAssistantContextBinding } from './use-assistant-context-binding'
 import { useAssistantStore, type AssistantBoundContext } from '@/stores/assistant-store'
 
@@ -124,6 +125,6 @@ describe('useAssistantContextBinding & ownerToken anti-race guard (CQ-02)', () =
     // 标记草稿为脏
     await screen.getByRole('button', { name: 'Mark Dirty' }).click()
     expect(useAssistantStore.getState().boundContext?.isDirty).toBe(true)
-    expect(useAssistantStore.getState().pageContext?.draft?.isDirty).toBe(true)
+    expect(normalizeAssistantPageContext(useAssistantStore.getState().pageContext)?.draft?.isDirty).toBe(true)
   })
 })

@@ -33,6 +33,7 @@ import { applyAuthoringOperations } from '@cairn/authoring'
 import {
   DomainError,
   assertTargetPermission,
+  authorizeTargetRequest,
   beginAssistantTurn,
   createAssistantConversation,
   deleteAssistantConversation,
@@ -278,11 +279,6 @@ export class AssistantService implements OnModuleInit {
     this.requireAssist(actor)
     // Fail before SSE if turn doesn't exist
     await this.getTurn(actor, conversationId, turnId)
-    const access = await this.platformConfig.resolvePlatformAiAccess().catch(() => null)
-    const thinkingStream = access
-      ? Boolean(access.thinkingMode === 'on')
-      : false
-
     return observeObject({
       req,
       res,
@@ -294,9 +290,11 @@ export class AssistantService implements OnModuleInit {
       snapshot: () => this.getTurn(actor, conversationId, turnId),
       events: (afterSeq) => listAssistantTurnEvents(this.db, turnId, afterSeq),
       finished: (snap) => snap.status !== 'RUNNING' && snap.status !== 'QUEUED',
-      readyData: { thinkingStream },
+      readyData: { thinkingStream: false },
       writeEvent: (event, write) => {
-        write(event.channel, event.payload, event.seq)
+        // Old turns may still have persisted raw reasoning events. Advance the
+        // durable cursor without replaying those events to the user.
+        if (event.channel === 'event') write(event.channel, event.payload, event.seq)
       },
     })
   }
@@ -388,6 +386,10 @@ export class AssistantService implements OnModuleInit {
       diffs = result.diffs as any
     }
 
+    await authorizeTargetRequest(this.db, actor.id, {
+      scenarioId,
+      permissions: ['workflow:write'],
+    }).catch(rethrowDomain)
     const scenario = await getScenario(this.db, scenarioId).catch(rethrowDomain)
     targetId = scenario.targetId
     await this.requireVisibleTarget(actor, targetId)
@@ -577,7 +579,7 @@ export class AssistantService implements OnModuleInit {
           return { ...turn, result: { kind: 'inaccessible' as const, message: '相关运行或目标已不可访问' } }
         }
         try {
-          const run = await getRun(this.db, runId)
+          const run = await getRun(this.db, runId, actor.id)
           await this.requireVisibleTarget(actor, run.targetId)
         } catch {
           return {
@@ -596,8 +598,8 @@ export class AssistantService implements OnModuleInit {
       }
       try {
         const [base, target] = await Promise.all([
-          getRun(this.db, baseRunId),
-          getRun(this.db, targetRunId),
+          getRun(this.db, baseRunId, actor.id),
+          getRun(this.db, targetRunId, actor.id),
         ])
         await this.requireVisibleTarget(actor, base.targetId)
         await this.requireVisibleTarget(actor, target.targetId)
@@ -612,9 +614,12 @@ export class AssistantService implements OnModuleInit {
     if (
       unpackedResult.kind === 'explanation' ||
       unpackedResult.kind === 'proposal' ||
-      unpackedResult.kind === 'knowledge_proposal'
+      unpackedResult.kind === 'knowledge_proposal' ||
+      unpackedResult.kind === 'authoring_proposal'
     ) {
-      const scenarioId = typeof slots?.scenarioId === 'string' ? slots.scenarioId : ''
+      const scenarioId = unpackedResult.kind === 'authoring_proposal'
+        ? unpackedResult.scenarioId
+        : typeof slots?.scenarioId === 'string' ? slots.scenarioId : ''
       if (
         !scenarioId ||
         !hasAllPermissions(actor.permissions, ['workflow:read', 'target:read'])
@@ -622,6 +627,10 @@ export class AssistantService implements OnModuleInit {
         return { ...turn, result: { kind: 'inaccessible' as const, message: '相关场景或目标已不可访问' } }
       }
       try {
+        await authorizeTargetRequest(this.db, actor.id, {
+          scenarioId,
+          permissions: ['workflow:read'],
+        })
         const detail = await getScenario(this.db, scenarioId)
         await this.requireVisibleTarget(actor, detail.targetId)
       } catch {

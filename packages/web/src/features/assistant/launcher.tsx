@@ -14,6 +14,9 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
+import { formatShortcut } from '@/lib/platform'
+import { useKeybindingsStore } from '@/stores/keybindings-store'
 import { assistantIcon } from './icon'
 
 const POSITION_KEY = 'cairn:assistant-launcher-position:v1'
@@ -116,14 +119,34 @@ export function AssistantLauncher({
   const [view, setView] = useState(viewport)
   const [dragging, setDragging] = useState(false)
   const [controlsOpen, setControlsOpen] = useState(false)
+  const [obscured, setObscured] = useState(false)
   const drag = useRef<Drag | null>(null)
   const suppressClick = useRef(false)
   const point = pixels(position, view)
+  const toggleKey = useKeybindingsStore((s) => s.getEffectiveKey('assistant.toggle'))
+  const shortcutHint = formatShortcut(toggleKey)
 
   useEffect(() => {
     const resize = () => setView(viewport())
     window.addEventListener('resize', resize)
     return () => window.removeEventListener('resize', resize)
+  }, [])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const checkConflicts = () => {
+      const conflict = Boolean(
+        document.querySelector('[data-testid="studio-inspector-host"]') ||
+        document.querySelector('[data-slot="sheet-content"]') ||
+        document.querySelector('[data-slot="drawer-content"]')
+      )
+      setObscured(conflict)
+    }
+
+    checkConflicts()
+    const observer = new MutationObserver(checkConflicts)
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true })
+    return () => observer.disconnect()
   }, [])
 
   function finishDrag(cancelled: boolean) {
@@ -186,12 +209,17 @@ export function AssistantLauncher({
           type='button'
           variant='ghost'
           size='icon'
-          className='fixed z-30 size-14 cursor-grab touch-none rounded-full border-0 bg-transparent p-0 shadow-none select-none hover:bg-transparent active:bg-transparent data-[dragging=true]:cursor-grabbing'
+          className={cn(
+            'fixed z-[38] size-14 cursor-grab touch-none rounded-full border-0 bg-transparent p-0 shadow-none select-none hover:bg-transparent active:bg-transparent data-[dragging=true]:cursor-grabbing transition-opacity duration-200',
+            obscured && 'opacity-0 pointer-events-none'
+          )}
           style={{ left: point.x, top: point.y }}
+          data-assistant-launcher='true'
           data-dragging={dragging || undefined}
+          data-obscured={obscured ? 'true' : undefined}
           aria-label='打开识途助手'
-          aria-description='点击打开，按住可拖动。右键打开位置控件，也可用方向键移动，Home 键重置位置。'
-          title='识途助手 · 按住拖动，右键调整位置'
+          aria-description={`点击打开，也可随时按 ${shortcutHint} 快速呼出。按住可拖动，右键打开位置控件，也可用方向键移动，Home 键重置位置。`}
+          title={`识途助手 (${shortcutHint}) · 按住拖动，右键调整位置`}
           onPointerDown={pointerDown}
           onPointerMove={pointerMove}
           onPointerUp={(event) => {

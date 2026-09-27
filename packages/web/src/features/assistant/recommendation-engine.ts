@@ -1,7 +1,8 @@
-import type {
-  AssistantCapabilitiesResponse,
-  AssistantCapabilityId,
-  AssistantPageContext,
+import {
+  normalizeAssistantPageContext,
+  type AssistantCapabilitiesResponse,
+  type AssistantCapabilityId,
+  type AssistantPageContext,
 } from '@cairn/shared'
 import type { AssistantBoundContext } from '@/stores/assistant-store'
 
@@ -22,6 +23,8 @@ export function resolveContextRecommendations(params: {
     canAssist: boolean
     canWrite: boolean
     canReadTarget: boolean
+    canReadSchedule?: boolean
+    canReadRun?: boolean
   }
 }): AssistantRecommendationChip[] {
   // 1. 若全局未启用 AI 助手能力或缺少 ai:assist 权限，返回空列表
@@ -34,8 +37,20 @@ export function resolveContextRecommendations(params: {
   )
 
   const bound = params.boundContext
-  const page = bound?.page ?? params.pageContext?.page
-  const selectedStepId = bound?.selectedStepId ?? params.pageContext?.stepId
+  const pageContext = normalizeAssistantPageContext(params.pageContext)
+  const page = bound?.page ?? pageContext?.page
+  const selectedStepId = bound?.selectedStepId ?? pageContext?.stepId
+  const runId =
+    bound?.runId ??
+    pageContext?.runId ??
+    (bound?.page === 'run' ? bound?.entityId : undefined)
+  const targetId =
+    bound?.targetId ??
+    bound?.entityId ??
+    pageContext?.targetId
+  const scheduleId =
+    (bound?.page === 'schedule' ? bound.entityId : undefined) ??
+    (pageContext?.primaryRef?.kind === 'schedule' ? pageContext.primaryRef.id : undefined)
   const rawChips: AssistantRecommendationChip[] = []
 
   // 2. 根据 boundContext / pageContext 匹配当前场景规则
@@ -88,6 +103,15 @@ export function resolveContextRecommendations(params: {
         capabilityHint: 'scenario.explain',
         priority: 90,
       })
+      if (params.permissions.canReadRun) {
+        rawChips.push({
+          id: 'studio-scenario-failure-history',
+          label: '📉 这个场景最近为什么老失败',
+          question: '请帮我分析当前场景最近 7 天内的失败运行记录，归纳主要失败原因。',
+          capabilityHint: 'knowledge.answer',
+          priority: 85,
+        })
+      }
       rawChips.push({
         id: 'studio-scenario-branch',
         label: '➕ 建议测试分支',
@@ -106,7 +130,7 @@ export function resolveContextRecommendations(params: {
         priority: 95,
       })
     }
-  } else if (page === 'run') {
+  } else if (page === 'run' && runId) {
     const isError = bound?.statusTone === 'error'
 
     if (isError) {
@@ -144,7 +168,44 @@ export function resolveContextRecommendations(params: {
         priority: 80,
       })
     }
-  } else if ((page === 'target' || page === 'session') && params.permissions.canReadTarget) {
+  } else if (page === 'run' && !runId && params.permissions.canReadRun) {
+    // 运行列表页排查
+    const filters = bound?.filters ?? pageContext?.view?.filters
+    const status = filters?.status
+    const showsFailures = status ? status === 'FAILED' : Boolean(bound?.listHasFailures)
+    if (showsFailures) {
+      rawChips.push({
+        id: 'run-list-failure-digest',
+        label: '🧩 这些失败是同一个原因吗',
+        question: '请帮我分析当前筛选出的这些失败运行，它们是同一个原因导致的吗？',
+        capabilityHint: 'knowledge.answer',
+        priority: 85,
+      })
+    }
+  } else if (page === 'session' && targetId && params.permissions.canReadTarget) {
+    // 账号会话页面排查
+    rawChips.push({
+      id: 'session-auth-failure-reason',
+      label: '🔑 为什么登录失效',
+      question: '请帮我分析当前账号为什么登录失效，最近一次认证失败的原因是什么？',
+      capabilityHint: 'knowledge.answer',
+      priority: 92,
+    })
+    rawChips.push({
+      id: 'session-occupied-by-whom',
+      label: '🔒 会话被谁占用',
+      question: '请检查当前会话被哪次运行或 Worker 占用，已经占用了多久？',
+      capabilityHint: 'knowledge.answer',
+      priority: 88,
+    })
+    rawChips.push({
+      id: 'session-queue-waiting-reason',
+      label: '⌛ 为什么开跑一直在等会话',
+      question: '请分析为什么当前账号的运行在等待会话，是否存在租约占用、并发超限或等待认证？',
+      capabilityHint: 'knowledge.answer',
+      priority: 82,
+    })
+  } else if (page === 'target' && targetId && params.permissions.canReadTarget) {
     // 目标系统与凭据
     rawChips.push({
       id: 'target-account-health',
@@ -157,6 +218,22 @@ export function resolveContextRecommendations(params: {
       id: 'target-menu-map',
       label: '🗺️ 目标菜单地图覆盖',
       question: '请解释当前目标系统的一级菜单授权与只读地图覆盖情况。',
+      capabilityHint: 'knowledge.answer',
+      priority: 80,
+    })
+  } else if (page === 'schedule' && scheduleId && params.permissions.canReadSchedule) {
+    // 调度聚焦 (Schedule Focused)
+    rawChips.push({
+      id: 'schedule-why-not-run',
+      label: '⏱️ 为什么没按时运行',
+      question: '请分析当前调度最近为什么没有按时运行，排查跳过原因与处理建议。',
+      capabilityHint: 'knowledge.answer',
+      priority: 90,
+    })
+    rawChips.push({
+      id: 'schedule-recent-summary',
+      label: '📋 最近触发情况汇总',
+      question: '请汇总当前调度最近的触发记录、准入状态与跳过原因分布。',
       capabilityHint: 'knowledge.answer',
       priority: 80,
     })

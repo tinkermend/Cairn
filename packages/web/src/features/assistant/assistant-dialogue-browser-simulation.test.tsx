@@ -1,5 +1,5 @@
 import '@/styles/index.css'
-import type { AssistantTurn } from '@cairn/shared'
+import type { AssistantProposal, AssistantTurn } from '@cairn/shared'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -10,6 +10,8 @@ import { ApiRequestError } from '@/lib/api-client'
 import {
   cancelAssistantTurn,
   createAssistantTurn,
+  fetchAssistantTurn,
+  observeAssistantTurn,
 } from '@/lib/assistant-api'
 import { AssistantHost } from './host'
 import { useAssistantContextBinding } from './use-assistant-context-binding'
@@ -28,6 +30,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 })
 
 let nextTurnToDeliver: AssistantTurn | null = null
+let latestObservationHandlers: Parameters<typeof observeAssistantTurn>[2] | null = null
+const observationCleanup = vi.fn()
 
 vi.mock('@/lib/assistant-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/assistant-api')>()
@@ -86,7 +90,7 @@ vi.mock('@/lib/assistant-api', async (importOriginal) => {
       createdAt: '2026-09-23T00:00:00.000Z',
       updatedAt: '2026-09-23T00:00:00.000Z',
     })),
-    createAssistantTurn: vi.fn(async (_cid: string, body: any) => {
+    createAssistantTurn: vi.fn(async (_cid: string, body: { question: string }) => {
       if (body.question === '__TRIGGER_CONFLICT__') {
         throw new ApiRequestError(409, {
           code: 'ASSISTANT_CONCURRENCY_CONFLICT',
@@ -109,20 +113,21 @@ vi.mock('@/lib/assistant-api', async (importOriginal) => {
     fetchAssistantTurns: vi.fn(async () => ({ items: [] })),
     fetchAssistantTurn: vi.fn(async () => nextTurnToDeliver),
     observeAssistantTurn: vi.fn(
-      (_cid: string, _tid: string, callbacks: { onTurn?: (t: AssistantTurn) => void }) => {
+      (_cid: string, _tid: string, callbacks: Parameters<typeof actual.observeAssistantTurn>[2]) => {
+        latestObservationHandlers = callbacks
         if (nextTurnToDeliver) {
           const toSend = nextTurnToDeliver
           setTimeout(() => {
             callbacks.onTurn?.(toSend)
           }, 10)
         }
-        return () => {}
+        return observationCleanup
       },
     ),
   }
 })
 
-function makeTurn(result: any, question = '测试提问'): AssistantTurn {
+function makeTurn(result: unknown, question = '测试提问'): AssistantTurn {
   return {
     id: `turn-id-${Math.random().toString(36).slice(2, 8)}`,
     conversationId: 'conv-browser-sim-1',
@@ -132,9 +137,19 @@ function makeTurn(result: any, question = '测试提问'): AssistantTurn {
     capabilityId: 'scenario.discover',
     status: 'COMPLETED',
     deadlineAt: '2026-09-23T00:05:00.000Z',
-    result,
+    result: result as AssistantTurn['result'],
     createdAt: '2026-09-23T00:00:00.000Z',
     updatedAt: '2026-09-23T00:00:00.000Z',
+  }
+}
+
+function makeObservedTurn(status: AssistantTurn['status']): AssistantTurn {
+  return {
+    ...makeTurn(null, '查询运行状态'),
+    id: 'turn-sim-100',
+    status,
+    stage: status === 'RUNNING' ? 'generating' : 'persisting',
+    result: status === 'COMPLETED' ? { kind: 'guide', items: [] } : null,
   }
 }
 
@@ -142,6 +157,7 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
   beforeEach(async () => {
     vi.clearAllMocks()
     nextTurnToDeliver = null
+    latestObservationHandlers = null
     await page.viewport(1440, 900)
     useAuthStore.getState().auth.reset()
     useAuthStore.getState().auth.setUser({
@@ -171,6 +187,7 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
   afterEach(() => {
     useAuthStore.getState().auth.setUser(null)
     useAssistantStore.getState().cancel()
+    useAssistantStore.getState().newConversation()
     useAssistantStore.getState().closePanel()
   })
 
@@ -241,13 +258,13 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
     const moduleElem = page.getByText('[模块] 智能表单填写公共子模块')
     await expect.element(moduleElem).toBeVisible()
 
-    // 4. 验证“下一页 / 继续找”按钮存在，点击后调用 openPanel 带着原搜索条件发起新轮次
+    // 4. 下一页明确关联上一轮，服务端才能沿用筛选条件和游标
     const nextPageBtn = page.getByRole('button', { name: '下一页 / 继续找' })
     await expect.element(nextPageBtn).toBeVisible()
     await userEvent.click(nextPageBtn)
     expect(createAssistantTurn).toHaveBeenCalledWith(
       'conv-browser-sim-1',
-      expect.objectContaining({ question: '下一页' }),
+      expect.objectContaining({ question: '下一页', replyToTurnId: turn.id }),
     )
   })
 
@@ -338,9 +355,9 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
   })
 
   // --------------------------------------------------------------------------
-  // 正例 4: Studio 未保存草稿 (isDirty) 胶囊提示与发问前缀警告注入 (PD-13)
+  // 正例 4: Studio 未保存草稿提醒与用户问题分离
   // --------------------------------------------------------------------------
-  it('正例 4 (PD-13): Studio 画布存在未保存修改时，上下文胶囊展示黄色未保存提示，提问开头显式注入版本警告并在气泡展示', async () => {
+  it('Studio 画布存在未保存修改时，单独提醒版本来源且不改写用户问题', async () => {
     useAssistantStore.setState({
       turns: [],
       pageContext: { page: 'studio', scenarioId: 'sc-123' },
@@ -366,15 +383,146 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
     const submitBtn = page.getByRole('button', { name: '发送' })
     await userEvent.click(submitBtn)
 
-    // 3. 验证提交时由于 isDirty = true，向后端发送的问题注入了版本警告前缀
+    await expect.element(page.getByText(/助手会依据已保存版本回答/)).toBeVisible()
+
+    // 3. 用户原话保持原样，草稿状态随 pageContext 独立传递
     expect(createAssistantTurn).toHaveBeenCalledWith(
       'conv-browser-sim-1',
       expect.objectContaining({
-        question: expect.stringContaining(
-          '⚠️ 当前分析基于已保存版本；若需分析刚刚编辑的步骤，请先保存（Ctrl+S）',
-        ),
+        question: '解释第三步为什么校验失败',
       }),
     )
+  })
+
+  it('停止请求失败时保留运行状态并提示重试', async () => {
+    vi.mocked(cancelAssistantTurn).mockRejectedValueOnce(new Error('网络断开'))
+    useAssistantStore.setState({
+      conversationId: 'conv-browser-sim-1',
+      activeTurnId: 'turn-running-1',
+      busy: true,
+      activeStage: 'generating',
+    })
+
+    render(<AssistantHost />)
+    await userEvent.click(page.getByRole('button', { name: '停止' }))
+
+    await expect.element(page.getByRole('alert')).toHaveTextContent('停止请求未成功')
+    expect(useAssistantStore.getState().busy).toBe(true)
+    expect(useAssistantStore.getState().activeTurnId).toBe('turn-running-1')
+    useAssistantStore.setState({ activeTurnId: null, busy: false })
+  })
+
+  it('SSE 断线补读到运行中状态时保持任务，并退避重连', async () => {
+    render(<AssistantHost />)
+    useAssistantStore.setState({ question: '查询运行状态' })
+    await useAssistantStore.getState().submit()
+    const runningTurn = makeObservedTurn('RUNNING')
+    vi.mocked(fetchAssistantTurn).mockResolvedValueOnce(runningTurn)
+
+    latestObservationHandlers?.onError?.(new Error('connection lost'))
+    await vi.waitFor(() => expect(fetchAssistantTurn).toHaveBeenCalledWith('conv-browser-sim-1', 'turn-sim-100'))
+    await vi.waitFor(() => expect(useAssistantStore.getState().turns[0]?.status).toBe('RUNNING'))
+    expect(useAssistantStore.getState()).toMatchObject({
+      busy: true,
+      activeTurnId: 'turn-sim-100',
+    })
+    expect(useAssistantStore.getState().error).toContain('连接中断')
+    await expect.element(page.getByRole('alert')).toHaveTextContent('连接中断')
+    await expect.element(page.getByText('答复已完成')).not.toBeInTheDocument()
+
+    await vi.waitFor(() => expect(observeAssistantTurn).toHaveBeenCalledTimes(2), { timeout: 2_000 })
+    latestObservationHandlers?.onReady?.({ realtime: true, thinkingStream: false })
+    expect(useAssistantStore.getState().error).toBeNull()
+    latestObservationHandlers?.onTurn?.(makeObservedTurn('COMPLETED'))
+    expect(useAssistantStore.getState()).toMatchObject({ busy: false, activeTurnId: null })
+  })
+
+  it('SSE 断线补读到终态时完成任务，不再重连', async () => {
+    useAssistantStore.setState({ question: '查询运行状态' })
+    await useAssistantStore.getState().submit()
+    vi.mocked(fetchAssistantTurn).mockResolvedValueOnce(makeObservedTurn('COMPLETED'))
+
+    latestObservationHandlers?.onError?.(new Error('connection lost'))
+    await vi.waitFor(() => expect(useAssistantStore.getState().busy).toBe(false))
+    expect(useAssistantStore.getState().activeTurnId).toBeNull()
+    expect(useAssistantStore.getState().turns[0]?.status).toBe('COMPLETED')
+    await new Promise((resolve) => setTimeout(resolve, 1_100))
+    expect(observeAssistantTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('观察流无终态就结束时报告断线，主动关闭不会误报', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/assistant-api')>('@/lib/assistant-api')
+    const makeStream = () => new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: ready\ndata: {"realtime":true,"thinkingStream":false}\n\n'))
+        controller.close()
+      },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    try {
+      fetchSpy.mockResolvedValueOnce(new Response(makeStream(), { status: 200 }))
+      const onDisconnected = vi.fn()
+      actual.observeAssistantTurn('conv-1', 'turn-1', { onError: onDisconnected })
+      await vi.waitFor(() => expect(onDisconnected).toHaveBeenCalledTimes(1))
+
+      fetchSpy.mockResolvedValueOnce(new Response(makeStream(), { status: 200 }))
+      const onAborted = vi.fn()
+      const close = actual.observeAssistantTurn('conv-1', 'turn-2', { onError: onAborted })
+      close()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(onAborted).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each(['cancel', 'switch'] as const)('%s 清理已排程的断线重连', async (action) => {
+    useAssistantStore.setState({ question: '查询运行状态' })
+    await useAssistantStore.getState().submit()
+    vi.mocked(fetchAssistantTurn).mockResolvedValueOnce(makeObservedTurn('RUNNING'))
+
+    latestObservationHandlers?.onError?.(new Error('connection lost'))
+    await vi.waitFor(() => expect(useAssistantStore.getState().turns[0]?.status).toBe('RUNNING'))
+    if (action === 'cancel') await useAssistantStore.getState().cancel()
+    else await useAssistantStore.getState().switchConversation('conv-other')
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100))
+    expect(observeAssistantTurn).toHaveBeenCalledTimes(1)
+    expect(useAssistantStore.getState().activeTurnId).toBeNull()
+    if (action === 'switch') {
+      expect(useAssistantStore.getState().conversationId).toBe('conv-other')
+      expect(useAssistantStore.getState().turns).toEqual([])
+    }
+  })
+
+  it('切换会话后忽略迟到的断线补读', async () => {
+    useAssistantStore.setState({ question: '查询运行状态' })
+    await useAssistantStore.getState().submit()
+    let resolveFetch: (turn: AssistantTurn) => void = () => undefined
+    vi.mocked(fetchAssistantTurn).mockImplementationOnce(() => new Promise<AssistantTurn>((resolve) => {
+      resolveFetch = resolve
+    }))
+
+    latestObservationHandlers?.onError?.(new Error('connection lost'))
+    await vi.waitFor(() => expect(fetchAssistantTurn).toHaveBeenCalledTimes(1))
+    await useAssistantStore.getState().switchConversation('conv-other')
+    resolveFetch(makeObservedTurn('RUNNING'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(useAssistantStore.getState().conversationId).toBe('conv-other')
+    expect(useAssistantStore.getState().turns).toEqual([])
+    expect(observeAssistantTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('补读失败时仍保持运行中并继续尝试恢复观察流', async () => {
+    useAssistantStore.setState({ question: '查询运行状态' })
+    await useAssistantStore.getState().submit()
+    vi.mocked(fetchAssistantTurn).mockRejectedValueOnce(new Error('network unavailable'))
+
+    latestObservationHandlers?.onError?.(new Error('connection lost'))
+    await vi.waitFor(() => expect(useAssistantStore.getState().error).toContain('暂时无法读取已保存进度'))
+    expect(useAssistantStore.getState()).toMatchObject({ busy: true, activeTurnId: 'turn-sim-100' })
+    await vi.waitFor(() => expect(observeAssistantTurn).toHaveBeenCalledTimes(2), { timeout: 2_000 })
   })
 
   it('后续提问带上最近一轮的 replyToTurnId', async () => {
@@ -472,16 +620,15 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
         ],
         draftRevision: 2,
         documentDigest: 'a'.repeat(64),
-        document: {} as any,
+        document: {} as unknown as AssistantProposal['document'],
         diagnostics: [],
       },
       '修复表单输入步骤',
     )
-    ;(proposalTurn.result as any).scenarioId = 'scenario-erp-01'
-
     useAssistantStore.setState({
       turns: [proposalTurn],
       pageContext: { page: 'run', runId: 'run-999' },
+      boundContext: { page: 'run', runId: 'run-999', scenarioId: 'scenario-erp-01' },
     })
 
     render(<AssistantHost />)
@@ -520,7 +667,7 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
         ],
         draftRevision: 1,
         documentDigest: 'c'.repeat(64),
-        document: {} as any,
+        document: {} as unknown as AssistantProposal['document'],
         diagnostics: [],
       },
       '优化步骤等待',

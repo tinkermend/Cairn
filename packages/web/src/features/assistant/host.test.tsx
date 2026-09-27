@@ -22,6 +22,13 @@ vi.mock('@/lib/assistant-api', () => ({
         missingPermissions: [],
         requiredContext: [],
       },
+      {
+        id: 'run.diagnose',
+        label: '运行诊断',
+        available: true,
+        missingPermissions: [],
+        requiredContext: ['runId'],
+      },
     ],
     modelEnabled: true,
   })),
@@ -32,7 +39,7 @@ vi.mock('@/lib/assistant-api', () => ({
     nextCursor: null,
   })),
   deleteAssistantConversation: vi.fn(async () => ({ id: 'mock', deleted: true })),
-  fetchAssistantTurns: vi.fn(),
+  fetchAssistantTurns: vi.fn(async () => ({ items: useAssistantStore.getState().turns, nextCursor: undefined })),
   fetchAssistantTurn: vi.fn(),
   cancelAssistantTurn: vi.fn(async () => ({ canceled: true })),
   observeAssistantTurn: vi.fn(() => () => {}),
@@ -359,6 +366,8 @@ describe('AssistantHost', () => {
     await openAssistant()
     useAssistantStore.setState({
       busy: true,
+      conversationId: '11111111-1111-4111-8111-111111111111',
+      activeTurnId: '22222222-2222-4222-8222-222222222222',
       question: '目标账号在哪里配置？',
       turns: [
         turn({
@@ -372,7 +381,7 @@ describe('AssistantHost', () => {
         }),
       ],
     })
-    await expect.element(page.getByRole('status')).toHaveTextContent('正在分析')
+    await expect.element(page.getByRole('status')).toHaveTextContent('正在处理，请稍候')
     await expect
       .element(page.getByRole('button', { name: '发送', exact: true }))
       .toBeDisabled()
@@ -381,7 +390,7 @@ describe('AssistantHost', () => {
     await page.getByRole('button', { name: '打开识途助手' }).click()
     await expect.element(page.getByRole('dialog')).toHaveFocus()
     await page.getByRole('button', { name: '停止', exact: true }).click()
-    expect(useAssistantStore.getState().busy).toBe(false)
+    await vi.waitFor(() => expect(useAssistantStore.getState().busy).toBe(false))
     await page.getByRole('button', { name: '功能导览', exact: true }).click()
     expect(useAssistantStore.getState().capabilityHint).toBe('platform.guide')
   })
