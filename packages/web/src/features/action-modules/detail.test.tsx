@@ -321,6 +321,7 @@ describe('AM-A action module editor review', () => {
   })
   it('前置条件和起止状态可编辑，人工说明始终标为未自动验证', async () => {
     const { screen } = await renderPage()
+    await screen.getByRole('button', { name: '展开条件与起止状态' }).click()
     for (const section of ['前置条件', '入口状态', '结束状态']) {
       await screen
         .getByRole('button', { name: `添加${section}`, exact: true })
@@ -504,5 +505,38 @@ describe('AM-A action module editor review', () => {
     // 点击收起详情
     await screen.getByRole('button', { name: '收起详情' }).click()
     await expect.element(screen.getByRole('button', { name: '展开详情' })).toBeVisible()
+  })
+
+  it('步骤为空或发布条件未满足时，诊断条温和提示草稿就绪且发布按钮展示原因提示', async () => {
+    const module = fixture()
+    // 将后置条件设为人工说明，并清空步骤：草稿结构合法可保存，但发布模式要求至少一个步骤
+    module.draftContent!.contract.postconditions = [
+      { meaning: '人工检查结果', verification: { kind: 'manual_requirement' } },
+    ]
+    module.draftContent!.implementations[0]!.steps = []
+    mocks.fetchActionModule.mockResolvedValue(module)
+    const { screen } = await renderPage()
+
+    // 检查工作台空态展示
+    await expect.element(screen.getByText('暂无执行步骤')).toBeVisible()
+    await expect
+      .element(
+        screen.getByText(
+          '动作模块需要至少一个步骤来执行业务操作。选择上方类型（如点击、填写、断言等）后点击「添加步骤」开始编排。'
+        )
+      )
+      .toBeVisible()
+
+    // 诊断栏应温和展示草稿就绪，而非骇人的红字编译错误
+    await expect
+      .element(screen.getByText(/草稿就绪 · \d+ 项发布待就绪/))
+      .toBeVisible()
+
+    // 发布按钮被禁用并附带明确原因
+    const publishBtn = screen.getByRole('button', { name: '发布新版本' })
+    await expect.element(publishBtn).toBeDisabled()
+    await expect
+      .element(publishBtn)
+      .toHaveAttribute('title', expect.stringContaining('发布条件未满足'))
   })
 })

@@ -19,6 +19,9 @@ vi.mock('@/lib/action-modules-api', async (importOriginal) => ({
   fetchActionModules: mocks.fetchActionModules,
   deleteActionModule: vi.fn(),
   createActionModule: vi.fn(),
+  fetchActionModuleReferences: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  fetchActionModuleVersions: vi.fn().mockResolvedValue({ items: [] }),
+  fetchActionModuleQuality: vi.fn().mockResolvedValue({ implementations: [] }),
 }))
 vi.mock('@/lib/targets-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/targets-api')>()),
@@ -116,4 +119,27 @@ describe('ActionModulesPage', () => {
       .element(screen.getByRole('button', { name: '新建动作模块' }))
       .toBeVisible()
   })
+
+  it('渲染 CollectionSummary 指标卡与卡片工具栏', async () => {
+    const screen = await renderPage()
+    await expect.element(screen.getByText('本页模块')).toBeVisible()
+    await expect.element(screen.getByText('已发布')).toBeVisible()
+    await expect.element(screen.getByText('覆盖系统')).toBeVisible()
+    await expect.element(screen.getByText('AI / 混编')).toBeVisible()
+  })
+
+  it('提供测试演练与查看调用方入口，点击展开引用分析抽屉', async () => {
+    const screen = await renderPage()
+    const refBtn = screen.getByRole('button', { name: '查看调用方（引用）' })
+    await expect.element(refBtn).toBeVisible()
+    await refBtn.click()
+
+    await expect
+      .element(screen.getByRole('heading', { name: '模块引用与调用方' }))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('查看动作模块「订单查询」在各业务场景中的调用与引用版本。'))
+      .toBeVisible()
+  })
 })
+
