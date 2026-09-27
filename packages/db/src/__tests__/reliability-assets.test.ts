@@ -3,8 +3,10 @@ import { DRIVERS, openContractDb } from './contract-fixture.js'
 import type { DbHandle } from '../client.js'
 import { schemaFor } from '../native.js'
 import { newId } from '../id.js'
-import { listAssetReliabilityItems } from '../reliability/metrics.js'
-import { listIncidentSignals } from '../reliability/incidents.js'
+import { getReliabilityOverview, listAssetReliabilityItems } from '../reliability/metrics.js'
+import { getIncidentDetail, listIncidentSignals } from '../reliability/incidents.js'
+import { getIncidentImpactSnapshot } from '../reliability/impact.js'
+import { requestReliabilityEvaluation } from '../reliability/evaluations.js'
 import { RELIABILITY_ERROR_CODES } from '@cairn/shared'
 
 describe.each(DRIVERS)('%s reliability assets and signals domain operations', (driver) => {
@@ -148,5 +150,123 @@ describe.each(DRIVERS)('%s reliability assets and signals domain operations', (d
     await expect(listIncidentSignals(handle.db, newId())).rejects.toMatchObject({
       code: RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND,
     })
+  })
+
+  it('filters every asset source to target:read and reliability:read scope', async () => {
+    const t = schemaFor(handle.db)
+    const otherTargetId = newId()
+    const otherScenarioId = newId()
+    const otherModuleId = newId()
+    const otherIncidentId = newId()
+    const now = new Date()
+
+    await handle.db.insert(t.targets).values({
+      id: otherTargetId,
+      code: `other-${otherTargetId.slice(0, 8)}`,
+      name: '不可见目标',
+      entryUrl: 'https://other.example.com',
+    })
+    await handle.db.insert(t.scenarios).values({
+      id: otherScenarioId,
+      targetId: otherTargetId,
+      name: '不可见场景',
+      createdByConsoleAccountId: consoleAccountId,
+    })
+    await handle.db.insert(t.actionModules).values({
+      id: otherModuleId,
+      targetId: otherTargetId,
+      key: `other-${otherModuleId.slice(0, 8)}`,
+      name: '不可见模块',
+      createdByConsoleAccountId: consoleAccountId,
+      updatedByConsoleAccountId: consoleAccountId,
+    })
+    await handle.db.insert(t.reliabilityIncidents).values({
+      id: otherIncidentId,
+      targetId: otherTargetId,
+      groupingKey: `gk:${otherTargetId}:${otherScenarioId}`,
+      scopeDigest: `target:${otherTargetId}`,
+      severity: 'P1',
+      status: 'ACTION_REQUIRED',
+      memberCount: 0,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      title: '不可见事件',
+      summary: '其他目标的事件',
+      evidenceScores: { supportingScore: 80, counterScore: 5, supportingFactors: [], counterFactors: [] },
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    async function actorWithScopes(targetRead: 'all' | 'selected', reliabilityRead: 'all' | 'selected') {
+      const actorId = newId()
+      await handle.db.insert(t.consoleAccounts).values({
+        id: actorId,
+        username: `viewer-${actorId.slice(0, 8)}`,
+        displayName: '受限查看者',
+        passwordHash: 'hash',
+        status: 'active',
+      })
+      for (const [permission, mode] of [
+        ['target:read', targetRead],
+        ['reliability:read', reliabilityRead],
+      ] as const) {
+        const roleId = newId()
+        await handle.db.insert(t.consoleRoles).values({ id: roleId, key: `reliability-${roleId}`, name: permission })
+        await handle.db.insert(t.consoleRolePermissions).values({ consoleRoleId: roleId, permission })
+        await handle.db.insert(t.consoleAccountRoles).values({
+          consoleAccountId: actorId,
+          consoleRoleId: roleId,
+          targetScopeMode: mode,
+          targetScopeIds: mode === 'selected' ? [targetId] : [],
+        })
+      }
+      return actorId
+    }
+
+    const configurableActorId = await actorWithScopes('all', 'selected')
+    const readOnlyActorId = await actorWithScopes('selected', 'all')
+    const configureRoleId = newId()
+    await handle.db.insert(t.consoleRoles).values({ id: configureRoleId, key: `reliability-${configureRoleId}`, name: '评估配置' })
+    await handle.db.insert(t.consoleRolePermissions).values({ consoleRoleId: configureRoleId, permission: 'reliability:configure' })
+    await handle.db.insert(t.consoleAccountRoles).values({
+      consoleAccountId: configurableActorId,
+      consoleRoleId: configureRoleId,
+      targetScopeMode: 'selected',
+      targetScopeIds: [targetId],
+    })
+
+    for (const actorId of [configurableActorId, readOnlyActorId]) {
+      const scoped = await listAssetReliabilityItems(handle.db, { limit: 100 }, actorId)
+      expect(scoped.items.map((item) => item.assetId)).toContain(scenarioId)
+      expect(scoped.items.map((item) => item.assetId)).toContain(moduleId)
+      expect(scoped.items.map((item) => item.assetId)).not.toContain(otherScenarioId)
+      expect(scoped.items.map((item) => item.assetId)).not.toContain(otherModuleId)
+      expect(scoped.total).toBe(2)
+
+      const foreignOnly = await listAssetReliabilityItems(handle.db, { targetId: otherTargetId }, actorId)
+      expect(foreignOnly).toEqual({ items: [], nextCursor: null, total: 0 })
+      expect((await listAssetReliabilityItems(handle.db, { targetId }, actorId)).total).toBe(2)
+
+      await expect(getReliabilityOverview(handle.db, otherTargetId, actorId)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+      await expect(getIncidentDetail(handle.db, otherIncidentId, actorId)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+      await expect(listIncidentSignals(handle.db, otherIncidentId, undefined, actorId)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+      await expect(getIncidentImpactSnapshot(handle.db, otherIncidentId, actorId)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+
+      expect((await getReliabilityOverview(handle.db, targetId, actorId)).targetId).toBe(targetId)
+      expect((await getIncidentDetail(handle.db, incidentId, actorId)).incident.id).toBe(incidentId)
+      expect((await listIncidentSignals(handle.db, incidentId, undefined, actorId)).total).toBe(3)
+      expect((await getIncidentImpactSnapshot(handle.db, incidentId, actorId)).incidentId).toBe(incidentId)
+    }
+
+    await expect(requestReliabilityEvaluation(handle.db, otherTargetId, configurableActorId))
+      .rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    await expect(requestReliabilityEvaluation(handle.db, targetId, readOnlyActorId))
+      .rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    expect((await requestReliabilityEvaluation(handle.db, targetId, configurableActorId)).requested).toBe(true)
+
+    const unrestricted = await listAssetReliabilityItems(handle.db, { limit: 100 })
+    expect(unrestricted.items.map((item) => item.assetId)).toContain(otherScenarioId)
+    expect(unrestricted.items.map((item) => item.assetId)).toContain(otherModuleId)
   })
 })

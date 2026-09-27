@@ -266,9 +266,9 @@ describe.each(DRIVERS)('%s 告警评估', { timeout: 60_000 }, (driver) => {
     expect(pending?.channelIds).toEqual([])
 
     const channelId = newId()
-    const { writeNotificationConfig } = await import('../notifications/config.js')
+    const { writeOutboundConfig } = await import('../outbound/config.js')
     const beforeChannel = await getOrCreatePlatformConfig(handle.db)
-    await writeNotificationConfig(handle.db, { actorId, expectedRevision: beforeChannel.revision, reason: '登记通知渠道', channel: {
+    await writeOutboundConfig(handle.db, { actorId, expectedRevision: beforeChannel.revision, reason: '登记通知渠道', channel: {
       id: channelId, name: 'hook', kind: 'webhook', enabled: true, secretRef: { provider: LOCAL_SECRET_PROVIDER, secretId: newId() }, host: 'hooks.example.com',
       recipients: [], version: 1, allowAlerts: true, targetIds: [], format: 'legacy_alert@1', replay: 'manual_on_unknown',
     } })

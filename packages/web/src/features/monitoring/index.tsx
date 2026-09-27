@@ -111,7 +111,7 @@ export function MonitoringPage() {
             {/* 配置规则 (放在顶部刷新旁) */}
             {canReadConfig && (
               <Button variant="outline" asChild>
-                <Link to="/notifications" search={{ tab: 'alerts' }}>
+                <Link to="/outbound" search={{ tab: 'alerts' }}>
                   配置规则
                   <ArrowUpRight className="size-3.5" />
                 </Link>

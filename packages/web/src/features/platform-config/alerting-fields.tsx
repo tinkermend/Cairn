@@ -61,7 +61,7 @@ export function AlertingFields({
 }) {
   const form = useFormContext<PlatformConfigDocument>()
   const rules = form.watch('alerting.rules') ?? FACTORY_ALERT_RULES
-  const channels = (form.watch('notifications.channels') ?? []).filter(c => c.allowAlerts)
+  const channels = (form.watch('outbound.channels') ?? []).filter(c => c.allowAlerts)
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [token, setToken] = useState('')
@@ -288,7 +288,7 @@ export function AlertingFields({
             )}
             {channels.length > 0 ? (
               <fieldset className='space-y-2'>
-                <legend className='text-label text-muted-foreground'>通知渠道</legend>
+                <legend className='text-label text-muted-foreground'>推送渠道</legend>
                 {channels.map((channel) => (
                   <label key={channel.id} className='flex items-center gap-2 text-body'>
                     <input

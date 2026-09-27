@@ -37,29 +37,31 @@ export class RepairController {
   async createCandidate(
     @Param('runId') runId: string,
     @Body(new ZodValidationPipe(createRepairCandidateBodySchema)) body: CreateRepairCandidateBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.repairService.createCandidate(runId, body)
+    return this.repairService.createCandidate(runId, body, actor.id)
   }
 
   @Get('runs/:runId/repair-candidates')
   @RequirePermissions('run:read')
-  async listCandidatesByRun(@Param('runId') runId: string) {
-    return this.repairService.listCandidatesByRun(runId)
+  async listCandidatesByRun(@Param('runId') runId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.repairService.listCandidatesByRun(runId, actor.id)
   }
 
   @Get('scenarios/:scenarioId/repair-candidates')
   @RequirePermissions('workflow:read')
   async listCandidatesByScenario(
     @Param('scenarioId') scenarioId: string,
+    @CurrentAccount() actor: RequestAccount,
     @Query('status') status?: string,
   ) {
-    return this.repairService.listCandidatesByScenario(scenarioId, status as RepairCandidateStatus | undefined)
+    return this.repairService.listCandidatesByScenario(scenarioId, status as RepairCandidateStatus | undefined, actor.id)
   }
 
   @Get('repair-candidates/:id')
   @RequirePermissions('run:read')
-  async getCandidate(@Param('id') id: string) {
-    return this.repairService.getCandidate(id)
+  async getCandidate(@Param('id') id: string, @CurrentAccount() actor: RequestAccount) {
+    return this.repairService.getCandidate(id, actor.id)
   }
 
   @Post('repair-candidates/:id/validate')

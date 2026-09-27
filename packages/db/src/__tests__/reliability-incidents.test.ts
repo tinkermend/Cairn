@@ -132,6 +132,21 @@ describe.each(DRIVERS)('%s reliability incident triage domain operations', (driv
     expect(newDetail.members.map((m) => m.memberRef).sort()).toEqual(['m-2', 'm-3'])
   })
 
+  it('listIncidents filters by multiple statuses', async () => {
+    const openId = await createTestIncident('未关闭事件 S1', ['ref-s1'])
+    const closedId = await createTestIncident('已忽略事件 S2', ['ref-s2'])
+    await dismissIncident(handle.db, { incidentId: closedId, reason: '测试' })
+
+    const { items } = await listIncidents(handle.db, {
+      targetId,
+      statuses: ['DETECTED', 'DIAGNOSING', 'ACTION_REQUIRED', 'VERIFYING', 'OBSERVING'],
+      limit: 100,
+    })
+    const ids = items.map((i) => i.id)
+    expect(ids).toContain(openId)
+    expect(ids).not.toContain(closedId)
+  })
+
   it('dismisses an incident with reason and increments revision', async () => {
     const incId = await createTestIncident('待忽略事件 E', ['ref-6'])
 
@@ -266,5 +281,70 @@ describe.each(DRIVERS)('%s reliability incident triage domain operations', (driv
     // Unscoped caller (e.g. system background job) gets items
     const unscoped = await listIncidents(handle.db, {})
     expect(unscoped.total).toBeGreaterThan(0)
+  })
+
+  it('rejects cross-target incident triage when actorId is supplied', async () => {
+    const t = schemaFor(handle.db)
+    const actorId = newId()
+    const roleId = newId()
+    const foreignTargetId = newId()
+    const foreignIncidentId = newId()
+    const localIncidentId = await createTestIncident('本地处置事件', ['local-ref'])
+    const now = new Date()
+
+    await handle.db.insert(t.consoleAccounts).values({
+      id: actorId,
+      username: `triager-${actorId.slice(0, 8)}`,
+      displayName: '受限分诊员',
+      passwordHash: 'hash',
+      status: 'active',
+    })
+    await handle.db.insert(t.consoleRoles).values({ id: roleId, key: `triager-${roleId}`, name: '受限分诊' })
+    await handle.db.insert(t.consoleRolePermissions).values([
+      { consoleRoleId: roleId, permission: 'target:read' },
+      { consoleRoleId: roleId, permission: 'reliability:triage' },
+    ])
+    await handle.db.insert(t.consoleAccountRoles).values({
+      consoleAccountId: actorId,
+      consoleRoleId: roleId,
+      targetScopeMode: 'selected',
+      targetScopeIds: [targetId],
+    })
+    await handle.db.insert(t.targets).values({
+      id: foreignTargetId,
+      code: `foreign-${foreignTargetId.slice(0, 8)}`,
+      name: '范围外目标',
+      entryUrl: 'https://foreign.example.com',
+    })
+    await handle.db.insert(t.reliabilityIncidents).values({
+      id: foreignIncidentId,
+      targetId: foreignTargetId,
+      groupingKey: `gk-${foreignIncidentId}`,
+      scopeDigest: `target:${foreignTargetId}`,
+      severity: 'P3',
+      status: 'DETECTED',
+      memberCount: 0,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      title: '范围外事件',
+      summary: '不可处置',
+      evidenceScores: { supportingScore: 50, counterScore: 10, supportingFactors: [], counterFactors: [] },
+      revision: 1,
+    })
+
+    const denied = [
+      () => mergeIncidents(handle.db, { sourceIncidentIds: [foreignIncidentId], targetIncidentId: localIncidentId, actorId }),
+      () => mergeIncidents(handle.db, { sourceIncidentIds: [localIncidentId], targetIncidentId: foreignIncidentId, actorId }),
+      () => splitIncidents(handle.db, { incidentId: foreignIncidentId, memberRefs: [], actorId }),
+      () => dismissIncident(handle.db, { incidentId: foreignIncidentId, reason: '不允许', actorId }),
+      () => silenceIncident(handle.db, { incidentId: foreignIncidentId, durationHours: 1, actorId }),
+      () => resolveIncident(handle.db, { incidentId: foreignIncidentId, reason: '不允许', actorId }),
+      () => updateIncidentStatus(handle.db, { incidentId: foreignIncidentId, status: 'OBSERVING', actorId }),
+    ]
+    for (const operation of denied) {
+      await expect(operation()).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    }
+    expect((await getIncidentDetail(handle.db, foreignIncidentId)).incident.revision).toBe(1)
+    expect((await dismissIncident(handle.db, { incidentId: localIncidentId, reason: '允许', actorId })).status).toBe('DISMISSED')
   })
 })

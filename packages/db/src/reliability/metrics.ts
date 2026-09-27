@@ -10,6 +10,13 @@ import {
   type WatermarkVector,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
+import {
+  assertTargetPermission,
+  intersectTargetScopes,
+  loadAccountGrants,
+  scopeFromGrants,
+  targetScopeFilter,
+} from '../console/target-authorization.js'
 import { schemaFor } from '../native.js'
 
 export interface ReliabilityOverview {
@@ -25,7 +32,9 @@ export interface ReliabilityOverview {
 export async function getReliabilityOverview(
   db: Db,
   targetId: string,
+  actorId?: string,
 ): Promise<ReliabilityOverview> {
+  if (actorId) await assertTargetPermission(db, actorId, targetId, 'reliability:read')
   const { reliabilityIncidents, featureWindows, reliabilityCheckpoints, reliabilityEvaluations } = schemaFor(db)
 
   // Incident counts
@@ -122,15 +131,20 @@ export async function getReliabilityOverview(
 export async function listAssetReliabilityItems(
   db: Db,
   query: AssetReliabilityQuery,
+  actorId?: string,
 ): Promise<AssetReliabilityListResponse> {
   const { scenarios, actionModules, targets, featureWindows, reliabilityIncidents } = schemaFor(db)
   const limit = Math.min(query.limit ?? 20, 100)
+  const grants = actorId ? await loadAccountGrants(db, actorId) : undefined
+  const scope = grants
+    ? intersectTargetScopes(scopeFromGrants(grants, 'target:read'), scopeFromGrants(grants, 'reliability:read'))
+    : undefined
 
   // 1. Target names lookup
   const targetRows = await db
     .select({ id: targets.id, name: targets.name })
     .from(targets)
-    .where(query.targetId ? eq(targets.id, query.targetId) : sql`1=1`)
+    .where(and(query.targetId ? eq(targets.id, query.targetId) : undefined, scope && targetScopeFilter(targets.id, scope)))
 
   const targetMap = new Map<string, string>()
   for (const t of targetRows) {
@@ -153,7 +167,8 @@ export async function listAssetReliabilityItems(
       .where(
         and(
           sql`${scenarios.deletedAt} IS NULL`,
-          query.targetId ? eq(scenarios.targetId, query.targetId) : sql`1=1`,
+          query.targetId ? eq(scenarios.targetId, query.targetId) : undefined,
+          scope && targetScopeFilter(scenarios.targetId, scope),
           query.search ? sql`${scenarios.name} LIKE ${'%' + query.search + '%'}` : sql`1=1`,
         ),
       )
@@ -185,7 +200,8 @@ export async function listAssetReliabilityItems(
       .where(
         and(
           sql`${actionModules.deletedAt} IS NULL`,
-          query.targetId ? eq(actionModules.targetId, query.targetId) : sql`1=1`,
+          query.targetId ? eq(actionModules.targetId, query.targetId) : undefined,
+          scope && targetScopeFilter(actionModules.targetId, scope),
           query.search
             ? sql`(${actionModules.name} LIKE ${'%' + query.search + '%'} OR ${actionModules.key} LIKE ${'%' + query.search + '%'})`
             : sql`1=1`,
@@ -220,7 +236,8 @@ export async function listAssetReliabilityItems(
     .from(reliabilityIncidents)
     .where(
       and(
-        query.targetId ? eq(reliabilityIncidents.targetId, query.targetId) : sql`1=1`,
+        query.targetId ? eq(reliabilityIncidents.targetId, query.targetId) : undefined,
+        scope && targetScopeFilter(reliabilityIncidents.targetId, scope),
         sql`${reliabilityIncidents.status} NOT IN ('RESOLVED', 'DISMISSED')`,
       ),
     )
@@ -229,7 +246,7 @@ export async function listAssetReliabilityItems(
   const recentWindows = await db
     .select()
     .from(featureWindows)
-    .where(query.targetId ? eq(featureWindows.targetId, query.targetId) : sql`1=1`)
+    .where(and(query.targetId ? eq(featureWindows.targetId, query.targetId) : undefined, scope && targetScopeFilter(featureWindows.targetId, scope)))
     .orderBy(desc(featureWindows.windowEnd))
     .limit(200)
 
@@ -320,5 +337,4 @@ export async function listAssetReliabilityItems(
     total,
   }
 }
-
 

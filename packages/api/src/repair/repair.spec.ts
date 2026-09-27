@@ -42,7 +42,7 @@ describe('AI-02 B1: 诊断聚焦点与运行对比可比性', () => {
     const spy = vi.spyOn(dbModule, 'loadRunObservation').mockResolvedValue(mockObservation as any)
 
     try {
-      const { pack } = await assembleDiagnoseContext(mockDb, '11111111-1111-4111-8111-111111111111', { focus: 'wait' })
+      const { pack } = await assembleDiagnoseContext(mockDb, '11111111-1111-4111-8111-111111111111', { focus: 'wait' }, 'test-actor')
       expect(pack.focus).toBe('wait')
       const waitFact = pack.facts.find((f) => f.id === 'focus_wait')
       expect(waitFact).toBeDefined()
@@ -77,7 +77,7 @@ describe('AI-02 B1: 诊断聚焦点与运行对比可比性', () => {
     const spy = vi.spyOn(dbModule, 'loadRunObservation').mockResolvedValue(mockObservation as any)
 
     try {
-      const { pack } = await assembleDiagnoseContext(mockDb, '11111111-1111-4111-8111-111111111112', { focus: 'duration' })
+      const { pack } = await assembleDiagnoseContext(mockDb, '11111111-1111-4111-8111-111111111112', { focus: 'duration' }, 'test-actor')
       expect(pack.focus).toBe('duration')
       const durFact = pack.facts.find((f) => f.id === 'focus_duration')
       expect(durFact).toBeDefined()
@@ -109,7 +109,7 @@ describe('AI-02 B1: 诊断聚焦点与运行对比可比性', () => {
     const spy = vi.spyOn(dbModule, 'loadRunObservation').mockResolvedValue(mockObservation as any)
 
     try {
-      const { pack } = await assembleDiagnoseContext(mockDb, '11111111-1111-4111-8111-111111111113', { focus: 'evidence_missing' })
+      const { pack } = await assembleDiagnoseContext(mockDb, '11111111-1111-4111-8111-111111111113', { focus: 'evidence_missing' }, 'test-actor')
       expect(pack.focus).toBe('evidence_missing')
       expect(pack.missingReasons?.some((r) => r.reason === 'incomplete')).toBe(true)
       const evFact = pack.facts.find((f) => f.id === 'focus_evidence')
@@ -157,6 +157,7 @@ describe('AI-02 B1: 诊断聚焦点与运行对比可比性', () => {
         mockDb,
         '11111111-1111-4111-8111-111111111114',
         '11111111-1111-4111-8111-111111111115',
+        'test-actor',
       )
       expect(pack.comparability?.comparable).toBe(false)
       expect(pack.comparability?.incomparableFactors.some((f) => f.includes('SCENARIO_MISMATCH'))).toBe(true)
@@ -240,7 +241,7 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
           kind: 'UPGRADE_TO_AI_STEP',
           upgradeSuggestion: { prompt: '忽略错误并继续' },
         },
-      })
+      }, 'user-42')
 
       // The guardrails must catch that an assert step was downgraded!
       expect(created.guardResults.unchangedBusinessGoal.status).toBe('rejected')
@@ -256,6 +257,7 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
     const dbModule = await import('@cairn/db')
     const getSpy = vi.spyOn(dbModule, 'getRepairCandidate').mockResolvedValue({
       id: 'rep-blocked-1',
+      scenarioId: 'scen-1',
       status: 'blocked',
       guardResults: {
         allowedFields: { name: 'allowedFields', status: 'rejected', reason: '修改了受保护字段' },
@@ -266,6 +268,7 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
       },
       validationScope: { locatorValid: false, stepPassed: false, outcomePassed: false, crossSampleStable: false },
     } as any)
+    const authSpy = vi.spyOn(dbModule, 'authorizeTargetRequest').mockResolvedValue(undefined)
 
     try {
       const service = new RepairService({} as any)
@@ -274,6 +277,7 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
       ).rejects.toThrow('该候选未通过安全护栏校验')
     } finally {
       getSpy.mockRestore()
+      authSpy.mockRestore()
     }
   })
 
@@ -288,19 +292,23 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
       } as any,
     ])
 
+    const authSpy = vi.spyOn(dbModule, 'authorizeTargetRequest').mockResolvedValue(undefined)
     try {
       const service = new RepairService({} as any)
-      const res = await service.listCandidatesByScenario('scen-1', 'proposed')
+      const res = await service.listCandidatesByScenario('scen-1', 'proposed', 'user-42')
       expect(listSpy).toHaveBeenCalledWith(expect.anything(), 'scen-1', 'proposed')
       expect(res).toHaveLength(1)
       expect(res[0]?.id).toBe('rep-cand-1')
     } finally {
+      authSpy.mockRestore()
       listSpy.mockRestore()
     }
   })
 
   it('RepairService.rejectCandidate 传递 actor 与驳回原因', async () => {
     const dbModule = await import('@cairn/db')
+    const getSpy = vi.spyOn(dbModule, 'getRepairCandidate').mockResolvedValue({ id: 'rep-cand-1', scenarioId: 'scen-1' } as any)
+    const authSpy = vi.spyOn(dbModule, 'authorizeTargetRequest').mockResolvedValue(undefined)
     const rejectSpy = vi.spyOn(dbModule, 'rejectRepairCandidate').mockResolvedValue({
       id: 'rep-cand-1',
       status: 'rejected',
@@ -314,16 +322,20 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
     try {
       const service = new RepairService({} as any)
       const res = await service.rejectCandidate('rep-cand-1', { reason: '不符合前端定位规范' }, 'user-42')
-      expect(rejectSpy).toHaveBeenCalledWith(expect.anything(), 'rep-cand-1', 'user-42', '不符合前端定位规范')
+      expect(rejectSpy).toHaveBeenCalledWith(expect.anything(), 'rep-cand-1', 'user-42', '不符合前端定位规范', 'user-42')
       expect(res.status).toBe('rejected')
       expect(res.rejection?.reason).toBe('不符合前端定位规范')
     } finally {
+      getSpy.mockRestore()
+      authSpy.mockRestore()
       rejectSpy.mockRestore()
     }
   })
 
   it('RepairService.reopenCandidate 重新打开已驳回的候选', async () => {
     const dbModule = await import('@cairn/db')
+    const getSpy = vi.spyOn(dbModule, 'getRepairCandidate').mockResolvedValue({ id: 'rep-cand-1', scenarioId: 'scen-1' } as any)
+    const authSpy = vi.spyOn(dbModule, 'authorizeTargetRequest').mockResolvedValue(undefined)
     const reopenSpy = vi.spyOn(dbModule, 'reopenRepairCandidate').mockResolvedValue({
       id: 'rep-cand-1',
       status: 'proposed',
@@ -338,16 +350,20 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
     try {
       const service = new RepairService({} as any)
       const res = await service.reopenCandidate('rep-cand-1', 'user-42')
-      expect(reopenSpy).toHaveBeenCalledWith(expect.anything(), 'rep-cand-1', 'user-42')
+      expect(reopenSpy).toHaveBeenCalledWith(expect.anything(), 'rep-cand-1', 'user-42', 'user-42')
       expect(res.status).toBe('proposed')
       expect(res.reopenHistory).toHaveLength(1)
     } finally {
+      getSpy.mockRestore()
+      authSpy.mockRestore()
       reopenSpy.mockRestore()
     }
   })
 
   it('RepairService.validateCandidate 发起真实验证试跑并返回 candidate 与 runId', async () => {
     const dbModule = await import('@cairn/db')
+    const getSpy = vi.spyOn(dbModule, 'getRepairCandidate').mockResolvedValue({ id: 'rep-cand-1', scenarioId: 'scen-1' } as any)
+    const authSpy = vi.spyOn(dbModule, 'authorizeTargetRequest').mockResolvedValue(undefined)
     const validateSpy = vi.spyOn(dbModule, 'validateRepairCandidate').mockResolvedValue({
       candidate: {
         id: 'rep-cand-1',
@@ -378,6 +394,8 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
       expect(res.runId).toBe('run-val-123')
       expect(res.candidate.status).toBe('validating')
     } finally {
+      getSpy.mockRestore()
+      authSpy.mockRestore()
       validateSpy.mockRestore()
     }
   })

@@ -72,8 +72,8 @@ export async function appendRunEvents(
   if (FINISHED_RUN_STATUSES.includes(current.status as typeof FINISHED_RUN_STATUSES[number])) {
     await indexRunForAnalysis(tx, { targetId: current.targetId, runId })
   }
-  const { enqueueRunNotificationIntentTx } = await import('../notifications/core.js')
-  await enqueueRunNotificationIntentTx(tx, runId)
+  const { enqueueRunOutboundIntentTx } = await import('../outbound/core.js')
+  await enqueueRunOutboundIntentTx(tx, runId)
   const runControlChanged = drafts.some(
     (draft) => draft.type === 'run.cancel_requested' || draft.type === 'run.status_changed',
   )

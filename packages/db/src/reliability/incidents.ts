@@ -9,7 +9,7 @@ import {
   type ReliabilitySignalDto,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
-import { scopedTargetFilter } from '../console/target-authorization.js'
+import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
 import { cursorFilter, encodeCursor } from '../cursor.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, schemaFor } from '../native.js'
@@ -18,6 +18,7 @@ import { conflict, notFound } from '../runs/errors.js'
 export interface ListIncidentsQuery {
   targetId?: string
   status?: IncidentStatus
+  statuses?: IncidentStatus[]
   severity?: IncidentSeverity
   assetKind?: 'scenario' | 'action_module'
   assetId?: string
@@ -42,6 +43,7 @@ export async function listIncidents(
     targetScope,
     query.targetId ? eq(reliabilityIncidents.targetId, query.targetId) : undefined,
     query.status ? eq(reliabilityIncidents.status, query.status) : undefined,
+    query.statuses?.length ? inArray(reliabilityIncidents.status, query.statuses) : undefined,
     query.severity ? eq(reliabilityIncidents.severity, query.severity) : undefined,
     query.assetId ? sql`${reliabilityIncidents.groupingKey} LIKE ${'%' + query.assetId + '%'}` : undefined,
     query.search
@@ -104,6 +106,7 @@ export async function listIncidents(
 export async function getIncidentDetail(
   db: Db,
   incidentId: string,
+  actorId?: string,
 ): Promise<{ incident: ReliabilityIncidentDto; members: ReliabilityIncidentMemberDto[] }> {
   const { reliabilityIncidents, reliabilityIncidentMembers } = schemaFor(db)
 
@@ -114,6 +117,7 @@ export async function getIncidentDetail(
   if (!row) {
     throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '未找到指定的可靠性事件')
   }
+  if (actorId) await assertTargetPermission(db, actorId, row.targetId, 'reliability:read')
 
   const memberRows = await db
     .select()
@@ -167,6 +171,7 @@ export async function mergeIncidents(
   input: MergeIncidentsInput,
 ): Promise<ReliabilityIncidentDto> {
   return atomic(db, async (tx) => {
+    if (input.actorId) await lockConsoleAuthorization(tx, input.actorId)
     const { reliabilityIncidents, reliabilityIncidentMembers } = schemaFor(tx)
     const now = await clockNow(tx)
 
@@ -178,6 +183,7 @@ export async function mergeIncidents(
     if (!target) {
       throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '目标可靠性事件不存在')
     }
+    if (input.actorId) await assertTargetPermission(tx, input.actorId, target.targetId, 'reliability:triage')
     if (input.expectedRevision !== undefined && target.revision !== input.expectedRevision) {
       throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_REVISION_CONFLICT, '事件版本冲突，请刷新后重试')
     }
@@ -190,6 +196,7 @@ export async function mergeIncidents(
         .from(reliabilityIncidents)
         .where(eq(reliabilityIncidents.id, sourceId))
       if (!src) continue
+      if (input.actorId) await assertTargetPermission(tx, input.actorId, src.targetId, 'reliability:triage')
       if (src.targetId !== target.targetId) {
         throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH, '不能跨目标合并可靠性事件')
       }
@@ -254,6 +261,7 @@ export async function splitIncidents(
   input: SplitIncidentsInput,
 ): Promise<{ sourceIncident: ReliabilityIncidentDto; newIncident: ReliabilityIncidentDto }> {
   return atomic(db, async (tx) => {
+    if (input.actorId) await lockConsoleAuthorization(tx, input.actorId)
     const { reliabilityIncidents, reliabilityIncidentMembers } = schemaFor(tx)
     const now = await clockNow(tx)
 
@@ -264,6 +272,7 @@ export async function splitIncidents(
     if (!source) {
       throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '源可靠性事件不存在')
     }
+    if (input.actorId) await assertTargetPermission(tx, input.actorId, source.targetId, 'reliability:triage')
     if (input.expectedRevision !== undefined && source.revision !== input.expectedRevision) {
       throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_REVISION_CONFLICT, '事件版本冲突，请刷新后重试')
     }
@@ -328,6 +337,7 @@ export async function dismissIncident(
   input: { incidentId: string; reason: string; expectedRevision?: number; actorId?: string },
 ): Promise<ReliabilityIncidentDto> {
   return atomic(db, async (tx) => {
+    if (input.actorId) await lockConsoleAuthorization(tx, input.actorId)
     const { reliabilityIncidents } = schemaFor(tx)
     const now = await clockNow(tx)
 
@@ -338,6 +348,7 @@ export async function dismissIncident(
     if (!row) {
       throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '可靠性事件不存在')
     }
+    if (input.actorId) await assertTargetPermission(tx, input.actorId, row.targetId, 'reliability:triage')
     if (input.expectedRevision !== undefined && row.revision !== input.expectedRevision) {
       throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_REVISION_CONFLICT, '事件版本冲突，请刷新后重试')
     }
@@ -362,6 +373,7 @@ export async function silenceIncident(
   input: { incidentId: string; durationMinutes?: number; durationHours?: number; reason?: string; expectedRevision?: number; actorId?: string },
 ): Promise<ReliabilityIncidentDto> {
   return atomic(db, async (tx) => {
+    if (input.actorId) await lockConsoleAuthorization(tx, input.actorId)
     const { reliabilityIncidents } = schemaFor(tx)
     const now = await clockNow(tx)
     const minutes = input.durationMinutes ?? (input.durationHours ? input.durationHours * 60 : 60)
@@ -374,6 +386,7 @@ export async function silenceIncident(
     if (!row) {
       throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '可靠性事件不存在')
     }
+    if (input.actorId) await assertTargetPermission(tx, input.actorId, row.targetId, 'reliability:triage')
     if (input.expectedRevision !== undefined && row.revision !== input.expectedRevision) {
       throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_REVISION_CONFLICT, '事件版本冲突，请刷新后重试')
     }
@@ -397,6 +410,7 @@ export async function resolveIncident(
   input: { incidentId: string; reason: string; expectedRevision?: number; actorId?: string },
 ): Promise<ReliabilityIncidentDto> {
   return atomic(db, async (tx) => {
+    if (input.actorId) await lockConsoleAuthorization(tx, input.actorId)
     const { reliabilityIncidents } = schemaFor(tx)
     const now = await clockNow(tx)
 
@@ -407,6 +421,7 @@ export async function resolveIncident(
     if (!row) {
       throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '可靠性事件不存在')
     }
+    if (input.actorId) await assertTargetPermission(tx, input.actorId, row.targetId, 'reliability:triage')
     if (input.expectedRevision !== undefined && row.revision !== input.expectedRevision) {
       throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_REVISION_CONFLICT, '事件版本冲突，请刷新后重试')
     }
@@ -438,6 +453,7 @@ export async function updateIncidentStatus(
   },
 ): Promise<ReliabilityIncidentDto> {
   return atomic(db, async (tx) => {
+    if (input.actorId) await lockConsoleAuthorization(tx, input.actorId)
     const { reliabilityIncidents } = schemaFor(tx)
     const now = await clockNow(tx)
 
@@ -448,6 +464,7 @@ export async function updateIncidentStatus(
     if (!row) {
       throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '可靠性事件不存在')
     }
+    if (input.actorId) await assertTargetPermission(tx, input.actorId, row.targetId, 'reliability:triage')
     if (input.expectedRevision !== undefined && row.revision !== input.expectedRevision) {
       throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_REVISION_CONFLICT, '事件版本冲突，请刷新后重试')
     }
@@ -471,6 +488,7 @@ export async function listIncidentSignals(
   db: Db,
   incidentId: string,
   options?: { cursor?: string; limit?: number },
+  actorId?: string,
 ): Promise<{ items: ReliabilitySignalDto[]; nextCursor: string | null; total: number }> {
   const { reliabilityIncidents, reliabilitySignals } = schemaFor(db)
   const limit = Math.min(options?.limit ?? 50, 100)
@@ -484,6 +502,7 @@ export async function listIncidentSignals(
   if (!incident) {
     throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '可靠性事件不存在')
   }
+  if (actorId) await assertTargetPermission(db, actorId, incident.targetId, 'reliability:read')
 
   const conditions = [
     eq(reliabilitySignals.targetId, incident.targetId),
@@ -527,4 +546,3 @@ export async function listIncidentSignals(
 
   return { items, nextCursor, total: Number(countRow?.count ?? 0) }
 }
-

@@ -11,6 +11,7 @@ import {
   type WatermarkVector,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
+import { assertTargetPermission, lockConsoleAuthorization } from '../console/target-authorization.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, insertRows, locked, schemaFor, updateRows } from '../native.js'
 import { conflict, notFound } from '../runs/errors.js'
@@ -415,8 +416,11 @@ export async function reconcileHangingIncidents(
 export async function requestReliabilityEvaluation(
   db: Db,
   targetId: string,
+  actorId?: string,
 ): Promise<{ targetId: string; requested: boolean }> {
   return atomic(db, async (tx) => {
+    if (actorId) await lockConsoleAuthorization(tx, actorId)
+    if (actorId) await assertTargetPermission(tx, actorId, targetId, 'reliability:configure')
     const { reliabilityCheckpoints } = schemaFor(tx)
     const now = await clockNow(tx)
     const [existing] = await tx

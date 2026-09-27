@@ -470,8 +470,8 @@ async function applyRuleInstance(
           ),
         )
         if (moved.length) {
-          const { enqueueAlertNotificationTx } = await import('../notifications/core.js')
-          await enqueueAlertNotificationTx(tx, existing.id, 'firing')
+          const { enqueueAlertOutboundTx } = await import('../outbound/core.js')
+          await enqueueAlertOutboundTx(tx, existing.id, 'firing')
         }
         return moved.length > 0 ? 'firing' : 'none'
       }
@@ -494,8 +494,8 @@ async function applyRuleInstance(
           and(eq(monitoringAlerts.id, existing.id), eq(monitoringAlerts.state, 'firing')),
         )
         if (moved.length) {
-          const { enqueueAlertNotificationTx } = await import('../notifications/core.js')
-          await enqueueAlertNotificationTx(tx, existing.id, 'interrupted')
+          const { enqueueAlertOutboundTx } = await import('../outbound/core.js')
+          await enqueueAlertOutboundTx(tx, existing.id, 'interrupted')
         }
         return moved.length > 0 ? 'interrupted' : 'none'
       }
@@ -583,8 +583,8 @@ async function completeRecovery(
     and(eq(monitoringAlerts.id, existing.id), eq(monitoringAlerts.state, existing.state)),
   )
   if (moved.length) {
-    const { enqueueAlertNotificationTx } = await import('../notifications/core.js')
-    await enqueueAlertNotificationTx(tx, existing.id, 'resolved')
+    const { enqueueAlertOutboundTx } = await import('../outbound/core.js')
+    await enqueueAlertOutboundTx(tx, existing.id, 'resolved')
   }
   return moved.length > 0 ? 'resolved' : 'none'
 }
@@ -915,10 +915,15 @@ export async function finishAlertDelivery(
   )
 }
 
-export function resolveAlerting(document: { alerting?: Omit<PlatformAlerting, 'channels'> & { channels?: AlertChannel[] }; notifications?: import('@cairn/shared').PlatformNotifications }): PlatformAlerting {
+export function resolveAlerting(document: {
+  alerting?: Omit<PlatformAlerting, 'channels'> & { channels?: AlertChannel[] }
+  outbound?: import('@cairn/shared').PlatformOutbound
+  notifications?: import('@cairn/shared').PlatformNotifications
+}): PlatformAlerting {
   const base = document.alerting ?? FACTORY_ALERTING
-  const channels: AlertChannel[] = document.notifications
-    ? document.notifications.channels.filter(c => c.kind === 'webhook').map(c => ({ id: c.id, name: c.name, kind: 'webhook', enabled: c.enabled, secretRef: c.secretRef, urlHost: c.host }))
+  const outboundDoc = document.outbound ?? document.notifications
+  const channels: AlertChannel[] = outboundDoc
+    ? outboundDoc.channels.filter(c => c.kind === 'webhook').map(c => ({ id: c.id, name: c.name, kind: 'webhook', enabled: c.enabled, secretRef: c.secretRef, urlHost: c.host }))
     : base.channels ?? []
   return { ...base, channels }
 }
@@ -964,9 +969,10 @@ export async function upsertAlertChannel(
   },
 ): Promise<PlatformConfigCurrent> {
   const current = await getOrCreatePlatformConfig(db)
-  const old = current.document.notifications.channels.find(c => c.id === input.channel.id)
-  const { writeNotificationConfig } = await import('../notifications/config.js')
-  return writeNotificationConfig(db, {
+  const outboundDoc = current.document.outbound ?? (current.document as any).notifications
+  const old = outboundDoc?.channels.find((c: any) => c.id === input.channel.id)
+  const { writeOutboundConfig } = await import('../outbound/config.js')
+  return writeOutboundConfig(db, {
     actorId: input.actor.id, expectedRevision: input.expectedRevision, reason: input.reason,
     channel: { id: input.channel.id, name: input.channel.name, kind: 'webhook', enabled: input.channel.enabled,
       secretRef: input.channel.secretRef, host: input.channel.urlHost, version: (old?.version ?? 0) + 1,

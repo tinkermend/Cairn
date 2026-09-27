@@ -7,6 +7,7 @@ import {
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { schemaFor } from '../native.js'
+import { scopedTargetFilter } from '../console/target-authorization.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
 import { loadRunDetail } from '../runs/runs.js'
 import { earliestEventSeq } from './events.js'
@@ -41,7 +42,7 @@ export async function loadRunObservationProgress(
   }
 }
 
-export async function loadRunObservation(db: Db, runId: string): Promise<RunObservation | null> {
+export async function loadRunObservation(db: Db, runId: string, actorId?: string): Promise<RunObservation | null> {
   const { runs, evidences } = schemaFor(db)
   const [runRow] = await db
     .select({
@@ -49,10 +50,14 @@ export async function loadRunObservation(db: Db, runId: string): Promise<RunObse
       eventSeq: runs.eventSeq,
     })
     .from(runs)
-    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+    .where(and(
+      eq(runs.id, runId),
+      isNull(runs.deletedAt),
+      await scopedTargetFilter(db, actorId, runs.targetId, 'run:read'),
+    ))
     .limit(1)
   if (!runRow) return null
-  const run = await loadRunDetail(db, runId)
+  const run = await loadRunDetail(db, runId, actorId)
   if (!run) return null
   const rows = await db
     .select()
@@ -66,4 +71,3 @@ export async function loadRunObservation(db: Db, runId: string): Promise<RunObse
     earliestEventSeq: await earliestEventSeq(db, runId),
   })
 }
-

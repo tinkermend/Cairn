@@ -87,11 +87,11 @@ export function AlertsSection() {
     <Section title='告警'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <p className='text-label text-muted-foreground'>
-          未恢复告警置顶。静默只抑制通知，不改判定。规则在平台配置里开关，出厂全部关闭。
+          未恢复告警置顶。静默只抑制消息推送，不改判定。规则在平台配置里开关，出厂全部关闭。
         </p>
         {canReadConfig ? (
           <Button variant='outline' size='sm' asChild>
-            <Link to='/notifications' search={{ tab: 'alerts' }}>
+            <Link to='/outbound' search={{ tab: 'alerts' }}>
               配置规则
               <ArrowUpRight />
             </Link>
@@ -197,7 +197,7 @@ function AlertTable({
             <TableHead>状态</TableHead>
             <TableHead>触发值</TableHead>
             <TableHead>持续</TableHead>
-            <TableHead>通知</TableHead>
+            <TableHead>推送</TableHead>
             <TableHead>静默</TableHead>
           </TableRow>
         </TableHeader>
@@ -234,7 +234,7 @@ function AlertTable({
                     {noticeKindLabel(item.noticeKind)}
                   </p>
                   <Link
-                    to='/notifications'
+                    to='/outbound'
                     search={{ tab: 'records', alertId: item.id }}
                     className='text-label underline'
                   >
@@ -267,7 +267,7 @@ function SilenceControls({ alertId }: { alertId: string }) {
     mutationFn: (durationSeconds: number) =>
       silenceMonitorAlert(alertId, { durationSeconds }),
     onSuccess: async () => {
-      toast.success('已静默通知')
+      toast.success('已静默推送')
       await client.invalidateQueries({ queryKey: ['monitoring'] })
     },
     onError: (error) => {

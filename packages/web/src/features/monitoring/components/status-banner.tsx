@@ -141,7 +141,7 @@ export function StatusBanner() {
         <div className="flex items-center gap-2">
           {canReadConfig && (
             <Button variant="outline" size="sm" className="h-7 gap-1 px-2 text-label" asChild>
-              <Link to="/notifications" search={{ tab: 'alerts' }}>
+              <Link to="/outbound" search={{ tab: 'alerts' }}>
                 配置规则
                 <ArrowUpRight className="size-3.5" />
               </Link>
@@ -208,7 +208,7 @@ export function StatusBanner() {
                 <TableHead>状态</TableHead>
                 <TableHead>触发值 / 阈值</TableHead>
                 <TableHead>持续时间</TableHead>
-                <TableHead>通知渠道</TableHead>
+                <TableHead>推送渠道</TableHead>
                 <TableHead>静默抑制</TableHead>
               </TableRow>
             </TableHeader>
@@ -251,7 +251,7 @@ export function StatusBanner() {
                     <TableCell>
                       <p className="text-body">{noticeKindLabel(item.noticeKind)}</p>
                       <Link
-                        to="/notifications"
+                        to="/outbound"
                         search={{ tab: 'records', alertId: item.id }}
                         className="text-label underline"
                       >
@@ -304,7 +304,7 @@ function SilenceControls({ alertId }: { alertId: string }) {
     mutationFn: (durationSeconds: number) =>
       silenceMonitorAlert(alertId, { durationSeconds }),
     onSuccess: async () => {
-      toast.success('已静默通知')
+      toast.success('已静默推送')
       await client.invalidateQueries({ queryKey: ['monitoring'] })
     },
     onError: (error) => {

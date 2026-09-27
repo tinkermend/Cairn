@@ -168,7 +168,7 @@ export function noticeKindLabel(kind: 'firing' | 'resolved' | 'interrupted' | nu
   if (kind === 'firing') return '触发'
   if (kind === 'resolved') return '恢复'
   if (kind === 'interrupted') return '判定依据已中断'
-  return '尚未通知'
+  return '尚未推送'
 }
 
 export function deliveryStatusLabel(

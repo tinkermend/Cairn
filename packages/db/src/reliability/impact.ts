@@ -21,9 +21,10 @@ import {
   unresolvedUpgradeBlockers,
 } from '@cairn/authoring'
 import type { Db } from '../client.js'
+import { assertTargetPermission } from '../console/target-authorization.js'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
-import { notFound } from '../runs/errors.js'
+import { conflict, notFound } from '../runs/errors.js'
 import { batchUpgradeModuleDrafts } from '../action-modules/upgrade.js'
 
 // In-memory store for recent batch upgrade jobs (Phase 3.1)
@@ -37,6 +38,7 @@ const upgradeJobsStore = new Map<string, MaintenanceUpgradeJobDto>()
 export async function getIncidentImpactSnapshot(
   db: Db,
   incidentId: string,
+  actorId?: string,
 ): Promise<IncidentImpactSnapshotDto> {
   const {
     reliabilityIncidents,
@@ -58,6 +60,7 @@ export async function getIncidentImpactSnapshot(
   if (!incident) {
     throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '未找到指定的可靠性事件')
   }
+  if (actorId) await assertTargetPermission(db, actorId, incident.targetId, 'reliability:read')
 
   // 2. Fetch impacted runs from incident members
   const memberRows = await db
@@ -69,6 +72,7 @@ export async function getIncidentImpactSnapshot(
 
   const memberRunIds: string[] = []
   const memberRunMap = new Map<string, { memberRef: string; joinedAt: Date }>()
+  const memberRunIdByRef = new Map<string, string>()
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
   for (const m of memberRows) {
@@ -82,16 +86,20 @@ export async function getIncidentImpactSnapshot(
       runId = parts[1] || parts[0] || rawRef
     }
     if (UUID_REGEX.test(runId)) {
+      runId = runId.toLowerCase()
       memberRunIds.push(runId)
       memberRunMap.set(runId, { memberRef: rawRef, joinedAt: m.joinedAt })
+      memberRunIdByRef.set(rawRef, runId)
     }
   }
 
   const impactedRuns: IncidentImpactRunDto[] = []
+  const foreignRunIds = new Set<string>()
   if (memberRunIds.length > 0) {
     const runRows = await db
       .select({
         id: runs.id,
+        targetId: runs.targetId,
         status: runs.status,
         createdAt: runs.createdAt,
         cancelReason: runs.cancelReason,
@@ -101,6 +109,10 @@ export async function getIncidentImpactSnapshot(
 
     for (const r of runRows) {
       const memberInfo = memberRunMap.get(r.id)
+      if (r.targetId !== incident.targetId) {
+        foreignRunIds.add(r.id)
+        continue
+      }
       impactedRuns.push({
         runId: r.id,
         occurredAt: (memberInfo?.joinedAt ?? r.createdAt).toISOString(),
@@ -113,6 +125,7 @@ export async function getIncidentImpactSnapshot(
   // If member rows had no matching run rows (e.g. mock members), synthesize entries
   if (impactedRuns.length === 0 && memberRows.length > 0) {
     for (const m of memberRows) {
+      if (foreignRunIds.has(memberRunIdByRef.get(m.memberRef) ?? '')) continue
       impactedRuns.push({
         runId: m.memberRef,
         occurredAt: m.joinedAt.toISOString(),
@@ -382,9 +395,9 @@ export async function getIncidentImpactSnapshot(
  */
 export async function executeMaintenanceBatchUpgrade(
   db: Db,
-  input: BatchUpgradeBody & { incidentId: string; actor: ExecutionActor },
+  input: BatchUpgradeBody & { incidentId: string; actor: ExecutionActor; actorId?: string },
 ): Promise<MaintenanceUpgradeJobDto> {
-  const { reliabilityIncidents, scenarios } = schemaFor(db)
+  const { reliabilityIncidents, actionModules, scenarios } = schemaFor(db)
 
   // Verify incident exists
   const [incident] = await db
@@ -396,15 +409,30 @@ export async function executeMaintenanceBatchUpgrade(
   if (!incident) {
     throw notFound(RELIABILITY_ERROR_CODES.INCIDENT_NOT_FOUND, '未找到指定的可靠性事件')
   }
+  if (input.actorId) await assertTargetPermission(db, input.actorId, incident.targetId, 'reliability:triage')
+
+  const [module] = await db.select({ targetId: actionModules.targetId })
+    .from(actionModules).where(eq(actionModules.id, input.moduleId)).limit(1)
+  if (module && input.actorId) await assertTargetPermission(db, input.actorId, module.targetId, 'reliability:triage')
+  if (module && module.targetId !== incident.targetId) {
+    throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH, '批量升级模块与事件不属于同一目标')
+  }
+
+  const scenarioRows = input.scenarioIds.length
+    ? await db.select({ id: scenarios.id, name: scenarios.name, targetId: scenarios.targetId })
+        .from(scenarios).where(inArray(scenarios.id, input.scenarioIds))
+    : []
+  for (const scenario of scenarioRows) {
+    if (input.actorId) await assertTargetPermission(db, input.actorId, scenario.targetId, 'reliability:triage')
+    if (scenario.targetId !== incident.targetId) {
+      throw conflict(RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH, '批量升级场景与事件不属于同一目标')
+    }
+  }
 
   const jobId = newId()
   const now = new Date().toISOString()
 
   // Query scenario names for readable feedback
-  const scenarioRows = await db
-    .select({ id: scenarios.id, name: scenarios.name })
-    .from(scenarios)
-    .where(inArray(scenarios.id, input.scenarioIds))
   const nameMap = new Map(scenarioRows.map((s) => [s.id, s.name]))
 
   // Call the core batchUpgradeModuleDrafts domain operation
@@ -413,6 +441,8 @@ export async function executeMaintenanceBatchUpgrade(
     scenarioIds: input.scenarioIds,
     idempotencyKey: input.idempotencyKey,
     actor: input.actor,
+    scopeActorId: input.actorId,
+    scopePermission: 'reliability:triage',
   })
 
   const results: UpgradeJobResult[] = batchResult.results.map((r: { scenarioId: string; status: string; code?: string; reason?: string }) => ({
@@ -448,12 +478,14 @@ export async function executeMaintenanceBatchUpgrade(
  * Get details of a maintenance upgrade job
  */
 export async function getMaintenanceUpgradeJob(
-  _db: Db,
+  db: Db,
   jobId: string,
+  actorId?: string,
 ): Promise<MaintenanceUpgradeJobDto> {
   const job = upgradeJobsStore.get(jobId)
   if (!job) {
     throw notFound(RELIABILITY_ERROR_CODES.UPGRADE_JOB_NOT_FOUND, '未找到指定的批量升级作业')
   }
+  if (actorId) await assertTargetPermission(db, actorId, job.targetId, 'reliability:read')
   return job
 }

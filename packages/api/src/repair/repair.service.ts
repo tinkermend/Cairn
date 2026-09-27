@@ -24,6 +24,7 @@ import {
   loadRunDetail,
   createRepairCandidate,
   getRepairCandidate,
+  authorizeTargetRequest,
   listRepairCandidatesByRun,
   listRepairCandidatesByScenario,
   updateRepairCandidateValidation,
@@ -70,9 +71,10 @@ export class RepairService {
   async createCandidate(
     runId: string,
     body: CreateRepairCandidateBody,
+    actorId: string,
   ): Promise<RepairCandidate> {
     try {
-      const run = await loadRunDetail(this.db, runId)
+      const run = await loadRunDetail(this.db, runId, actorId)
       if (!run) {
         throw notFound('RUN_NOT_FOUND', `未找到运行: ${runId}`)
       }
@@ -140,6 +142,7 @@ export class RepairService {
         digestManifest,
         guardResults,
         status: guardResults.overallPassed ? 'proposed' : 'blocked',
+        scopeActorId: actorId,
       })
 
       return created
@@ -148,8 +151,9 @@ export class RepairService {
     }
   }
 
-  async listCandidatesByRun(runId: string): Promise<RepairCandidate[]> {
+  async listCandidatesByRun(runId: string, actorId: string): Promise<RepairCandidate[]> {
     try {
+      await authorizeTargetRequest(this.db, actorId, { runId, permissions: ['run:read'] })
       return await listRepairCandidatesByRun(this.db, runId)
     } catch (error) {
       return rethrowDomain(error)
@@ -158,22 +162,38 @@ export class RepairService {
 
   async listCandidatesByScenario(
     scenarioId: string,
-    status?: RepairCandidateStatus,
+    status: RepairCandidateStatus | undefined,
+    actorId: string,
   ): Promise<RepairCandidate[]> {
     try {
+      await authorizeTargetRequest(this.db, actorId, { scenarioId, permissions: ['workflow:read'] })
       return await listRepairCandidatesByScenario(this.db, scenarioId, status)
     } catch (error) {
       return rethrowDomain(error)
     }
   }
 
-  async getCandidate(id: string): Promise<RepairCandidate> {
+  private async candidateForActor(id: string, actorId: string, permissions: string[]): Promise<RepairCandidate> {
+    const candidate = await getRepairCandidate(this.db, id)
+    if (!candidate) {
+      throw notFound('REPAIR_CANDIDATE_NOT_FOUND', `修复候选不存在: ${id}`)
+    }
+    if (!candidate.scenarioId && !candidate.runId) {
+      throw notFound('TARGET_NOT_FOUND', '目标不存在或无权访问')
+    }
+    // The route has only :id. Resolve the candidate's scenario before any read or side effect;
+    // TargetScopeGuard cannot infer its target from this parameter (which may also be rep_...).
+    await authorizeTargetRequest(this.db, actorId, {
+      scenarioId: candidate.scenarioId ?? undefined,
+      runId: candidate.runId ?? undefined,
+      permissions,
+    })
+    return candidate
+  }
+
+  async getCandidate(id: string, actorId: string): Promise<RepairCandidate> {
     try {
-      const candidate = await getRepairCandidate(this.db, id)
-      if (!candidate) {
-        throw notFound('REPAIR_CANDIDATE_NOT_FOUND', `修复候选不存在: ${id}`)
-      }
-      return candidate
+      return await this.candidateForActor(id, actorId, ['run:read'])
     } catch (error) {
       return rethrowDomain(error)
     }
@@ -185,12 +205,14 @@ export class RepairService {
     actor: RequestAccount,
   ): Promise<{ candidate: RepairCandidate; runId: string }> {
     try {
+      const candidate = await this.candidateForActor(id, actor.id, ['run:execute', 'workflow:write'])
       const current = await this.currentConfig()
       const executableTypes = executableTypesFrom(current.document)
-      return await validateRepairCandidate(this.db, id, {
+      return await validateRepairCandidate(this.db, candidate.id, {
         targetAccountId: body.targetAccountId,
         input: body.input as any,
         actor: { id: actor.id },
+        scopeActorId: actor.id,
         executableTypes,
         hangWaitMs: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
       })
@@ -205,10 +227,7 @@ export class RepairService {
     adoptedBy: string,
   ): Promise<{ candidate: RepairCandidate; draftRevision: number }> {
     try {
-      const candidate = await getRepairCandidate(this.db, id)
-      if (!candidate) {
-        throw notFound('REPAIR_CANDIDATE_NOT_FOUND', `修复候选不存在: ${id}`)
-      }
+      const candidate = await this.candidateForActor(id, adoptedBy, ['workflow:write'])
 
       if (!candidate.guardResults.overallPassed) {
         throw badRequest(
@@ -218,9 +237,10 @@ export class RepairService {
       }
 
       return await adoptRepairCandidate(this.db, {
-        idOrCandidateId: id,
+        idOrCandidateId: candidate.id,
         expectedRevision: body.expectedRevision,
         adoptedBy,
+        scopeActorId: adoptedBy,
       })
     } catch (error) {
       return rethrowDomain(error)
@@ -233,7 +253,8 @@ export class RepairService {
     actorId: string,
   ): Promise<RepairCandidate> {
     try {
-      return await rejectRepairCandidate(this.db, id, actorId, body.reason)
+      const candidate = await this.candidateForActor(id, actorId, ['workflow:write'])
+      return await rejectRepairCandidate(this.db, candidate.id, actorId, body.reason, actorId)
     } catch (error) {
       return rethrowDomain(error)
     }
@@ -244,7 +265,8 @@ export class RepairService {
     actorId: string,
   ): Promise<RepairCandidate> {
     try {
-      return await reopenRepairCandidate(this.db, id, actorId)
+      const candidate = await this.candidateForActor(id, actorId, ['workflow:write'])
+      return await reopenRepairCandidate(this.db, candidate.id, actorId, actorId)
     } catch (error) {
       return rethrowDomain(error)
     }

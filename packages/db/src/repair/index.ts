@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import {
   type AdoptionReceipt,
   type AuthoringOrigin,
@@ -22,13 +22,33 @@ import { newId } from '../id.js'
 import { atomic, insertRows, locked, schemaFor, updateRows } from '../native.js'
 import { badRequest, conflict, notFound } from '../runs/errors.js'
 import { prepareTrialVersion } from '../runs/scenarios.js'
-import { createRunWithSnapshot } from '../runs/runs.js'
+import { createRunWithSnapshot, getRun } from '../runs/runs.js'
 import type { AuditActor } from '../audit/record.js'
+import { authorizeTargetRequest, lockConsoleAuthorization } from '../console/target-authorization.js'
 
 export type DbHandle = object
 
+async function assertCandidateScopeTx(
+  tx: Db,
+  candidate: { scenarioId: string | null; runId: string | null },
+  actorId: string | undefined,
+  permissions: string[],
+): Promise<void> {
+  if (!actorId) return
+  if (!candidate.scenarioId && !candidate.runId) {
+    throw notFound('TARGET_NOT_FOUND', '目标不存在或无权访问')
+  }
+  await authorizeTargetRequest(tx, actorId, {
+    scenarioId: candidate.scenarioId ?? undefined,
+    runId: candidate.runId ?? undefined,
+    permissions,
+  })
+}
+
 export interface CreateRepairCandidateInput {
   candidateId: string
+  /** Console writes recheck scope under the account lock before inserting. */
+  scopeActorId?: string
   scenarioId?: string
   runId?: string | null
   sourceAttemptId: string
@@ -237,44 +257,60 @@ export async function createRepairCandidate(
   const dedupeKey = input.dedupeKey ?? input.candidateId
   const now = new Date()
 
-  const [row] = await insertRows(db, repairCandidates, {
-    id,
-    candidateId: input.candidateId,
-    scenarioId,
-    runId: input.runId ?? null,
-    sourceAttemptId: input.sourceAttemptId,
-    sourceTargetDigest,
-    dedupeKey,
-    observationCount: 1,
-    rejectedObservationCount: 0,
-    lastSeenRunId: input.runId ?? null,
-    lastSeenAt: now,
-    sourceRunKind: input.sourceRunKind ?? 'published',
-    patchTargetRef: input.patchTargetRef,
-    authoringOrigin: input.authoringOrigin ?? null,
-    patch: input.patch,
-    hypothesis: input.hypothesis,
-    applicability: input.applicability ?? null,
-    digestManifest: input.digestManifest,
-    guardResults: input.guardResults,
-    status,
-    validationScope,
-    validationRefs: input.validationRefs ?? null,
-    adoption: null,
-    rejection: null,
-    reopenHistory: null,
-    createdAt: now,
-    updatedAt: now,
-  })
+  const insert = async (tx: Db) => {
+    if (input.scopeActorId) {
+      await lockConsoleAuthorization(tx, input.scopeActorId)
+      if (!input.runId) throw notFound('RUN_NOT_FOUND', '运行不存在')
+      const run = await getRun(tx, input.runId, input.scopeActorId)
+      if (run.scenarioId !== scenarioId) throw notFound('TARGET_NOT_FOUND', '目标不存在或无权访问')
+      await authorizeTargetRequest(tx, input.scopeActorId, {
+        runId: input.runId,
+        scenarioId,
+        permissions: ['run:read', 'workflow:write'],
+      })
+    }
+    const [row] = await insertRows(tx, repairCandidates, {
+      id,
+      candidateId: input.candidateId,
+      scenarioId,
+      runId: input.runId ?? null,
+      sourceAttemptId: input.sourceAttemptId,
+      sourceTargetDigest,
+      dedupeKey,
+      observationCount: 1,
+      rejectedObservationCount: 0,
+      lastSeenRunId: input.runId ?? null,
+      lastSeenAt: now,
+      sourceRunKind: input.sourceRunKind ?? 'published',
+      patchTargetRef: input.patchTargetRef,
+      authoringOrigin: input.authoringOrigin ?? null,
+      patch: input.patch,
+      hypothesis: input.hypothesis,
+      applicability: input.applicability ?? null,
+      digestManifest: input.digestManifest,
+      guardResults: input.guardResults,
+      status,
+      validationScope,
+      validationRefs: input.validationRefs ?? null,
+      adoption: null,
+      rejection: null,
+      reopenHistory: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    return rowToRepairCandidate(row)
+  }
 
-  return rowToRepairCandidate(row)
+  return input.scopeActorId ? atomic(db, insert) : insert(db)
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function matchIdOrCandidateId(table: any, idOrCandidateId: string) {
+  // UUIDs name the primary key. Matching both columns could authorize one row and
+  // mutate another when a candidateId happens to equal a different row's UUID.
   return UUID_REGEX.test(idOrCandidateId)
-    ? or(eq(table.id, idOrCandidateId), eq(table.candidateId, idOrCandidateId))
+    ? eq(table.id, idOrCandidateId)
     : eq(table.candidateId, idOrCandidateId)
 }
 
@@ -524,80 +560,60 @@ export async function rejectRepairCandidate(
   idOrCandidateId: string,
   actorOrOptions: string | { actor: string; reason?: string },
   reasonParam?: string,
+  scopeActorId?: string,
 ): Promise<RepairCandidate> {
   const db = handle as Db
-  const { repairCandidates } = schemaFor(db)
-  const now = new Date()
-
-  const current = await getRepairCandidate(handle, idOrCandidateId)
-  if (!current) {
-    throw notFound('REPAIR_CANDIDATE_NOT_FOUND', '修复候选不存在')
-  }
-
   const actorId = typeof actorOrOptions === 'string' ? actorOrOptions : actorOrOptions.actor
   const reason = typeof actorOrOptions === 'string' ? reasonParam : (actorOrOptions.reason ?? reasonParam)
-
-  const rejection: CandidateRejectionReceipt = {
-    rejectedAt: now.toISOString(),
-    rejectedBy: actorId,
-    reason: reason ?? undefined,
-  }
-
-  const [updated] = await updateRows(
-    db,
-    repairCandidates,
-    {
-      status: 'rejected',
-      rejection,
-      updatedAt: now,
-    },
-    eq(repairCandidates.id, current.id),
-  )
-
-  return rowToRepairCandidate(updated)
+  return atomic(db, async (tx: any) => {
+    if (scopeActorId) await lockConsoleAuthorization(tx, scopeActorId)
+    const { repairCandidates } = schemaFor(tx)
+    const [row] = await locked(tx, tx.select().from(repairCandidates)
+      .where(matchIdOrCandidateId(repairCandidates, idOrCandidateId)).limit(1))
+    if (!row) throw notFound('REPAIR_CANDIDATE_NOT_FOUND', '修复候选不存在')
+    await assertCandidateScopeTx(tx, row, scopeActorId, ['workflow:write'])
+    const now = new Date()
+    const rejection: CandidateRejectionReceipt = {
+      rejectedAt: now.toISOString(),
+      rejectedBy: actorId,
+      reason: reason ?? undefined,
+    }
+    const [updated] = await updateRows(tx, repairCandidates, {
+      status: 'rejected', rejection, updatedAt: now,
+    }, eq(repairCandidates.id, row.id))
+    return rowToRepairCandidate(updated)
+  })
 }
 
 export async function reopenRepairCandidate(
   handle: DbHandle,
   idOrCandidateId: string,
   actorOrOptions: string | { actor: string },
+  scopeActorId?: string,
 ): Promise<RepairCandidate> {
   const db = handle as Db
-  const { repairCandidates } = schemaFor(db)
-  const now = new Date()
-
-  const current = await getRepairCandidate(handle, idOrCandidateId)
-  if (!current) {
-    throw notFound('REPAIR_CANDIDATE_NOT_FOUND', '修复候选不存在')
-  }
-
-  if (current.status !== 'rejected') {
-    throw conflict('REPAIR_CANDIDATE_NOT_REOPENABLE', `候选状态为「${current.status}」，仅已驳回的候选可重新打开`)
-  }
-
   const actorId = typeof actorOrOptions === 'string' ? actorOrOptions : actorOrOptions.actor
-
-  const reopenHistory: CandidateReopenReceipt[] = [
-    ...(current.reopenHistory ?? []),
-    {
-      reopenedAt: now.toISOString(),
-      reopenedBy: actorId,
-    },
-  ]
-
-  const [updated] = await updateRows(
-    db,
-    repairCandidates,
-    {
-      status: 'proposed',
-      rejectedObservationCount: 0,
-      reopenHistory,
-      updatedAt: now,
-    },
-    eq(repairCandidates.id, current.id),
-  )
-
-  return rowToRepairCandidate(updated)
+  return atomic(db, async (tx: any) => {
+    if (scopeActorId) await lockConsoleAuthorization(tx, scopeActorId)
+    const { repairCandidates } = schemaFor(tx)
+    const [row] = await locked(tx, tx.select().from(repairCandidates)
+      .where(matchIdOrCandidateId(repairCandidates, idOrCandidateId)).limit(1))
+    if (!row) throw notFound('REPAIR_CANDIDATE_NOT_FOUND', '修复候选不存在')
+    await assertCandidateScopeTx(tx, row, scopeActorId, ['workflow:write'])
+    const current = rowToRepairCandidate(row)
+    if (current.status !== 'rejected') {
+      throw conflict('REPAIR_CANDIDATE_NOT_REOPENABLE', `候选状态为「${current.status}」，仅已驳回的候选可重新打开`)
+    }
+    const now = new Date()
+    const reopenHistory: CandidateReopenReceipt[] = [
+      ...(current.reopenHistory ?? []),
+      { reopenedAt: now.toISOString(), reopenedBy: actorId },
+    ]
+    const [updated] = await updateRows(tx, repairCandidates, {
+      status: 'proposed', rejectedObservationCount: 0, reopenHistory, updatedAt: now,
+    }, eq(repairCandidates.id, row.id))
+    return rowToRepairCandidate(updated)
+  })
 }
 
 function findStepTargetInDocument(doc: any, stepId: string): unknown {
@@ -644,6 +660,7 @@ export interface ValidateRepairCandidateInput {
   targetAccountId?: string
   input?: Record<string, JsonValue>
   actor: AuditActor
+  scopeActorId?: string
   hangWaitMs?: number
   executableTypes?: readonly string[]
 }
@@ -657,6 +674,7 @@ export async function validateRepairCandidate(
 
   return await atomic(db, async (tx: any) => {
     const { repairCandidates, scenarioDrafts } = schemaFor(tx)
+    if (options.scopeActorId) await lockConsoleAuthorization(tx, options.scopeActorId)
 
     const [candRow] = await locked(
       tx,
@@ -670,6 +688,7 @@ export async function validateRepairCandidate(
     if (!candRow) {
       throw notFound('REPAIR_CANDIDATE_NOT_FOUND', '修复候选不存在')
     }
+    await assertCandidateScopeTx(tx, candRow, options.scopeActorId, ['run:execute', 'workflow:write'])
 
     if (candRow.status === 'rejected' || candRow.status === 'adopted' || candRow.status === 'expired') {
       throw conflict('REPAIR_CANDIDATE_NOT_VALIDATABLE', `候选状态为「${candRow.status}」，不可发起验证试跑`)
@@ -762,16 +781,18 @@ export interface AdoptRepairCandidateOptions {
   idOrCandidateId: string
   expectedRevision: number
   adoptedBy: string
+  scopeActorId?: string
 }
 
 export async function adoptRepairCandidate(
   handle: DbHandle,
-  options: { idOrCandidateId: string; expectedRevision: number; adoptedBy: string },
+  options: AdoptRepairCandidateOptions,
 ): Promise<{ candidate: RepairCandidate; draftRevision: number }> {
   const db = handle as Db
 
   return await atomic(db, async (tx: any) => {
     const { repairCandidates, scenarioDrafts } = schemaFor(tx)
+    if (options.scopeActorId) await lockConsoleAuthorization(tx, options.scopeActorId)
 
     const [candRow] = await locked(
       tx,
@@ -785,6 +806,7 @@ export async function adoptRepairCandidate(
     if (!candRow) {
       throw notFound('REPAIR_CANDIDATE_NOT_FOUND', '修复候选不存在')
     }
+    await assertCandidateScopeTx(tx, candRow, options.scopeActorId, ['workflow:write'])
 
     if (candRow.status !== 'proposed' && candRow.status !== 'validated' && candRow.status !== 'validating') {
       throw conflict('REPAIR_CANDIDATE_NOT_ADOPTABLE', `候选当前状态为「${candRow.status}」，不可采纳`)

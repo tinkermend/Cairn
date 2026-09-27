@@ -33,8 +33,8 @@ export class TargetReliabilityController {
 
   @Get()
   @RequirePermissions('reliability:read')
-  getOverview(@Param('targetId') targetId: string) {
-    return this.reliability.getOverview(targetId)
+  getOverview(@Param('targetId') targetId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.reliability.getOverview(targetId, actor.id)
   }
 
   @Post('evaluations')
@@ -43,8 +43,9 @@ export class TargetReliabilityController {
   triggerEvaluation(
     @Param('targetId') targetId: string,
     @Body(new ZodValidationPipe(triggerEvaluationBodySchema)) body: TriggerEvaluationBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.requestEvaluation(targetId, body)
+    return this.reliability.requestEvaluation(targetId, body, actor.id)
   }
 }
 
@@ -54,8 +55,11 @@ export class ReliabilityAssetsController {
 
   @Get()
   @RequirePermissions('reliability:read')
-  list(@Query(new ZodValidationPipe(assetReliabilityQuerySchema)) query: AssetReliabilityQuery) {
-    return this.reliability.listAssets(query)
+  list(
+    @Query(new ZodValidationPipe(assetReliabilityQuerySchema)) query: AssetReliabilityQuery,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.reliability.listAssets(query, actor.id)
   }
 }
 
@@ -74,8 +78,8 @@ export class ReliabilityIncidentsController {
 
   @Get(':incidentId')
   @RequirePermissions('reliability:read')
-  get(@Param('incidentId') incidentId: string) {
-    return this.reliability.getIncidentDetail(incidentId)
+  get(@Param('incidentId') incidentId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.reliability.getIncidentDetail(incidentId, actor.id)
   }
 
   @Get(':incidentId/signals')
@@ -83,8 +87,9 @@ export class ReliabilityIncidentsController {
   listSignals(
     @Param('incidentId') incidentId: string,
     @Query(new ZodValidationPipe(incidentSignalsQuerySchema)) query: IncidentSignalsQuery,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.listIncidentSignals(incidentId, query)
+    return this.reliability.listIncidentSignals(incidentId, query, actor.id)
   }
 
   @Post(':incidentId/merge')
@@ -93,8 +98,9 @@ export class ReliabilityIncidentsController {
   merge(
     @Param('incidentId') incidentId: string,
     @Body(new ZodValidationPipe(mergeIncidentBodySchema)) body: MergeIncidentBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.mergeIncidents(incidentId, body)
+    return this.reliability.mergeIncidents(incidentId, body, actor.id)
   }
 
   @Post(':incidentId/split')
@@ -103,8 +109,9 @@ export class ReliabilityIncidentsController {
   split(
     @Param('incidentId') incidentId: string,
     @Body(new ZodValidationPipe(splitIncidentBodySchema)) body: SplitIncidentBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.splitIncidents(incidentId, body)
+    return this.reliability.splitIncidents(incidentId, body, actor.id)
   }
 
   @Post(':incidentId/dismiss')
@@ -113,8 +120,9 @@ export class ReliabilityIncidentsController {
   dismiss(
     @Param('incidentId') incidentId: string,
     @Body(new ZodValidationPipe(dismissIncidentBodySchema)) body: DismissIncidentBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.dismissIncident(incidentId, body)
+    return this.reliability.dismissIncident(incidentId, body, actor.id)
   }
 
   @Post(':incidentId/silence')
@@ -123,8 +131,9 @@ export class ReliabilityIncidentsController {
   silence(
     @Param('incidentId') incidentId: string,
     @Body(new ZodValidationPipe(silenceIncidentBodySchema)) body: SilenceIncidentBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.silenceIncident(incidentId, body)
+    return this.reliability.silenceIncident(incidentId, body, actor.id)
   }
 
   @Post(':incidentId/resolve')
@@ -133,14 +142,15 @@ export class ReliabilityIncidentsController {
   resolve(
     @Param('incidentId') incidentId: string,
     @Body(new ZodValidationPipe(resolveIncidentBodySchema)) body: ResolveIncidentBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.reliability.resolveIncident(incidentId, body)
+    return this.reliability.resolveIncident(incidentId, body, actor.id)
   }
 
   @Get(':incidentId/impact')
   @RequirePermissions('reliability:read')
-  getImpact(@Param('incidentId') incidentId: string) {
-    return this.reliability.getIncidentImpact(incidentId)
+  getImpact(@Param('incidentId') incidentId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.reliability.getIncidentImpact(incidentId, actor.id)
   }
 
   @Post(':incidentId/batch-upgrade')
@@ -161,8 +171,7 @@ export class ReliabilityUpgradeJobsController {
 
   @Get(':jobId')
   @RequirePermissions('reliability:read')
-  getJob(@Param('jobId') jobId: string) {
-    return this.reliability.getUpgradeJob(jobId)
+  getJob(@Param('jobId') jobId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.reliability.getUpgradeJob(jobId, actor.id)
   }
 }
-

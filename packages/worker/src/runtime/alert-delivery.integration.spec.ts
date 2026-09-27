@@ -9,7 +9,7 @@ import {
   getOrCreatePlatformConfig,
   registerStandaloneSecret,
   updatePlatformConfig,
-  writeNotificationConfig,
+  writeOutboundConfig,
 } from '@cairn/db'
 import {
   consoleAccountRoles,
@@ -28,11 +28,11 @@ import {
   DEV_CREDENTIAL_KEY,
   FACTORY_ALERT_RULES,
   LOCAL_SECRET_PROVIDER,
-  NOTIFICATION_WORKER_PROTOCOL,
+  OUTBOUND_WORKER_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
 } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
-import { deliverNotifications } from './notification-delivery.js'
+import { deliverOutbound } from './outbound-delivery.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_alrt`
 
@@ -126,19 +126,19 @@ describe('告警投递闭环（集成）', { timeout: 60_000 }, () => {
       format: 'legacy_alert@1' as const,
       replay: 'manual_on_unknown' as const,
     }
-    // 渠道与启用开关走通知领域写入；此时库里还没有旧协议 Worker，不会被停写升级闸门挡住。
+    // 渠道与启用开关走消息推送领域写入；此时库里还没有旧协议 Worker，不会被停写升级闸门挡住。
     let config = await getOrCreatePlatformConfig(handle)
-    await writeNotificationConfig(handle, {
+    await writeOutboundConfig(handle, {
       actorId,
       expectedRevision: config.revision,
       reason: '测试失联闭环：登记渠道',
       channel,
     })
     config = await getOrCreatePlatformConfig(handle)
-    await writeNotificationConfig(handle, {
+    await writeOutboundConfig(handle, {
       actorId,
       expectedRevision: config.revision,
-      reason: '测试失联闭环：启用通知',
+      reason: '测试失联闭环：启用消息推送',
       settings: { enabled: true, consoleBaseUrl: '' },
     })
     const current = await getOrCreatePlatformConfig(handle)
@@ -166,10 +166,10 @@ describe('告警投递闭环（集成）', { timeout: 60_000 }, () => {
       capacity: 1,
       maxSessions: 2,
       lostAfterSeconds: 3600,
-      protocolCapabilities: [NOTIFICATION_WORKER_PROTOCOL],
+      protocolCapabilities: [OUTBOUND_WORKER_PROTOCOL],
     })
     const deliver = () =>
-      deliverNotifications({
+      deliverOutbound({
         db: handle,
         ...deliverer,
         secrets,
@@ -183,7 +183,7 @@ describe('告警投递闭环（集成）', { timeout: 60_000 }, () => {
       capacity: 1,
       maxSessions: 2,
       lostAfterSeconds: 45,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, NOTIFICATION_WORKER_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, OUTBOUND_WORKER_PROTOCOL],
     })
     await handle.db.update(workers).set({ heartbeatExpiresAt: new Date(Date.now() - 1_000) }).where(eq(workers.id, workerId))
     expect(await markLostWorkers(handle.db)).toContain(workerId)
@@ -199,7 +199,7 @@ describe('告警投递闭环（集成）', { timeout: 60_000 }, () => {
       capacity: 1,
       maxSessions: 2,
       lostAfterSeconds: 45,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, NOTIFICATION_WORKER_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, OUTBOUND_WORKER_PROTOCOL],
     })
     expect((await evaluateAlerts(handle.db)).resolved).toBe(1)
     await deliver()

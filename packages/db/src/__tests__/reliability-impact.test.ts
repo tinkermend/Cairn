@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { grantScopedPermissions } from '../testing.js'
 import type { DbHandle } from '../client.js'
 import { schemaFor } from '../native.js'
 import { newId } from '../id.js'
@@ -32,6 +33,7 @@ describe.each(DRIVERS)('%s reliability impact and batch upgrade domain operation
       passwordHash: 'hash',
       status: 'active',
     })
+    await grantScopedPermissions(handle.db, consoleAccountId, ['target:read', 'reliability:read', 'reliability:triage'])
 
     await handle.db.insert(t.targets).values({
       id: targetId,
@@ -315,6 +317,61 @@ describe.each(DRIVERS)('%s reliability impact and batch upgrade domain operation
     expect(snapshot.summary.gapsCount).toBe(1)
   })
 
+  it('does not synthesize duplicate foreign-target run references into impact results', async () => {
+    const t = schemaFor(handle.db)
+    const foreignTargetId = newId()
+    const foreignScenarioId = newId()
+    const foreignVersionId = newId()
+    const foreignRunId = newId()
+    const scopedIncidentId = newId()
+    await handle.db.insert(t.targets).values({ id: foreignTargetId, code: `foreign-run-${foreignTargetId.slice(0, 8)}`, name: '范围外运行目标', entryUrl: 'https://foreign.example.com' })
+    await handle.db.insert(t.scenarios).values({ id: foreignScenarioId, targetId: foreignTargetId, name: '范围外运行场景', createdByConsoleAccountId: consoleAccountId })
+    await handle.db.insert(t.scenarioVersions).values({
+      id: foreignVersionId,
+      scenarioId: foreignScenarioId,
+      versionNo: 1,
+      kind: 'published',
+      sourceDigest: 'foreign-run-test',
+      definition: { schemaVersion: 1, inputs: [], steps: [] },
+      createdByConsoleAccountId: consoleAccountId,
+    })
+    await handle.db.insert(t.runs).values({
+      id: foreignRunId,
+      targetId: foreignTargetId,
+      scenarioId: foreignScenarioId,
+      scenarioVersionId: foreignVersionId,
+      createdByConsoleAccountId: consoleAccountId,
+      status: 'FAILED',
+      snapshot: {} as any,
+      snapshotDigest: 'foreign-run-test',
+      context: {},
+    })
+    await handle.db.insert(t.reliabilityIncidents).values({
+      id: scopedIncidentId,
+      targetId,
+      groupingKey: `foreign-run-${scopedIncidentId}`,
+      scopeDigest: 'foreign-run-test',
+      severity: 'P2',
+      status: 'DETECTED',
+      memberCount: 3,
+      firstSeenAt: new Date(),
+      lastSeenAt: new Date(),
+      title: '外目标成员引用',
+      summary: '成员引用不应暴露外目标运行',
+      evidenceScores: { supportScore: 40, counterScore: 10, totalScore: 30 },
+      revision: 1,
+    })
+    await handle.db.insert(t.reliabilityIncidentMembers).values(['attempt-1', 'attempt-2', 'attempt-3'].map((suffix) => ({
+      id: newId(),
+      incidentId: scopedIncidentId,
+      memberRef: `run:${suffix === 'attempt-3' ? foreignRunId.toUpperCase() : foreignRunId}:${suffix}`,
+      memberType: 'run',
+      joinedAt: new Date(),
+    })))
+    const impact = await getIncidentImpactSnapshot(handle.db, scopedIncidentId, consoleAccountId)
+    expect(impact.impactedRuns).toEqual([])
+  })
+
   it('RIC02: handles legacy scenario missing manifest by categorizing into coverage_gap', async () => {
     const snapshot = await getIncidentImpactSnapshot(handle.db, incidentId)
 
@@ -340,6 +397,7 @@ describe.each(DRIVERS)('%s reliability impact and batch upgrade domain operation
       scenarioIds: [scenario1Id],
       idempotencyKey: `idem-${newId()}`,
       actor,
+      actorId: consoleAccountId,
     })
 
     expect(job.incidentId).toBe(incidentId)
@@ -349,9 +407,10 @@ describe.each(DRIVERS)('%s reliability impact and batch upgrade domain operation
     expect(job.results[0].status).toBe('upgraded')
 
     // Verify retrieval by jobId
-    const fetchedJob = await getMaintenanceUpgradeJob(handle.db, job.jobId)
+    const fetchedJob = await getMaintenanceUpgradeJob(handle.db, job.jobId, consoleAccountId)
     expect(fetchedJob.jobId).toBe(job.jobId)
     expect(fetchedJob.status).toBe('completed')
+    await expect(getMaintenanceUpgradeJob(handle.db, job.jobId, newId())).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
 
     // Now scenario1 should be upgraded to version2
     const snapshotAfter = await getIncidentImpactSnapshot(handle.db, incidentId)
@@ -366,5 +425,61 @@ describe.each(DRIVERS)('%s reliability impact and batch upgrade domain operation
     await expect(getMaintenanceUpgradeJob(handle.db, newId())).rejects.toThrow(
       '未找到指定的批量升级作业',
     )
+  })
+
+  it('rejects batch upgrades that mix incident, module, and scenario targets', async () => {
+    const t = schemaFor(handle.db)
+    const foreignTargetId = newId()
+    const foreignModuleId = newId()
+    const foreignScenarioId = newId()
+    await handle.db.insert(t.targets).values({
+      id: foreignTargetId,
+      code: `foreign-${foreignTargetId.slice(0, 8)}`,
+      name: '范围外目标',
+      entryUrl: 'https://foreign.example.com',
+    })
+    await handle.db.insert(t.actionModules).values({
+      id: foreignModuleId,
+      targetId: foreignTargetId,
+      key: `foreign-${foreignModuleId.slice(0, 8)}`,
+      name: '范围外模块',
+      createdByConsoleAccountId: consoleAccountId,
+      updatedByConsoleAccountId: consoleAccountId,
+    })
+    await handle.db.insert(t.scenarios).values({
+      id: foreignScenarioId,
+      targetId: foreignTargetId,
+      name: '范围外场景',
+      createdByConsoleAccountId: consoleAccountId,
+    })
+
+    const actor = { id: consoleAccountId, kind: 'console' as const }
+    await expect(executeMaintenanceBatchUpgrade(handle.db, {
+      incidentId,
+      moduleId: foreignModuleId,
+      toVersionId: version2Id,
+      scenarioIds: [scenario1Id],
+      idempotencyKey: `foreign-module-${newId()}`,
+      actor,
+      actorId: consoleAccountId,
+    })).rejects.toMatchObject({ code: RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH })
+    await expect(executeMaintenanceBatchUpgrade(handle.db, {
+      incidentId,
+      moduleId,
+      toVersionId: version2Id,
+      scenarioIds: [foreignScenarioId],
+      idempotencyKey: `foreign-scenario-${newId()}`,
+      actor,
+      actorId: consoleAccountId,
+    })).rejects.toMatchObject({ code: RELIABILITY_ERROR_CODES.INCIDENT_TARGET_MISMATCH })
+    await expect(executeMaintenanceBatchUpgrade(handle.db, {
+      incidentId,
+      moduleId,
+      toVersionId: version2Id,
+      scenarioIds: [scenario1Id],
+      idempotencyKey: `unauthorized-${newId()}`,
+      actor,
+      actorId: newId(),
+    })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
   })
 })

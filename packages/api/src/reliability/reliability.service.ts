@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common'
 import {
+  authorizeTargetRequest,
   dismissIncident,
   executeMaintenanceBatchUpgrade,
   getIncidentDetail,
@@ -35,70 +36,83 @@ import { DB_HANDLE } from '../db/db.module'
 export class ReliabilityService {
   constructor(@Inject(DB_HANDLE) private readonly database: DbHandle) {}
 
-  getOverview(targetId: string) {
-    return getReliabilityOverview(this.database, targetId).catch(rethrowDomain)
+  private authorizeTriage(actorId: string, incidentId: string, targetIncidentId?: string) {
+    return authorizeTargetRequest(this.database, actorId, {
+      incidentId,
+      targetIncidentId,
+      permissions: ['reliability:triage'],
+    })
+  }
+
+  getOverview(targetId: string, actorId: string) {
+    return getReliabilityOverview(this.database, targetId, actorId).catch(rethrowDomain)
   }
 
   listIncidents(query: ReliabilityIncidentListQuery, actorId?: string) {
     return listIncidents(this.database, query, actorId).catch(rethrowDomain)
   }
 
-  getIncidentDetail(incidentId: string) {
-    return getIncidentDetail(this.database, incidentId).catch(rethrowDomain)
+  getIncidentDetail(incidentId: string, actorId: string) {
+    return getIncidentDetail(this.database, incidentId, actorId).catch(rethrowDomain)
   }
 
-  requestEvaluation(targetId: string, _body?: TriggerEvaluationBody) {
-    return requestReliabilityEvaluation(this.database, targetId).catch(rethrowDomain)
+  requestEvaluation(targetId: string, _body: TriggerEvaluationBody, actorId: string) {
+    return requestReliabilityEvaluation(this.database, targetId, actorId).catch(rethrowDomain)
   }
 
-  mergeIncidents(incidentId: string, body: MergeIncidentBody) {
-    return mergeIncidents(this.database, {
+  mergeIncidents(incidentId: string, body: MergeIncidentBody, actorId: string) {
+    return this.authorizeTriage(actorId, incidentId, body.targetIncidentId).then(() => mergeIncidents(this.database, {
       sourceIncidentIds: [incidentId],
       targetIncidentId: body.targetIncidentId,
-    }).catch(rethrowDomain)
+      actorId,
+    })).catch(rethrowDomain)
   }
 
-  splitIncidents(incidentId: string, body: SplitIncidentBody) {
-    return splitIncidents(this.database, {
+  splitIncidents(incidentId: string, body: SplitIncidentBody, actorId: string) {
+    return this.authorizeTriage(actorId, incidentId).then(() => splitIncidents(this.database, {
       incidentId,
       memberRefs: body.memberIds,
       newTitle: body.newTitle,
-    }).catch(rethrowDomain)
+      actorId,
+    })).catch(rethrowDomain)
   }
 
-  dismissIncident(incidentId: string, body: DismissIncidentBody) {
-    return dismissIncident(this.database, {
+  dismissIncident(incidentId: string, body: DismissIncidentBody, actorId: string) {
+    return this.authorizeTriage(actorId, incidentId).then(() => dismissIncident(this.database, {
       incidentId,
       reason: body.reason,
-    }).catch(rethrowDomain)
+      actorId,
+    })).catch(rethrowDomain)
   }
 
-  silenceIncident(incidentId: string, body: SilenceIncidentBody) {
-    return silenceIncident(this.database, {
+  silenceIncident(incidentId: string, body: SilenceIncidentBody, actorId: string) {
+    return this.authorizeTriage(actorId, incidentId).then(() => silenceIncident(this.database, {
       incidentId,
       durationHours: body.durationHours,
       reason: body.reason,
-    }).catch(rethrowDomain)
+      actorId,
+    })).catch(rethrowDomain)
   }
 
-  resolveIncident(incidentId: string, body: ResolveIncidentBody) {
-    return resolveIncident(this.database, {
+  resolveIncident(incidentId: string, body: ResolveIncidentBody, actorId: string) {
+    return this.authorizeTriage(actorId, incidentId).then(() => resolveIncident(this.database, {
       incidentId,
       reason: body.reason,
       expectedRevision: body.expectedRevision,
-    }).catch(rethrowDomain)
+      actorId,
+    })).catch(rethrowDomain)
   }
 
-  listAssets(query: AssetReliabilityQuery) {
-    return listAssetReliabilityItems(this.database, query).catch(rethrowDomain)
+  listAssets(query: AssetReliabilityQuery, actorId: string) {
+    return listAssetReliabilityItems(this.database, query, actorId).catch(rethrowDomain)
   }
 
-  listIncidentSignals(incidentId: string, query?: IncidentSignalsQuery) {
-    return listIncidentSignals(this.database, incidentId, query).catch(rethrowDomain)
+  listIncidentSignals(incidentId: string, query: IncidentSignalsQuery, actorId: string) {
+    return listIncidentSignals(this.database, incidentId, query, actorId).catch(rethrowDomain)
   }
 
-  getIncidentImpact(incidentId: string) {
-    return getIncidentImpactSnapshot(this.database, incidentId).catch(rethrowDomain)
+  getIncidentImpact(incidentId: string, actorId: string) {
+    return getIncidentImpactSnapshot(this.database, incidentId, actorId).catch(rethrowDomain)
   }
 
   batchUpgrade(
@@ -106,18 +120,25 @@ export class ReliabilityService {
     body: BatchUpgradeBody,
     actor: { id: string; displayName?: string },
   ) {
-    return executeMaintenanceBatchUpgrade(this.database, {
+    const authorize = async () => {
+      await this.authorizeTriage(actor.id, incidentId)
+      await authorizeTargetRequest(this.database, actor.id, { moduleId: body.moduleId, permissions: ['reliability:triage'] })
+      for (const scenarioId of body.scenarioIds) {
+        await authorizeTargetRequest(this.database, actor.id, { scenarioId, permissions: ['reliability:triage'] })
+      }
+    }
+    return authorize().then(() => executeMaintenanceBatchUpgrade(this.database, {
       incidentId,
       moduleId: body.moduleId,
       toVersionId: body.toVersionId,
       scenarioIds: body.scenarioIds,
       idempotencyKey: body.idempotencyKey,
       actor: { id: actor.id, kind: 'console' },
-    }).catch(rethrowDomain)
+      actorId: actor.id,
+    })).catch(rethrowDomain)
   }
 
-  getUpgradeJob(jobId: string) {
-    return getMaintenanceUpgradeJob(this.database, jobId).catch(rethrowDomain)
+  getUpgradeJob(jobId: string, actorId: string) {
+    return getMaintenanceUpgradeJob(this.database, jobId, actorId).catch(rethrowDomain)
   }
 }
-

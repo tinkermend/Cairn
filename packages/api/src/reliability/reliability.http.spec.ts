@@ -255,6 +255,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(res.status).toBe(200)
     expect(res.body.targetId).toBe(targetId)
     expect(res.body.activeIncidentsCount).toBe(1)
+    expect(service.getOverview).toHaveBeenCalledWith(targetId, viewer.id)
   })
 
   it('GET /reliability/incidents lists incidents with query params', async () => {
@@ -273,6 +274,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(res.status).toBe(200)
     expect(res.body.incident.id).toBe(incidentId)
     expect(res.body.members.length).toBe(1)
+    expect(service.getIncidentDetail).toHaveBeenCalledWith(incidentId, viewer.id)
   })
 
   it('POST /targets/:targetId/reliability/evaluations permissions check', async () => {
@@ -290,6 +292,7 @@ describe('Reliability HTTP Endpoints', () => {
       .send({})
     expect(ok.status).toBe(200)
     expect(ok.body.requested).toBe(true)
+    expect(service.requestEvaluation).toHaveBeenCalledWith(targetId, expect.any(Object), admin.id)
   })
 
   it('POST /reliability/incidents/:incidentId/merge permissions and triage execution', async () => {
@@ -305,6 +308,7 @@ describe('Reliability HTTP Endpoints', () => {
       .send({ targetIncidentId: '44444444-4444-4444-8444-444444444444' })
     expect(ok.status).toBe(200)
     expect(ok.body.memberCount).toBe(4)
+    expect(service.mergeIncidents).toHaveBeenCalledWith(incidentId, expect.any(Object), triager.id)
   })
 
   it('POST /reliability/incidents/:incidentId/split partitions incident', async () => {
@@ -314,6 +318,7 @@ describe('Reliability HTTP Endpoints', () => {
       .send({ memberIds: ['att-1'], newTitle: '拆离子事件' })
     expect(ok.status).toBe(200)
     expect(ok.body.newIncident.id).toBeDefined()
+    expect(service.splitIncidents).toHaveBeenCalledWith(incidentId, expect.any(Object), triager.id)
   })
 
   it('POST /reliability/incidents/:incidentId/dismiss dismisses incident', async () => {
@@ -323,6 +328,7 @@ describe('Reliability HTTP Endpoints', () => {
       .send({ reason: '预期变更' })
     expect(ok.status).toBe(200)
     expect(ok.body.status).toBe('DISMISSED')
+    expect(service.dismissIncident).toHaveBeenCalledWith(incidentId, expect.any(Object), triager.id)
   })
 
   it('POST /reliability/incidents/:incidentId/silence silences incident', async () => {
@@ -332,6 +338,7 @@ describe('Reliability HTTP Endpoints', () => {
       .send({ durationHours: 24, reason: '排期修复中' })
     expect(ok.status).toBe(200)
     expect(ok.body.silencedUntil).toBeDefined()
+    expect(service.silenceIncident).toHaveBeenCalledWith(incidentId, expect.any(Object), triager.id)
   })
 
   it('POST /reliability/incidents/:incidentId/resolve resolves incident with reason', async () => {
@@ -348,6 +355,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.status).toBe(200)
     expect(ok.body.status).toBe('RESOLVED')
     expect(ok.body.dismissedReason).toBe('已采纳修复补丁')
+    expect(service.resolveIncident).toHaveBeenCalledWith(incidentId, expect.any(Object), triager.id)
   })
 
   it('GET /reliability/assets returns asset items and checks permissions', async () => {
@@ -364,6 +372,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.body.items).toHaveLength(1)
     expect(ok.body.items[0].assetName).toBe('测试场景')
     expect(ok.body.items[0].status).toBe('healthy')
+    expect(service.listAssets).toHaveBeenCalledWith(expect.objectContaining({ assetType: 'scenario' }), viewer.id)
   })
 
   it('GET /reliability/incidents/:incidentId/signals returns paginated signals', async () => {
@@ -372,6 +381,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.status).toBe(200)
     expect(ok.body.items).toHaveLength(1)
     expect(ok.body.items[0].kind).toBe('resolution_fallback')
+    expect(service.listIncidentSignals).toHaveBeenCalledWith(incidentId, expect.any(Object), viewer.id)
   })
 
   it('GET /reliability/incidents/:incidentId/impact returns impact snapshot', async () => {
@@ -381,6 +391,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.body.incidentId).toBe(incidentId)
     expect(ok.body.targetId).toBe(targetId)
     expect(ok.body.summary).toBeDefined()
+    expect(service.getIncidentImpact).toHaveBeenCalledWith(incidentId, viewer.id)
   })
 
   it('POST /reliability/incidents/:incidentId/batch-upgrade permissions check and execution', async () => {
@@ -410,6 +421,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.body.jobId).toBe('job-1')
     expect(ok.body.status).toBe('completed')
     expect(ok.body.results).toHaveLength(1)
+    expect(service.batchUpgrade).toHaveBeenCalledWith(incidentId, expect.any(Object), triager)
   })
 
   it('GET /reliability/upgrade-jobs/:jobId returns upgrade job detail', async () => {
@@ -418,6 +430,7 @@ describe('Reliability HTTP Endpoints', () => {
     expect(ok.status).toBe(200)
     expect(ok.body.jobId).toBe('job-1')
     expect(ok.body.status).toBe('completed')
+    expect(service.getUpgradeJob).toHaveBeenCalledWith('job-1', viewer.id)
   })
 
   it('GET /reliability/incidents/:foreignIncidentId rejects cross-target incident with 404 TARGET_NOT_FOUND', async () => {
@@ -455,4 +468,3 @@ describe('Reliability HTTP Endpoints', () => {
     )
   })
 })
-
