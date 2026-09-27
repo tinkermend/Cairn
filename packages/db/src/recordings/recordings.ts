@@ -16,6 +16,7 @@ import {
   recordingDraftListQuerySchema,
   recordingDraftListResponseSchema,
   recordingDraftSchema,
+  synthesizeRecordingDraftTitle,
   type CreateRecordingBody,
   type DeleteResourceResult,
   type RecordingDraftDetailDto,
@@ -48,17 +49,14 @@ function recordingDigest(input: CreateRecordingBody, events: CreateRecordingBody
   )
 }
 
-function defaultName(events: CreateRecordingBody['events']): string {
+function defaultName(events: CreateRecordingBody['events'], targetName?: string): string {
   const firstUrl = events.find((event) => typeof event.url === 'string' && event.url && event.url !== 'about:blank')
     ?.url
-  if (firstUrl) {
-    try {
-      return `录制 ${new URL(firstUrl).host}`
-    } catch {
-      return '未命名录制'
-    }
-  }
-  return '未命名录制'
+  return synthesizeRecordingDraftTitle({
+    targetName,
+    url: firstUrl,
+    stepCount: events.length,
+  })
 }
 
 export async function createRecordingDraft(
@@ -104,7 +102,7 @@ export async function createRecordingDraft(
 
   const id = newId()
   const now = new Date()
-  const name = input.name?.trim() || defaultName(input.events)
+  const name = input.name?.trim() || defaultName(input.events, target.name)
   try {
     await db.transaction(async (tx) => {
       await tx.insert(recordingDrafts).values({

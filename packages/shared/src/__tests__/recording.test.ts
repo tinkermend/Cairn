@@ -15,6 +15,7 @@ import {
   recordingItemReady,
   RecordingNormalizationError,
   utf8ByteLength,
+  synthesizeRecordingDraftTitle,
 } from '../recording.js'
 
 /**
@@ -598,5 +599,54 @@ describe('高保真手势与特殊动作规整', () => {
     expect(fileUpload.status).toBe('unresolved')
     expect(fileUpload.diagnostics).toContain('当前版本文件上传需在工作台手动配置')
     expect(recordingItemReady(fileUpload)).toBe(false)
+  })
+
+  describe('synthesizeRecordingDraftTitle 智能语义化标题合成', () => {
+    it('包含清晰页面标题时清洗后缀并拼接步数与系统前缀', () => {
+      const title = synthesizeRecordingDraftTitle({
+        targetName: 'ModelAPI',
+        pageTitle: '渠道配置与调用明细 - ModelAPI 控制台',
+        stepCount: 5,
+      })
+      expect(title).toBe('[ModelAPI] 渠道配置与调用明细 (5步)')
+    })
+
+    it('无标题但有 URL 时提取域名与路径段', () => {
+      const title = synthesizeRecordingDraftTitle({
+        targetName: '采购系统',
+        url: 'https://purchase.example.com/orders/new?type=standard',
+        stepCount: 3,
+      })
+      expect(title).toBe('[采购系统] 页面操作 /orders (3步)')
+    })
+
+    it('无标题无系统名有 URL 时用 Host 充当前缀', () => {
+      const title = synthesizeRecordingDraftTitle({
+        url: 'https://shop.example.com/checkout',
+        stepCount: 2,
+      })
+      expect(title).toBe('[shop.example.com] 页面操作 /checkout (2步)')
+    })
+
+    it('对超长标题强制截断至 128 字符以内防呆', () => {
+      const extremelyLongTitle = 'A'.repeat(200)
+      const title = synthesizeRecordingDraftTitle({
+        targetName: '超长业务系统',
+        pageTitle: extremelyLongTitle,
+        stepCount: 10,
+      })
+      expect(title.length).toBeLessThanOrEqual(128)
+      expect(title).toContain('[超长业务系统]')
+      expect(title).toContain('(10步)')
+    })
+
+    it('空标题空 URL 时生成人性化时间兜底', () => {
+      const fixedTime = new Date('2026-09-27T14:30:00Z')
+      const title = synthesizeRecordingDraftTitle({
+        targetName: '财务中心',
+        timestamp: fixedTime,
+      })
+      expect(title).toContain('[财务中心] 录制操作序列 · ')
+    })
   })
 })

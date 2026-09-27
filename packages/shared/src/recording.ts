@@ -1043,3 +1043,56 @@ function shortUrl(url: string): string {
   const label = path === '/' ? host : `${host}${path}`
   return label.slice(0, 48)
 }
+
+export interface RecordingTitleMeta {
+  targetName?: string
+  pageTitle?: string
+  url?: string
+  stepCount?: number
+  timestamp?: Date | string | number
+}
+
+/**
+ * 智能语义化默认标题合成策略：
+ * 1. 优先提取清洗后的页面标题与步数；
+ * 2. 其次提取 URL 域名及关键路径段；
+ * 3. 兜底生成人类可读的人性化时间（带 128 字符安全截断防呆）。
+ */
+export function synthesizeRecordingDraftTitle(meta: RecordingTitleMeta): string {
+  const stepCountText = typeof meta.stepCount === 'number' && meta.stepCount > 0 ? ` (${meta.stepCount}步)` : ''
+  const targetPrefix = meta.targetName?.trim() ? `[${meta.targetName.trim()}] ` : ''
+
+  // 1. 若有明确页面标题
+  if (meta.pageTitle && typeof meta.pageTitle === 'string') {
+    const rawTitle = meta.pageTitle.trim()
+    if (rawTitle && rawTitle !== 'about:blank') {
+      const cleaned = rawTitle.replace(/\s*[-_|·]\s*[^\-_|·]+$/, '').trim() || rawTitle
+      const availableLen = 128 - targetPrefix.length - stepCountText.length
+      const safeTitle = cleaned.slice(0, Math.max(16, availableLen))
+      return `${targetPrefix}${safeTitle}${stepCountText}`.trim().slice(0, 128)
+    }
+  }
+
+  // 2. 若有有效 URL
+  if (meta.url && typeof meta.url === 'string' && meta.url.startsWith('http')) {
+    try {
+      const parsed = new URL(meta.url)
+      const pathSeg = parsed.pathname.split('/').filter(Boolean)[0]
+      const pathHint = pathSeg ? ` /${pathSeg}` : ''
+      const host = parsed.host
+      const combined = `${targetPrefix || `[${host}] `}页面操作${pathHint}${stepCountText}`
+      return combined.trim().slice(0, 128)
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3. 友好时间兜底 (例如: [目标系统] 录制操作序列 · 09-27 14:30)
+  const d = meta.timestamp ? new Date(meta.timestamp) : new Date()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  const timeText = `${month}-${day} ${hours}:${minutes}`
+  return `${targetPrefix}录制操作序列 · ${timeText}${stepCountText}`.trim().slice(0, 128)
+}

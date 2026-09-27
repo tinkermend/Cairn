@@ -16,6 +16,7 @@ import {
   type DemonstrationDetail,
   type DemonstrationPreview,
   type RecordingImportReceipt,
+  synthesizeRecordingDraftTitle,
 } from '@cairn/shared'
 import {
   applyDemonstrationToDocument,
@@ -145,6 +146,13 @@ export async function createDemonstration(
     recordingId = newId()
     const suggestions = suggestDemonstration(source)
     const now = new Date()
+    const draftName =
+      body.name?.trim() ||
+      synthesizeRecordingDraftTitle({
+        targetName: target?.name,
+        url: source.facts.find((f) => f.data.url)?.data.url,
+        stepCount: suggestions.length,
+      })
     await tx.insert(recordingDrafts).values({
       id: recordingId,
       targetId: source.targetId,
@@ -154,7 +162,7 @@ export async function createDemonstration(
       sourceProtocol: DEMONSTRATION_PROTOCOL,
       idempotencyKey: body.idempotencyKey,
       payloadDigest,
-      name: body.name,
+      name: draftName,
       eventCount: source.facts.length,
       itemCount: suggestions.length,
       unresolvedCount: suggestions.filter((s) => s.status === 'unresolved').length,

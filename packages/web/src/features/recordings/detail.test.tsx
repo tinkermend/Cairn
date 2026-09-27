@@ -43,16 +43,24 @@ vi.mock('@/lib/recordings-api', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/demonstrations-api', () => ({
-  fetchDemonstration: mocks.fetchDemonstration,
-  fetchDemonstrationImage: mocks.fetchDemonstrationImage,
-}))
+vi.mock('@/lib/demonstrations-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/demonstrations-api')>()
+  return {
+    ...actual,
+    fetchDemonstration: mocks.fetchDemonstration,
+    fetchDemonstrationImage: mocks.fetchDemonstrationImage,
+  }
+})
 
-vi.mock('@/lib/scenarios-api', () => ({
-  fetchScenarios: mocks.fetchScenarios,
-  createScenario: mocks.createScenario,
-  fetchScenarioCapabilities: mocks.fetchScenarioCapabilities,
-}))
+vi.mock('@/lib/scenarios-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/scenarios-api')>()
+  return {
+    ...actual,
+    fetchScenarios: mocks.fetchScenarios,
+    createScenario: mocks.createScenario,
+    fetchScenarioCapabilities: mocks.fetchScenarioCapabilities,
+  }
+})
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -218,13 +226,30 @@ describe('录制草稿详情页', () => {
     await expect.element(stepList.getByText('打开登录页面')).toBeVisible()
   })
 
-  it('点击回填到场景唤起回填引导弹窗', async () => {
+  it('点击回填到场景唤起回填向导并展示插入位置与 Mini-Diff 对比', async () => {
+    mocks.fetchScenarios.mockResolvedValue({
+      items: [
+        {
+          id: 'sc-1',
+          name: '请假审批流程',
+          targetId: '11111111-1111-4111-8111-111111111111',
+          stepCount: 2,
+          status: 'draft',
+        },
+      ],
+      nextCursor: null,
+    })
     const screen = await renderPage()
 
     await screen.getByRole('button', { name: '回填到场景' }).click()
 
     await expect.element(screen.getByText('回填录制草稿到场景')).toBeVisible()
     await expect.element(screen.getByRole('tab', { name: '以草稿新建场景' })).toBeVisible()
+    await expect.element(screen.getByText(/确定插入位置/)).toBeVisible()
+    await expect.element(screen.getByText(/追加到流程末尾/)).toBeVisible()
+    await expect.element(screen.getByText(/回填后流程结构对比/)).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: /在 Studio 中深度微调/ })).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: /直接回填至场景/ })).toBeVisible()
     await screen.getByRole('button', { name: '取消' }).click()
   })
 
@@ -287,11 +312,11 @@ describe('录制草稿详情页', () => {
 
     // 依然展示统一工作台
     await expect.element(screen.getByText('操作步骤流水线 (3)')).toBeVisible()
-    const rawViewBtn = screen.getByRole('button', { name: '原始示教视图' })
-    await expect.element(rawViewBtn).toBeVisible()
+    const rawViewTab = screen.getByRole('tab', { name: /原始示教事实/ })
+    await expect.element(rawViewTab).toBeVisible()
 
     // 切换为原始示教事实溯源视图
-    await rawViewBtn.click()
+    await rawViewTab.click()
     await expect.element(screen.getByText('原始示教事实溯源')).toBeVisible()
     await expect.element(screen.getByRole('button', { name: '返回步骤流水线工作台' })).toBeVisible()
 

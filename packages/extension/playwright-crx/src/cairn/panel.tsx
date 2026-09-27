@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { RECORDER_SOURCE_VERSION, targetDescriptorFromInspectSelector, type RecordingBindingDto, type TargetDto } from '@cairn/shared'
+import { RECORDER_SOURCE_VERSION, targetDescriptorFromInspectSelector, synthesizeRecordingDraftTitle, type RecordingBindingDto, type TargetDto } from '@cairn/shared'
 import type { ElementInfo, Mode, Source } from '@recorder/recorderTypes'
 import { describeAttachment } from './attachment'
 import { canAttachRecorder, canReadTargets, canUploadRecording } from './auth-gate'
@@ -281,8 +281,9 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   }
 
   const onUpload = async () => {
+    const effectiveName = draftName.trim() || fallbackDraftName
     const meta = resolveRecordingUploadMeta({
-      name: draftName,
+      name: effectiveName,
       targetId,
       binding: binding ? { scenarioName: binding.scenarioName, targetId: binding.targetId } : null,
     })
@@ -534,8 +535,18 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const recording = RECORDING_MODES.includes(effectiveMode) && attachment?.attached === true
   const inspecting = INSPECT_MODES.includes(effectiveMode)
   const asserting = ASSERT_MODES.includes(effectiveMode)
+  const fallbackDraftName = React.useMemo(() => {
+    if (draftName.trim() || binding) return ''
+    const facts = capture.facts.filter((_, index) => !excluded.includes(index))
+    const firstUrl = facts.find((f) => f.data.url)?.data.url || (sources[0] as { url?: string } | undefined)?.url
+    return synthesizeRecordingDraftTitle({
+      targetName: selectedTarget?.name,
+      url: firstUrl,
+      stepCount: items.length,
+    })
+  }, [draftName, binding, capture.facts, excluded, sources, selectedTarget?.name, items.length])
   const uploadMeta = resolveRecordingUploadMeta({
-    name: draftName,
+    name: draftName.trim() || fallbackDraftName,
     targetId,
     binding: binding ? { scenarioName: binding.scenarioName, targetId: binding.targetId } : null,
   })
@@ -606,7 +617,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
             value={draftName}
             disabled={Boolean(binding)}
             maxLength={128}
-            placeholder='例如：报销审批'
+            placeholder={fallbackDraftName || '例如：报销审批'}
             onChange={(event) => onDraftName(event.target.value)}
           />
         </div>

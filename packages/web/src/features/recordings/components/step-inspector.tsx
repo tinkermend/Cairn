@@ -4,9 +4,11 @@ import {
   AlertCircle,
   Camera,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Copy,
+  HelpCircle,
   KeyRound,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -14,6 +16,16 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Observation, actionLabels } from '../demonstration-facts'
+
+const STEP_TYPE_LABELS: Record<string, string> = {
+  navigate: '页面导航 (navigate)',
+  click: '元素点击 (click)',
+  fill: '表单填写 (fill)',
+  assert: '页面断言 (assert)',
+  select: '下拉选择 (select)',
+  keyboard: '按键输入 (keyboard)',
+  ai_action: '视觉模型操作 (ai_action)',
+}
 
 type Props = {
   item: RecordingItem | undefined
@@ -201,9 +213,26 @@ export function RecordingStepInspector({
           <div className='flex items-center justify-between'>
             <div className='flex items-center gap-2'>
               <span className='text-label text-muted-foreground'>目标 DSL 类型:</span>
-              <code className='rounded bg-primary-100 px-1.5 py-0.5 text-label font-mono font-semibold text-primary-700'>
-                {item.candidateStepType ?? '未映射 (unresolved)'}
-              </code>
+              {item.candidateStepType ? (
+                <code className='rounded bg-primary-100 px-1.5 py-0.5 text-label font-mono font-semibold text-primary-700'>
+                  {STEP_TYPE_LABELS[item.candidateStepType] ?? item.candidateStepType}
+                </code>
+              ) : item.status === 'mapped' ? (
+                <span className='inline-flex items-center gap-1 rounded bg-status-success-background px-1.5 py-0.5 text-label font-medium text-status-success-foreground'>
+                  <CheckCircle2 className='size-3' />
+                  流程成功条件 (Assertion Rule)
+                </span>
+              ) : item.status === 'parameterized' ? (
+                <span className='inline-flex items-center gap-1 rounded bg-status-warning-background px-1.5 py-0.5 text-label font-medium text-status-warning-foreground'>
+                  <KeyRound className='size-3' />
+                  参数化输入 (待绑定变量)
+                </span>
+              ) : (
+                <span className='inline-flex items-center gap-1 rounded bg-surface-subtle px-1.5 py-0.5 text-label font-medium text-muted-foreground'>
+                  <HelpCircle className='size-3' />
+                  待人工适配动作
+                </span>
+              )}
             </div>
             <div className='flex items-center gap-1'>
               <Button

@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { parseDemonstrationFile } from '@cairn/authoring'
 import {
   DEMONSTRATION_LIMITS,
+  synthesizeRecordingDraftTitle,
   type DemonstrationProfile,
   type DemonstrationSource,
   type DemonstrationDetail,
@@ -103,10 +104,17 @@ export function DemonstrationFileDialog({
       })
       setSource(next)
       setEmbedded(localSourceImages(text, next))
-      if (!name)
+      if (!name) {
+        const targetObj = targets.data?.items.find((t) => t.id === targetId)
+        const firstUrl = next.facts.find((f) => f.data.url)?.data.url
         setName(
-          `${demonstrationProfileLabels[profile]} ${new Date().toLocaleDateString()}`
+          synthesizeRecordingDraftTitle({
+            targetName: targetObj?.name,
+            url: firstUrl,
+            stepCount: next.facts.length,
+          })
         )
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '无法识别录制文件')
     }
