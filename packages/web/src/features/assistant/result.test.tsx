@@ -240,6 +240,30 @@ describe('AssistantResultView 结构化提案比对与采纳', () => {
     await adoptBtn.click()
     expect(onAdopt).toHaveBeenCalledWith(targetProposal)
   })
+
+  it('target_form 包含不合法修改（如编辑模式修改系统编码）时展示校验错误并禁用采纳按钮', async () => {
+    const onAdopt = vi.fn()
+    const invalidProposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'edit',
+      targetId: 'tgt-1',
+      summary: '尝试在编辑模式修改编码',
+      changes: [
+        { fieldId: 'code', value: 'new-code' },
+      ],
+    }
+
+    const screen = await render(
+      <AssistantResultView
+        result={invalidProposal}
+        onAdopt={onAdopt}
+      />
+    )
+
+    await expect.element(screen.getByText('编码在编辑时不可修改')).toBeInTheDocument()
+    const adoptBtn = screen.getByRole('button', { name: /采纳到表单/ })
+    await expect.element(adoptBtn).toBeDisabled()
+  })
 })
 
 describe('AssistantResultView 诊断结果与已确认事实呈现', () => {
@@ -492,7 +516,7 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
     await expect.element(screen.getByText(/在场景工作区选中步骤.*重试上限/)).toBeInTheDocument()
     await expect.element(screen.getByText('已确认资料')).toBeInTheDocument()
     await expect.element(screen.getByText('系统观测')).toBeInTheDocument()
-    await expect.element(screen.getByText('帮助资料 · studio-r')).toBeInTheDocument()
+    await expect.element(screen.getByText('帮助资料 · 步骤重试')).toBeInTheDocument()
     await expect.element(screen.getByText('运行记录 · 01920000')).toBeInTheDocument()
     await expect.element(screen.getByTestId('knowledge-missing-list')).toBeInTheDocument()
     await expect.element(screen.getByText('该步骤未配置显式超时时间')).toBeInTheDocument()

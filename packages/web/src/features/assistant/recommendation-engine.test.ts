@@ -466,4 +466,27 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     // 按其他状态筛选：即使列表标记有失败也不展示
     expect(resolve({ page: 'run', filters: { status: 'SUCCEEDED' }, listHasFailures: true })).toBe(false)
   })
+
+  it('表单上下文感知：激活目标配置表单时推荐字段解释与配置规则 Chips', () => {
+    const chips = resolveContextRecommendations({
+      boundContext: {
+        page: 'targets',
+        activeForm: {
+          formId: 'target_config',
+          mode: 'create',
+        },
+      },
+      pageContext: { page: 'targets' },
+      capabilities: mockCapabilities(),
+      permissions: defaultPermissions,
+    })
+
+    expect(chips.map((c) => c.label)).toEqual([
+      '⏱️ 登录超时不填会怎样',
+      '🧹 登录后整理规则',
+      '📝 目标编码与命名规则',
+    ])
+    expect(chips[0].question).toContain('登录页停留超时不填会怎样？')
+    expect(chips[0].capabilityHint).toBe('knowledge.answer')
+  })
 })

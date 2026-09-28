@@ -61,9 +61,9 @@ export function citationDisplayLabel(citation: string): string {
       return field ? `字段说明 · ${field.label}` : `字段说明 · ${fieldId}`
     }
     if (HELP_DOC_LABELS[entityId]) {
-      return `帮助 · ${HELP_DOC_LABELS[entityId]}`
+      return `帮助资料 · ${HELP_DOC_LABELS[entityId]}`
     }
-    return `帮助 · ${entityId}`
+    return `帮助资料 · ${entityId}`
   }
 
   const label = CITATION_LABELS[kind] ?? '来源记录'

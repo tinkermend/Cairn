@@ -19,7 +19,7 @@ describe('citationDisplayLabel (M4 - 细分引用标签展示)', () => {
     expect(citationDisplayLabel('run:run-300')).toBe('运行记录 · run-300')
     expect(citationDisplayLabel('stepRun:sr-400')).toBe('步骤执行 · sr-400')
     expect(citationDisplayLabel('attempt:att-500')).toBe('执行尝试 · att-500')
-    expect(citationDisplayLabel('help:studio-retry')).toBe('帮助 · 步骤重试')
+    expect(citationDisplayLabel('help:studio-retry')).toBe('帮助资料 · 步骤重试')
     expect(citationDisplayLabel('help:target-config-loginLeaveTimeoutSeconds')).toBe('字段说明 · 提交后等待离开登录页')
     expect(citationDisplayLabel('platform:knowledge_status:no_matching_facts')).toBe('平台规则')
   })

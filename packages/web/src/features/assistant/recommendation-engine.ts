@@ -55,7 +55,29 @@ export function resolveContextRecommendations(params: {
   const rawChips: AssistantRecommendationChip[] = []
 
   // 2. 根据 boundContext / pageContext 匹配当前场景规则
-  if (page === 'studio') {
+  if (bound?.activeForm?.formId === 'target_config') {
+    rawChips.push({
+      id: 'target-form-timeout-help',
+      label: '⏱️ 登录超时不填会怎样',
+      question: '登录页停留超时不填会怎样？',
+      capabilityHint: 'knowledge.answer',
+      priority: 105,
+    })
+    rawChips.push({
+      id: 'target-form-settle-help',
+      label: '🧹 登录后整理规则',
+      question: '目标配置里的「登录后整理」和「整理预算」是什么作用？',
+      capabilityHint: 'knowledge.answer',
+      priority: 95,
+    })
+    rawChips.push({
+      id: 'target-form-rules-help',
+      label: '📝 目标编码与命名规则',
+      question: '目标系统的系统名称与系统编码命名有什么格式要求？',
+      capabilityHint: 'knowledge.answer',
+      priority: 90,
+    })
+  } else if (page === 'studio') {
     if (selectedStepId) {
       // 场景单步聚焦 (Studio Step Focused)
       rawChips.push({
