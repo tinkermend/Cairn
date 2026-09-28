@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { SESSION_OCCUPANCY_PROTOCOL, SUITE_ADMISSION_PROTOCOL, type Step } from '@cairn/shared'
+import { SESSION_OCCUPANCY_PROTOCOL, SUITE_ADMISSION_PROTOCOL, suiteDocumentSchema, type Step } from '@cairn/shared'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
@@ -85,7 +85,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
       {
         targetId,
         name: '日常巡检',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -110,7 +110,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
           executionMode: 'sequential',
           failurePolicy: 'continue',
           autoGenerateFinalReport: false,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -160,7 +160,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
         created.id,
         {
           expectedRevision: created.draft.revision + 1,
-          document: {
+          document: suiteDocumentSchema.parse({
             schemaVersion: 1,
             groups: [],
             members: [
@@ -175,7 +175,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
             sharedInput: {},
             failurePolicy: 'continue',
             autoGenerateFinalReport: false,
-          },
+          }),
         },
         { kind: 'console', id: actorId },
       ),
@@ -197,7 +197,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
       {
         targetId,
         name: '停止策略',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -220,7 +220,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
           executionMode: 'sequential',
           failurePolicy: 'stop',
           autoGenerateFinalReport: false,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -239,7 +239,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
     await handle.db
       .update(runs)
       .set({ status, finishedAt: new Date(), updatedAt: new Date(), outcomeStatus: 'FAIL' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
     const advanced = await advanceSuiteRun(handle.db, observation.id)
     expect(advanced.items[0]?.admission).toBe('SETTLED')
     expect(advanced.items[1]?.admission).toBe('SKIPPED')
@@ -254,7 +254,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
       {
         targetId,
         name: '证据集合',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -276,7 +276,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
           sharedInput: {},
           failurePolicy: 'continue',
           autoGenerateFinalReport: false,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -296,7 +296,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
     const createdAt = new Date('2026-09-19T12:00:00.000Z')
     await handle.db.insert(evidences).values({
       id: evidenceId,
-      runId: observation.items[0]!.childRunId,
+      runId: observation.items[0]!.childRunId!,
       type: 'log',
       status: 'available',
       payload: { note: 'suite' },
@@ -330,7 +330,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
       {
         targetId,
         name: '自动推进',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -355,7 +355,7 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
           executionMode: 'sequential',
           failurePolicy: 'continue',
           autoGenerateFinalReport: false,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -380,8 +380,8 @@ describe.each(DRIVERS)('%s 场景集与放行', { timeout: 90_000 }, (driver) =>
     await handle.db
       .update(runs)
       .set({ status: 'SUCCEEDED', finishedAt: new Date(), updatedAt: new Date(), outcomeStatus: 'PASS' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
-    await scheduleSuiteAdvanceForChild(handle.db, observation.items[0]!.childRunId)
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
+    await scheduleSuiteAdvanceForChild(handle.db, observation.items[0]!.childRunId!)
     const advanced = await getSuiteRunObservation(handle.db, observation.id)
     expect(advanced.items[0]?.admission).toBe('SETTLED')
     expect(advanced.items[1]?.admission).toBe('ACTIVE')

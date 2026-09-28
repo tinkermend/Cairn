@@ -4,14 +4,17 @@ import {
   createAccountBodySchema,
   createTargetBodySchema,
   serviceCallerBodySchema,
+  suiteDocumentSchema,
   DEFAULT_REPORT_CONFIG,
+  type AccountDto,
   type Step,
+  type TargetDto,
 } from '@cairn/shared'
 import * as api from '../index.js'
 import { expose } from '../database.js'
 import { schemaFor } from '../native.js'
 import { openContractDb, DRIVERS } from './contract-fixture.js'
-import type { DbHandle } from '../client.js'
+import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
 import {
   createRunWithSnapshot,
@@ -34,10 +37,10 @@ import { saveScenarioReportDefaults, freezeRunReportContext } from '../reports/p
 import { advanceSuiteRun } from '../suites/runs.js'
 
 describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~RR07)', { timeout: 90_000 }, (driver) => {
-  let handle: DbHandle & { db: api.Db }
-  let db: api.Db
-  let actor: { id: string }
-  let target: { id: string }
+  let handle: DbHandle
+  let db: Db
+  let actor: AccountDto
+  let target: TargetDto
 
   const testStep: Step = {
     id: '00000000-0000-4000-8000-0000000000c1',
@@ -48,7 +51,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
   }
 
   beforeAll(async () => {
-    handle = (await openContractDb(driver, `rpt_conv_${Date.now().toString(36)}`)) as any
+    handle = await openContractDb(driver, `rpt_conv_${Date.now().toString(36)}`)
     db = handle.db
     const facade = expose(handle)
     const rbac = new api.RbacStore(facade, {
@@ -100,7 +103,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -136,12 +139,12 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
     await generateDueReports(db)
 
     // run1: 无报告触发器，状态为 not_configured
-    const run1Detail = await loadRunDetail(db, run1.detail.id, actor.id)
+    const run1Detail = (await loadRunDetail(db, run1.detail.id, actor.id))!
     expect(run1Detail.runReportStatus).toBe('not_configured')
     expect(run1Detail.reportId).toBeNull()
 
     // run2: 自动生成报告，状态为 generated，且有导出任务
-    const run2Detail = await loadRunDetail(db, run2.detail.id, actor.id)
+    const run2Detail = (await loadRunDetail(db, run2.detail.id, actor.id))!
     expect(run2Detail.runReportStatus).toBe('generated')
     expect(run2Detail.reportId).toBeTruthy()
 
@@ -153,7 +156,8 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
     const exportJobs = await db.select().from(t.exportJobs).where(eq(t.exportJobs.reportId, run2Detail.reportId!))
     expect(exportJobs.length).toBeGreaterThan(0)
     expect(exportJobs[0]!.kind).toBe('report_render')
-    expect(exportJobs[0]!.sourceManifest).toEqual({ formats: ['docx', 'pdf'] })
+    // 自动生成的运行报告只导出 html（生成成本低、可即时预览）；docx/pdf 需用户显式请求导出。
+    expect(exportJobs[0]!.sourceManifest).toEqual({ formats: ['html'] })
   })
 
   it('RR02: 试跑 (isTrial)、调试模式 (debugMode != runThrough)、地图作业 (isMapJob) 不误触发自动报告', async () => {
@@ -164,14 +168,14 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
 
     // 1. 试跑：使用 createTrialRunFromDraft，不应触发自动报告
     const trialRun = await createTrialRunFromDraft(db, s.id, {
-      revision: s.draft.revision,
+      revision: s.draft!.revision,
       actor: { id: actor.id },
     })
 
@@ -195,6 +199,9 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
     await freezeRunReportContext(db, {
       runId: runForDefenses.detail.id,
       scenarioId: s.id,
+      targetId: target.id,
+      scenarioName: s.name,
+      targetName: target.name,
       isTrial: false,
       isMapJob: true,
       debugMode: 'runThrough',
@@ -209,6 +216,9 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
     await freezeRunReportContext(db, {
       runId: runForDefenses.detail.id,
       scenarioId: s.id,
+      targetId: target.id,
+      scenarioName: s.name,
+      targetName: target.name,
       isTrial: false,
       isMapJob: false,
       debugMode: 'step',
@@ -223,6 +233,9 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
     await freezeRunReportContext(db, {
       runId: runForDefenses.detail.id,
       scenarioId: s.id,
+      targetId: target.id,
+      scenarioName: s.name,
+      targetName: target.name,
       isTrial: false,
       isMapJob: false,
       debugMode: 'runThrough',
@@ -241,7 +254,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -252,7 +265,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         targetId: target.id,
         name: `抑制成员报告集-${newId()}`,
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [{ id: 'g1', name: '分组1' }],
           sharedInput: {},
@@ -270,8 +283,9 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
           outputPolicy: {
             autoGenerateReport: true,
             memberReportPolicy: 'suppress',
+            aiSummaryPolicy: 'inherit',
           },
-        },
+        }),
       },
       { kind: 'console', id: actor.id },
     )
@@ -313,7 +327,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -324,7 +338,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         targetId: target.id,
         name: `跳过成员集-${newId()}`,
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [{ id: 'g1', name: '分组1' }],
           sharedInput: {},
@@ -342,8 +356,9 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
           outputPolicy: {
             autoGenerateReport: true,
             memberReportPolicy: 'inherit',
+            aiSummaryPolicy: 'inherit',
           },
-        },
+        }),
       },
       { kind: 'console', id: actor.id },
     )
@@ -400,7 +415,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -424,7 +439,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       updatedAt: new Date(),
     }).where(and(eq(t.reportTriggers.subjectKind, 'RUN'), eq(t.reportTriggers.subjectId, run.detail.id)))
 
-    let detail = await loadRunDetail(db, run.detail.id, actor.id)
+    let detail = (await loadRunDetail(db, run.detail.id, actor.id))!
     expect(detail.runReportStatus).toBe('failed')
     expect(detail.reportError).toContain('模拟报告导出崩溃')
 
@@ -438,7 +453,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
 
     // 重新跑一次扫描，报告成功生成
     await generateDueReports(db)
-    detail = await loadRunDetail(db, run.detail.id, actor.id)
+    detail = (await loadRunDetail(db, run.detail.id, actor.id))!
     expect(detail.runReportStatus).toBe('generated')
     expect(detail.reportId).toBeTruthy()
   })
@@ -451,7 +466,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: false, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: false, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -470,7 +485,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
         {
           profileId: null,
           expectedRevision: 0,
-          outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+          outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
         },
         { kind: 'console', id: actor.id },
       ),
@@ -483,13 +498,13 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: defaults.revision,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
 
     // 历史已创建运行的冻结配置不变
-    const detail = await loadRunDetail(db, run.detail.id, actor.id)
+    const detail = (await loadRunDetail(db, run.detail.id, actor.id))!
     expect(detail.runReportStatus).toBe('not_configured')
   })
 
@@ -501,7 +516,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -604,7 +619,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
       {
         profileId: null,
         expectedRevision: 0,
-        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit' },
+        outputPolicy: { autoGenerateReport: true, memberReportPolicy: 'inherit', aiSummaryPolicy: 'inherit' },
       },
       { kind: 'console', id: actor.id },
     )
@@ -632,7 +647,7 @@ describe.each(DRIVERS)('%s 运行记录与程序版报告一体化闭环 (RR01~R
     expect(updatedRun!.evidenceStatus).toBe('INCOMPLETE')
 
     // 报告应已顺利生成（带缺项状态）
-    const detail = await loadRunDetail(db, run.detail.id, actor.id)
+    const detail = (await loadRunDetail(db, run.detail.id, actor.id))!
     expect(detail.runReportStatus).toBe('partial_gaps')
     expect(detail.reportId).toBeTruthy()
   })

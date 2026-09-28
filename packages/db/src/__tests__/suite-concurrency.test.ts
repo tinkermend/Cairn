@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { SESSION_OCCUPANCY_PROTOCOL, SUITE_ADMISSION_PROTOCOL, type Step } from '@cairn/shared'
+import { SESSION_OCCUPANCY_PROTOCOL, SUITE_ADMISSION_PROTOCOL, suiteDocumentSchema, type Step } from '@cairn/shared'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
@@ -100,14 +100,14 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC01默认套件',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
             { memberId: 'm1', ordinal: 0, scenarioId: scenarios[0]!.id, scenarioVersionId: scenarios[0]!.published!.versionId, input: {} },
             { memberId: 'm2', ordinal: 1, scenarioId: scenarios[1]!.id, scenarioVersionId: scenarios[1]!.published!.versionId, input: {} },
           ],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -139,7 +139,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC02并发认领',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: scenarios.map((s, idx) => ({
@@ -151,7 +151,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           })),
           executionMode: 'parallel',
           maxConcurrency: 3,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -193,7 +193,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC03串行回归',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -202,7 +202,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           ],
           executionMode: 'sequential',
           maxConcurrency: 1,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -223,8 +223,8 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
     await handle.db
       .update(runs)
       .set({ status: 'SUCCEEDED', finishedAt: new Date(), updatedAt: new Date(), outcomeStatus: 'PASS' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
-    await scheduleSuiteAdvanceForChild(handle.db, observation.items[0]!.childRunId)
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
+    await scheduleSuiteAdvanceForChild(handle.db, observation.items[0]!.childRunId!)
 
     const updated = await getSuiteRunObservation(handle.db, observation.id)
     expect(updated.items[0]?.admission).toBe('SETTLED')
@@ -244,7 +244,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC04账号冲突互斥',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -254,7 +254,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           ],
           executionMode: 'parallel',
           maxConcurrency: 3,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -278,8 +278,8 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
     await handle.db
       .update(runs)
       .set({ status: 'SUCCEEDED', finishedAt: new Date(), updatedAt: new Date(), outcomeStatus: 'PASS' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
-    await scheduleSuiteAdvanceForChild(handle.db, observation.items[0]!.childRunId)
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
+    await scheduleSuiteAdvanceForChild(handle.db, observation.items[0]!.childRunId!)
 
     // Now m2 can safely be admitted!
     const afterM1 = await getSuiteRunObservation(handle.db, observation.id)
@@ -298,7 +298,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC05异账号并发',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -307,7 +307,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           ],
           executionMode: 'parallel',
           maxConcurrency: 2,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -335,7 +335,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC06故障熔断',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -346,7 +346,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           executionMode: 'parallel',
           maxConcurrency: 2,
           failurePolicy: 'stop',
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -366,7 +366,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
     await handle.db
       .update(runs)
       .set({ status: 'FAILED', finishedAt: new Date(), updatedAt: new Date(), outcomeStatus: 'FAIL' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
     await advanceSuiteRun(handle.db, observation.id)
 
     const fused = await getSuiteRunObservation(handle.db, observation.id)
@@ -386,7 +386,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC07计数恒等式',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: scenarios.map((s, idx) => ({
@@ -398,7 +398,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           })),
           executionMode: 'parallel',
           maxConcurrency: 2,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -422,7 +422,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
     await handle.db
       .update(runs)
       .set({ status: 'SUCCEEDED', finishedAt: new Date(), updatedAt: new Date(), outcomeStatus: 'PASS' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
     const advanced = await advanceSuiteRun(handle.db, observation.id)
     checkConservation(advanced)
   })
@@ -434,7 +434,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
       {
         targetId,
         name: 'AC08耗时度量',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -443,7 +443,7 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
           ],
           executionMode: 'parallel',
           maxConcurrency: 2,
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -462,11 +462,11 @@ describe.each(DRIVERS)('%s 场景集并发调度与账号互斥', { timeout: 90_
     await handle.db
       .update(runs)
       .set({ status: 'SUCCEEDED', startedAt: t0, finishedAt: t1, updatedAt: t1, outcomeStatus: 'PASS' })
-      .where(eq(runs.id, observation.items[0]!.childRunId))
+      .where(eq(runs.id, observation.items[0]!.childRunId!))
     await handle.db
       .update(runs)
       .set({ status: 'SUCCEEDED', startedAt: t0, finishedAt: t1, updatedAt: t1, outcomeStatus: 'PASS' })
-      .where(eq(runs.id, observation.items[1]!.childRunId))
+      .where(eq(runs.id, observation.items[1]!.childRunId!))
 
     const finalized = await advanceSuiteRun(handle.db, observation.id)
     expect(finalized.status).toBe('COMPLETED')

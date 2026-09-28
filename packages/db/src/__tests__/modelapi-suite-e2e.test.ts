@@ -1,11 +1,13 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  suiteDocumentSchema,
   validateStageDependencies,
   signReportToken,
   verifyReportToken,
-  type Step,
   type ScenarioOutputDecl,
+  type Step,
+  type SuiteStage,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
@@ -75,12 +77,31 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
     })
 
     // 场景 1: 环境探活与 SessionToken 生成（阶段 1）
+    // 编译器要求业务输出引用的每个变量都能追溯到某个步骤的 outputKey；
+    // 测试本身通过直接写 runs.context 来模拟执行结果（见下方 settleRunOutput 前的 update），
+    // 这两个 echo 步骤只用于让编译通过，其字面值不参与断言。
     const step1: Step = {
       id: newId(),
       name: '访问仪表盘',
       type: 'navigate',
       effectType: 'READ_ONLY',
       input: { url: 'https://modelapi.im/dashboard' },
+    }
+    const step1Latency: Step = {
+      id: newId(),
+      name: '记录网络延迟',
+      type: 'echo',
+      effectType: 'READ_ONLY',
+      input: { value: 0 },
+      outputKey: 'apiLatency',
+    }
+    const step1Token: Step = {
+      id: newId(),
+      name: '生成 SessionToken',
+      type: 'echo',
+      effectType: 'READ_ONLY',
+      input: { value: '' },
+      outputKey: 'sessionToken',
     }
     const outputDecl1: ScenarioOutputDecl = {
       summaryTemplate: '环境探活成功，生成 SessionToken ${sessionToken}',
@@ -94,7 +115,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
     const scAuth = await createScenarioWithVersion(handle.db, {
       targetId,
       name: 'modelapi中转站-环境探活与SessionToken生成',
-      steps: [step1],
+      steps: [step1, step1Latency, step1Token],
       outputs: outputDecl1,
       actor: { id: actorId },
     })
@@ -106,6 +127,22 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
       type: 'navigate',
       effectType: 'READ_ONLY',
       input: { url: 'https://modelapi.im/models' },
+    }
+    const step2ModelCount: Step = {
+      id: newId(),
+      name: '记录可用模型数',
+      type: 'echo',
+      effectType: 'READ_ONLY',
+      input: { value: 0 },
+      outputKey: 'modelCount',
+    }
+    const step2Balance: Step = {
+      id: newId(),
+      name: '记录账户余额',
+      type: 'echo',
+      effectType: 'READ_ONLY',
+      input: { value: 0 },
+      outputKey: 'balanceUsd',
     }
     const outputDecl2: ScenarioOutputDecl = {
       summaryTemplate: '模型巡检完成，可用模型 ${modelCount} 个，账户余额 $${balanceUsd}',
@@ -120,7 +157,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
     const scQuota = await createScenarioWithVersion(handle.db, {
       targetId,
       name: 'modelapi中转站-模型列表与配额巡检',
-      steps: [step2],
+      steps: [step2, step2ModelCount, step2Balance],
       outputs: outputDecl2,
       actor: { id: actorId },
     })
@@ -152,7 +189,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
       {
         targetId,
         name: 'modelapi中转站-全链路日常巡检与风控套件',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           defaultTargetAccountId: targetAccountId,
           autoGenerateFinalReport: true,
@@ -211,7 +248,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
             },
           ],
           members: [],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -351,7 +388,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
     expect(reportDto.currentRevision?.revisionNo).toBe(1)
 
     const revDoc = await loadReportRevisionDocument(handle.db, reportDto.currentRevision!.id)
-    const summaryBlock = revDoc.revision.document.sections[0]?.blocks[0] as any
+    const summaryBlock = revDoc.revision.document!.sections[0]?.blocks[0] as any
     expect(summaryBlock.type).toBe('suite_business_summary')
 
     // L0: 扣分制健康分核验（存在 1 个异常项扣 20 分，满分 100）
@@ -431,7 +468,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
     const updatedReport = await getReport(handle.db, trigger!.reportId!, actorId)
     expect(updatedReport.currentRevision?.revisionNo).toBe(2)
     const rev2Doc = await loadReportRevisionDocument(handle.db, updatedReport.currentRevision!.id)
-    const rev2SummaryBlock = rev2Doc.revision.document.sections[0]?.blocks[0] as any
+    const rev2SummaryBlock = rev2Doc.revision.document!.sections[0]?.blocks[0] as any
 
     // 全量通过，健康分恢复为满分 100 分
     expect(rev2SummaryBlock.healthScore).toBe(100)
@@ -486,7 +523,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
     expect(forwardErrors.some((e) => e.code === 'FORWARD_STAGE_VARIABLE_FORBIDDEN')).toBe(true)
 
     // 同阶段内互相引用（禁止 Stage 内部直接隐式依赖）
-    const intraInvalidStages = [
+    const intraInvalidStages: SuiteStage[] = [
       {
         id: 'stage-1',
         name: '阶段一',
@@ -556,7 +593,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
       {
         targetId,
         name: 'modelapi中转站-熔断验证套件',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           stages: [
@@ -600,7 +637,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
             },
           ],
           members: [],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -644,7 +681,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
       {
         targetId,
         name: 'modelapi中转站-账号排他并发守卫套件',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           stages: [
@@ -678,7 +715,7 @@ describe.each(DRIVERS)('%s modelapi中转站 - 场景集4阶段全链路端到�
             },
           ],
           members: [],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )

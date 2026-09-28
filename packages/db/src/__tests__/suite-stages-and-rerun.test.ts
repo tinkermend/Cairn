@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  suiteDocumentSchema,
   type Step,
 } from '@cairn/shared'
 import { newId } from '../id.js'
@@ -83,7 +84,7 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
       {
         targetId,
         name: '多阶段巡检集合',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           stages: [
@@ -128,7 +129,7 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
             },
           ],
           members: [],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -174,8 +175,15 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
         evidenceStatus: 'COMPLETE',
         finishedAt: new Date(),
         output: {
-          token: 'jwt_mock_token_abcdef',
-          userId: 12345,
+          summary: '登录成功',
+          status: 'NORMAL',
+          metrics: {},
+          findings: [],
+          dataRow: {
+            token: 'jwt_mock_token_abcdef',
+            userId: 12345,
+          },
+          assembledAt: new Date().toISOString(),
         },
       })
       .where(eq(runs.id, item1.childRunId!))
@@ -206,7 +214,7 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
       {
         targetId,
         name: '阻断策略测试集合',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           stages: [
@@ -248,7 +256,7 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
             },
           ],
           members: [],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -302,7 +310,7 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
       {
         targetId,
         name: '单成员重跑集合',
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           members: [
@@ -315,7 +323,7 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
               input: {},
             },
           ],
-        },
+        }),
       },
       { kind: 'console', id: actorId },
     )
@@ -381,7 +389,14 @@ describe.each(DRIVERS)('%s 场景集阶段编排与增量重跑', { timeout: 90_
         outcomeStatus: 'PASS',
         evidenceStatus: 'COMPLETE',
         finishedAt: new Date(),
-        output: { result: 'rerun_success' },
+        output: {
+          summary: '重跑成功',
+          status: 'NORMAL',
+          metrics: {},
+          findings: [],
+          dataRow: { result: 'rerun_success' },
+          assembledAt: new Date().toISOString(),
+        },
       })
       .where(eq(runs.id, rerunResult.runId))
 

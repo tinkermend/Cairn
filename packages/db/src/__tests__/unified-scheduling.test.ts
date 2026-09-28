@@ -6,6 +6,7 @@ import { getOrCreatePlatformConfig, updatePlatformConfig } from '../platform-con
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { appendRunEvents } from '../observe/events.js'
 import { expireRunDeadlines } from '../runs/deadline.js'
+import { suiteDocumentSchema } from '@cairn/shared'
 import {
   admitScheduleOccurrence,
   claimAnalysisJob,
@@ -267,7 +268,7 @@ describe.each(DRIVERS)('%s 统一定时调度', { timeout: 60_000 }, (driver) =>
       {
         targetId,
         name: `集合 ${newId().slice(0, 6)}`,
-        document: {
+        document: suiteDocumentSchema.parse({
           schemaVersion: 1,
           groups: [],
           sharedInput: {},
@@ -282,7 +283,7 @@ describe.each(DRIVERS)('%s 统一定时调度', { timeout: 60_000 }, (driver) =>
               input: {},
             },
           ],
-        },
+        }),
       },
       actor(),
     )
