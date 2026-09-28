@@ -308,7 +308,7 @@ export function computeScenarioDiff(
     })
     const inputChanges: InputDiffItem[] = (draftDoc.inputs ?? []).map((input) => ({
       kind: 'added',
-      key: input.key ?? (input as any).name ?? '',
+      key: input.key,
       label: input.label,
       after: input,
     }))
@@ -418,8 +418,8 @@ export function computeScenarioDiff(
 
   // 比较全局 inputs
   const inputChanges: InputDiffItem[] = []
-  const baseInputs = new Map((baselineDoc.inputs ?? []).map((i) => [i.key ?? (i as any).name ?? '', i]))
-  const draftInputs = new Map((draftDoc.inputs ?? []).map((i) => [i.key ?? (i as any).name ?? '', i]))
+  const baseInputs = new Map((baselineDoc.inputs ?? []).map((i) => [i.key, i]))
+  const draftInputs = new Map((draftDoc.inputs ?? []).map((i) => [i.key, i]))
 
   for (const [key, dInput] of draftInputs.entries()) {
     const bInput = baseInputs.get(key)

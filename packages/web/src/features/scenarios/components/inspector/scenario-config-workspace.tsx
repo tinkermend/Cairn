@@ -1,15 +1,15 @@
 import { useRef, useState } from 'react'
-import type {
-  CompileDiagnostic,
-  OutcomeContract,
-  PlatformConfigDocument,
-  RuntimeInvariant,
-  ScenarioAuthoringDocumentV2,
-  ScenarioInputDecl,
-  ScenarioOutputDecl,
-  TargetResolutionPolicy,
+import {
+  type CompileDiagnostic,
+  type OutcomeContract,
+  type PlatformConfigDocument,
+  type RuntimeInvariant,
+  type ScenarioAuthoringDocumentV2,
+  type ScenarioInputDecl,
+  type ScenarioOutputDecl,
+  type TargetResolutionPolicy,
+  authoringSteps,
 } from '@cairn/shared'
-import { authoringSteps } from '@cairn/shared'
 import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileText, Layers, Sliders, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'

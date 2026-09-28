@@ -175,7 +175,7 @@ export function useScenarioLocatorHealth(
       void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'repair-candidates'] })
       void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'resolution-stats'] })
       void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
-    } catch (err) {
+    } catch {
       toast.error('采纳修复规则失败，请稍后重试')
     }
   }
@@ -186,7 +186,7 @@ export function useScenarioLocatorHealth(
       toast.info('已忽略此自愈建议')
       void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
       void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'repair-candidates'] })
-    } catch (err) {
+    } catch {
       toast.error('操作失败')
     }
   }

@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import type { ModuleInputBinding, UpgradeDiff } from '@cairn/shared'
-import { upgradeWarningKey, walkAuthoringNodes } from '@cairn/shared'
+import {
+  type ModuleInputBinding,
+  type UpgradeDiff,
+  upgradeWarningKey,
+  walkAuthoringNodes,
+} from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,6 +19,7 @@ import { Input } from '@/components/ui/input'
 import { fetchActionModuleVersion } from '@/lib/action-modules-api'
 import { fetchScenario, previewScenarioModuleUpgrade, upgradeScenarioModule } from '@/lib/scenarios-api'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 const SEVERITY_LABEL = { blocking: '阻断', warning: '警告', info: '信息' } as const
 
 export function ModuleUpgradeDialog({
@@ -58,13 +63,13 @@ export function ModuleUpgradeDialog({
   const [confirmed, setConfirmed] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => {
-    if (open) {
-      setConfirmed([])
-      setBindings({})
-      setError('')
-    }
-  }, [open, invocationId, toVersionId])
+  // 每次打开（或打开期间切换调用/目标版本）都清空确认与绑定。
+  useResetOnChange(open ? `${invocationId}:${toVersionId}` : null, (key) => {
+    if (key === null) return
+    setConfirmed([])
+    setBindings({})
+    setError('')
+  })
   const groups = useMemo(() => {
     const diffs = preview.data?.diffs ?? []
     return {

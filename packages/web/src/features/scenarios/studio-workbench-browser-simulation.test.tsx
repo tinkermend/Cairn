@@ -183,8 +183,9 @@ describe('场景编排工作台（Scenario Studio）浏览器全功能与 UI 布
 
     // 严苛验证 wait 步骤的 kind 必须是契约内的 visible，而不是非法 target_visible
     expect(waitStep.type).toBe('wait')
-    expect((waitStep.input as any).kind).toBe('visible')
-    expect((waitStep.input as any).target?.candidates?.length).toBeGreaterThan(0)
+    const waitInput = waitStep.input as { kind?: string; target?: { candidates?: unknown[] } }
+    expect(waitInput.kind).toBe('visible')
+    expect(waitInput.target?.candidates?.length).toBeGreaterThan(0)
 
     expect(extractStep.type).toBe('extract')
     expect(extractStep.outputKey).toBe('extracted_row_id_1')
@@ -349,7 +350,7 @@ describe('场景编排工作台（Scenario Studio）浏览器全功能与 UI 布
     const holdingDraftStepId = 'step-failed-1'
     const messages: string[] = []
     let draftSavedCalled = false
-    let debugRunCalledWith: any = null
+    let debugRunCalledWith: { action: string; targetStepId: string; fencingToken: string } | null = null
 
     async function ensureDraftSaved() {
       draftSavedCalled = true

@@ -19,6 +19,9 @@ import {
   type ScenarioStepNode,
   type ScenarioModuleInvocationNode,
   type Step,
+  MAX_LOCATOR_CANDIDATES,
+  type LocatorCandidate,
+  type TargetDescriptor,
 } from '@cairn/shared'
 import {
   documentContextKeys,
@@ -239,8 +242,8 @@ export function collectVariableSources(
         })
       }
     }
-  } else if ('inputs' in document && Array.isArray((document as any).inputs)) {
-    for (const input of (document as any).inputs) {
+  } else if ('inputs' in document && Array.isArray(document.inputs)) {
+    for (const input of document.inputs) {
       if (input.key) {
         sources.push({
           key: input.key,
@@ -451,14 +454,35 @@ export function outputConsumersAny(
       const s = node.step
       if ((s.type === 'echo' || s.type === 'fill' || s.type === 'select') && s.input.from === outputKey) {
         consumers.push({ id: s.id, name: s.name })
-      } else if (s.fieldRefs && Object.values(s.fieldRefs).some((ref: any) => ref?.from === outputKey)) {
+      } else if (s.fieldRefs && Object.values(s.fieldRefs).some((ref) => ref?.from === outputKey)) {
         consumers.push({ id: s.id, name: s.name })
       }
     } else if (node.kind === 'module') {
-      if (node.inputBindings && Object.values(node.inputBindings).some((b: any) => b?.kind === 'from' && b?.key === outputKey)) {
+      if (node.inputBindings && Object.values(node.inputBindings).some((b) => b?.kind === 'from' && b?.key === outputKey)) {
         consumers.push({ id: node.invocationId, name: node.name || '动作模块' })
       }
     }
   }
   return consumers
+}
+
+/** 步骤的元素定位目标：定位目标放在 step.input.target 上，没有则返回 undefined。 */
+export function stepTargetDescriptor(step: Step | null | undefined): TargetDescriptor | undefined {
+  if (!step || !('input' in step) || !step.input || typeof step.input !== 'object' || !('target' in step.input)) {
+    return undefined
+  }
+  const target = step.input.target
+  return target && typeof target === 'object' && 'candidates' in target ? (target as TargetDescriptor) : undefined
+}
+
+/** 把修复候选置顶到步骤的定位候选里（同档同值去重，保留上限）；步骤没有元素目标时返回 null。 */
+export function withPromotedCandidate(step: Step, candidate: LocatorCandidate): Step | null {
+  const target = stepTargetDescriptor(step)
+  if (!target) return null
+  const candidates = [
+    candidate,
+    ...target.candidates.filter((c) => !(c.by === candidate.by && c.value === candidate.value)),
+  ].slice(0, MAX_LOCATOR_CANDIDATES)
+  const input = (step as Step & { input: Record<string, unknown> }).input
+  return { ...step, input: { ...input, target: { ...target, candidates } } } as Step
 }

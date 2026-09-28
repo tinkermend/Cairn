@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ActionModuleVersionDto, ModulePublicationStatus } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,7 @@ import {
 } from '@/lib/action-modules-api'
 import { MODULE_PUBLICATION_STATUS_LABELS } from './labels'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 const ACTION_LABEL: Record<ModulePublicationStatus, string> = {
   published: '恢复为已发布',
   deprecated: '弃用此版本',
@@ -49,13 +50,13 @@ export function ModulePublicationDialog({
   const [disable, setDisable] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => {
-    if (open) {
-      setReason('')
-      setDisable(false)
-      setError('')
-    }
-  }, [open, version.id, status])
+  // 每次打开（或打开期间切换版本/目标状态）都从空白表单开始。
+  useResetOnChange(open ? `${version.id}:${status}` : null, (key) => {
+    if (key === null) return
+    setReason('')
+    setDisable(false)
+    setError('')
+  })
   const userRefs = (refs.data?.items ?? []).filter((item) => item.purpose === 'user')
   const publishedUsers = userRefs.filter((item) => item.publishedUses.some((use) => use.moduleVersionId === version.id))
   const submit = async () => {

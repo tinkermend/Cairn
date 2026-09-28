@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect, useMemo, type KeyboardEvent } from 'react'
+import { useCallback, useState, useRef, useMemo, type KeyboardEvent } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Popover, PopoverContent, PopoverAnchor } from '@/components/ui/popover'
 import type { BindingOption } from '@/features/authoring/document'
 import { Braces, Variable, Database, Box } from 'lucide-react'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 export interface ContextMentionInputProps {
   id?: string
   value: string
@@ -36,6 +37,10 @@ export function ContextMentionInput({
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
+  // Input / Textarea 二选一渲染：回调 ref 同时满足两者的 ref 类型。
+  const setInputRef = useCallback((el: HTMLInputElement | HTMLTextAreaElement | null) => {
+    inputRef.current = el
+  }, [])
 
   // 区分变量类别
   const categorizedBindings = useMemo(() => {
@@ -62,9 +67,8 @@ export function ContextMentionInput({
     })
   }, [bindings, query])
 
-  useEffect(() => {
-    setSelectedIndex(0)
-  }, [categorizedBindings.length, query])
+  // 候选列表或查询变化时高亮回到第一项
+  useResetOnChange(`${categorizedBindings.length}:${query}`, () => setSelectedIndex(0))
 
   function handleSelect(item: BindingOption) {
     if (item.stale) return
@@ -196,7 +200,7 @@ export function ContextMentionInput({
           <div className='relative flex items-center w-full'>
             <InputComp
               id={id}
-              ref={inputRef as any}
+              ref={setInputRef}
               value={value}
               disabled={disabled}
               placeholder={placeholder}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { CreateScenarioBody } from '@cairn/shared'
 import { toast } from 'sonner'
@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/select'
 import { createBlankStep } from './blank-step'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 type ScenarioCreateDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -70,11 +71,10 @@ export function ScenarioCreateDialog({
     [items, targetId],
   )
 
-  useEffect(() => {
-    if (!userEditedUrl && selectedTarget?.entryUrl) {
-      setUrl(selectedTarget.entryUrl)
-    }
-  }, [selectedTarget, userEditedUrl])
+  // 用户未手动改过地址时，跟随所选目标系统的入口地址
+  useResetOnChange(`${selectedTarget?.entryUrl ?? ''}:${userEditedUrl}`, () => {
+    if (!userEditedUrl && selectedTarget?.entryUrl) setUrl(selectedTarget.entryUrl)
+  })
 
   function handleTargetChange(nextTargetId: string) {
     setTargetId(nextTargetId)

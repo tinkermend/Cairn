@@ -2,7 +2,8 @@ import '@/styles/index.css'
 import { render } from 'vitest-browser-react'
 import { describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ScenarioAuthoringDocumentV2 } from '@cairn/shared'
+import type { ScenarioAuthoringDocumentV2, Step } from '@cairn/shared'
+import { makeRepairCandidate } from '@/test-utils/repair-candidate'
 import { ScenarioConfigWorkspace } from './scenario-config-workspace'
 import * as scenariosApi from '@/lib/scenarios-api'
 
@@ -33,8 +34,8 @@ describe('ScenarioConfigWorkspace - 定位稳定性与自愈分区', () => {
           name: '点击支付按钮',
           type: 'click',
           effectType: 'SIDE_EFFECT',
-          input: {},
-        } as any,
+          input: { target: { framePath: [], candidates: [{ by: 'text', value: '支付' }] } },
+        } as Step,
       },
     ],
   }
@@ -127,7 +128,7 @@ describe('ScenarioConfigWorkspace - 定位稳定性与自愈分区', () => {
             warningCount: 1,
             failingCount: 0,
             candidateCount: 1,
-            candidates: [{} as any],
+            candidates: [makeRepairCandidate()],
             isLoading: false,
             isError: false,
             adoptCandidate: vi.fn(),

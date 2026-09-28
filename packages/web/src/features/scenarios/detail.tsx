@@ -57,7 +57,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useBreadcrumb } from '@/stores/breadcrumb-store'
-import { applyAuthoringOperations } from '@cairn/authoring'
+import { applyAuthoringOperations, resolveOutcomeWriteback } from '@cairn/authoring'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   deleteScenario,
@@ -129,7 +129,6 @@ import { ScenarioResolutionStats } from './resolution-stats'
 import { ScenarioSettingsDialog } from './scenario-settings-dialog'
 import { OutcomeListEditor } from '@/features/authoring/outcome-editor'
 import { RuntimeInvariantEditor } from '@/features/authoring/invariant-editor'
-import { resolveOutcomeWriteback } from '@cairn/authoring'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { TrialDialog } from './trial-dialog'
 import { TrialResultDialog } from './trial-result-dialog'
@@ -180,6 +179,8 @@ import {
   priorBindingsV2,
   priorOutputShapesAny,
   removeAuthoringNode,
+  stepTargetDescriptor,
+  withPromotedCandidate,
 } from './studio-document'
 import { STEP_SNIPPET_TEMPLATES, instantiateSnippet } from './snippets/step-snippets'
 import { InsertModuleDialog } from './insert-module-dialog'
@@ -320,18 +321,17 @@ export function ScenarioDetailPage() {
       authoringHasControlBlocks(draft.candidate)
     ) {
       void navigate({
+        from: '/scenarios/$scenarioId/',
         to: '/scenarios/$scenarioId',
         params: { scenarioId },
-        search: (prev: any) => ({ ...prev, editor: undefined }),
+        search: (prev) => ({ ...prev, editor: undefined }),
         replace: true,
       })
     }
   }, [flowgram, draft.candidate, navigate, scenarioId])
 
   const hasCssSelector = Boolean(
-    (draft.selected?.input as any)?.target?.candidates?.some(
-      (c: any) => c.by === 'css',
-    ),
+    stepTargetDescriptor(draft.selected)?.candidates.some((c) => c.by === 'css'),
   )
 
   const studioChips = useMemo(() => {
@@ -434,8 +434,9 @@ export function ScenarioDetailPage() {
   const [renaming, setRenaming] = useState(false)
   const importedQueryKey = ['scenarios', scenarioId, 'imported-step-ids'] as const
   const importedStepsQuery = useQuery({
-    queryKey: importedQueryKey,
-    queryFn: async () => queryClient.getQueryData<string[]>(importedQueryKey) ?? [],
+    queryKey: ['scenarios', scenarioId, 'imported-step-ids'],
+    // 这条查询只是本地缓存槽位：导入时 setQueryData 写入，这里读回已有值。
+    queryFn: async ({ queryKey }) => queryClient.getQueryData<string[]>(queryKey) ?? [],
     staleTime: Infinity,
     gcTime: 30 * 60 * 1000,
   })
@@ -508,8 +509,8 @@ export function ScenarioDetailPage() {
       toast.success('已采纳修复候选到草稿')
       void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
       void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
-    } catch (err: any) {
-      toast.error(err?.message || '采纳修复候选失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '采纳修复候选失败')
     }
   }
 
@@ -518,8 +519,8 @@ export function ScenarioDetailPage() {
       await rejectRepairCandidate(candidateId, { reason })
       toast.success('已驳回修复候选')
       void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
-    } catch (err: any) {
-      toast.error(err?.message || '驳回修复候选失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '驳回修复候选失败')
     }
   }
 
@@ -528,8 +529,8 @@ export function ScenarioDetailPage() {
       await reopenRepairCandidate(candidateId)
       toast.success('已重新打开修复候选')
       void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
-    } catch (err: any) {
-      toast.error(err?.message || '重新打开修复候选失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '重新打开修复候选失败')
     }
   }
 
@@ -539,13 +540,14 @@ export function ScenarioDetailPage() {
       toast.success(`已发起验证试跑 (Run ${res.runId.slice(0, 8)})`)
       void queryClient.invalidateQueries({ queryKey: ['scenario-repair-candidates', scenarioId] })
       void navigate({
+        from: '/scenarios/$scenarioId/',
         to: '/scenarios/$scenarioId',
         params: { scenarioId },
-        search: (prev: any) => ({ ...prev, runId: res.runId }),
+        search: (prev) => ({ ...prev, runId: res.runId }),
         replace: true,
       })
-    } catch (err: any) {
-      toast.error(err?.message || '发起验证试跑失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '发起验证试跑失败')
     }
   }
 
@@ -625,20 +627,8 @@ export function ScenarioDetailPage() {
   ) => {
     for (const { stepId, candidate } of candidatesToApply) {
       const targetStep = authoringSteps(draft.v2Document).find((s) => s.id === stepId)
-      if (targetStep && 'target' in targetStep && (targetStep as any).target?.kind === 'element') {
-        const existingCandidates = (targetStep as any).target.candidates ?? []
-        const nextCandidates = [
-          candidate,
-          ...existingCandidates.filter((c: any) => !(c.by === candidate.by && c.value === candidate.value)),
-        ]
-        draft.updateStep({
-          ...targetStep,
-          target: {
-            ...(targetStep as any).target,
-            candidates: nextCandidates,
-          },
-        } as unknown as Step)
-      }
+      const next = targetStep ? withPromotedCandidate(targetStep, candidate) : null
+      if (next) draft.updateStep(next)
     }
   }
 
@@ -661,6 +651,7 @@ export function ScenarioDetailPage() {
   }, [])
   const disabled = !canWrite || saving || publishing
   const compile = draft.compile ?? (draft.hasFieldDrafts ? null : scenario?.compile)
+  const diagnosticsFor = (nodeId: string) => (compile?.diagnostics ?? []).filter((item) => item.stepId === nodeId)
   const editableTypes = selectableScenarioStudioTypes(capabilitiesQuery.data)
   // 夹具类型由平台闸门决定是否出现在能力清单里，这里不再按字面量兜底。
   const fixtureTypes = editableTypes.filter((type) => isFixtureStepType(type))
@@ -715,7 +706,7 @@ export function ScenarioDetailPage() {
   const selectedIndex = draft.selectedIndex
   const selectedStepId = draft.selected?.id ?? null
 
-  const preAdoptSnapshotRef = useRef<any>(null)
+  const preAdoptSnapshotRef = useRef<Parameters<typeof applyStructure>[0] | null>(null)
 
   useEffect(() => {
     if (!scenario?.draft || !document) {
@@ -1577,7 +1568,7 @@ export function ScenarioDetailPage() {
                 priorBindings={draft.v2Document ? priorBindingsV2(draft.v2Document, draft.selectedIndex) : []}
                 baselineRevision={scenario!.draft?.revision ?? 1}
                 document={draft.candidate!}
-                diagnostics={(compile?.diagnostics ?? []).filter((item) => item.stepId === (draft.selectedNode as any)?.invocationId)}
+                diagnostics={diagnosticsFor(draft.selectedNode.invocationId)}
                 disabled={disabled || !supportsAuthoringV2}
                 onChange={(updated) => draft.updateNode(updated)}
                 onInlined={() => {
@@ -1637,7 +1628,7 @@ export function ScenarioDetailPage() {
               <BlockNodeEditor
                 node={draft.selectedNode}
                 priorBindings={draft.v2Document ? priorBindingsV2(draft.v2Document, draft.selectedIndex) : []}
-                diagnostics={(compile?.diagnostics ?? []).filter((item) => item.stepId === (draft.selectedNode as any)?.blockId)}
+                diagnostics={diagnosticsFor(draft.selectedNode.blockId)}
                 disabled={disabled}
                 onChange={(updated) => draft.updateNode(updated)}
                 onAddStepToBranch={(branch, type) => {
@@ -2413,9 +2404,10 @@ export function ScenarioDetailPage() {
                       aria-pressed={!flowgram}
                       onClick={() =>
                         void navigate({
+                          from: '/scenarios/$scenarioId/',
                           to: '/scenarios/$scenarioId',
                           params: { scenarioId },
-                          search: (prev: any) => ({ ...prev, editor: undefined }),
+                          search: (prev) => ({ ...prev, editor: undefined }),
                           replace: true,
                         })
                       }
@@ -2429,9 +2421,10 @@ export function ScenarioDetailPage() {
                       aria-pressed={flowgram}
                       onClick={() =>
                         void navigate({
+                          from: '/scenarios/$scenarioId/',
                           to: '/scenarios/$scenarioId',
                           params: { scenarioId },
-                          search: (prev: any) => ({ ...prev, editor: 'flowgram' }),
+                          search: (prev) => ({ ...prev, editor: 'flowgram' }),
                           replace: true,
                         })
                       }
@@ -2598,9 +2591,10 @@ export function ScenarioDetailPage() {
                       locatorHealthMap={locatorHealth.healthMap}
                       onToggleFlowgram={(f) => {
                         void navigate({
+                          from: '/scenarios/$scenarioId/',
                           to: '/scenarios/$scenarioId',
                           params: { scenarioId },
-                          search: (prev: any) => ({ ...prev, editor: f ? 'flowgram' : undefined }),
+                          search: (prev) => ({ ...prev, editor: f ? 'flowgram' : undefined }),
                           replace: true,
                         })
                       }}

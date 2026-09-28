@@ -6,6 +6,7 @@ import type {
   DataGeneratorSpec,
   ScenarioInputDecl,
   OutcomeContract,
+  ScenarioOutputDecl,
 } from '@cairn/shared'
 import { StudioInspectorHost } from './components/inspector/studio-inspector-host'
 import { InputsEditor } from '@/features/authoring/step-editor'
@@ -55,11 +56,6 @@ describe('右侧属性面板 (Studio Inspector) 浏览器全功能与 UI 布局�
     const selectRect = typeSelect?.getBoundingClientRect()
     const removeRect = removeBtn.getBoundingClientRect()
 
-    console.log('--- 桌面视口下侧边栏 400px 测量数据 ---')
-    console.log('Key Input Rect:', keyRect)
-    console.log('Label Input Rect:', labelRect)
-    console.log('Type Select Rect:', selectRect)
-    console.log('Remove Btn Rect:', removeRect)
 
     // 验证 Key 和 Label 宽度充裕 (>140px)
     expect(keyRect.width).toBeGreaterThan(140)
@@ -70,7 +66,6 @@ describe('右侧属性面板 (Studio Inspector) 浏览器全功能与 UI 布局�
 
     // 验证 Type Select 和 Remove Btn 完全无重叠
     const isOverlap = checkOverlap2D(selectRect, removeRect)
-    console.log('Type Select 和 Remove Btn 是否发生 2D 物理碰撞重叠:', isOverlap)
     expect(isOverlap).toBe(false)
   })
 
@@ -96,10 +91,7 @@ describe('右侧属性面板 (Studio Inspector) 浏览器全功能与 UI 布局�
     if (triggers.length >= 2) {
       const t1 = triggers[0].getBoundingClientRect()
       const t2 = triggers[1].getBoundingClientRect()
-      console.log('Trigger 1 (生成规则类型):', t1)
-      console.log('Trigger 2 (字典预设项):', t2)
       const isOverlap = checkOverlap2D(t1, t2)
-      console.log('Trigger 1 和 Trigger 2 是否发生 2D 物理碰撞重叠:', isOverlap)
       expect(isOverlap).toBe(false)
       expect(t1.width).toBeGreaterThan(300)
       expect(t2.width).toBeGreaterThan(300)
@@ -134,7 +126,7 @@ describe('右侧属性面板 (Studio Inspector) 浏览器全功能与 UI 布局�
 
   it('仿真走查 3：验证业务输出面板 (Outputs) 在 400px 下指标与宽表字段的尺寸与零重叠', async () => {
     function OutputsContainer() {
-      const [outputs, setOutputs] = useState({
+      const [outputs, setOutputs] = useState<ScenarioOutputDecl | undefined>({
         summaryTemplate: '巡检完成，在售商品 ${item_count} 件',
         metrics: [
           { key: 'item_count', name: '在售商品数', fromContextKey: 'report', unit: '件' },
@@ -147,7 +139,7 @@ describe('右侧属性面板 (Studio Inspector) 浏览器全功能与 UI 布局�
       return (
         <div style={{ width: 400, height: 700 }} className='flex flex-col bg-card border'>
           <StudioInspectorHost rightTab='outputs' onTabChange={() => {}}>
-            <ScenarioOutputsEditor outputs={outputs} onChange={setOutputs as any} />
+            <ScenarioOutputsEditor outputs={outputs} onChange={setOutputs} />
           </StudioInspectorHost>
         </div>
       )
@@ -158,14 +150,12 @@ describe('右侧属性面板 (Studio Inspector) 浏览器全功能与 UI 布局�
     const metricKeyInput = screen.container.querySelector('input[value="item_count"]') as HTMLElement
     expect(metricKeyInput).not.toBeNull()
     const rect = metricKeyInput.getBoundingClientRect()
-    console.log('Metric Key Input width:', rect.width)
     expect(rect.width).toBeGreaterThan(140)
 
     // 检查字段行输入框宽度
     const fieldKeyInput = screen.container.querySelector('input[value="sku_id"]') as HTMLElement
     expect(fieldKeyInput).not.toBeNull()
     const fieldRect = fieldKeyInput.getBoundingClientRect()
-    console.log('Field Key Input width:', fieldRect.width)
     expect(fieldRect.width).toBeGreaterThan(140)
   })
 

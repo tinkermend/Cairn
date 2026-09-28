@@ -14,6 +14,7 @@ import {
   type TargetDto,
   type AssistantAuthoringProposal,
   type AuthoringOperation,
+  type RepairCandidate,
 } from '@cairn/shared'
 import { applyAuthoringOperations } from '@cairn/authoring'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -99,10 +100,10 @@ vi.mock('@/lib/repair-api', () => ({
   fetchScenarioRepairCandidates: vi.fn(async () => []),
   fetchRunRepairCandidates: vi.fn(async () => []),
   fetchRepairCandidate: vi.fn(async () => { throw new Error('not found') }),
-  validateRepairCandidate: vi.fn(async () => ({ candidate: {} as any, runId: 'run-val' })),
-  adoptRepairCandidate: vi.fn(async () => ({ candidate: {} as any, draftRevision: 2 })),
-  rejectRepairCandidate: vi.fn(async () => ({} as any)),
-  reopenRepairCandidate: vi.fn(async () => ({} as any)),
+  validateRepairCandidate: vi.fn(async () => ({ candidate: {} as RepairCandidate, runId: 'run-val' })),
+  adoptRepairCandidate: vi.fn(async () => ({ candidate: {} as RepairCandidate, draftRevision: 2 })),
+  rejectRepairCandidate: vi.fn(async () => ({}) as RepairCandidate),
+  reopenRepairCandidate: vi.fn(async () => ({}) as RepairCandidate),
 }))
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: mocks.fetchTarget,

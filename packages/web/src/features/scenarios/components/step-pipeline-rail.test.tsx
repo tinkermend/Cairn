@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { StepPipelineRail } from './step-pipeline-rail'
-import type { ScenarioAuthoringDocumentV2 } from '@cairn/shared'
+import type { ModuleManifest, ScenarioAuthoringDocumentV2 } from '@cairn/shared'
+import { makeRunDetail } from '@/test-utils/run-detail'
+import { makeRepairCandidate } from '@/test-utils/repair-candidate'
 import '@/styles/index.css'
 
 describe('StepPipelineRail', () => {
@@ -174,12 +176,7 @@ describe('StepPipelineRail', () => {
           located: 10,
           ruleHitRate: 0.2,
           fallbackRate: 0.8,
-          activeCandidate: {
-            id: 'cand-1',
-            scenarioId: 'sc-1',
-            status: 'proposed' as const,
-            patch: { kind: 'replace_element_target' as const },
-          } as any,
+          activeCandidate: makeRepairCandidate(),
         },
       ],
     ])
@@ -237,10 +234,9 @@ describe('StepPipelineRail', () => {
   })
 
   it('试跑执行中时高亮当前步骤、展示旋转动效与执行中徽标，已完成步骤展示成功与耗时', async () => {
-    const trialRun: any = {
+    const trialRun = makeRunDetail({
       id: 'run-trial-1',
       scenarioId: 'sc-1',
-      scenarioVersion: 1,
       status: 'RUNNING',
       stepRuns: [
         {
@@ -250,6 +246,7 @@ describe('StepPipelineRail', () => {
           type: 'navigate',
           ordinal: 0,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:00.000Z',
           finishedAt: '2026-09-28T00:00:01.200Z',
           attempts: [],
@@ -261,12 +258,13 @@ describe('StepPipelineRail', () => {
           type: 'extract',
           ordinal: 1,
           status: 'RUNNING',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:01.300Z',
           finishedAt: null,
           attempts: [],
         },
       ],
-    }
+    })
 
     const screen = await render(
       <div className='h-[600px] w-[320px] flex flex-col'>
@@ -296,10 +294,9 @@ describe('StepPipelineRail', () => {
   })
 
   it('试跑失败时步骤卡片展示失败图标与失败徽标', async () => {
-    const trialRun: any = {
+    const trialRun = makeRunDetail({
       id: 'run-trial-2',
       scenarioId: 'sc-1',
-      scenarioVersion: 1,
       status: 'FAILED',
       stepRuns: [
         {
@@ -309,12 +306,13 @@ describe('StepPipelineRail', () => {
           type: 'navigate',
           ordinal: 0,
           status: 'FAILED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:00.000Z',
           finishedAt: '2026-09-28T00:00:00.800Z',
           attempts: [],
         },
       ],
-    }
+    })
 
     const screen = await render(
       <div className='h-[600px] w-[320px] flex flex-col'>
@@ -350,10 +348,9 @@ describe('StepPipelineRail', () => {
       ],
     }
 
-    const trialRun: any = {
+    const trialRun = makeRunDetail({
       id: 'run-trial-block',
       scenarioId: 'sc-1',
-      scenarioVersion: 1,
       status: 'RUNNING',
       stepRuns: [
         {
@@ -363,12 +360,13 @@ describe('StepPipelineRail', () => {
           type: 'extract',
           ordinal: 0,
           status: 'RUNNING',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:01.000Z',
           finishedAt: null,
           attempts: [],
         },
       ],
-    }
+    })
 
     const screen = await render(
       <div className='h-[600px] w-[320px] flex flex-col'>
@@ -426,17 +424,18 @@ describe('StepPipelineRail', () => {
   })
 
   it('动作模块内部子步骤执行中时，动作模块节点高亮并展示转圈与执行中徽标', async () => {
-    const trialRun: any = {
+    const trialRun = makeRunDetail({
       id: 'run-trial-module-1',
       scenarioId: 'sc-1',
       status: 'RUNNING',
       snapshot: {
+        ...makeRunDetail().snapshot,
         moduleManifest: {
           entries: [
             {
               invocationId: 'mod-inv-1',
               expandedStepIds: ['exp-step-1', 'exp-step-2'],
-            },
+            } as ModuleManifest['entries'][number],
           ],
         },
       },
@@ -448,6 +447,7 @@ describe('StepPipelineRail', () => {
           type: 'click',
           ordinal: 0,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:00.000Z',
           finishedAt: '2026-09-28T00:00:01.000Z',
           attempts: [],
@@ -459,12 +459,13 @@ describe('StepPipelineRail', () => {
           type: 'fill',
           ordinal: 1,
           status: 'RUNNING',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:01.100Z',
           finishedAt: null,
           attempts: [],
         },
       ],
-    }
+    })
 
     const screen = await render(
       <div className='h-[600px] w-[320px] flex flex-col'>
@@ -487,17 +488,18 @@ describe('StepPipelineRail', () => {
   })
 
   it('动作模块内部所有子步骤成功时，动作模块展示成功对勾与耗时；失败时展示失败徽标', async () => {
-    const trialRunSucceeded: any = {
+    const trialRunSucceeded = makeRunDetail({
       id: 'run-trial-module-2',
       scenarioId: 'sc-1',
       status: 'SUCCEEDED',
       snapshot: {
+        ...makeRunDetail().snapshot,
         moduleManifest: {
           entries: [
             {
               invocationId: 'mod-inv-1',
               expandedStepIds: ['exp-step-1', 'exp-step-2'],
-            },
+            } as ModuleManifest['entries'][number],
           ],
         },
       },
@@ -509,6 +511,7 @@ describe('StepPipelineRail', () => {
           type: 'click',
           ordinal: 0,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:00.000Z',
           finishedAt: '2026-09-28T00:00:01.000Z',
           attempts: [],
@@ -520,12 +523,13 @@ describe('StepPipelineRail', () => {
           type: 'fill',
           ordinal: 1,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-28T00:00:01.000Z',
           finishedAt: '2026-09-28T00:00:02.500Z',
           attempts: [],
         },
       ],
-    }
+    })
 
     const screen1 = await render(
       <div className='h-[600px] w-[320px] flex flex-col'>
@@ -547,23 +551,33 @@ describe('StepPipelineRail', () => {
     await expect.element(screen1.getByTestId('step-status-succeeded-mod-inv-1')).toHaveTextContent('成功 · 2.5s')
 
     // 接下来测试断点停在动作模块内部时的挂起状态
-    const trialRunHolding: any = {
+    const trialRunHolding = makeRunDetail({
       id: 'run-trial-module-3',
       scenarioId: 'sc-1',
       status: 'HOLDING',
-      checkpoint: { stepId: 'exp-step-1', fencingToken: 1 },
+      checkpoint: {
+        mode: 'holdAfterEach',
+        reason: 'step_succeeded',
+        stepId: 'exp-step-1',
+        stepOrdinal: 0,
+        contextKeys: [],
+        sessionGeneration: 1,
+        fencingToken: '1',
+        overlayRevision: 0,
+      },
       snapshot: {
+        ...makeRunDetail().snapshot,
         moduleManifest: {
           entries: [
             {
               invocationId: 'mod-inv-1',
               expandedStepIds: ['exp-step-1', 'exp-step-2'],
-            },
+            } as ModuleManifest['entries'][number],
           ],
         },
       },
       stepRuns: [],
-    }
+    })
 
     const screen2 = await render(
       <div className='h-[600px] w-[320px] flex flex-col'>

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ModuleInputDecl } from '@cairn/shared'
+import type { ModuleInputDecl, Step } from '@cairn/shared'
 import { ScopeVariablesBar } from './scope-variables-bar'
 import { ImportModuleDialog } from './import-dialog'
 import { TrialRunSheet } from './trial-run-sheet'
@@ -38,16 +38,15 @@ describe('作用域变量芯片栏 (ScopeVariablesBar)', () => {
       { key: 'orderId', label: '订单号', valueType: 'string', required: true },
       { key: 'count', label: '数量', valueType: 'number', required: false },
     ]
-    const mockSteps: any[] = [
+    const mockSteps: Step[] = [
       {
         id: '11111111-1111-4111-8111-111111111111',
         name: '查询详情',
         type: 'fill',
-        effectType: 'read_only',
-        targetElement: { kind: 'selector', selector: '#id' },
-        input: { kind: 'literal', value: '1' },
+        effectType: 'READ_ONLY',
+        input: { target: { framePath: [], candidates: [{ by: 'css', value: '#id' }] }, value: '1' },
         outputKey: 'detailResult',
-      },
+      } as Step,
     ]
 
     const screen = await render(

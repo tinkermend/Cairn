@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { RepairCandidate, Step } from '@cairn/shared'
 import { Sparkles, ShieldCheck, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { stepTargetDescriptor } from '../../studio-document'
 
 export interface StepHealingCardProps {
   step: Step
@@ -29,25 +30,16 @@ export function StepHealingCard({
 }: StepHealingCardProps) {
   const [adopting, setAdopting] = useState(false)
   const [dismissed, setDismissed] = useState(false)
-  const [zoomedImage, setZoomedImage] = useState<string | null>(null)
 
   // 如果没有健康度警示且没有可用候选，或者已被用户暂时忽略，则不展示
   if (dismissed) return null
   if (!candidate && health?.status !== 'fallback_warning') return null
 
-  const target = (
-    'target' in step && step.target && typeof step.target === 'object'
-      ? step.target
-      : 'input' in step && step.input && typeof step.input === 'object' && 'target' in step.input
-        ? (step.input as any).target
-        : undefined
-  ) as { candidates?: Array<{ by: string; value: string; name?: string }> } | undefined
+  const target = stepTargetDescriptor(step)
 
   const originalPrimary = target?.candidates?.[0]
   const suggestedCandidate = candidate?.patch?.suggestedCandidate
   const evidenceDiff = candidate?.patch?.evidenceDiff
-  const screenshotEvidence = (candidate as any)?.evidenceRefs?.find((e: any) => e.kind === 'screenshot')
-  const screenshotUri = screenshotEvidence?.uri ?? (candidate as any)?.screenshotUri
   const rulePercent = health?.ruleHitRate == null ? null : Math.round(health.ruleHitRate * 100)
 
   const handleAdopt = async () => {
@@ -115,29 +107,6 @@ export function StepHealingCard({
               </span>
             </div>
 
-            {screenshotUri && (
-              <div className='pt-1 border-t border-border-divider/50 space-y-1'>
-                <div className='flex items-center justify-between text-3xs text-muted-foreground'>
-                  <span>目标视觉确认（AI 定位截图切片）：</span>
-                  <span className='font-mono'>置信度 {Math.round(((candidate as any)?.confidence ?? 0.95) * 100)}%</span>
-                </div>
-                <div
-                  className='relative inline-block group cursor-pointer'
-                  onClick={() => setZoomedImage(screenshotUri)}
-                >
-                  <img
-                    data-testid='crop-thumbnail'
-                    src={screenshotUri}
-                    alt={screenshotEvidence?.caption ?? '目标截图切片'}
-                    className='max-h-16 max-w-[200px] object-contain rounded border border-border-default/80 bg-black/5 hover:border-primary transition-colors'
-                  />
-                  <span className='absolute bottom-1 right-1 px-1 py-0.2 rounded bg-black/60 text-white text-3xs opacity-0 group-hover:opacity-100 transition-opacity'>
-                    点击放大
-                  </span>
-                </div>
-              </div>
-            )}
-
             <div className='space-y-1.5 font-mono text-caption'>
               {originalPrimary && (
                 <div className='flex items-center gap-2 text-muted-foreground'>
@@ -195,24 +164,6 @@ export function StepHealingCard({
         )}
       </div>
 
-      {zoomedImage && (
-        <div
-          data-testid='zoom-modal'
-          className='fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4'
-          onClick={() => setZoomedImage(null)}
-        >
-          <div className='relative max-w-2xl max-h-[80vh] overflow-hidden rounded-lg bg-card p-2 shadow-2xl'>
-            <img src={zoomedImage} alt='放大查看' className='max-h-[75vh] max-w-full object-contain' />
-            <button
-              type='button'
-              className='absolute top-3 right-3 rounded-full bg-black/60 p-1 text-white hover:bg-black/80'
-              onClick={() => setZoomedImage(null)}
-            >
-              <X className='size-4' />
-            </button>
-          </div>
-        </div>
-      )}
     </>
   )
 }

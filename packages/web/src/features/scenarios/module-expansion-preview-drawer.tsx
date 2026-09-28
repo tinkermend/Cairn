@@ -29,7 +29,8 @@ export function ModuleExpansionPreviewDrawer({
   document,
 }: ModuleExpansionPreviewDrawerProps) {
   const previewQuery = useQuery({
-    queryKey: ['scenario-expansion-preview', scenarioId, invocationId],
+    // 预览按当前草稿展开：文档变了就不能复用旧结果。
+    queryKey: ['scenario-expansion-preview', scenarioId, invocationId, document],
     queryFn: () => previewScenarioExpansion(scenarioId, { document }),
     enabled: open,
   })

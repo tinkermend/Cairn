@@ -29,7 +29,7 @@ export function toFlowgram(document: ScenarioDocument | ScenarioAuthoringDocumen
               step: {
                 id,
                 name: `分支 · ${node.name || '条件分支'}`,
-                type: 'block' as unknown as any,
+                type: 'block',
                 effectType: 'READ_ONLY',
                 input: {},
               },

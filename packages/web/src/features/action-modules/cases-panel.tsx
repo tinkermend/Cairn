@@ -12,7 +12,7 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react'
-import { canonicalJson, type ActionModuleDetail } from '@cairn/shared'
+import { canonicalJson, type ActionModuleDetail, type JsonValue } from '@cairn/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -117,18 +117,18 @@ export function ActionModuleCasesPanel({
   const createMutation = useMutation({
     mutationFn: async () => {
       setJsonError(null)
-      let parsedInputs = {}
-      let parsedOutputs = {}
+      let parsedInputs: Record<string, JsonValue>
+      let parsedOutputs: Record<string, JsonValue>
       try {
         parsedInputs = JSON.parse(inputsJson)
-      } catch (err: any) {
-        setJsonError(`输入 JSON 格式错误: ${err.message}`)
+      } catch (err) {
+        setJsonError(`输入 JSON 格式错误: ${err instanceof Error ? err.message : String(err)}`)
         throw err
       }
       try {
         parsedOutputs = JSON.parse(expectedOutputsJson)
-      } catch (err: any) {
-        setJsonError(`预期输出 JSON 格式错误: ${err.message}`)
+      } catch (err) {
+        setJsonError(`预期输出 JSON 格式错误: ${err instanceof Error ? err.message : String(err)}`)
         throw err
       }
 

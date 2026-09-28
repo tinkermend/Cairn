@@ -5,7 +5,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useScenarioLocatorHealth } from './use-scenario-locator-health'
 import * as scenariosApi from '@/lib/scenarios-api'
 import * as repairApi from '@/lib/repair-api'
-import type { RepairCandidate } from '@cairn/shared'
+import type { ResolutionStatsItem } from '@cairn/shared'
+import { makeRepairCandidate } from '@/test-utils/repair-candidate'
 
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarioResolutionStats: vi.fn(),
@@ -24,7 +25,7 @@ function HealthTestConsumer({
 }: {
   scenarioId: string
   steps: { id: string; name?: string }[]
-  onApply?: any
+  onApply?: Parameters<typeof useScenarioLocatorHealth>[2]
 }) {
   const health = useScenarioLocatorHealth(scenarioId, steps, onApply)
   if (health.isLoading) return <div>加载中...</div>
@@ -68,11 +69,9 @@ describe('useScenarioLocatorHealth', () => {
     vi.mocked(scenariosApi.fetchScenarioResolutionStats).mockResolvedValue({
       items: [
         {
-          scenarioId: 'sc-1',
           scenarioVersionId: 'ver-1',
           targetId: 'tar-1',
           stepId: 'step-1',
-          ruleFamily: 'css',
           deterministic: 10,
           map: 0,
           ai: 0,
@@ -80,11 +79,9 @@ describe('useScenarioLocatorHealth', () => {
           fallbackRate: 0,
         },
         {
-          scenarioId: 'sc-1',
           scenarioVersionId: 'ver-1',
           targetId: 'tar-1',
           stepId: 'step-2',
-          ruleFamily: 'css',
           deterministic: 1,
           map: 0,
           ai: 3,
@@ -92,40 +89,25 @@ describe('useScenarioLocatorHealth', () => {
           fallbackRate: 0.75,
         },
         {
-          scenarioId: 'sc-1',
           scenarioVersionId: 'ver-1',
           targetId: 'tar-1',
           stepId: 'step-3',
-          ruleFamily: 'css',
           deterministic: 0,
           map: 0,
           ai: 0,
           failed: 2,
           fallbackRate: null,
         },
-      ] as any,
+      ] satisfies ResolutionStatsItem[],
     })
 
     const mockCandidates = [
-      {
-        id: 'cand-1',
-        scenarioId: 'sc-1',
-        incidentId: 'inc-1',
-        status: 'proposed',
-        cause: 'LOCATOR_DRIFT',
-        summary: '选择器漂移自愈',
+      makeRepairCandidate({
+        candidateId: 'cand-1',
         patchTargetRef: { kind: 'scenario', stepId: 'step-2', sourceDefinitionDigest: 'dig-1' },
-        patch: {
-          kind: 'REPLACE_LOCATOR',
-          suggestedCandidate: { by: 'role', value: 'button', name: '提交' },
-        },
-        confidence: 0.95,
-        riskLevel: 'low',
-        evidenceRefs: [],
-        createdAt: '2026-09-26T00:00:00Z',
-        updatedAt: '2026-09-26T00:00:00Z',
-      },
-    ] as any as RepairCandidate[]
+        patch: { kind: 'REPLACE_LOCATOR', suggestedCandidate: { by: 'role', value: 'button', name: '提交' } },
+      }),
+    ]
 
     vi.mocked(repairApi.fetchScenarioRepairCandidates).mockResolvedValue(mockCandidates)
 
@@ -153,26 +135,13 @@ describe('useScenarioLocatorHealth', () => {
 
   it('adoptCandidate 会应用到草稿并调用 API', async () => {
     vi.mocked(scenariosApi.fetchScenarioResolutionStats).mockResolvedValue({ items: [] })
-    const candidate = {
-      id: 'cand-1',
-      scenarioId: 'sc-1',
-      incidentId: 'inc-1',
-      status: 'proposed',
-      cause: 'LOCATOR_DRIFT',
-      summary: '自愈建议',
+    const candidate = makeRepairCandidate({
+      candidateId: 'cand-1',
       patchTargetRef: { kind: 'scenario', stepId: 'step-1', sourceDefinitionDigest: 'dig-1' },
-      patch: {
-        kind: 'REPLACE_LOCATOR',
-        suggestedCandidate: { by: 'text', value: '登录' },
-      },
-      confidence: 0.98,
-      riskLevel: 'low',
-      evidenceRefs: [],
-      createdAt: '2026-09-26T00:00:00Z',
-      updatedAt: '2026-09-26T00:00:00Z',
-    } as any as RepairCandidate
+      patch: { kind: 'REPLACE_LOCATOR', suggestedCandidate: { by: 'text', value: '登录' } },
+    })
     vi.mocked(repairApi.fetchScenarioRepairCandidates).mockResolvedValue([candidate])
-    vi.mocked(repairApi.adoptRepairCandidate).mockResolvedValue({} as any)
+    vi.mocked(repairApi.adoptRepairCandidate).mockResolvedValue({} as Awaited<ReturnType<typeof repairApi.adoptRepairCandidate>>)
 
     const applyDraftMock = vi.fn()
 
@@ -192,7 +161,7 @@ describe('useScenarioLocatorHealth', () => {
     expect(applyDraftMock).toHaveBeenCalledWith([
       { stepId: 'step-1', candidate: { by: 'text', value: '登录' } },
     ])
-    expect(repairApi.adoptRepairCandidate).toHaveBeenCalledWith('cand-1', {
+    expect(repairApi.adoptRepairCandidate).toHaveBeenCalledWith(candidate.id, {
       expectedRevision: 2,
     })
   })

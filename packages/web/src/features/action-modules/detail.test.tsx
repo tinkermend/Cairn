@@ -40,7 +40,8 @@ const mocks = vi.hoisted(() => ({
   canWrite: true,
 }))
 vi.mock('@/lib/action-modules-api', () => mocks)
-vi.mock('@tanstack/react-router', () => ({
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => mocks.navigate,
   Link: ({ children }: { children: ReactNode }) => <a href='#'>{children}</a>,
 }))

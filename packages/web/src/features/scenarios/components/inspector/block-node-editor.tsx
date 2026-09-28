@@ -8,15 +8,16 @@ import {
   CheckCircle2,
   Plus,
 } from 'lucide-react'
-import type {
-  CompileDiagnostic,
-  ExecutableStepType,
-  ScenarioAuthoringNode,
-  AuthoringBlockNode,
-  AuthoringBlockNodeIf,
-  AuthoringBlockNodeForEach,
-  AuthoringBlockNodeRepeat,
-  Expr,
+import {
+  EXPR_COMPARE_OPS,
+  type CompileDiagnostic,
+  type ExecutableStepType,
+  type ScenarioAuthoringNode,
+  type AuthoringBlockNode,
+  type AuthoringBlockNodeIf,
+  type AuthoringBlockNodeForEach,
+  type AuthoringBlockNodeRepeat,
+  type Expr,
 } from '@cairn/shared'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -287,7 +288,9 @@ export function BlockNodeEditor({
   }
 
   const updateCondition = (nextLeft: string, nextOp: string, nextRight: string) => {
-    let parsedRight: any = nextRight
+    const compareOp = EXPR_COMPARE_OPS.find((candidate) => candidate === nextOp)
+    if (!compareOp) return
+    let parsedRight: string | number | boolean = nextRight
     if (nextRight === 'true') parsedRight = true
     else if (nextRight === 'false') parsedRight = false
     else if (!Number.isNaN(Number(nextRight)) && nextRight.trim() !== '') {
@@ -296,7 +299,7 @@ export function BlockNodeEditor({
 
     const nextExpr: Expr = {
       kind: 'compare',
-      op: nextOp as any,
+      op: compareOp,
       left: { kind: 'ref', key: nextLeft },
       right: { kind: 'literal', value: parsedRight },
     }

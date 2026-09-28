@@ -249,7 +249,7 @@ describe('边界防护与历史状态隔离', () => {
   it('pendingOperationId 为 null 且后端 currentOperation 为 null 时，不误选失效的 activeOperation', () => {
     expect(
       classifyStudioSessionConnect(
-        { session: { status: 'CLOSED' }, currentOperation: null } as any,
+        { session: { status: 'CLOSED' }, currentOperation: null } as AccountSessionDetail,
         null,
         { id: 'stale-op', status: 'FAILED' },
       ),
@@ -305,7 +305,7 @@ describe('resolveStudioConnectAction', () => {
 
   it('会话状态为 unprepared 时推荐 PREPARE', () => {
     const action = resolveStudioConnectAction({
-      sessionDetail: { session: null, status: 'unprepared' } as any,
+      sessionDetail: { session: null, status: 'unprepared' } as AccountSessionDetail,
     })
     expect(action.kind).toBe('PREPARE')
   })
@@ -315,7 +315,7 @@ describe('resolveStudioConnectAction', () => {
       sessionDetail: {
         session: { id: 's-1', status: 'OPEN' },
         status: 'needs_login',
-      } as any,
+      } as AccountSessionDetail,
     })
     expect(action.kind).toBe('LOGIN')
     expect(action.label).toBe('登录会话')
@@ -326,8 +326,8 @@ describe('resolveStudioConnectAction', () => {
       sessionDetail: {
         session: { id: 's-1', status: 'OPEN' },
         status: 'maintenance',
-        currentOperation: { id: 'op-1', status: 'FAILED', errorCode: 'SESSION_OPERATION_CONFLICT' },
-      } as any,
+        currentOperation: { id: 'op-1', kind: 'prepare', status: 'FAILED', reusedRunId: null, queueDeadlineAt: '2026-09-26T00:00:00Z', waitReason: null },
+      } as AccountSessionDetail,
       isFailed: true,
       activeOpErrorCode: 'SESSION_OPERATION_CONFLICT',
     })
@@ -340,7 +340,7 @@ describe('resolveStudioConnectAction', () => {
       sessionDetail: {
         session: { id: 's-1', status: 'OPEN' },
         status: 'lost',
-      } as any,
+      } as AccountSessionDetail,
       isFailed: true,
     })
     expect(action.kind).toBe('RESTART')
@@ -351,7 +351,7 @@ describe('resolveStudioConnectAction', () => {
       sessionDetail: {
         session: { id: 's-1', status: 'OPEN' },
         status: 'ready',
-      } as any,
+      } as AccountSessionDetail,
       isFailed: true,
     })
     expect(action.kind).toBe('RESTART')

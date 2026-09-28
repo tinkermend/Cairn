@@ -29,6 +29,7 @@ import {
   type ScenarioAuthoringDocument,
   type ScenarioDocument,
   type StepRunDto,
+  type ScenarioCapabilities,
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
@@ -59,6 +60,7 @@ import { STEP_TYPE_HINTS, unavailableStudioTypes } from '../step-registry'
 import { STEP_SNIPPET_TEMPLATES } from '../snippets/step-snippets'
 import type { StepLocatorHealth } from '../use-scenario-locator-health'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 function formatStepDuration(stepRun?: StepRunDto): string | null {
   if (!stepRun) return null
   const lastAtt = stepRun.attempts?.[stepRun.attempts.length - 1]
@@ -88,7 +90,7 @@ export interface StepPipelineRailProps {
   extractIds?: string[]
   pendingImportDraftId?: string | null
   canRecord?: boolean
-  capabilitiesData?: any
+  capabilitiesData?: ScenarioCapabilities
   flowgram?: boolean
   locatorHealthMap?: Map<string, StepLocatorHealth>
   onToggleFlowgram?: (flowgram: boolean) => void
@@ -183,7 +185,7 @@ export function StepPipelineRail({
     let topOrdinal = 0
 
     return walked.map((entry) => {
-      let displayNumber = ''
+      let displayNumber: string
       if (entry.depth === 0) {
         topOrdinal++
         displayNumber = String(topOrdinal).padStart(2, '0')
@@ -261,20 +263,20 @@ export function StepPipelineRail({
     }
   }, [effectiveRunningId])
 
-  // 若正在执行的步骤在已折叠的块内，自动展开该块
-  useEffect(() => {
-    if (effectiveRunningId && blockDescendantIds) {
-      for (const [blockId, descendantSet] of blockDescendantIds.entries()) {
-        if (descendantSet.has(effectiveRunningId) && collapsedBlocks.has(blockId)) {
-          setCollapsedBlocks((prev) => {
-            const next = new Set(prev)
-            next.delete(blockId)
-            return next
-          })
-        }
-      }
-    }
-  }, [effectiveRunningId, blockDescendantIds, collapsedBlocks])
+  // 执行推进到已折叠块内的步骤时，自动展开该块（之后用户仍可手动折叠）
+  useResetOnChange(effectiveRunningId, (runningId) => {
+    if (!runningId || !blockDescendantIds) return
+    const containing = [...blockDescendantIds.entries()]
+      .filter(([, descendants]) => descendants.has(runningId))
+      .map(([blockId]) => blockId)
+    if (containing.length === 0) return
+    setCollapsedBlocks((prev) => {
+      if (!containing.some((blockId) => prev.has(blockId))) return prev
+      const next = new Set(prev)
+      for (const blockId of containing) next.delete(blockId)
+      return next
+    })
+  })
 
   useEffect(() => {
     if (selectedId) {

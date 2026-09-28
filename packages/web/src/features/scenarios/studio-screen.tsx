@@ -100,7 +100,7 @@ export function StudioScreen({
   const [abandoning, setAbandoning] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
   const [pendingOperationId, setPendingOperationId] = useState<string | null>(null)
-  const [nowMs, setNowMs] = useState(Date.now())
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   // 目标或账号切换时及时重置连接与失败状态，防止历史状态泄漏
   useEffect(() => {
@@ -130,7 +130,10 @@ export function StudioScreen({
     enabled: Boolean(targetId && targetAccountId && canReadSession && (connecting || prepareFailed)),
   })
 
-  // 当处于 connecting 时每秒更新计时；每 3 秒兜底刷新一次，防范 SSE 瞬时断线或延迟
+  // 当处于 connecting 时每秒更新计时；每 3 秒兜底刷新一次，防范 SSE 瞬时断线或延迟。
+  // 依赖只取稳定的 refetch：查询结果对象每次渲染都会变，放进依赖会让计时器每秒重建、计数永远到不了 3。
+  const refetchSession = sessionQuery.refetch
+  const refetchOperation = operationQuery.refetch
   useEffect(() => {
     if (!connecting) return
     let timer: ReturnType<typeof setTimeout>
@@ -139,14 +142,14 @@ export function StudioScreen({
       setNowMs(Date.now())
       counter++
       if (counter % 3 === 0) {
-        void sessionQuery.refetch()
-        void operationQuery.refetch()
+        void refetchSession()
+        void refetchOperation()
       }
       timer = setTimeout(tick, 1000)
     }
     timer = setTimeout(tick, 1000)
     return () => clearTimeout(timer)
-  }, [connecting, sessionQuery, operationQuery])
+  }, [connecting, refetchSession, refetchOperation])
 
   const sessionOpen = session?.session?.status === 'OPEN'
   const occupyingRunId = session?.occupancy?.occupyingRunId ?? null

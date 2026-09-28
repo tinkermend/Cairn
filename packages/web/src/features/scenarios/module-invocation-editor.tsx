@@ -5,6 +5,7 @@ import {
   latestSelectableVersion,
   resolveInvocationSelection,
   type CompileDiagnostic,
+  type JsonValue,
   type ModuleInputBinding,
   type ScenarioAuthoringDocumentV2,
   type ScenarioDocument,
@@ -479,10 +480,12 @@ export function ModuleInvocationEditor({
                                 : ''
                             }
                             onChange={(event) => {
-                              let val: any = event.target.value
+                              let val: JsonValue = event.target.value
                               try {
                                 val = JSON.parse(event.target.value)
-                              } catch {}
+                              } catch {
+                                // 不是合法 JSON 时按原文字符串保存。
+                              }
                               updateInputBinding(input.key, {
                                 kind: 'literal',
                                 value: val,

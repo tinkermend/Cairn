@@ -239,7 +239,9 @@ function ActionModuleEditor({
     setFixtures(updated)
     try {
       localStorage.setItem(fixturesStorageKey, JSON.stringify(updated))
-    } catch {}
+    } catch {
+      // 本地存储不可用（隐私模式、配额满）时只保留内存态。
+    }
   }
 
   const [activeTrialRunId, setActiveTrialRunId] = useState<string | null>(null)

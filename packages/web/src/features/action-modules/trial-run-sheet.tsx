@@ -67,6 +67,9 @@ export function TrialRunSheet({
   })
 
   const run = observedRun ?? fallbackQuery.data
+  // Run 本身不带错误；失败原因取第一个失败步骤最后一次尝试的错误（与运行详情页同一口径）。
+  const failedStepRun = run?.stepRuns?.find((stepRun) => stepRun.status === 'FAILED')
+  const failureError = failedStepRun?.attempts[failedStepRun.attempts.length - 1]?.error ?? null
   const isTerminal =
     run?.status === 'SUCCEEDED' ||
     run?.status === 'FAILED' ||
@@ -237,7 +240,7 @@ export function TrialRunSheet({
               </div>
 
               {/* 失败原因提示 */}
-              {(run as any).error && (
+              {failureError && (
                 <div
                   role='alert'
                   className='space-y-1 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-small text-destructive'
@@ -247,9 +250,7 @@ export function TrialRunSheet({
                     <span>执行异常终止</span>
                   </div>
                   <p className='font-mono text-label break-all'>
-                    {typeof (run as any).error === 'object' && (run as any).error !== null
-                      ? JSON.stringify((run as any).error)
-                      : String((run as any).error)}
+                    {failureError.code}: {failureError.safeMessage}
                   </p>
                 </div>
               )}

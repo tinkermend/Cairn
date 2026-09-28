@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { AccountSessionDetail, RunDetailDto } from '@cairn/shared'
+import type { AccountSessionDetail, EvidenceMetadata, RunDetailDto } from '@cairn/shared'
+import { makeStepRun } from '@/test-utils/run-detail'
 import { useAuthStore } from '@/stores/auth-store'
 import { StudioScreen } from './studio-screen'
 
@@ -559,10 +560,15 @@ describe('StudioScreen Component', () => {
       ...finishedRun,
       status: 'HOLDING',
       checkpoint: {
-        stepId: 'step-2',
+        mode: 'holdOnFailure',
         reason: 'step_failed',
+        stepId: 'step-2',
+        stepOrdinal: 1,
+        contextKeys: [],
+        sessionGeneration: 1,
         fencingToken: 'f-1',
-      } as any,
+        overlayRevision: 0,
+      },
     }
     sessionMocks.fetchAccountSession.mockResolvedValue(openSession)
     const screen = await renderScreen({
@@ -584,12 +590,7 @@ describe('StudioScreen Component', () => {
       ...finishedRun,
       status: 'SUCCEEDED',
       stepRuns: [
-        {
-          id: 'sr-1',
-          stepId: 'step-1',
-          status: 'SUCCEEDED',
-          attempts: [],
-        } as any,
+        makeStepRun({ id: 'sr-1', stepId: 'step-1', status: 'SUCCEEDED' }),
       ],
     }
     observation.evidence = {
@@ -599,7 +600,7 @@ describe('StudioScreen Component', () => {
           type: 'screenshot',
           status: 'available',
           stepRunId: 'sr-1',
-        } as any,
+        } as EvidenceMetadata,
       ],
     }
     sessionMocks.fetchAccountSession.mockResolvedValue({

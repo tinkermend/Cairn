@@ -4,9 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { RunDetailDto } from '@cairn/shared'
 import '@/styles/index.css'
 import { TrialResultDialog } from './trial-result-dialog'
+import type { MockLinkProps, MockAuthState } from '@/test-utils/router-mocks'
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children, className, ...props }: any) => (
+  Link: ({ children, className, ...props }: MockLinkProps) => (
     <a href='#' className={className} {...props}>
       {children}
     </a>
@@ -14,12 +15,12 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@/stores/auth-store', () => ({
-  useAuthStore: (selector: any) =>
+  useAuthStore: (selector: (state: MockAuthState) => unknown) =>
     selector({
       auth: {
         user: {
           id: 'u-1',
-          name: 'Tester',
+          displayName: 'Tester',
           roles: ['operator'],
           permissions: ['run:read', 'run:execute'],
         },

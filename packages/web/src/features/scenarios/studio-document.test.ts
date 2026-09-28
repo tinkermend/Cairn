@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { walkAuthoringNodes, type ScenarioDocument, type Step } from '@cairn/shared'
+import {
+  walkAuthoringNodes,
+  type ScenarioDocument,
+  type Step,
+  type ScenarioAuthoringDocumentV2,
+} from '@cairn/shared'
 import {
   authoringNodeLabel,
   bindingUiKind,
@@ -21,8 +26,8 @@ import {
   tryReplaceNode,
   tryReplaceStep,
   uniqueOutputKey,
+  withPromotedCandidate,
 } from './studio-document'
-import type { ScenarioAuthoringDocumentV2 } from '@cairn/shared'
 
 const navigate: Step = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -201,5 +206,50 @@ describe('studio-document', () => {
     if (node?.kind !== 'step') return
     expect(node.step.name).toBe('打开首页')
     expect(node.outcomes?.[0]?.id).toBe(contractId)
+  })
+})
+
+describe('withPromotedCandidate（采纳修复候选到草稿）', () => {
+  const click = {
+    id: 'click-1',
+    name: '点击提交',
+    type: 'click',
+    input: {
+      target: {
+        framePath: [],
+        candidates: [
+          { by: 'text', value: '提交' },
+          { by: 'css', value: '#submit' },
+        ],
+      },
+    },
+  } as unknown as Step
+
+  it('把候选置顶到 input.target，并去掉同档同值的旧项', () => {
+    const next = withPromotedCandidate(click, { by: 'css', value: '#submit' })
+    expect(next && 'input' in next ? next.input : null).toMatchObject({
+      target: { candidates: [{ by: 'css', value: '#submit' }, { by: 'text', value: '提交' }] },
+    })
+  })
+
+  it('候选数量不超过上限', () => {
+    const many = {
+      ...click,
+      input: {
+        target: {
+          framePath: [],
+          candidates: ['a', 'b', 'c', 'd', 'e'].map((value) => ({ by: 'text', value })),
+        },
+      },
+    } as unknown as Step
+    const next = withPromotedCandidate(many, { by: 'role', value: 'button', name: '提交' })
+    const target = next && 'input' in next ? (next.input as { target: { candidates: unknown[] } }).target : null
+    expect(target?.candidates).toHaveLength(5)
+    expect(target?.candidates[0]).toEqual({ by: 'role', value: 'button', name: '提交' })
+  })
+
+  it('没有元素目标的步骤返回 null', () => {
+    const wait = { id: 'wait-1', name: '等待', type: 'wait', input: { ms: 100 } } as unknown as Step
+    expect(withPromotedCandidate(wait, { by: 'text', value: 'x' })).toBeNull()
   })
 })

@@ -59,7 +59,10 @@ export function useStudioDraft(
         inputOverlay !== null ||
         !sameDocument(candidate, baseline.document)),
   )
-  dirtyRef.current = dirty
+  // 下方同步服务端版本的 effect 读最新脏标记；effect 按声明顺序执行，这里先同步。
+  useEffect(() => {
+    dirtyRef.current = dirty
+  })
   const hasFieldDrafts = Object.keys(stepOverlays).length > 0 || inputOverlay !== null
 
   useEffect(() => {

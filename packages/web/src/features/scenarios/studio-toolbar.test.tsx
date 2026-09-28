@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ScenarioDetailDto, TargetDto } from '@cairn/shared'
+import type { RunDetailDto, ScenarioDetailDto, TargetDto } from '@cairn/shared'
 import '@/styles/index.css'
 import { StudioToolbar } from './studio-toolbar'
 import { useAssistantStore } from '@/stores/assistant-store'
+import type { MockLinkProps } from '@/test-utils/router-mocks'
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children, className, title, ...props }: any) => (
+  Link: ({ children, className, title, ...props }: MockLinkProps) => (
     <a href='#' className={className} title={title} {...props}>{children}</a>
   ),
 }))
@@ -445,7 +446,7 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
               id: 'run-success-123',
               scenarioId: mockScenario.id,
               status: 'SUCCEEDED',
-            } as any}
+            } as RunDetailDto}
             canPublish={false}
             unpublishedDraft={false}
             compileOk={true}
@@ -498,7 +499,7 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
               id: 'run-running-123',
               scenarioId: mockScenario.id,
               status: 'RUNNING',
-            } as any}
+            } as RunDetailDto}
             canPublish={false}
             unpublishedDraft={false}
             compileOk={true}
@@ -557,7 +558,7 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
               id: 'run-running-123',
               scenarioId: mockScenario.id,
               status: 'RUNNING',
-            } as any}
+            } as RunDetailDto}
             canCancelTrial={true}
             onCancelTrial={onCancelTrial}
             canPublish={false}

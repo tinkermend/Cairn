@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { parseDemonstrationFile, previewDemonstration } from '@cairn/authoring'
-import type { Step } from '@cairn/shared'
+import type { DemonstrationPlacement, Step } from '@cairn/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
@@ -49,7 +49,7 @@ const preview = previewDemonstration({
 })
 const onApplied = vi.fn()
 
-function panel(canApply = true, initialPlaceholderStepId?: string, initialPlacement?: any) {
+function panel(canApply = true, initialPlaceholderStepId?: string, initialPlacement?: DemonstrationPlacement) {
   return render(
     <QueryClientProvider
       client={
