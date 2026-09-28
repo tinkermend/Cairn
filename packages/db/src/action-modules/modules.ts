@@ -411,6 +411,7 @@ export async function publishActionModule(
     idempotencyKey: string
     expectedRevision: number
     confirmedWarnings?: string[]
+    skipReleaseGate?: boolean
     actor: ExecutionActor
   },
 ): Promise<ActionModuleDetail> {
