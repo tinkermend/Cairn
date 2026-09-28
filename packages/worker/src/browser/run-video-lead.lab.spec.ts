@@ -229,7 +229,6 @@ describe('运行录像前置空白治理验证（方案 B 真实浏览器场景�
       targetAccountId: accountId,
       actor: { id: actorId },
       evidencePolicy: { video: 'always', screenshot: 'always' },
-      allowedOrigins: [baseUrl],
     })
     const runId = created.detail.id
 

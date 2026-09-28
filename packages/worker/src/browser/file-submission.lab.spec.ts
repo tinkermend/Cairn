@@ -380,8 +380,6 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
       scenarioId: scenario.id,
       targetAccountId: accountId,
       actor: { id: actorId },
-      trigger: 'MANUAL',
-      allowedOrigins: [lab.url],
     })
     const runId = created.detail.id
 
@@ -472,8 +470,6 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
       scenarioId: scenario.id,
       targetAccountId: accountId,
       actor: { id: actorId },
-      trigger: 'MANUAL',
-      allowedOrigins: [lab.url],
     })
     const runId = created.detail.id
 
@@ -525,8 +521,6 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
       scenarioId: scenario.id,
       targetAccountId: accountId,
       actor: { id: actorId },
-      trigger: 'MANUAL',
-      allowedOrigins: [lab.url],
     })
     const runId = created.detail.id
 
@@ -586,8 +580,6 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
       scenarioId: scenario.id,
       targetAccountId: accountId,
       actor: { id: actorId },
-      trigger: 'MANUAL',
-      allowedOrigins: [lab.url],
       input: { injectedHandle: foreignHandle as any },
     })
     const runId = created.detail.id
@@ -642,8 +634,6 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
       scenarioId: scenario.id,
       targetAccountId: accountId,
       actor: { id: actorId },
-      trigger: 'MANUAL',
-      allowedOrigins: [lab.url],
     })
     const runId = created.detail.id
 
