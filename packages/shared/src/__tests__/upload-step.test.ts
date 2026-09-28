@@ -12,7 +12,7 @@ import {
 
 describe('Browser File Transfer (Download / Upload / Handle) Schemas', () => {
   const baseTarget = {
-    candidates: [{ by: 'css' as const, value: '#uploader' }],
+    framePath: [], candidates: [{ by: 'css' as const, value: '#uploader' }],
   }
 
   const validSha256 = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { FACTORY_PLATFORM_CONFIG, assistantResultSchema } from '@cairn/shared'
 import { handleKnowledgeAnswer } from './knowledge-answer.handler.js'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
+import type { RequestAccount } from '../../common/request-account.js'
 
 vi.mock('@cairn/db', () => ({
   authorizeTargetRequest: vi.fn().mockResolvedValue(undefined),
@@ -19,7 +20,7 @@ vi.mock('@cairn/db', () => ({
   getAccountSessionDetail: vi.fn(),
   listAccountSessionOverview: vi.fn(),
   loadAccountAuthDisplay: vi.fn(async () => new Map()),
-  listRuns: vi.fn(async () => ({ items: [], nextCursor: null })),
+  listRuns: vi.fn(async () => ({ items: [], nextCursor: undefined })),
   loadRunFailureSummaries: vi.fn(async () => []),
   listIncidents: vi.fn(async () => ({ items: [], total: 0 })),
   DomainError: class DomainError extends Error {
@@ -82,9 +83,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       db: {} as any,
       actor: {
         id: 'user-1',
-        name: 'Test User',
+        displayName: 'Test User',
         permissions: ['ai:assist'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       slots: {},
       question: q,
@@ -152,7 +155,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     vi.mocked(listRuns).mockResolvedValue({ items: [{
       id: runId, scenarioId: SC_UUID, targetId: TGT_UUID, status: 'SUCCEEDED',
       outcomeStatus: 'FAIL', scenarioVersionKind: 'trial', createdAt: '2026-09-27T10:00:00.000Z',
-    }] as never, nextCursor: null } as never)
+    }] as never, nextCursor: undefined } as never)
     const slots: Record<string, unknown> = { scenarioId: SC_UUID, targetId: TGT_UUID }
     const question = '这个场景已经跑成功了吗？'
     const ctx = createMockContext({
@@ -172,7 +175,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
   it('无运行记录时如实说明缺口，不从草稿成功条件推断已通过', async () => {
     vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
-    vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null } as never)
+    vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: undefined } as never)
     const question = '刚才这个场景运行通过了吗？'
     const result = await handleKnowledgeAnswer(createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'workflow:read', 'run:read', 'target:read'] } as never,
@@ -203,7 +206,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'run:read'] } as any,
       body: { question, pageContext: { version: 2, routeKey: 'home', pageKind: 'home', page: 'home' } },
-      targets: { listTargets: vi.fn(async () => ({ items: [], nextCursor: null })) } as any,
+      targets: { listTargets: vi.fn(async () => ({ items: [], nextCursor: undefined })) } as any,
     })
 
     const result = await handleKnowledgeAnswer(ctx)
@@ -222,14 +225,14 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     vi.mocked(listRuns).mockResolvedValueOnce({ items: [{
       id: '9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c9c', scenarioName: '实例检查',
       status: 'FAILED', outcomeStatus: 'UNKNOWN',
-    }], nextCursor: null } as any)
+    }], nextCursor: undefined } as any)
     const ctx = createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'run:read'] } as any,
       body: { question, pageContext: { version: 2, routeKey: 'home', pageKind: 'home', page: 'home' } },
       targets: {
-        listTargets: vi.fn(async () => ({ items: [{ id: TGT_UUID, name: '智慧运维管理平台' }], nextCursor: null })),
+        listTargets: vi.fn(async () => ({ items: [{ id: TGT_UUID, name: '智慧运维管理平台' }], nextCursor: undefined })),
         getTarget: vi.fn(async () => ({ id: TGT_UUID, name: '智慧运维管理平台' })),
-        listAccounts: vi.fn(async () => ({ items: [{ displayName: '巡检账号', status: 'active' }], nextCursor: null })),
+        listAccounts: vi.fn(async () => ({ items: [{ displayName: '巡检账号', status: 'active' }], nextCursor: undefined })),
       } as any,
     })
 
@@ -273,7 +276,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         liveCount: 0, effectiveCap: 1, occupyingRunId: null, occupyingOperationId: null,
         lastAuthCheckedAt: null,
       }],
-      nextCursor: null,
+      nextCursor: undefined,
       summary: { total: 1, available: 0, problem: 0, unprepared: 1, busy: 0, retained: 0 },
       asOf: '2026-09-27T12:00:00.000Z',
     } as never)
@@ -299,12 +302,12 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
   it('跨页点名目标的账号健康问法使用授权名称匹配目标，不使用当前页面目标', async () => {
     vi.mocked(listAccountSessionOverview).mockResolvedValueOnce({
-      items: [], nextCursor: null,
+      items: [], nextCursor: undefined,
       summary: { total: 0, available: 0, problem: 0, unprepared: 0, busy: 0, retained: 0 },
       asOf: '2026-09-28T00:00:00.000Z',
     } as never)
     const question = '请问系统甲的账号现在健康吗？'
-    const listTargets = vi.fn().mockResolvedValue({ items: [{ id: 'tgt-a', name: '系统甲' }], nextCursor: null })
+    const listTargets = vi.fn().mockResolvedValue({ items: [{ id: 'tgt-a', name: '系统甲' }], nextCursor: undefined })
     const ctx = createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
       question,
@@ -328,7 +331,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       body: { question, pageContext: { page: 'target', targetId: 'tgt-b' } },
       targets: { listTargets: vi.fn().mockResolvedValue({ items: [
         { id: 'tgt-a', name: '系统甲' }, { id: 'tgt-c', name: '系统甲' },
-      ], nextCursor: null }) } as any,
+      ], nextCursor: undefined }) } as any,
     }))
     expect(result.summary).toContain('多个同名目标')
     expect(listAccountSessionOverview).not.toHaveBeenCalled()
@@ -362,7 +365,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         liveCount: 0, effectiveCap: 1, occupyingRunId: null, occupyingOperationId: null,
         lastAuthCheckedAt: null,
       }],
-      nextCursor: null,
+      nextCursor: undefined,
       summary: { total: 1, available: 0, problem: 0, unprepared: 1, busy: 0, retained: 0 },
       asOf: '2026-09-28T00:00:00.000Z',
     } as never)
@@ -543,11 +546,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     expect(result.kind).toBe('knowledge_answer')
     expect(result.summary).toContain('retryLimit')
     expect(result.claims.length).toBe(1)
-    expect(result.claims[0].factKind).toBe('human_confirmed')
-    expect(result.claims[0].citations).toContain('help:studio-retry')
+    expect(result.claims[0]!.factKind).toBe('human_confirmed')
+    expect(result.claims[0]!.citations).toContain('help:studio-retry')
     expect(result.nextActions).toBeDefined()
     expect(result.nextActions?.length).toBeGreaterThan(0)
-    expect(result.nextActions?.[0].kind).toBe('studio.step')
+    expect(result.nextActions?.[0]!.kind).toBe('studio.step')
   })
 
   it('instructs JSON output explicitly for the knowledge answer provider', async () => {
@@ -634,7 +637,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     const result = await handleKnowledgeAnswer(ctx)
-    expect(result.claims[0].citations).toEqual(['platform:knowledge_status:no_verified_claims'])
+    expect(result.claims[0]!.citations).toEqual(['platform:knowledge_status:no_verified_claims'])
     expect(result.missing).toContainEqual(expect.objectContaining({ key: 'unsupported_citation' }))
     expect(JSON.stringify(result)).not.toContain('help:fake-non-existent-id')
   })
@@ -856,9 +859,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Restricted User',
-        permissions: ['ai:assist'], // lacks run:read and target:read
-        targetScope: 'all',
+        displayName: 'Restricted User',
+        permissions: ['ai:assist'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       body: {
         question: '这次运行为什么停了？',
@@ -931,9 +936,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Op User',
+        displayName: 'Op User',
         permissions: ['ai:assist', 'run:read', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1064,9 +1071,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Scoped User',
+        displayName: 'Scoped User',
         permissions: ['ai:assist', 'run:read', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       body: {
         question: '这次运行发生了什么？',
@@ -1089,10 +1098,12 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
   })
 
   it('does not load scenario or session facts after target-scoped permission is denied', async () => {
-    const actor = {
-      id: 'user-1', name: 'Scoped User',
+    const actor: RequestAccount = {
+      id: 'user-1', displayName: 'Scoped User',
       permissions: ['ai:assist', 'target:read', 'workflow:read', 'session:read'],
-      targetScope: 'all',
+      email: 'user-1@example.com',
+      status: 'active',
+      roles: [],
     }
     vi.mocked(authorizeTargetRequest).mockRejectedValueOnce(new Error('TARGET_NOT_FOUND'))
     const scenario = await handleKnowledgeAnswer(createMockContext({
@@ -1162,9 +1173,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Workflow Author',
+        displayName: 'Workflow Author',
         permissions: ['ai:assist', 'workflow:read', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1219,9 +1232,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1241,16 +1256,18 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     const result = await handleKnowledgeAnswer(ctx)
-    expect(result.claims[0].citations).toContain('session:sess-888')
+    expect(result.claims[0]!.citations).toContain('session:sess-888')
     expect(result.nextActions?.some((a) => a.href?.includes('/sessions/tgt-1/acc-admin'))).toBe(true)
 
     // 负例：伪造不匹配的账号 scopeRefs
     const mismatchCtx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       body: {
         question: '会话状态？',
@@ -1534,9 +1551,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read', 'run:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1597,9 +1616,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1673,9 +1694,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read', 'run:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1721,7 +1744,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       occupancy: null,
       retention: null,
       currentOperation: null,
-      actions: ['LOGIN'],
+      actions: [{ kind: 'LOGIN', enabled: true, disabledReason: null }],
       asOf: new Date().toISOString(),
     })
     vi.mocked(listQueuedRunsForAccount).mockResolvedValueOnce([
@@ -1743,9 +1766,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read', 'run:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1811,9 +1836,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Admin',
+        displayName: 'Admin',
         permissions: ['ai:assist', 'target:read', 'session:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -1891,9 +1918,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Scheduler Admin',
+        displayName: 'Scheduler Admin',
         permissions: ['ai:assist', 'schedule:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: {
         completeJson: completeJsonMock,
@@ -1912,7 +1941,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const result = await handleKnowledgeAnswer(ctx)
     // 验证 occurrence 引用通过白名单校验
-    expect(result.claims[0].citations).toContain('occurrence:11111111-1111-4111-8111-111111111111')
+    expect(result.claims[0]!.citations).toContain('occurrence:11111111-1111-4111-8111-111111111111')
     // 验证包含处置入口（去认证账号）与查看调度列表
     expect(result.nextActions?.some((a) => a.kind === 'target.accounts' && a.href === '/sessions/tgt-1')).toBe(true)
     expect(result.nextActions?.some((a) => a.kind === 'schedule.edit' && a.href === '/schedules')).toBe(true)
@@ -1935,7 +1964,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       definition: { timezone: 'Asia/Shanghai' },
       createdAt: `${today}T08:00:00.000Z`, nextDueAt: `${today}T18:00:00.000Z`,
     } as any)
-    vi.mocked(listScheduleOccurrences).mockResolvedValue({ items: [], nextCursor: null } as any)
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({ items: [], nextCursor: undefined } as any)
     const completeJson = vi.fn()
     const ctx = createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read', 'target:read'], targetScope: 'all' } as any,
@@ -1969,7 +1998,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       } },
       createdAt: `${priorDate}T08:00:00.000Z`, nextDueAt: null,
     } as any)
-    vi.mocked(listScheduleOccurrences).mockResolvedValue({ items: [], nextCursor: null } as any)
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({ items: [], nextCursor: undefined } as any)
     const ctx = createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read', 'target:read'], targetScope: 'all' } as any,
       body: {
@@ -1998,7 +2027,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       items: [{ occurrenceId, scheduleId, localStartDate: yesterday, source: 'scheduled',
         windowStartUtc: `${yesterday}T14:00:00.000Z`, windowEndUtc: null,
         admissionStatus: 'SKIPPED', reason: 'WORKER_UNAVAILABLE', runId: null }],
-      nextCursor: null,
+      nextCursor: undefined,
     } as any)
     const completeJson = vi.fn()
     const ctx = createMockContext({
@@ -2034,7 +2063,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       items: [{ occurrenceId, scheduleId, localStartDate: yesterday, source: 'scheduled',
         windowStartUtc: `${yesterday}T14:00:00.000Z`, windowEndUtc: null,
         admissionStatus: 'ADMITTED', reason: null, runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }],
-      nextCursor: null,
+      nextCursor: undefined,
     } as any)
     const ctx = createMockContext({
       actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read'], targetScope: 'all' } as any,
@@ -2076,7 +2105,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     } as any)
     let captured: any = null
     const ctx = createMockContext({
-      actor: { id: 'user-1', name: 'Scheduler Admin', permissions: ['ai:assist', 'schedule:read'], targetScope: 'all' },
+      actor: { id: 'user-1', displayName: 'Scheduler Admin', permissions: ['ai:assist', 'schedule:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
       session: {
         completeJson: vi.fn().mockImplementation((_n: string, _s: unknown, messages: any[]) => {
           captured = JSON.parse(messages[1].content)
@@ -2115,7 +2147,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     } as any)
     let captured: any = null
     const ctx = createMockContext({
-      actor: { id: 'user-1', name: 'Scheduler Admin', permissions: ['ai:assist', 'schedule:read'], targetScope: 'all' },
+      actor: { id: 'user-1', displayName: 'Scheduler Admin', permissions: ['ai:assist', 'schedule:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
       session: {
         completeJson: vi.fn().mockImplementation((_n: string, _s: unknown, messages: any[]) => {
           captured = JSON.parse(messages[1].content)
@@ -2168,9 +2203,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Scheduler Admin',
+        displayName: 'Scheduler Admin',
         permissions: ['ai:assist', 'schedule:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: {
         completeJson: vi.fn().mockResolvedValue({
@@ -2208,9 +2245,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Guest User',
-        permissions: ['ai:assist'], // No schedule:read
-        targetScope: 'all',
+        displayName: 'Guest User',
+        permissions: ['ai:assist'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       body: {
         question: '为什么没跑？',
@@ -2242,9 +2281,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Data Viewer',
+        displayName: 'Data Viewer',
         permissions: ['ai:assist', 'dataset:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: {
         completeJson: vi.fn().mockResolvedValue({
@@ -2274,16 +2315,18 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     const result = await handleKnowledgeAnswer(ctx)
-    expect(result.claims[0].citations).toContain('dataset:ds-1')
+    expect(result.claims[0]!.citations).toContain('dataset:ds-1')
   })
 
   it('模型失败时把目标实体事实标为系统观测，而非官方规则', async () => {
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Target Viewer',
+        displayName: 'Target Viewer',
         permissions: ['ai:assist', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       question: 'zzzzzz-no-help-match',
       body: {
@@ -2304,9 +2347,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Target Viewer',
+        displayName: 'Target Viewer',
         permissions: ['ai:assist', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       body: {
         question: '如何配置重试策略？',
@@ -2375,9 +2420,9 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const result = await handleKnowledgeAnswer(ctx)
     expect(result.claims.length).toBe(1)
-    expect(result.claims[0].factKind).toBe('human_confirmed')
-    expect(result.claims[0].text).toContain('重试上限')
-    expect(result.claims[0].text).not.toContain('遇到瞬态异常时可以考虑配置重试')
+    expect(result.claims[0]!.factKind).toBe('human_confirmed')
+    expect(result.claims[0]!.text).toContain('重试上限')
+    expect(result.claims[0]!.text).not.toContain('遇到瞬态异常时可以考虑配置重试')
     expect(result.missing.some((m) => m.key === 'unsupported_inference')).toBe(true)
     expect(result.missing.some((m) => m.key === 'unverified_inference')).toBe(true)
     expect(result.missing.some((m) => m.key === 'unsupported_citation')).toBe(true)
@@ -2463,9 +2508,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Workflow Author',
+        displayName: 'Workflow Author',
         permissions: ['ai:assist', 'workflow:read', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       session: { completeJson: completeJsonMock } as any,
       body: {
@@ -2499,9 +2546,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const ctx = createMockContext({
       actor: {
         id: 'user-1',
-        name: 'Workflow Author',
+        displayName: 'Workflow Author',
         permissions: ['ai:assist', 'workflow:read', 'target:read'],
-        targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
       },
       body: {
         question: '这个步骤做什么？',
@@ -2584,7 +2633,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         },
       ]
 
-      vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: null })
+      vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: undefined })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue(mockSummaries as any)
 
       const completeJsonMock = vi.fn()
@@ -2592,9 +2641,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'Ops',
+          displayName: 'Ops',
           permissions: ['ai:assist', 'run:read'],
-          targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         session: { completeJson: completeJsonMock } as any,
         body: {
@@ -2673,7 +2724,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         },
       ]
 
-      vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: null })
+      vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: undefined })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue(mockSummaries as any)
       vi.mocked(listIncidents).mockResolvedValue({ items: mockIncidents as any, total: 1 })
 
@@ -2682,9 +2733,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'Ops',
+          displayName: 'Ops',
           permissions: ['ai:assist', 'run:read', 'reliability:read'],
-          targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         session: { completeJson: completeJsonMock } as any,
         body: {
@@ -2703,7 +2756,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       expect(listIncidents).not.toHaveBeenCalled()
       expect(completeJsonMock).not.toHaveBeenCalled()
       expect(result.summary).toContain('只有 1 条失败运行，无法判断多次失败是否同因')
-      expect(result.claims[0].citations).toEqual([
+      expect(result.claims[0]!.citations).toEqual([
         'platform:run_failure_digest_v1',
         'run:11111111-1111-1111-1111-111111111111',
       ])
@@ -2714,9 +2767,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'NoRunPermission',
-          permissions: ['ai:assist'], // 无 run:read
-          targetScope: 'all',
+          displayName: 'NoRunPermission',
+          permissions: ['ai:assist'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         body: {
           question: '请帮我分析当前筛选出的这些失败运行，它们是同一个原因导致的吗？',
@@ -2746,7 +2801,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
           createdAt: '2026-09-27T10:00:00.000Z',
         },
       ]
-      vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: null })
+      vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: undefined })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue([
         { runId: '11111111-1111-1111-1111-111111111111', stepName: '填写地址', errorCode: 'TIMEOUT' },
       ] as any)
@@ -2768,9 +2823,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'OpsWithoutReliability',
-          permissions: ['ai:assist', 'run:read'], // 无 reliability:read
-          targetScope: 'all',
+          displayName: 'OpsWithoutReliability',
+          permissions: ['ai:assist', 'run:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         session: { completeJson: completeJsonMock } as any,
         body: {
@@ -2792,14 +2849,16 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     it('感知一致性：运行列表筛选条件经列表查询 schema 校验后原样传递（含试跑、业务结果，丢弃未知字段）', async () => {
-      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null })
+      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: undefined })
 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'Ops',
+          displayName: 'Ops',
           permissions: ['ai:assist', 'run:read'],
-          targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         body: {
           question: '请帮我分析当前筛选出的这些失败运行，它们是同一个原因导致的吗？',
@@ -2846,14 +2905,16 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     it('场景编排全局排查：Studio 提问为什么老失败时自动限定当前 scenarioId 与 7 天范围', async () => {
       vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
-      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null })
+      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: undefined })
 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'Author',
+          displayName: 'Author',
           permissions: ['ai:assist', 'run:read', 'workflow:read', 'target:read'],
-          targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         body: {
           question: '请帮我分析当前场景最近 7 天内的失败运行记录，归纳主要失败原因。',
@@ -2884,7 +2945,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     it('页面选中步骤但明确问整个场景失败记录时仍限定 scenarioId', async () => {
       vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
-      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null } as never)
+      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: undefined } as never)
       const question = '分析当前场景最近 7 天内的失败运行记录，归纳主要失败原因。'
       const result = await handleKnowledgeAnswer(createMockContext({
         actor: { id: 'user-1', permissions: ['ai:assist', 'workflow:read', 'run:read', 'target:read'] } as never,
@@ -2912,7 +2973,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         errorCode: 'ERR_TIMEOUT',
       }))
 
-      vi.mocked(listRuns).mockResolvedValue({ items: fiftyRuns as any, nextCursor: null })
+      vi.mocked(listRuns).mockResolvedValue({ items: fiftyRuns as any, nextCursor: undefined })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue(fiftySummaries as any)
 
       const completeJsonMock = vi.fn()
@@ -2920,9 +2981,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const ctx = createMockContext({
         actor: {
           id: 'user-1',
-          name: 'Ops',
+          displayName: 'Ops',
           permissions: ['ai:assist', 'run:read'],
-          targetScope: 'all',
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [],
         },
         session: { completeJson: completeJsonMock } as any,
         body: {
@@ -2945,7 +3008,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     it('触发范围：运行详情页问「为什么失败」不做跨运行归并', async () => {
       const ctx = createMockContext({
-        actor: { id: 'user-1', name: 'Ops', permissions: ['ai:assist', 'run:read'], targetScope: 'all' },
+        actor: { id: 'user-1', displayName: 'Ops', permissions: ['ai:assist', 'run:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
         body: {
           question: '这次运行为什么失败？',
           pageContext: {
@@ -2964,7 +3030,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     it('触发范围：Studio 已选中步骤时不做跨运行归并', async () => {
       const ctx = createMockContext({
-        actor: { id: 'user-1', name: 'Author', permissions: ['ai:assist', 'run:read', 'workflow:read'], targetScope: 'all' },
+        actor: { id: 'user-1', displayName: 'Author', permissions: ['ai:assist', 'run:read', 'workflow:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
         body: {
           question: '这一步为什么老失败？',
           pageContext: {
@@ -2983,7 +3052,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     it('筛选校验：状态筛选不是失败时不做归并并登记缺口', async () => {
       const ctx = createMockContext({
-        actor: { id: 'user-1', name: 'Ops', permissions: ['ai:assist', 'run:read'], targetScope: 'all' },
+        actor: { id: 'user-1', displayName: 'Ops', permissions: ['ai:assist', 'run:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
         body: {
           question: '这些失败是同一个原因吗？',
           pageContext: { version: 2, routeKey: 'runs', pageKind: 'run', page: 'run', view: { filters: { status: 'SUCCEEDED' } } },
@@ -2996,7 +3068,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     it('筛选校验：筛选条件非法时不做归并并登记缺口，不猜测范围', async () => {
       const ctx = createMockContext({
-        actor: { id: 'user-1', name: 'Ops', permissions: ['ai:assist', 'run:read'], targetScope: 'all' },
+        actor: { id: 'user-1', displayName: 'Ops', permissions: ['ai:assist', 'run:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
         body: {
           question: '这些失败是同一个原因吗？',
           pageContext: { version: 2, routeKey: 'runs', pageKind: 'run', page: 'run', view: { filters: { scenarioId: 'not-a-uuid' } } },
@@ -3011,7 +3086,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const runIdA = '11111111-1111-4111-8111-111111111111'
       vi.mocked(listRuns).mockResolvedValue({
         items: [{ id: runIdA, scenarioId: SC_UUID, scenarioName: '订单创建', targetId: TGT_UUID, status: 'FAILED', createdAt: '2026-09-27T10:00:00.000Z' }] as any,
-        nextCursor: null,
+        nextCursor: undefined,
       })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue([
         { runId: runIdA, stepName: '填写地址', errorCode: 'LOCATOR_NOT_FOUND', errorSafeMessage: '未找到地址输入框' },
@@ -3025,7 +3100,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       })
       const completeJson = vi.fn()
       const ctx = createMockContext({
-        actor: { id: 'user-1', name: 'Ops', permissions: ['ai:assist', 'run:read', 'reliability:read'], targetScope: 'all' },
+        actor: { id: 'user-1', displayName: 'Ops', permissions: ['ai:assist', 'run:read', 'reliability:read'],
+        email: 'user-1@example.com',
+        status: 'active',
+        roles: [] },
         session: { completeJson } as any,
         body: {
           question: '这些失败是同一个原因吗？',

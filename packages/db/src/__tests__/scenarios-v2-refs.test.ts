@@ -413,7 +413,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       name: '定位协议闸门场景',
       steps: [{
         id: newId(), name: '打开查询', type: 'click', effectType: 'IDEMPOTENT',
-        input: { target: { semantic: '查询入口', candidates: [{ by: 'text', value: '查询' }] } },
+        input: { target: { semantic: '查询入口', framePath: [], candidates: [{ by: 'text', value: '查询' }] } },
         policy: { locatorPlan: { v: 2, order: ['rule'] } },
       }],
       actor: { id: actorId },

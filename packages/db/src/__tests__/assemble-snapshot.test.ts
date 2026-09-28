@@ -52,7 +52,7 @@ describe('assembleRunSnapshot', () => {
   it('v2 仅文本模型在视觉关闭时冻结文本配置，规则场景不冻结模型', () => {
     const step: Step = {
       id: '00000000-0000-4000-8000-000000000027', name: '查询', type: 'click', effectType: 'SIDE_EFFECT',
-      input: { target: { semantic: '查询按钮', candidates: [{ by: 'text', value: '查询' }] } },
+      input: { target: { semantic: '查询按钮', framePath: [], candidates: [{ by: 'text', value: '查询' }] } },
       policy: { locatorPlan: { v: 2, order: ['text_ai'] } },
     }
     const document = {
@@ -200,7 +200,7 @@ describe('assembleRunSnapshot', () => {
       name: '点击',
       type: 'click',
       effectType: 'SIDE_EFFECT',
-      input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+      input: { target: { framePath: [], candidates: [{ by: 'text', value: '查询' }] } },
     }
     const platformDocument = {
       ...FACTORY_PLATFORM_CONFIG,

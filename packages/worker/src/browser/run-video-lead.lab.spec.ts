@@ -202,7 +202,7 @@ describe('运行录像前置空白治理验证（方案 B 真实浏览器场景�
         type: 'fill',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#applicant-name' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#applicant-name' }] },
           value: '张三 (EMP-1002)',
         },
       },
@@ -212,7 +212,7 @@ describe('运行录像前置空白治理验证（方案 B 真实浏览器场景�
         type: 'click',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#urgent-check' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#urgent-check' }] },
         },
       },
     ]

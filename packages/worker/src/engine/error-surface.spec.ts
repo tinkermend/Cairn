@@ -28,7 +28,7 @@ const clickStep: Step = {
   name: '点击',
   type: 'click',
   effectType: 'SIDE_EFFECT',
-  input: { target: { candidates: [{ by: 'css', value: 'button' }] } },
+  input: { target: { framePath: [], candidates: [{ by: 'css', value: 'button' }] } },
 }
 
 const echoStep: Step = {

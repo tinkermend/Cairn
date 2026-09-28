@@ -234,7 +234,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'asset',
@@ -276,7 +276,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'asset',
@@ -316,7 +316,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'asset',
@@ -350,7 +350,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'context',
@@ -404,7 +404,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'context',
@@ -437,7 +437,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'context',
@@ -485,7 +485,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [{ source: 'context', from: 'stolen' }],
       },
     }
@@ -537,7 +537,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [{ source: 'context', from: 'fixtureFile' }],
       },
     }
@@ -576,7 +576,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [{ source: 'context', from: 'fixtureFile' }],
       },
     }
@@ -619,7 +619,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [{ source: 'context', from: 'big' }],
       },
     }
@@ -658,7 +658,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [{ source: 'context', from: 'big' }],
       },
     }
@@ -702,7 +702,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [{ source: 'context', from: 'generatedReport' }],
       },
     }
@@ -744,7 +744,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'context',
@@ -783,7 +783,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#file-input' }] },
         files: [
           {
             source: 'asset',
@@ -822,7 +822,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
       type: 'upload',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#avatar-input' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#avatar-input' }] },
         files: [
           {
             source: 'context',

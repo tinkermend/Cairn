@@ -342,7 +342,7 @@ describe('compileScenarioDocument', () => {
         type: 'click',
         effectType: 'SIDE_EFFECT',
         policy: { resolution: 'ai_only' },
-        input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+        input: { target: { framePath: [], candidates: [{ by: 'text', value: '查询' }] } },
       },
     ])
     expect(
@@ -362,7 +362,7 @@ describe('compileScenarioDocument', () => {
         type: 'click',
         effectType: 'SIDE_EFFECT',
         policy: { resolution: 'prefer_deterministic' },
-        input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+        input: { target: { framePath: [], candidates: [{ by: 'text', value: '查询' }] } },
       },
     ])
     expect(
@@ -388,7 +388,7 @@ describe('compileScenarioDocument', () => {
         type: 'click',
         effectType: 'SIDE_EFFECT',
         policy: { resolution: 'prefer_ai' },
-        input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+        input: { target: { framePath: [], candidates: [{ by: 'text', value: '查询' }] } },
       },
     ])
     expect(

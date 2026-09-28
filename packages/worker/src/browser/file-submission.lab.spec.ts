@@ -247,7 +247,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         effectType: 'SIDE_EFFECT',
         outputKey: 'downloadedTemplate',
         input: {
-          target: { candidates: [{ by: 'css', value: '#download-template-btn' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#download-template-btn' }] },
           waitMs: 15_000,
           expect: {
             fileNamePattern: '\\.csv$',
@@ -261,7 +261,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'fill',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#applicant-name' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#applicant-name' }] },
           value: '李四 (ENG-2048)',
         },
       },
@@ -271,7 +271,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'select',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#category-select' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#category-select' }] },
           by: 'value',
           value: 'INVOICE',
         },
@@ -282,7 +282,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'fill',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#remarks' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#remarks' }] },
           value: 'Q3研发机房扩容采购及差旅报销',
         },
       },
@@ -292,7 +292,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'fill',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#emergency-phone' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#emergency-phone' }] },
           value: '13987654321',
         },
       },
@@ -302,7 +302,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'click',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#urgent-check' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#urgent-check' }] },
         },
       },
       {
@@ -311,7 +311,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'upload',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#btn-select-invoice' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#btn-select-invoice' }] },
           files: [
             {
               source: 'asset',
@@ -328,7 +328,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'upload',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#extra-file' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#extra-file' }] },
           files: [
             {
               source: 'context',
@@ -343,7 +343,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'click',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#submit-btn' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#submit-btn' }] },
         },
       },
       {
@@ -352,7 +352,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'assert',
         effectType: 'READ_ONLY',
         input: {
-          target: { candidates: [{ by: 'css', value: '#ticket-id' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#ticket-id' }] },
           expect: { kind: 'exists' },
         },
       },
@@ -363,7 +363,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         effectType: 'READ_ONLY',
         outputKey: 'claimTicketId',
         input: {
-          target: { candidates: [{ by: 'css', value: '#ticket-id' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#ticket-id' }] },
           as: 'text',
         },
       },
@@ -438,7 +438,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'upload',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#invoice-file' }] }, // 直接定位到隐藏的 input[type=file]
+          target: { framePath: [], candidates: [{ by: 'css', value: '#invoice-file' }] }, // 直接定位到隐藏的 input[type=file]
           files: [
             {
               source: 'asset',
@@ -455,7 +455,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'assert',
         effectType: 'READ_ONLY',
         input: {
-          target: { candidates: [{ by: 'css', value: '#invoice-status' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#invoice-status' }] },
           expect: { kind: 'text_contains', value: 'direct-hidden.pdf' },
         },
       },
@@ -502,7 +502,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'upload',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#btn-select-invoice' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#btn-select-invoice' }] },
           files: [
             {
               source: 'asset',
@@ -563,7 +563,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'upload',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#extra-file' }] },
+          target: { framePath: [], candidates: [{ by: 'css', value: '#extra-file' }] },
           files: [
             {
               source: 'context',
@@ -619,7 +619,7 @@ describe('浏览器文件上传/下载与Target夹具全链路业务系统验证
         type: 'upload',
         effectType: 'SIDE_EFFECT',
         input: {
-          target: { candidates: [{ by: 'css', value: '#btn-dummy-no-upload' }] }, // 按钮不唤起任何 file input
+          target: { framePath: [], candidates: [{ by: 'css', value: '#btn-dummy-no-upload' }] }, // 按钮不唤起任何 file input
           files: [
             {
               source: 'asset',

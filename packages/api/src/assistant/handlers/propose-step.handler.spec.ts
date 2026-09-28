@@ -50,7 +50,7 @@ function sampleScenarioV2(overrides: Partial<ScenarioDetailDto> = {}): ScenarioD
           input: {
             target: {
               semantic: '搜索按钮',
-              candidates: [{ by: 'css', value: '#search-btn' }],
+              framePath: [], candidates: [{ by: 'css', value: '#search-btn' }],
             },
           },
         },
@@ -199,7 +199,7 @@ describe('propose-step.handler 场景编排结构化提议', () => {
     if (result.kind === 'authoring_proposal') expect(result.operations[0]).toMatchObject({
       kind: 'insert_step', anchorStepId: '11111111-1111-4111-8111-111111111111',
       step: { type: 'assert', effectType: 'READ_ONLY', input: {
-        target: { assetRef, candidates: [{ by: 'role', value: 'columnheader', name: 'API Key' }] },
+        target: { assetRef, framePath: [], candidates: [{ by: 'role', value: 'columnheader', name: 'API Key' }] },
         expect: { kind: 'exists' },
       } },
     })
@@ -504,7 +504,7 @@ describe('propose-step.handler 场景编排结构化提议', () => {
               input: {
                 target: {
                   semantic: '订单号输入框',
-                  candidates: [{ by: 'css', value: '#order-input' }],
+                  framePath: [], candidates: [{ by: 'css', value: '#order-input' }],
                 },
                 from: 'orderId',
               },
@@ -544,7 +544,7 @@ describe('propose-step.handler 场景编排结构化提议', () => {
       session: { generateScenarioAuthoringProposal: vi.fn(async () => ({ operations: [{
         kind: 'insert_step', id: 'temp-1', anchorStepId: '11111111-1111-4111-8111-111111111111',
         step: { id: 'temp-step-1', name: '输入订单号', type: 'fill',
-          input: { target: { candidates: [{ by: 'css', value: '#order-input' }] }, from: 'orderId' } },
+          input: { target: { framePath: [], candidates: [{ by: 'css', value: '#order-input' }] }, from: 'orderId' } },
       }] })) } as never,
     }))
     expect(result).toMatchObject({ kind: 'clarify', missingFields: ['targetLocator'] })
@@ -556,7 +556,7 @@ describe('propose-step.handler 场景编排结构化提议', () => {
       session: { generateScenarioAuthoringProposal: vi.fn(async () => ({ operations: [{
         kind: 'insert_step', id: 'temp-1', anchorStepId: '11111111-1111-4111-8111-111111111111',
         step: { id: 'temp-step-1', name: '输入订单号', type: 'fill',
-          input: { target: { candidates: [{ by: 'css', value: '#order-input' }] }, from: 'orderId' } },
+          input: { target: { framePath: [], candidates: [{ by: 'css', value: '#order-input' }] }, from: 'orderId' } },
       }] })) } as never,
     }))
     expect(result.kind).toBe('authoring_proposal')

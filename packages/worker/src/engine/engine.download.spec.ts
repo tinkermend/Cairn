@@ -152,7 +152,7 @@ describe('BrowserStepExecutor - Download Step', () => {
       type: 'download',
       effectType: 'SIDE_EFFECT',
       input: {
-        target: { candidates: [{ by: 'css', value: '#export-btn' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '#export-btn' }] },
         waitMs: 10000,
       },
     }

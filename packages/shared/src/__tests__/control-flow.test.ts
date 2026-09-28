@@ -44,7 +44,7 @@ describe('Control Flow B: Schemas & AST', () => {
       name: '点击详情',
       type: 'click',
       effectType: 'IDEMPOTENT',
-      input: { target: { candidates: [{ by: 'css', value: '#btn-detail' }] } },
+      input: { target: { framePath: [], candidates: [{ by: 'css', value: '#btn-detail' }] } },
       outputKey: 'detailResult',
     },
   }
@@ -265,7 +265,7 @@ describe('Control Flow B: Schemas & AST', () => {
       effectType: 'READ_ONLY',
       input: {
         kind: 'element',
-        target: { candidates: [{ by: 'css', value: '.modal' }] },
+        target: { framePath: [], candidates: [{ by: 'css', value: '.modal' }] },
         state: 'visible',
         waitMs: 3000,
       },
@@ -303,7 +303,7 @@ describe('Control Flow B: Schemas & AST', () => {
       type: 'click',
       effectType: 'IDEMPOTENT',
       optional: true,
-      input: { target: { candidates: [{ by: 'css', value: '.close' }] } },
+      input: { target: { framePath: [], candidates: [{ by: 'css', value: '.close' }] } },
     })
     expect(clickOptional.optional).toBe(true)
 

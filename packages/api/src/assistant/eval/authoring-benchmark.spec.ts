@@ -56,7 +56,7 @@ function buildBenchmarkScenario(overrides: Partial<ScenarioAuthoringDocumentV2> 
           type: 'extract',
           effectType: 'READ_ONLY',
           input: {
-            target: { semantic: '客户编号文本', candidates: [{ by: 'css', value: '#customer-id' }] },
+            target: { semantic: '客户编号文本', framePath: [], candidates: [{ by: 'css', value: '#customer-id' }] },
             as: 'text',
           },
           outputKey: 'customerId',
@@ -70,7 +70,7 @@ function buildBenchmarkScenario(overrides: Partial<ScenarioAuthoringDocumentV2> 
           type: 'fill',
           effectType: 'IDEMPOTENT',
           input: {
-            target: { semantic: '客户输入框', candidates: [{ by: 'css', value: '#customer-input' }] },
+            target: { semantic: '客户输入框', framePath: [], candidates: [{ by: 'css', value: '#customer-input' }] },
             from: 'username',
           },
         },
@@ -84,7 +84,7 @@ function buildBenchmarkScenario(overrides: Partial<ScenarioAuthoringDocumentV2> 
           effectType: 'READ_ONLY',
           input: {
             kind: 'visible',
-            target: { semantic: '结果容器', candidates: [{ by: 'css', value: '#result' }] },
+            target: { semantic: '结果容器', framePath: [], candidates: [{ by: 'css', value: '#result' }] },
           },
         },
       },
@@ -96,7 +96,7 @@ function buildBenchmarkScenario(overrides: Partial<ScenarioAuthoringDocumentV2> 
           type: 'assert',
           effectType: 'READ_ONLY',
           input: {
-            target: { semantic: '结果容器', candidates: [{ by: 'css', value: '#result' }] },
+            target: { semantic: '结果容器', framePath: [], candidates: [{ by: 'css', value: '#result' }] },
             expect: { kind: 'text_contains', value: '初始预期' },
           },
         },
@@ -295,7 +295,7 @@ describe('识途助手场景编排正反例评测基准 (Authoring Benchmark P01
                 effectType: 'READ_ONLY',
                 input: {
                   kind: 'visible',
-                  target: { semantic: '结果容器', candidates: [{ by: 'css', value: '#result' }] },
+                  target: { semantic: '结果容器', framePath: [], candidates: [{ by: 'css', value: '#result' }] },
                 },
               },
               anchorStepId: '33333333-3333-4333-8333-333333333333',
@@ -383,7 +383,7 @@ describe('识途助手场景编排正反例评测基准 (Authoring Benchmark P01
                 type: 'assert',
                 effectType: 'READ_ONLY',
                 input: {
-                  target: { semantic: '结果容器', candidates: [{ by: 'css', value: '#result' }] },
+                  target: { semantic: '结果容器', framePath: [], candidates: [{ by: 'css', value: '#result' }] },
                   expect: { kind: 'text_contains', value: '查询成功' },
                 },
               },
