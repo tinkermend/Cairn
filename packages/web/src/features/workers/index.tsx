@@ -50,6 +50,7 @@ import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { StatusBadge } from '@/components/status-badge'
 import { cn } from '@/lib/utils'
+import { formatAsOf } from '@/lib/formatters'
 import {
   MISMATCH_LABELS,
   ROUTE_REASON_LABELS,
@@ -59,10 +60,6 @@ import {
 
 const STATUS_FILTERS = ['all', 'READY', 'DISABLED', 'DRAINING', 'STOPPED', 'LOST'] as const
 const FRESH_FILTERS = ['all', 'fresh', 'stale'] as const
-
-function formatAsOf(value: string) {
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
 
 export function WorkersPage() {
   const page = useCursorPage()

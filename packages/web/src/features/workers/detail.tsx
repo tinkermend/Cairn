@@ -37,6 +37,7 @@ import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
+import { formatAsOf } from '@/lib/formatters'
 import {
   MISMATCH_LABELS,
   ROUTE_REASON_LABELS,
@@ -47,10 +48,6 @@ import {
 } from './labels'
 
 const route = getRouteApi('/_authenticated/workers/$workerId/')
-
-function formatAsOf(value: string) {
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
 
 export function WorkerDetailPage() {
   const { workerId } = route.useParams()

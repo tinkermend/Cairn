@@ -9,6 +9,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 export type StatusTone =
@@ -65,17 +66,14 @@ export function StatusBadge({
 }: StatusBadgeProps) {
   const Icon = toneIcon[tone]
   return (
-    <span
+    <Badge
+      variant='outline'
       data-slot='status-badge'
-      className={cn(
-        'inline-flex w-fit items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium whitespace-nowrap shrink-0',
-        toneClass[tone],
-        className
-      )}
+      className={cn(toneClass[tone], className)}
       {...rest}
     >
-      {hideIcon ? null : <Icon className='size-3' aria-hidden />}
+      {hideIcon ? null : <Icon className='size-3 shrink-0' aria-hidden />}
       {children}
-    </span>
+    </Badge>
   )
 }

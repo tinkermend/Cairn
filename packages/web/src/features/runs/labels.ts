@@ -94,15 +94,7 @@ export const MISSING_REASON_LABELS: Record<string, string> = {
 export function missingReasonLabel(reason: string): string {
   return MISSING_REASON_LABELS[reason] ?? reason
 }
-
-export function formatDuration(startedAt: string | null, finishedAt: string | null): string | null {
-  if (!startedAt || !finishedAt) return null
-  const ms = Date.parse(finishedAt) - Date.parse(startedAt)
-  if (!Number.isFinite(ms) || ms < 0) return null
-  if (ms < 1000) return `${ms} ms`
-  if (ms < 10_000) return `${(ms / 1000).toFixed(1)} s`
-  return `${Math.round(ms / 1000)} s`
-}
+export { formatDuration } from '@/lib/formatters'
 
 export const RUN_REPORT_STATUS_LABELS: Record<RunReportStatus, string> = {
   not_configured: '未配置',

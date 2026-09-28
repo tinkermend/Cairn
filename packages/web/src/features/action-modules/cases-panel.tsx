@@ -2,18 +2,16 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
-  CheckCircle2,
-  Clock,
   Layers,
   Play,
   Plus,
   RefreshCw,
   ShieldCheck,
   Trash2,
-  XCircle,
 } from 'lucide-react'
 import { canonicalJson, type ActionModuleDetail, type JsonValue } from '@cairn/shared'
 import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -612,34 +610,14 @@ function CaseCard({
 function ResultBadge({ status }: { status: string }) {
   switch (status) {
     case 'PASS':
-      return (
-        <Badge variant='outline' className='border-status-success-accent bg-status-success-background text-status-success-foreground font-medium gap-1'>
-          <CheckCircle2 className='size-3' />
-          PASS
-        </Badge>
-      )
+      return <StatusBadge tone='success'>PASS</StatusBadge>
     case 'FAIL':
-      return (
-        <Badge variant='outline' className='border-destructive/30 bg-destructive/10 text-destructive font-medium gap-1'>
-          <XCircle className='size-3' />
-          FAIL
-        </Badge>
-      )
+      return <StatusBadge tone='error'>FAIL</StatusBadge>
     case 'PENDING':
-      return (
-        <Badge variant='outline' className='border-primary/30 bg-primary/10 text-primary font-medium gap-1'>
-          <Clock className='size-3 animate-pulse' />
-          PENDING
-        </Badge>
-      )
+      return <StatusBadge tone='waiting'>PENDING</StatusBadge>
     case 'INCONCLUSIVE':
-      return (
-        <Badge variant='outline' className='border-status-warning-foreground/30 bg-status-warning-background text-status-warning-foreground font-medium gap-1'>
-          <AlertTriangle className='size-3' />
-          INCONCLUSIVE
-        </Badge>
-      )
+      return <StatusBadge tone='warning'>INCONCLUSIVE</StatusBadge>
     default:
-      return <Badge variant='outline'>{status}</Badge>
+      return <StatusBadge tone='neutral'>{status}</StatusBadge>
   }
 }

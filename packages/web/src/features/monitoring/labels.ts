@@ -56,10 +56,8 @@ export function writeAutoRefreshInterval(interval: RefreshIntervalSeconds): void
     /* 无存储时仍可在本次会话使用 */
   }
 }
-
-export function formatAsOf(value: string): string {
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
+import { formatAsOf } from '@/lib/formatters'
+export { formatAsOf }
 
 export function freshnessLabel(source: MonitorSource, sampledAt: string): string {
   if (source === 'sample') return `上次采样（${formatAsOf(sampledAt)}）`
