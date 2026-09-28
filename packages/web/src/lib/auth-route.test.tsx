@@ -7,7 +7,7 @@ import {
 import { routeTree } from '@/routeTree.gen'
 import '@/styles/index.css'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render } from 'vitest-browser-react'
+import { render, type RenderResult } from 'vitest-browser-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { ThemeProvider } from '@/context/theme-provider'
 import { getLoginRedirect } from './auth'
@@ -75,11 +75,12 @@ afterEach(() => {
  * 而不是别的账号——这正是「会话恢复」这组用例守护的事。
  */
 async function expectOverviewFor(
-  screen: { getByRole: (...a: any[]) => any; getByText: (...a: any[]) => any },
+  screen: Pick<RenderResult, 'getByRole' | 'getByText'>,
   displayName: string,
 ) {
   await expect.element(screen.getByRole('heading', { name: '总览' })).toBeInTheDocument()
-  await expect.element(screen.getByText(new RegExp(`你好，${displayName}`))).toBeInTheDocument()
+  // 问候语在顶栏（宽屏）与正文（窄屏）各渲染一份，按断点只显示其一；取第一处即可证明会话用户。
+  await expect.element(screen.getByText(new RegExp(`你好，${displayName}`)).first()).toBeInTheDocument()
 }
 
 describe('控制台会话恢复', () => {

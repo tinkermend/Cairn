@@ -12,8 +12,6 @@ import {
   type CreateReportRevisionBody,
   type ExportReportBody,
   type ReportListQuery,
-} from '@cairn/shared'
-import {
   reportConfigSchema,
   reportRevisionDtoSchema,
   reportDocumentSchema,

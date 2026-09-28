@@ -3,6 +3,12 @@ import { apiErrorSchema, REQUEST_ID_HEADER, type ApiError } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 
 /** 携带服务端 requestId 的错误，便于把前端报错与后端日志对上 */
+
+/** 下载文件名去掉路径分隔符与控制字符（码点 0–31），防止保存时逃出目录或写出不可见字符。 */
+function replaceUnsafeFileNameChars(name: string): string {
+  return Array.from(name, (ch) => (ch === '/' || ch === '\\' || ch.charCodeAt(0) < 0x20 ? '_' : ch)).join('')
+}
+
 export class ApiRequestError extends Error {
   constructor(
     readonly status: number,
@@ -148,7 +154,7 @@ export async function apiFetchBlob(
   return {
     blob: await res.blob(),
     ...(fileName
-      ? { fileName: fileName.replace(/[\\/\u0000-\u001F]/g, '_') }
+      ? { fileName: replaceUnsafeFileNameChars(fileName) }
       : {}),
     contentType: res.headers.get('content-type') ?? 'application/octet-stream',
   }

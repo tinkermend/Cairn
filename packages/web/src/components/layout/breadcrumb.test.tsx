@@ -6,17 +6,18 @@ import { AppBreadcrumb } from './breadcrumb'
 import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { usePageHeadingStore } from '@/stores/page-heading-store'
+import type { MockLinkProps } from '@/test-utils/router-mocks'
 
 let mockPathname = '/'
 const mockSearch = {}
 
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ to, children, ...props }: any) => (
+  Link: ({ to, children, ...props }: MockLinkProps) => (
     <a href={to} {...props}>
       {children}
     </a>
   ),
-  useRouterState: ({ select }: any) =>
+  useRouterState: ({ select }: { select: (state: { location: { pathname: string; search: object } }) => unknown }) =>
     select({
       location: {
         pathname: mockPathname,
@@ -29,8 +30,9 @@ describe('AppBreadcrumb', () => {
   beforeEach(async () => {
     await page.viewport(1280, 800)
     useBreadcrumbStore.setState({ entities: {} })
-    useAuthStore.setState({
+    useAuthStore.setState((state) => ({
       auth: {
+        ...state.auth,
         user: {
           id: 'u1',
           displayName: 'Admin',
@@ -39,9 +41,8 @@ describe('AppBreadcrumb', () => {
           permissions: ['*:*'],
         },
         accessToken: 'mock',
-        refreshToken: null,
-      } as any,
-    })
+      },
+    }))
   })
 
   it('首页只显示「总览」', async () => {
@@ -101,8 +102,9 @@ describe('AppBreadcrumb', () => {
 
   it('当用户缺少父级权限时，父级仅显示为普通文本而不是链接', async () => {
     mockPathname = '/suite-runs'
-    useAuthStore.setState({
+    useAuthStore.setState((state) => ({
       auth: {
+        ...state.auth,
         user: {
           id: 'u2',
           displayName: 'Restricted',
@@ -111,9 +113,8 @@ describe('AppBreadcrumb', () => {
           permissions: [], // 没有任何权限，包括 run:read
         },
         accessToken: 'mock',
-        refreshToken: null,
-      } as any,
-    })
+      },
+    }))
     await render(<AppBreadcrumb />)
     const runsItem = page.getByText('运行记录', { exact: true })
     await expect.element(runsItem).toBeVisible()

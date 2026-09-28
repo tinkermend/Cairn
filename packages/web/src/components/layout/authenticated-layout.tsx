@@ -10,7 +10,7 @@ import { SkipToMain } from '@/components/skip-to-main'
 import { AssistantHost } from '@/features/assistant/host'
 import { useAuthStore } from '@/stores/auth-store'
 import { useAssistantStore } from '@/stores/assistant-store'
-import { resolveRouteContext } from '@/features/assistant/route-context'
+import { resolveRouteContext, type RouteMatchInfo } from '@/features/assistant/route-context'
 import { AuthScopeObserver } from './auth-scope-observer'
 
 type AuthenticatedLayoutProps = {
@@ -30,11 +30,18 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const pathname = useRouterState({
     select: (s) => s.location.pathname,
   })
+  // 叶路由的助手声明与参数序列化成字符串：只在它们变化时重算，免得每次路由状态更新都拿到新对象。
+  const leafKey = useRouterState({
+    select: (s) => {
+      const leaf = s.matches[s.matches.length - 1]
+      return leaf ? JSON.stringify({ assistant: leaf.staticData?.assistant, params: leaf.params }) : ''
+    },
+  })
 
   useEffect(() => {
-    const routeCtx = resolveRouteContext(pathname)
-    setRouteContext(routeCtx)
-  }, [pathname, setRouteContext])
+    const leaf = leafKey ? (JSON.parse(leafKey) as RouteMatchInfo) : undefined
+    setRouteContext(resolveRouteContext(pathname, leaf))
+  }, [pathname, leafKey, setRouteContext])
 
   const scopeKey = JSON.stringify([auth?.id, auth?.permissions, auth?.targetScopes, auth?.targetScopePermissions])
   return (

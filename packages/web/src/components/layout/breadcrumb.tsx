@@ -27,10 +27,10 @@ function checkAccess(
     for (const item of group.items) {
       if ('url' in item && item.url === targetPath) {
         if (item.anyOf && item.anyOf.length > 0) {
-          return item.anyOf.some((p) => can(user, p as any))
+          return item.anyOf.some((p) => can(user, p))
         }
         if (item.permission) {
-          return can(user, item.permission as any)
+          return can(user, item.permission)
         }
         return true
       }

@@ -42,8 +42,8 @@ export function getAvatarDataUri(avatarKey?: string | null): string | null {
     const dataUri = avatar.toDataUri()
     avatarCache.set(cacheKey, dataUri)
     return dataUri
-  } catch (err) {
-    console.warn('Failed to generate DiceBear avatar:', err)
+  } catch {
+    // 生成失败时返回 null，由调用方决定降级展示。
     return null
   }
 }

@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 type MockLocation = { pathname: string; href: string; search: Record<string, never> }
-type MockRouterState = { location: MockLocation }
+type MockRouterState = { location: MockLocation; matches: [] }
 type MockLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
   to: string | Record<string, unknown>
   children?: ReactNode
@@ -28,7 +28,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useRouterState: (opts?: { select?: (s: MockRouterState) => unknown }) => {
-      const state: MockRouterState = { location: { pathname: mocks.pathname, href: mocks.pathname, search: {} } }
+      const state: MockRouterState = { location: { pathname: mocks.pathname, href: mocks.pathname, search: {} }, matches: [] }
       return opts?.select ? opts.select(state) : state
     },
     useLocation: (opts?: { select?: (l: MockLocation) => unknown }) => {

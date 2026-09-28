@@ -20,6 +20,7 @@ import {
 import { DEFAULT_AVATAR_STYLE } from '@cairn/shared'
 import { cn } from '@/lib/utils'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 export interface AvatarPickerProps {
   value?: string | null
   onChange: (value: string) => void
@@ -38,9 +39,7 @@ export function AvatarPicker({
   const [selected, setSelected] = React.useState<string>(value || '')
   const previewAvatar = value || DEFAULT_PREVIEW_AVATAR
 
-  React.useEffect(() => {
-    setSelected(value || '')
-  }, [value])
+  useResetOnChange(value, (next) => setSelected(next || ''))
 
   const handleShuffle = () => {
     const newSeeds = Array.from({ length: 16 }, () => {

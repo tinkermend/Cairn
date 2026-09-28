@@ -12,8 +12,6 @@ import {
   sessionEventDtoSchema,
   sessionOperationDtoSchema,
   type SessionEventDto,
-} from '@cairn/shared'
-import {
   observeOperationSchema,
   targetObservationSchema,
   type ObserveOperation,

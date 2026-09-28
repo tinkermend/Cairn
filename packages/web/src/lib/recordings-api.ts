@@ -108,7 +108,7 @@ export function observeRecordingGeneralization(
               const parsed = generalizationResponseSchema.parse(JSON.parse(frame.data))
               handlers.onUpdate?.(parsed)
             } catch (e) {
-              console.error('Failed to parse generalization SSE event:', e)
+              handlers.onError?.(new Error(`泛化进度事件不符合契约：${e instanceof Error ? e.message : String(e)}`))
             }
           }
         },
