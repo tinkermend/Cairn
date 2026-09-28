@@ -153,6 +153,7 @@ export function PromptCards({
 }) {
   const canAssist = useCan('ai:assist')
   const canWrite = useCan('workflow:write')
+  const canWriteTarget = useCan('target:write')
   const canReadTarget = useCan('target:read')
   const canReadSession = useCan('session:read')
   const canReadSchedule = useCan('schedule:read')
@@ -182,11 +183,11 @@ export function PromptCards({
         boundContext,
         pageContext,
         capabilities,
-        permissions: { canAssist, canWrite, canReadTarget, canReadSession, canReadSchedule, canReadRun },
+        permissions: { canAssist, canWrite, canWriteTarget, canReadTarget, canReadSession, canReadSchedule, canReadRun },
       })
     }
     return []
-  }, [boundContext, pageContext, capabilities, availableIds, canAssist, canWrite, canReadTarget, canReadSession, canReadSchedule, canReadRun])
+  }, [boundContext, pageContext, capabilities, availableIds, canAssist, canWrite, canWriteTarget, canReadTarget, canReadSession, canReadSchedule, canReadRun])
 
   const recommendedCategory = useMemo((): PromptCategory | null => {
     if (recommendedChips.length === 0) return null

@@ -29,6 +29,7 @@ function bindingSignature(context: AssistantBoundContext | null): string {
     context.statusTone ?? null,
     context.summaryText ?? null,
     Boolean(context.isDirty),
+    context.activeForm ? JSON.stringify(context.activeForm) : null,
     (context.chips ?? []).map((chip) => [chip.label, chip.question, chip.capabilityHint ?? null]),
   ])
 }

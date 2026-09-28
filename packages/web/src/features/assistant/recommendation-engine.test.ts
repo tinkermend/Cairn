@@ -518,4 +518,30 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     expect(chips[0].capabilityHint).toBe('target.propose-form')
     expect(chips[1].capabilityHint).toBe('target.propose-form')
   })
+
+  it('表单上下文感知：用户无 workflow:write 但具备 canWriteTarget 时依然能看到修改建议 Chips', () => {
+    const caps = mockCapabilities()
+    caps.items.push({
+      id: 'target.propose-form' as any,
+      label: '目标配置建议',
+      available: true,
+      missingPermissions: [],
+      requiredContext: [],
+    })
+    const chips = resolveContextRecommendations({
+      boundContext: {
+        page: 'target',
+        activeForm: {
+          formId: 'target-config',
+          mode: 'create',
+        },
+      },
+      pageContext: { page: 'target' },
+      capabilities: caps,
+      permissions: { ...defaultPermissions, canWrite: false, canWriteTarget: true },
+    })
+
+    expect(chips.map((c) => c.label)).toContain('⏱️ 将登录等待设为30秒')
+    expect(chips.map((c) => c.label)).toContain('🧹 开启自动整理欢迎层')
+  })
 })

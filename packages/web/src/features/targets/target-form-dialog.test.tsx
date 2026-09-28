@@ -181,7 +181,7 @@ describe('TargetFormDialog', () => {
     await renderDialog()
     const bound = useAssistantStore.getState().boundContext
     expect(bound?.page).toBe('target')
-    expect(bound?.activeForm).toEqual({ formId: 'target-config', mode: 'create', targetId: undefined })
+    expect(bound?.activeForm).toMatchObject({ formId: 'target-config', mode: 'create', targetId: undefined })
     expect(bound?.chips?.some((chip) => chip.label.includes('超时'))).toBe(true)
   })
 

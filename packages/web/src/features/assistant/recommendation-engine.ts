@@ -23,6 +23,7 @@ export function resolveContextRecommendations(params: {
   permissions: {
     canAssist: boolean
     canWrite: boolean
+    canWriteTarget?: boolean
     canReadTarget: boolean
     canReadSession?: boolean
     canReadSchedule?: boolean
@@ -57,7 +58,8 @@ export function resolveContextRecommendations(params: {
 
   // 2. 根据 boundContext / pageContext 匹配当前场景规则
   if (bound?.activeForm?.formId === TARGET_CONFIG_FORM_ID) {
-    if (params.permissions.canWrite) {
+    const hasTargetWrite = params.permissions.canWriteTarget ?? params.permissions.canWrite
+    if (hasTargetWrite) {
       rawChips.push({
         id: 'target-form-timeout-propose',
         label: '⏱️ 将登录等待设为30秒',
@@ -302,10 +304,13 @@ export function resolveContextRecommendations(params: {
       if (chip.capabilityHint && !availableIds.has(chip.capabilityHint)) {
         return false
       }
-      // 权限闸门：编排与配置提议类能力严格需要写权限
+      // 权限闸门：编排与配置提议类能力严格需要对应写权限
+      if (chip.capabilityHint === 'scenario.propose-step' && !params.permissions.canWrite) {
+        return false
+      }
       if (
-        (chip.capabilityHint === 'scenario.propose-step' || chip.capabilityHint === 'target.propose-form') &&
-        !params.permissions.canWrite
+        chip.capabilityHint === 'target.propose-form' &&
+        !(params.permissions.canWriteTarget ?? params.permissions.canWrite)
       ) {
         return false
       }

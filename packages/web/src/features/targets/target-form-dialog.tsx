@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
@@ -105,6 +105,45 @@ function TargetFormFields({
     defaultValues: current ? valuesFromTarget(current) : EMPTY_TARGET_FORM_VALUES,
   })
 
+  const watchedValues = form.watch()
+  const draftValues = useMemo(() => {
+    const res: Record<string, string> = {}
+    if (watchedValues.name) res.name = watchedValues.name
+    if (watchedValues.code) res.code = watchedValues.code
+    if (watchedValues.entryUrl) res.entryUrl = watchedValues.entryUrl
+    if (watchedValues.loginUrl) res.loginUrl = watchedValues.loginUrl
+    if (
+      watchedValues.loginLeaveTimeoutSeconds !== undefined &&
+      watchedValues.loginLeaveTimeoutSeconds !== null &&
+      watchedValues.loginLeaveTimeoutSeconds !== ''
+    ) {
+      res.loginLeaveTimeoutSeconds = String(watchedValues.loginLeaveTimeoutSeconds)
+    }
+    if (watchedValues.landingSettleMode) res.landingSettleMode = watchedValues.landingSettleMode
+    if (
+      watchedValues.landingSettleTimeoutSeconds !== undefined &&
+      watchedValues.landingSettleTimeoutSeconds !== null &&
+      watchedValues.landingSettleTimeoutSeconds !== ''
+    ) {
+      res.landingSettleTimeoutSeconds = String(watchedValues.landingSettleTimeoutSeconds)
+    }
+    if (watchedValues.authMethod) res.authMethod = watchedValues.authMethod
+    if (watchedValues.captchaMode) res.captchaMode = watchedValues.captchaMode
+    if (watchedValues.status) res.status = watchedValues.status
+    return res
+  }, [
+    watchedValues.name,
+    watchedValues.code,
+    watchedValues.entryUrl,
+    watchedValues.loginUrl,
+    watchedValues.loginLeaveTimeoutSeconds,
+    watchedValues.landingSettleMode,
+    watchedValues.landingSettleTimeoutSeconds,
+    watchedValues.authMethod,
+    watchedValues.captchaMode,
+    watchedValues.status,
+  ])
+
   useAssistantContextBinding(
     user?.permissions.includes('ai:assist')
       ? {
@@ -119,19 +158,36 @@ function TargetFormFields({
             formId: TARGET_CONFIG_FORM_ID,
             mode: isEdit ? 'edit' : 'create',
             targetId: current?.id,
+            draftValues,
           },
           chips: [
+            ...(user?.permissions.includes('target:write')
+              ? [
+                  {
+                    id: 'target-form-timeout-propose',
+                    label: '⏱️ 将登录等待设为30秒',
+                    question: '帮我把这个目标系统的提交后等待离开登录页超时改成30秒。',
+                    capabilityHint: 'target.propose-form' as const,
+                  },
+                ]
+              : []),
             {
+              id: 'target-form-timeout-help',
               label: '超时配置说明',
               question: '目标系统配置里的登录页停留超时是选填吗？不填会怎样？',
+              capabilityHint: 'knowledge.answer' as const,
             },
             {
+              id: 'target-form-settle-help',
               label: '整理预算说明',
               question: '目标系统的登录后整理预算有什么作用？',
+              capabilityHint: 'knowledge.answer' as const,
             },
             {
+              id: 'target-form-rules-help',
               label: '认证方式说明',
               question: '目标系统的认证方式可选值有哪些？',
+              capabilityHint: 'knowledge.answer' as const,
             },
           ],
         }
