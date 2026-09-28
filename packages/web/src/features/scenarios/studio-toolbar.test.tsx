@@ -420,6 +420,181 @@ describe('StudioToolbar 容器响应式与侧边栏自适应', () => {
     await importItem.click()
     expect(onOpenImport).toHaveBeenCalledTimes(1)
   })
+
+  it('当存在已完成的 trialRun 时，展示「试跑结果」按钮且点击触发 onOpenTrialResult', async () => {
+    const onOpenTrialResult = vi.fn()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={false}
+            hasDraftDirty={false}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            trialRun={{
+              id: 'run-success-123',
+              scenarioId: mockScenario.id,
+              status: 'SUCCEEDED',
+            } as any}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={() => {}}
+            onOpenTrialResult={onOpenTrialResult}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>,
+    )
+
+    const trialResultBtn = screen.getByRole('button', { name: /试跑结果/i })
+    await expect.element(trialResultBtn).toBeInTheDocument()
+    await trialResultBtn.click()
+    expect(onOpenTrialResult).toHaveBeenCalledTimes(1)
+  })
+
+  it('当 trialRun 处于运行中（RUNNING / QUEUED）时，「试跑」按钮自身变为「试跑中…」置灰态，不产生多余的并列按钮或试跑结果按钮', async () => {
+    const onStartTrial = vi.fn()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={false}
+            hasDraftDirty={false}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            trialRun={{
+              id: 'run-running-123',
+              scenarioId: mockScenario.id,
+              status: 'RUNNING',
+            } as any}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={onStartTrial}
+            onOpenTrialResult={() => {}}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>,
+    )
+
+    // 原「试跑」按钮变为置灰的「试跑中…」
+    const runningBtn = screen.getByRole('button', { name: /试跑中/i })
+    await expect.element(runningBtn).toBeInTheDocument()
+    await expect.element(runningBtn).toBeDisabled()
+
+    // 不存在多余的第二个「试跑」按钮
+    expect(screen.getByRole('button', { name: '试跑', exact: true }).elements()).toHaveLength(0)
+
+    // 执行中不展示「试跑结果」按钮
+    expect(screen.getByRole('button', { name: /试跑结果/i }).elements()).toHaveLength(0)
+  })
+
+  it('当具备中断权限时，试跑中按钮支持 Hover 切换为「中止试跑」并可点击触发 onCancelTrial', async () => {
+    const onCancelTrial = vi.fn()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <div style={{ width: '1200px' }}>
+          <StudioToolbar
+            scenario={mockScenario}
+            target={mockTarget}
+            scenarioId={mockScenario.id}
+            revision={1}
+            dirty={false}
+            hasDraftDirty={false}
+            saving={false}
+            publishing={false}
+            canWrite={true}
+            canTrial={true}
+            canStartFormalRun={true}
+            trialDisabledReason={undefined}
+            trialRun={{
+              id: 'run-running-123',
+              scenarioId: mockScenario.id,
+              status: 'RUNNING',
+            } as any}
+            canCancelTrial={true}
+            onCancelTrial={onCancelTrial}
+            canPublish={false}
+            unpublishedDraft={false}
+            compileOk={true}
+            canReadTarget={true}
+            canRecord={true}
+            canDelete={true}
+            disabled={false}
+            onSave={() => {}}
+            onPublish={() => {}}
+            onStartTrial={() => {}}
+            onOpenTrialResult={() => {}}
+            onOpenRun={() => {}}
+            onOpenImport={() => {}}
+            onOpenRename={() => {}}
+            onToggleStatus={() => {}}
+            onOpenRemove={() => {}}
+            onLeave={() => {}}
+          />
+        </div>
+      </QueryClientProvider>,
+    )
+
+    // 默认展示「试跑中…」
+    const runningBtn = screen.getByRole('button', { name: /试跑中/i })
+    await expect.element(runningBtn).toBeInTheDocument()
+
+    // 悬停 Hover 后文案变为「中止试跑」
+    await runningBtn.hover()
+    const cancelBtn = screen.getByRole('button', { name: /中止试跑/i })
+    await expect.element(cancelBtn).toBeInTheDocument()
+
+    // 点击触发中止回调
+    await cancelBtn.click()
+    expect(onCancelTrial).toHaveBeenCalledTimes(1)
+  })
 })
 
 

@@ -10,9 +10,11 @@ import {
   Layers,
   Link2,
   ListOrdered,
+  Loader2,
   Plus,
   Sparkles,
   Split,
+  XCircle,
 } from 'lucide-react'
 import {
   authoringHasControlBlocks,
@@ -23,8 +25,10 @@ import {
   type AuthoringBlockNode,
   type CompileDiagnostic,
   type ExecutableStepType,
+  type RunDetailDto,
   type ScenarioAuthoringDocument,
   type ScenarioDocument,
+  type StepRunDto,
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
@@ -55,11 +59,23 @@ import { STEP_TYPE_HINTS, unavailableStudioTypes } from '../step-registry'
 import { STEP_SNIPPET_TEMPLATES } from '../snippets/step-snippets'
 import type { StepLocatorHealth } from '../use-scenario-locator-health'
 
+function formatStepDuration(stepRun?: StepRunDto): string | null {
+  if (!stepRun) return null
+  const lastAtt = stepRun.attempts?.[stepRun.attempts.length - 1]
+  const startedAt = lastAtt?.startedAt || stepRun.startedAt
+  const finishedAt = lastAtt?.finishedAt || stepRun.finishedAt
+  if (!startedAt || !finishedAt) return null
+  const ms = Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt))
+  if (ms <= 0) return '0s'
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
 export interface StepPipelineRailProps {
   document?: ScenarioDocument | ScenarioAuthoringDocument | null
   selectedId: string | null
   selectedIndex?: number
   holdingDraftStepId?: string | null
+  trialRun?: RunDetailDto | null
   importedStepIds?: string[]
   compileDiagnostics?: CompileDiagnostic[]
   canWrite: boolean
@@ -100,6 +116,7 @@ export function StepPipelineRail({
   selectedId,
   selectedIndex,
   holdingDraftStepId,
+  trialRun,
   importedStepIds = [],
   compileDiagnostics = [],
   canWrite,
@@ -137,6 +154,14 @@ export function StepPipelineRail({
 
   const hasControlBlocks = Boolean(
     document && isAuthoringDocumentV2(document) && authoringHasControlBlocks(document)
+  )
+
+  const showBatchSelection = Boolean(
+    (actionModulesEnabled || (onWrapSelection && canWrite)) &&
+      supportsAuthoringV2 &&
+      document &&
+      isAuthoringDocumentV2(document) &&
+      onExtractIdsChange
   )
 
   const items = useMemo(() => {
@@ -200,6 +225,56 @@ export function StepPipelineRail({
   }, [items, collapsedBlocks])
 
   const nodeCount = items.length
+
+  // 试跑状态处理：提取每个步骤最新的 stepRun 和当前正在执行的 stepId
+  const { stepRunMap, runningStepId, effectiveRunningId } = useMemo(() => {
+    const map = new Map<string, StepRunDto>()
+    if (!trialRun || !trialRun.stepRuns) {
+      return { stepRunMap: map, runningStepId: null, effectiveRunningId: null }
+    }
+    let running: string | null = null
+    for (const sr of trialRun.stepRuns) {
+      map.set(sr.stepId, sr)
+      if (sr.status === 'RUNNING') {
+        running = sr.stepId
+      }
+    }
+    let effective: string | null = running
+    if (running && trialRun.snapshot?.moduleManifest?.entries) {
+      for (const entry of trialRun.snapshot.moduleManifest.entries) {
+        if (entry.expandedStepIds?.includes(running)) {
+          effective = entry.invocationId
+          break
+        }
+      }
+    }
+    return { stepRunMap: map, runningStepId: running, effectiveRunningId: effective }
+  }, [trialRun])
+
+  // 试跑推进到某一步时自动滚入视野（支持普通步骤与动作模块）
+  useEffect(() => {
+    if (effectiveRunningId) {
+      const runningEl = stepListRef.current?.querySelector(`[data-list-step="${effectiveRunningId}"]`)
+      if (runningEl && runningEl.getClientRects().length) {
+        runningEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }
+    }
+  }, [effectiveRunningId])
+
+  // 若正在执行的步骤在已折叠的块内，自动展开该块
+  useEffect(() => {
+    if (effectiveRunningId && blockDescendantIds) {
+      for (const [blockId, descendantSet] of blockDescendantIds.entries()) {
+        if (descendantSet.has(effectiveRunningId) && collapsedBlocks.has(blockId)) {
+          setCollapsedBlocks((prev) => {
+            const next = new Set(prev)
+            next.delete(blockId)
+            return next
+          })
+        }
+      }
+    }
+  }, [effectiveRunningId, blockDescendantIds, collapsedBlocks])
 
   useEffect(() => {
     if (selectedId) {
@@ -637,6 +712,12 @@ export function StepPipelineRail({
               const blockNode = item.node as AuthoringBlockNode
               const isCollapsed = collapsedBlocks.has(key)
               const descendantSet = blockDescendantIds.get(key) ?? new Set()
+              const isBlockRunning = Array.from(descendantSet).some(
+                (childId) => stepRunMap.get(childId)?.status === 'RUNNING',
+              )
+              const hasBlockFailed = Array.from(descendantSet).some(
+                (childId) => stepRunMap.get(childId)?.status === 'FAILED',
+              )
               const blockDiagnostics = compileDiagnostics.filter(
                 (d) => d.stepId === key || (d.stepId ? descendantSet.has(d.stepId) : false),
               )
@@ -660,16 +741,30 @@ export function StepPipelineRail({
                       depthClass,
                     )}
                   >
+                    {showBatchSelection && (
+                      <Checkbox
+                        disabled
+                        aria-label={`${blockNode.name || '流程控制块'}暂不支持批量提炼或包裹`}
+                        title='流程控制块暂不支持批量提炼或包裹'
+                        className='mt-2.5 opacity-40 cursor-not-allowed'
+                      />
+                    )}
                     <div className='flex flex-col items-center shrink-0 mt-2'>
                       <span
                         className={cn(
                           'relative z-10 flex size-5 shrink-0 items-center justify-center rounded-full border text-3xs font-mono font-medium transition-colors',
-                          isSelected
-                            ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
-                            : 'border-primary/40 bg-primary/5 text-primary',
+                          isBlockRunning
+                            ? 'border-primary bg-primary text-primary-foreground font-bold shadow-sm ring-2 ring-primary/40 ring-offset-1 animate-pulse'
+                            : isSelected
+                              ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
+                              : 'border-primary/40 bg-primary/5 text-primary',
                         )}
                       >
-                        {item.displayNumber}
+                        {isBlockRunning ? (
+                          <Loader2 className='size-3 animate-spin text-primary-foreground' />
+                        ) : (
+                          item.displayNumber
+                        )}
                       </span>
                       {!isLast && (
                         <div
@@ -680,7 +775,11 @@ export function StepPipelineRail({
                             data-testid={`step-flow-arrow-${key}`}
                             className={cn(
                               'size-3 shrink-0 transition-colors',
-                              isSelected ? 'text-primary/70' : 'text-primary/40',
+                              isBlockRunning
+                                ? 'text-primary animate-pulse'
+                                : isSelected
+                                  ? 'text-primary/70'
+                                  : 'text-primary/40',
                             )}
                           />
                         </div>
@@ -700,11 +799,13 @@ export function StepPipelineRail({
                       }}
                       className={cn(
                         'flex min-w-0 flex-1 flex-col rounded-lg border p-2 text-left transition-colors cursor-pointer',
-                        isSelected
-                          ? 'border-primary bg-primary/5 shadow-control-focus'
-                          : isDisabled
-                            ? 'border-dashed border-border-default bg-muted/20 opacity-60 hover:opacity-80'
-                            : 'border-border-card bg-card hover:bg-primary/5',
+                        isBlockRunning
+                          ? 'border-primary bg-primary/[0.04] shadow-xs ring-1 ring-primary/30'
+                          : isSelected
+                            ? 'border-primary bg-primary/5 shadow-control-focus'
+                            : isDisabled
+                              ? 'border-dashed border-border-default bg-muted/20 opacity-60 hover:opacity-80'
+                              : 'border-border-card bg-card hover:bg-primary/5',
                       )}
                     >
                       <div className='flex items-center justify-between gap-1.5 min-w-0'>
@@ -744,7 +845,14 @@ export function StepPipelineRail({
                             解除包裹
                           </button>
                         ) : null}
-                        {errorCount > 0 ? (
+                        {isBlockRunning ? (
+                          <span title='块内步骤执行中...' className='inline-flex shrink-0'>
+                            <Loader2
+                              data-testid={`block-running-spinner-${key}`}
+                              className='size-3.5 text-primary animate-spin'
+                            />
+                          </span>
+                        ) : errorCount > 0 ? (
                           <span
                             className='size-2 rounded-full bg-status-error shrink-0'
                             title={`${errorCount} 项错误（含子步骤）`}
@@ -761,6 +869,16 @@ export function StepPipelineRail({
 
                       <div className='mt-1 flex flex-wrap items-center gap-1.5 text-label'>
                         {isDisabled && <StatusBadge tone='neutral'>已跳过</StatusBadge>}
+                        {isBlockRunning && (
+                          <StatusBadge tone='info' className='animate-pulse' data-testid={`block-status-running-${key}`}>
+                            执行中
+                          </StatusBadge>
+                        )}
+                        {hasBlockFailed && (
+                          <StatusBadge tone='error' data-testid={`block-status-failed-${key}`}>
+                            含失败
+                          </StatusBadge>
+                        )}
                         <span
                           className='rounded bg-primary/10 px-1.5 py-0.5 text-3xs font-mono font-medium text-primary truncate max-w-[170px]'
                           title={condSummary}
@@ -791,7 +909,6 @@ export function StepPipelineRail({
             const step = item.node.kind === 'step' ? item.node.step : null
             const moduleNode = item.node.kind === 'module' ? item.node : null
             const imported = Boolean(step && importedStepIds.includes(step.id))
-            const isHolding = Boolean(step && holdingDraftStepId === step.id)
             const isDisabled = moduleNode
               ? Boolean(moduleNode.disabled)
               : Boolean(step?.disabled)
@@ -805,6 +922,65 @@ export function StepPipelineRail({
             )
             const consumers = outputKey && document ? outputConsumersAny(document, outputKey) : []
 
+            let isNodeRunning = false
+            let isNodeSucceeded = false
+            let isNodeFailed = false
+            let isNodeSkipped = false
+            let nodeDuration: string | null = null
+            let isHolding = Boolean(step && holdingDraftStepId === step.id)
+
+            if (step) {
+              const stepRun = stepRunMap.get(key)
+              isNodeRunning = stepRun?.status === 'RUNNING'
+              isNodeSucceeded = stepRun?.status === 'SUCCEEDED'
+              isNodeFailed = stepRun?.status === 'FAILED'
+              isNodeSkipped = stepRun?.status === 'SKIPPED'
+              nodeDuration = formatStepDuration(stepRun)
+            } else if (moduleNode) {
+              const moduleEntry = trialRun?.snapshot?.moduleManifest?.entries?.find(
+                (e) => e.invocationId === moduleNode.invocationId,
+              )
+              if (moduleEntry) {
+                const expandedIds = moduleEntry.expandedStepIds ?? []
+                const childRuns = expandedIds.map((id) => stepRunMap.get(id)).filter(Boolean) as StepRunDto[]
+
+                const holdingStepId = trialRun?.status === 'HOLDING' ? trialRun.checkpoint?.stepId : null
+                if (holdingDraftStepId === moduleNode.invocationId || (holdingStepId && expandedIds.includes(holdingStepId))) {
+                  isHolding = true
+                }
+
+                if (
+                  childRuns.some((sr) => sr.status === 'RUNNING') ||
+                  (childRuns.length > 0 && childRuns.length < expandedIds.length && childRuns.every((sr) => sr.status === 'SUCCEEDED'))
+                ) {
+                  isNodeRunning = true
+                } else if (childRuns.some((sr) => sr.status === 'FAILED')) {
+                  isNodeFailed = true
+                } else if (expandedIds.length > 0 && childRuns.length === expandedIds.length && childRuns.every((sr) => sr.status === 'SUCCEEDED')) {
+                  isNodeSucceeded = true
+                } else if (childRuns.length > 0 && childRuns.every((sr) => sr.status === 'SKIPPED')) {
+                  isNodeSkipped = true
+                }
+
+                let earliestStart: number | null = null
+                let latestFinish: number | null = null
+                for (const sr of childRuns) {
+                  if (sr.startedAt) {
+                    const t = Date.parse(sr.startedAt)
+                    if (earliestStart === null || t < earliestStart) earliestStart = t
+                  }
+                  if (sr.finishedAt) {
+                    const t = Date.parse(sr.finishedAt)
+                    if (latestFinish === null || t > latestFinish) latestFinish = t
+                  }
+                }
+                if (earliestStart && latestFinish && latestFinish >= earliestStart) {
+                  const ms = latestFinish - earliestStart
+                  nodeDuration = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                }
+              }
+            }
+
             return (
               <div key={key} className='space-y-1'>
                 {branchDivider}
@@ -815,39 +991,56 @@ export function StepPipelineRail({
                     depthClass,
                   )}
                 >
-                  {(actionModulesEnabled || (onWrapSelection && canWrite)) &&
-                    supportsAuthoringV2 &&
-                    document &&
-                    isAuthoringDocumentV2(document) &&
-                    step &&
-                    onExtractIdsChange && (
+                  {showBatchSelection &&
+                    (step ? (
                       <Checkbox
                         aria-label={`选择提炼 ${step.name}`}
                         checked={extractIds.includes(step.id)}
                         className='mt-2.5'
                         onCheckedChange={(val) => {
                           const id = step.id
-                          onExtractIdsChange((cur) =>
+                          onExtractIdsChange?.((cur) =>
                             val === true ? [...cur, id] : cur.filter((i) => i !== id),
                           )
                         }}
                       />
-                    )}
+                    ) : (
+                      <Checkbox
+                        disabled
+                        aria-label={`${moduleNode?.name || '动作模块'}暂不支持批量提炼或包裹`}
+                        title='动作模块暂不支持批量提炼或包裹'
+                        className='mt-2.5 opacity-40 cursor-not-allowed'
+                      />
+                    ))}
 
                   <div className='flex flex-col items-center shrink-0 mt-2'>
                     <span
                       className={cn(
                         'relative z-10 flex size-5 shrink-0 items-center justify-center rounded-full border text-3xs font-mono font-medium transition-colors',
-                        isSelected
-                          ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
-                          : isHolding
-                            ? 'border-status-warning bg-status-warning text-white'
-                            : isDisabled
-                              ? 'border-dashed border-border-default bg-muted/40 text-muted-foreground/60'
-                              : 'border-border-default bg-surface-subtle text-muted-foreground',
+                        isNodeRunning
+                          ? 'border-primary bg-primary text-primary-foreground font-bold shadow-sm ring-2 ring-primary/40 ring-offset-1 animate-pulse'
+                          : isNodeFailed
+                            ? 'border-status-error-accent bg-status-error-background text-status-error-foreground font-semibold'
+                            : isNodeSucceeded
+                              ? 'border-status-success-accent bg-status-success-background text-status-success-foreground'
+                              : isSelected
+                                ? 'border-primary bg-primary text-primary-foreground shadow-control-focus'
+                                : isHolding
+                                  ? 'border-status-warning bg-status-warning text-white'
+                                  : isDisabled
+                                    ? 'border-dashed border-border-default bg-muted/40 text-muted-foreground/60'
+                                    : 'border-border-default bg-surface-subtle text-muted-foreground',
                       )}
                     >
-                      {item.displayNumber}
+                      {isNodeRunning ? (
+                        <Loader2 className='size-3 animate-spin text-primary-foreground' />
+                      ) : isNodeFailed ? (
+                        <XCircle className='size-3 text-status-error-foreground' />
+                      ) : isNodeSucceeded ? (
+                        <CheckCircle2 className='size-3 text-status-success-foreground' />
+                      ) : (
+                        item.displayNumber
+                      )}
                     </span>
                     {!isLast && (
                       <div
@@ -858,13 +1051,17 @@ export function StepPipelineRail({
                           data-testid={`step-flow-arrow-${key}`}
                           className={cn(
                             'size-3 shrink-0 transition-colors',
-                            isSelected
-                              ? 'text-primary/70'
-                              : isHolding
-                                ? 'text-status-warning/70'
-                                : isDisabled
-                                  ? 'text-muted-foreground/20'
-                                  : 'text-muted-foreground/40',
+                            isNodeRunning
+                              ? 'text-primary animate-pulse'
+                              : isNodeSucceeded
+                                ? 'text-status-success-foreground/70'
+                                : isSelected
+                                  ? 'text-primary/70'
+                                  : isHolding
+                                    ? 'text-status-warning/70'
+                                    : isDisabled
+                                      ? 'text-muted-foreground/20'
+                                      : 'text-muted-foreground/40',
                           )}
                         />
                       </div>
@@ -877,11 +1074,19 @@ export function StepPipelineRail({
                     onClick={() => onSelect(key)}
                     className={cn(
                       'flex min-w-0 flex-1 flex-col rounded-lg border p-2 text-left transition-colors',
-                      isSelected
-                        ? 'border-selection-border bg-selection-background shadow-control-focus'
-                        : isDisabled
-                          ? 'border-dashed border-border-default bg-muted/20 opacity-60 hover:opacity-80'
-                          : 'border-border-default bg-card hover:bg-action-hover',
+                      isNodeRunning && isSelected
+                        ? 'border-primary bg-selection-background shadow-control-focus ring-2 ring-primary/40'
+                        : isNodeRunning
+                          ? 'border-primary bg-primary/[0.04] shadow-xs ring-1 ring-primary/30'
+                          : isNodeFailed
+                            ? isSelected
+                              ? 'border-status-error-accent bg-status-error-background/40 shadow-control-focus'
+                              : 'border-status-error-accent/60 bg-status-error-background/30'
+                            : isSelected
+                              ? 'border-selection-border bg-selection-background shadow-control-focus'
+                              : isDisabled
+                                ? 'border-dashed border-border-default bg-muted/20 opacity-60 hover:opacity-80'
+                                : 'border-border-default bg-card hover:bg-action-hover',
                     )}
                   >
                     <div className='flex items-center justify-between gap-1.5 min-w-0'>
@@ -904,7 +1109,28 @@ export function StepPipelineRail({
                         </span>
                       </div>
 
-                      {errorCount > 0 ? (
+                      {isNodeRunning ? (
+                        <span title='正在执行...' className='inline-flex shrink-0'>
+                          <Loader2
+                            data-testid={`step-running-spinner-${key}`}
+                            className='size-3.5 text-primary animate-spin'
+                          />
+                        </span>
+                      ) : isNodeFailed ? (
+                        <span title='试跑失败' className='inline-flex shrink-0'>
+                          <XCircle
+                            data-testid={`step-failed-icon-${key}`}
+                            className='size-3.5 text-status-error-foreground'
+                          />
+                        </span>
+                      ) : isNodeSucceeded ? (
+                        <span title='试跑成功' className='inline-flex shrink-0'>
+                          <CheckCircle2
+                            data-testid={`step-succeeded-icon-${key}`}
+                            className='size-3.5 text-status-success-foreground'
+                          />
+                        </span>
+                      ) : errorCount > 0 ? (
                         <span
                           className='size-2 rounded-full bg-status-error shrink-0'
                           title={`${errorCount} 项错误`}
@@ -923,6 +1149,26 @@ export function StepPipelineRail({
                       {isDisabled && <StatusBadge tone='neutral'>已跳过</StatusBadge>}
                       {isHolding && <StatusBadge tone='warning'>挂起</StatusBadge>}
                       {imported && <StatusBadge tone='info'>刚导入</StatusBadge>}
+                      {isNodeRunning && (
+                        <StatusBadge tone='info' className='animate-pulse' data-testid={`step-status-running-${key}`}>
+                          执行中
+                        </StatusBadge>
+                      )}
+                      {isNodeSucceeded && (
+                        <StatusBadge tone='success' data-testid={`step-status-succeeded-${key}`}>
+                          成功{nodeDuration ? ` · ${nodeDuration}` : ''}
+                        </StatusBadge>
+                      )}
+                      {isNodeFailed && (
+                        <StatusBadge tone='error' data-testid={`step-status-failed-${key}`}>
+                          失败{nodeDuration ? ` · ${nodeDuration}` : ''}
+                        </StatusBadge>
+                      )}
+                      {isNodeSkipped && (
+                        <StatusBadge tone='neutral' data-testid={`step-status-skipped-${key}`}>
+                          已跳过
+                        </StatusBadge>
+                      )}
                       {step && locatorHealthMap?.get(step.id) && (
                         <div
                           data-testid={`step-locator-health-${step.id}`}

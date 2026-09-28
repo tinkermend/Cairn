@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { HTMLAttributes, ReactNode } from 'react'
 import {
   AlertTriangle,
   Ban,
@@ -49,7 +49,7 @@ const toneIcon: Record<StatusTone, typeof CheckCircle2> = {
   ai: Sparkles,
 }
 
-type StatusBadgeProps = {
+type StatusBadgeProps = HTMLAttributes<HTMLSpanElement> & {
   tone: StatusTone
   children: ReactNode
   className?: string
@@ -61,6 +61,7 @@ export function StatusBadge({
   children,
   className,
   hideIcon = false,
+  ...rest
 }: StatusBadgeProps) {
   const Icon = toneIcon[tone]
   return (
@@ -71,6 +72,7 @@ export function StatusBadge({
         toneClass[tone],
         className
       )}
+      {...rest}
     >
       {hideIcon ? null : <Icon className='size-3' aria-hidden />}
       {children}

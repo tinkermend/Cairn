@@ -71,7 +71,7 @@ import {
   saveScenarioDraft,
   updateScenario,
 } from '@/lib/scenarios-api'
-import { debugRun, observeRun } from '@/lib/runs-api'
+import { cancelRun, debugRun, observeRun } from '@/lib/runs-api'
 import { fetchAccountSession } from '@/lib/sessions-api'
 import { fetchTarget, fetchTargetAccounts } from '@/lib/targets-api'
 import { preferredPasswordAccountId } from '@/features/runs/target-account'
@@ -134,7 +134,7 @@ import { RuntimeInvariantEditor } from '@/features/authoring/invariant-editor'
 import { resolveOutcomeWriteback } from '@cairn/authoring'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { TrialDialog } from './trial-dialog'
-import { TrialPanel } from './trial-panel'
+import { TrialResultDialog } from './trial-result-dialog'
 import { StudioScreen } from './studio-screen'
 import { HealingCard } from '@/features/authoring/fields/healing-card'
 import { HealingPatchCard } from '@/features/authoring/healing-patch-card'
@@ -422,6 +422,9 @@ export function ScenarioDetailPage() {
   const [leaveOpen, setLeaveOpen] = useState(false)
   const [trialOpen, setTrialOpen] = useState(false)
   const [trialPauseBeforeStepId, setTrialPauseBeforeStepId] = useState<string | undefined>(undefined)
+  const [trialResultOpen, setTrialResultOpen] = useState(false)
+  const autoOpenedRunRef = useRef<string | null>(null)
+  const localInitiatedRunId = useRef<string | null>(null)
   const [retryConfirm, setRetryConfirm] = useState<'side_effect' | 'page_changed' | null>(null)
   const [retryingStep, setRetryingStep] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
@@ -559,6 +562,31 @@ export function ScenarioDetailPage() {
     openedPageForRun.current = runId
     setMobilePane('page')
   }, [runId, trialRun])
+
+  useEffect(() => {
+    if (!runId) return
+    if (autoOpenedRunRef.current === runId) return
+
+    // 如果有权限但 trialRun 尚未加载出来，等待加载，严禁在首帧数据未就绪时提前弹窗
+    if (canReadRun && !trialRun) return
+
+    // 如果无权限读取 run，弹窗提示无权限
+    if (!canReadRun) {
+      autoOpenedRunRef.current = runId
+      setTrialResultOpen(true)
+      return
+    }
+
+    // 如果试跑处于非终态（排队中、执行中、挂起单步调试中），不弹窗打扰用户
+    if (trialRun && ['QUEUED', 'RUNNING', 'RECOVERING', 'WAITING_FOR_AUTH', 'HOLDING'].includes(trialRun.status)) {
+      return
+    }
+
+    if (trialRun && ['SUCCEEDED', 'FAILED', 'NEEDS_REVIEW', 'CANCELED'].includes(trialRun.status)) {
+      autoOpenedRunRef.current = runId
+      setTrialResultOpen(true)
+    }
+  }, [runId, trialRun?.status, canReadRun, Boolean(trialRun)])
   const holdingStepId =
     trialRun?.status === 'HOLDING' && trialRun.debugMode !== 'runThrough'
       ? trialRun.checkpoint?.stepId
@@ -705,6 +733,7 @@ export function ScenarioDetailPage() {
         const v2 = normalizeAuthoringDocument(current)
         const allowed = await canAdoptAuthoringProposal({
           proposal,
+          scenarioId: scenario.id,
           revision,
           document: v2,
           hasFieldDrafts: draft.hasFieldDrafts,
@@ -1248,6 +1277,7 @@ export function ScenarioDetailPage() {
   }
 
   function attachRun(run: RunDetailDto) {
+    localInitiatedRunId.current = run.id
     queryClient.setQueryData(['runs', run.id], run)
     setTrackedRunId(run.id)
     void navigate({
@@ -1256,6 +1286,23 @@ export function ScenarioDetailPage() {
       search: { runId: run.id, editor: flowgram ? 'flowgram' : undefined },
       replace: true,
     })
+  }
+
+  const canCancelTrial = Boolean(user && hasPermission(user.permissions, 'run:cancel'))
+  const [cancellingTrial, setCancellingTrial] = useState(false)
+
+  async function handleCancelTrial() {
+    if (!trialRun || cancellingTrial) return
+    setCancellingTrial(true)
+    try {
+      await cancelRun(trialRun.id)
+      toast.success('已发送中止指令')
+      void queryClient.invalidateQueries({ queryKey: ['run-observation', trialRun.id] })
+    } catch (error) {
+      toast.error(error instanceof ApiRequestError ? error.message : '中止失败')
+    } finally {
+      setCancellingTrial(false)
+    }
   }
 
   async function handleRunToStep(targetStepId: string) {
@@ -1956,17 +2003,6 @@ export function ScenarioDetailPage() {
             </div>
           </>
         )}
-
-        {runId ? (
-          <div className='border-t border-border-divider pt-4'>
-            <TrialPanel
-              runId={runId}
-              scenarioId={scenarioId}
-              selectedDraftStepId={draft.selectedId}
-              onSelectDraftStep={draft.setSelectedId}
-            />
-          </div>
-        ) : null}
       </StudioInspectorHost>
     )}
   </InspectorShield>
@@ -1990,6 +2026,7 @@ export function ScenarioDetailPage() {
           canTrial={canTrial}
           canStartFormalRun={canStartFormalRun}
           trialDisabledReason={trialDisabledReason}
+          trialRun={trialRun?.scenarioId === scenarioId ? trialRun : undefined}
           canPublish={canPublish}
           unpublishedDraft={unpublishedDraft}
           compileOk={compile?.ok}
@@ -2006,6 +2043,10 @@ export function ScenarioDetailPage() {
           onSave={() => void save()}
           onPublish={() => void handleStartPublish()}
           onStartTrial={() => setTrialOpen(true)}
+          canCancelTrial={canCancelTrial}
+          cancellingTrial={cancellingTrial}
+          onCancelTrial={canCancelTrial && trialRun ? () => void handleCancelTrial() : undefined}
+          onOpenTrialResult={() => setTrialResultOpen(true)}
           onOpenRun={() => setRunOpen(true)}
           onOpenImport={() => {
             if (draft.dirty || draft.hasFieldDrafts) {
@@ -2535,6 +2576,7 @@ export function ScenarioDetailPage() {
                       selectedId={effectiveInspectorView === 'scenario' ? null : draft.selectedId}
                       selectedIndex={draft.selectedIndex}
                       holdingDraftStepId={holdingDraftStepId}
+                      trialRun={trialRun?.scenarioId === scenarioId ? trialRun : undefined}
                       importedStepIds={importedStepIds}
                       compileDiagnostics={compile?.diagnostics ?? []}
                       canWrite={canWrite}
@@ -2788,6 +2830,25 @@ export function ScenarioDetailPage() {
             attachRun(run)
           }}
           onConflict={markConflict}
+        />
+      ) : null}
+      {runId ? (
+        <TrialResultDialog
+          open={trialResultOpen}
+          onOpenChange={setTrialResultOpen}
+          runId={runId}
+          scenarioId={scenarioId}
+          selectedDraftStepId={draft.selectedId}
+          onSelectDraftStep={(stepId) => {
+            if (stepId) {
+              locateStep(stepId)
+            } else {
+              draft.setSelectedId(null)
+            }
+          }}
+          onFocusFailedStep={(stepId) => {
+            locateStep(stepId)
+          }}
         />
       ) : null}
       {scenario ? (

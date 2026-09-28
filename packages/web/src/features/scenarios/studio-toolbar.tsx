@@ -10,8 +10,14 @@ import {
   Save,
   Settings,
   Zap,
+  CheckCircle2,
+  AlertCircle,
+  Info,
+  Loader2,
+  Square,
 } from 'lucide-react'
 import type {
+  RunDetailDto,
   ScenarioDetailDto,
   TargetDto,
 } from '@cairn/shared'
@@ -42,6 +48,7 @@ export type StudioToolbarProps = {
   canTrial: boolean
   canStartFormalRun: boolean
   trialDisabledReason: string | undefined
+  trialRun?: RunDetailDto | null
   canPublish: boolean
   unpublishedDraft: boolean
   compileOk: boolean | undefined
@@ -55,6 +62,10 @@ export type StudioToolbarProps = {
   onSave: () => void
   onPublish: () => void
   onStartTrial: () => void
+  onCancelTrial?: () => void
+  canCancelTrial?: boolean
+  cancellingTrial?: boolean
+  onOpenTrialResult?: () => void
   onOpenRun: () => void
   onOpenImport: () => void
   onOpenRename: () => void
@@ -77,6 +88,7 @@ export function StudioToolbar({
   canTrial,
   canStartFormalRun,
   trialDisabledReason,
+  trialRun,
   canPublish,
   unpublishedDraft,
   compileOk,
@@ -90,6 +102,10 @@ export function StudioToolbar({
   onSave,
   onPublish,
   onStartTrial,
+  onCancelTrial,
+  canCancelTrial: canCancelTrialProp,
+  cancellingTrial = false,
+  onOpenTrialResult,
   onOpenRun,
   onOpenImport,
   onOpenRename,
@@ -145,6 +161,13 @@ export function StudioToolbar({
       onOpenRename()
     }
   }
+
+  // 试跑运行态判定
+  const isTrialRunning = Boolean(
+    trialRun && ['QUEUED', 'RUNNING', 'RECOVERING', 'WAITING_FOR_AUTH', 'HOLDING'].includes(trialRun.status),
+  )
+  const canCancelTrial = canCancelTrialProp ?? Boolean(onCancelTrial)
+  const [isCancelHovered, setIsCancelHovered] = useState(false)
 
   // 容器可用宽度状态（首帧合理估算，后续由 ResizeObserver 精确测量）
   const [containerWidth, setContainerWidth] = useState<number>(() => {
@@ -395,7 +418,53 @@ export function StudioToolbar({
             </Button>
           ) : null}
 
-          {canTrial ? (
+          {isTrialRunning ? (
+            canCancelTrial && onCancelTrial ? (
+              <Button
+                size='sm'
+                variant='outline'
+                className={cn(
+                  'h-8 px-2.5 text-label gap-1.5 transition-colors',
+                  isCancelHovered || cancellingTrial
+                    ? 'border-status-error/40 bg-status-error/10 text-status-error hover:border-status-error/60 hover:bg-status-error/15 hover:text-status-error'
+                    : 'border-border text-muted-foreground hover:border-status-error/40 hover:bg-status-error/10 hover:text-status-error',
+                )}
+                disabled={cancellingTrial}
+                onClick={onCancelTrial}
+                onMouseEnter={() => setIsCancelHovered(true)}
+                onMouseLeave={() => setIsCancelHovered(false)}
+                title='试跑执行中，点击可中止'
+              >
+                {cancellingTrial ? (
+                  <>
+                    <Loader2 className='size-3.5 animate-spin text-status-error' />
+                    <span>正在中止…</span>
+                  </>
+                ) : isCancelHovered ? (
+                  <>
+                    <Square className='size-3.5 fill-current text-status-error' aria-hidden='true' />
+                    <span>中止试跑</span>
+                  </>
+                ) : (
+                  <>
+                    <Loader2 className='size-3.5 animate-spin text-primary' />
+                    <span>试跑中…</span>
+                  </>
+                )}
+              </Button>
+            ) : (
+              <Button
+                size='sm'
+                variant='outline'
+                className='h-8 px-2.5 text-label text-muted-foreground gap-1.5'
+                disabled
+                title='试跑执行中…'
+              >
+                <Loader2 className='size-3.5 animate-spin text-primary' />
+                <span>试跑中…</span>
+              </Button>
+            )
+          ) : canTrial ? (
             <Button size='sm' className='action-shadow' onClick={onStartTrial}>
               <Play className='size-3.5 mr-1' />
               试跑
@@ -404,6 +473,30 @@ export function StudioToolbar({
             <Button size='sm' variant='outline' disabled title={trialDisabledReason}>
               <Play className='size-3.5 mr-1' />
               试跑
+            </Button>
+          ) : null}
+
+          {onOpenTrialResult && trialRun && !isTrialRunning ? (
+            <Button
+              size='sm'
+              variant='outline'
+              className={cn(
+                'h-8 px-2.5 text-label font-medium gap-1.5 transition-colors',
+                trialRun.status === 'SUCCEEDED' && 'border-status-success/40 text-status-success-foreground hover:bg-status-success/10',
+                trialRun.status === 'FAILED' && 'border-status-error/40 text-status-error-foreground hover:bg-status-error/10',
+                trialRun.status === 'NEEDS_REVIEW' && 'border-status-warning/40 text-status-warning-foreground hover:bg-status-warning/10',
+              )}
+              onClick={onOpenTrialResult}
+              title='查看试跑结果'
+            >
+              {trialRun.status === 'SUCCEEDED' ? (
+                <CheckCircle2 className='size-3.5 text-status-success' />
+              ) : trialRun.status === 'FAILED' ? (
+                <AlertCircle className='size-3.5 text-status-error' />
+              ) : (
+                <Info className='size-3.5 text-status-warning' />
+              )}
+              <span>试跑结果</span>
             </Button>
           ) : null}
 
