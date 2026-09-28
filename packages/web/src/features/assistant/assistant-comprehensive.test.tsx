@@ -9,33 +9,10 @@ import {
   createAssistantTurn,
   fetchAssistantCapabilities,
 } from '@/lib/assistant-api'
-import { cancelRun } from '@/lib/runs-api'
 import { AssistantHost } from './host'
 
-const { navigate, mockRunObservation } = vi.hoisted(() => ({
+const { navigate } = vi.hoisted(() => ({
   navigate: vi.fn(async () => undefined),
-  mockRunObservation: {
-    run: {
-      id: 'run-active-12345678',
-      status: 'RUNNING',
-      stepRuns: [
-        {
-          id: 'sr-1',
-          ordinal: 0,
-          status: 'RUNNING',
-          name: '打开商品页面',
-          startedAt: '2026-09-23T00:00:00.000Z',
-        },
-      ],
-    },
-    view: null,
-    isStreaming: true,
-    error: null,
-  },
-}))
-
-vi.mock('@/features/runs/use-run-observation', () => ({
-  useRunObservation: () => mockRunObservation,
 }))
 
 let nextTurnToDeliver: AssistantTurn | null = null
@@ -201,7 +178,6 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
       activeQuote: null,
       activeStage: null,
       thinkingText: undefined,
-      trackedRunId: null,
       capabilityHint: undefined,
       capabilities: null,
       adoptHandler: null,
@@ -647,32 +623,6 @@ describe('识途助手：正反例综合场景、页面布局与核心能力全�
 
       await userEvent.keyboard('{Enter}')
       expect(createAssistantTurn).not.toHaveBeenCalled()
-    })
-  })
-
-  /* ========================================================================
-   * 5. 微型运行监控坞 (Mini Run Tracker)
-   * ======================================================================== */
-  describe('维度 5: 微型运行监控坞', () => {
-    it('正例：活跃 Run 展示步进进度，支持一键发送中止请求', async () => {
-      useAssistantStore.setState({
-        trackedRunId: 'run-active-12345678',
-      })
-
-      await openAssistant()
-      const tracker = page.getByTestId('mini-run-tracker')
-      await expect.element(tracker).toBeVisible()
-      await expect.element(page.getByText('运行监控 · run-acti…')).toBeVisible()
-
-      // 点击中止按钮
-      const abortBtn = page.getByRole('button', { name: '中止运行' })
-      await abortBtn.click()
-      expect(cancelRun).toHaveBeenCalledWith('run-active-12345678')
-
-      // 点击关闭监控坞
-      const closeTrackerBtn = page.getByRole('button', { name: '关闭运行监控坞' })
-      await closeTrackerBtn.click()
-      expect(useAssistantStore.getState().trackedRunId).toBeNull()
     })
   })
 })

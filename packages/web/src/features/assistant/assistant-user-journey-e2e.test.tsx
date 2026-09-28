@@ -129,7 +129,6 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
       activeQuote: null,
       boundContext: null,
       currentBindingOwnerToken: null,
-      trackedRunId: null,
       previewStepId: null,
       lastAdoptedProposalId: null,
       lastAdoptedDigest: null,

@@ -27,7 +27,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { assistantIcon } from './icon'
 import { AssistantResultView } from './result'
-import { MiniRunTracker } from './mini-run-tracker'
 import { PromptCards } from './prompt-cards'
 import { HistoryDrawer } from './history-drawer'
 import { ThinkingProcessBlock } from './components/thinking-process'
@@ -549,9 +548,6 @@ export function AssistantPanel({
           ) : null}
         </div>
       </div>
-
-      {/* 微型运行监控坞 */}
-      <MiniRunTracker />
 
       <form
         className='shrink-0 space-y-2.5 border-t border-border-default px-4 py-3'

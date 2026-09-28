@@ -273,7 +273,6 @@ export function ScenarioDetailPage() {
   const setLastAdopted = useAssistantStore((state) => state.setLastAdopted)
   const previewStepId = useAssistantStore((state) => state.previewStepId)
   const setPreviewStepId = useAssistantStore((state) => state.setPreviewStepId)
-  const setTrackedRunId = useAssistantStore((state) => state.setTrackedRunId)
   const canStartFormalRun = Boolean(user && canExecuteRun(user.permissions))
   const canStartTrial = Boolean(user && canTrialRun(user.permissions))
   const canAi = Boolean(user && hasPermission(user.permissions, 'ai:execute'))
@@ -1274,7 +1273,6 @@ export function ScenarioDetailPage() {
   function attachRun(run: RunDetailDto) {
     localInitiatedRunId.current = run.id
     queryClient.setQueryData(['runs', run.id], run)
-    setTrackedRunId(run.id)
     void navigate({
       to: '/scenarios/$scenarioId',
       params: { scenarioId },

@@ -147,7 +147,6 @@ describe('识途助手：新建会话、可继续加载的历史与分类引导�
       dockWidth: 400,
       activeQuote: null,
       boundContext: null,
-      trackedRunId: null,
       previewStepId: null,
       lastAdoptedProposalId: null,
       lastAdoptedDigest: null,

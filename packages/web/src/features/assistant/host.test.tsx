@@ -520,7 +520,7 @@ describe('AssistantHost', () => {
     await expect.element(dialog).toBeVisible()
     const backdrop = document.querySelector<HTMLElement>('[data-assistant-sidebar="true"][data-state="open"]')
     expect(backdrop).not.toBeNull()
-    await userEvent.click(backdrop!)
+    backdrop!.click()
     await expect.element(dialog).not.toBeInTheDocument()
     await expect.element(opener).toHaveFocus()
   })

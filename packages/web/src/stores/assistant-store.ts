@@ -103,7 +103,6 @@ type AssistantState = {
   currentBindingOwnerToken: string | null
 
   // 进阶二业务协同控制
-  trackedRunId: string | null
   previewStepId: string | null
   lastAdoptedProposalId: string | null
   lastAdoptedDigest: string | null
@@ -142,7 +141,6 @@ type AssistantState = {
   unbindPageContext: (ownerToken?: string) => void
   setRouteContext: (routeContext: AssistantRouteContext | null) => void
 
-  setTrackedRunId: (runId: string | null) => void
   setPreviewStepId: (stepId: string | null) => void
   setLastAdopted: (info: { proposalId: string; digest: string } | null) => void
 
@@ -229,7 +227,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   routeContext: null,
   currentBindingOwnerToken: null,
 
-  trackedRunId: null,
   previewStepId: null,
   lastAdoptedProposalId: null,
   lastAdoptedDigest: null,
@@ -258,7 +255,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   setPageContext: (pageContext) => set({ pageContext }),
   registerAdoptHandler: (handler) => set({ adoptHandler: handler }),
   registerRollbackHandler: (handler) => set({ rollbackHandler: handler }),
-  setTrackedRunId: (trackedRunId) => set({ trackedRunId }),
   setPreviewStepId: (previewStepId) => set({ previewStepId }),
   setLastAdopted: (info) =>
     set({
