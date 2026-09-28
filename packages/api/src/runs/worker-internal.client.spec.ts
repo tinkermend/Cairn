@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  INTERNAL_SIGNATURE_HEADERS,
   WORKER_FORWARD_AUTH_TIMEOUT_MS,
   WORKER_FORWARD_CONNECT_TIMEOUT_MS,
   WORKER_FORWARD_HEADER_TIMEOUT_MS,
+  requireInternalSecret,
+  verifyInternalHeaders,
 } from '@cairn/shared'
 import { currentInternalForwards } from '../common/process-gauges'
 import { WorkerForwardError, WorkerInternalClient } from './worker-internal.client'
@@ -46,6 +49,39 @@ describe('WorkerInternalClient', () => {
     )
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     expect((init.signal as AbortSignal).aborted).toBe(false)
+  })
+
+  it('查询串走 query 且不参与签名，Worker 按 pathname 验签可通过', async () => {
+    vi.stubEnv('CAIRN_INTERNAL_AUTH_SECRET', Buffer.alloc(32, 7).toString('base64'))
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new WorkerInternalClient()
+    await client.requestJson({ ...call, method: 'GET', timeout: 'headers', query: { pageId: 'page-2' } })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const parsed = new URL(url)
+    expect(parsed.searchParams.get('pageId')).toBe('page-2')
+    const headers = init.headers as Record<string, string>
+    const { config } = await import('../config/env')
+    const ok = await verifyInternalHeaders(requireInternalSecret(config.CAIRN_INTERNAL_AUTH_SECRET), {
+      method: 'GET',
+      path: parsed.pathname,
+      body: '',
+      expiresUnix: Number(headers[INTERNAL_SIGNATURE_HEADERS.expires]),
+      actorId: call.actorId,
+      runId: call.runId,
+      sessionGeneration: call.sessionGeneration,
+      workerInstanceId: call.workerInstanceId,
+      signature: headers[INTERNAL_SIGNATURE_HEADERS.signature]!,
+    })
+    expect(ok).toBe(true)
+  })
+
+  it('path 混入查询串直接拒绝，避免签名与 Worker 验签不一致', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const client = new WorkerInternalClient()
+    await expect(
+      client.requestJson({ ...call, method: 'GET', timeout: 'headers', path: `${call.path}?pageId=p` }),
+    ).rejects.toThrow(/查询串/)
   })
 
   it('认证 POST 超时或断连返回结果未知，Web 可见文案不含地址', async () => {

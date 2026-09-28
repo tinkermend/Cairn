@@ -85,6 +85,8 @@ export class WorkerInternalClient {
     } catch {
       throw new WorkerForwardError(503, 'WORKER_UNREACHABLE', '执行面暂时不可达')
     }
+    // Worker 按 url.pathname 验签；查询串必须走 call.query，混进 path 会导致签名不一致。
+    if (call.path.includes('?')) throw new Error('WorkerCall.path 不得包含查询串，请使用 query')
     const body = call.method === 'GET' ? '' : (call.body ?? '')
     const headers = await signInternalHeaders(requireInternalSecret(config.CAIRN_INTERNAL_AUTH_SECRET), {
       method: call.method,

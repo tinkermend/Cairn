@@ -295,7 +295,8 @@ export class BrowserSessionsService {
         actorId: actor.id,
         runId: target.ownerId,
         sessionGeneration: target.session.generation,
-        path: workerInternalPath('/meta') + (pageId ? `?pageId=${encodeURIComponent(pageId)}` : ''),
+        path: workerInternalPath('/meta'),
+        query: { pageId },
         method: 'GET',
         endpoint: target.endpoint,
         timeout: 'headers',
@@ -330,9 +331,8 @@ export class BrowserSessionsService {
           actorId: input.actor.id,
           runId: target.ownerId,
           sessionGeneration: target.session.generation,
-          path:
-            workerInternalPath('/frames') +
-            (input.pageId ? `?pageId=${encodeURIComponent(input.pageId)}` : ''),
+          path: workerInternalPath('/frames'),
+          query: { pageId: input.pageId },
           method: 'GET',
           endpoint: target.endpoint,
           timeout: 'stream',
