@@ -85,11 +85,13 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-# ── Claude Code ──────────────────────────────
+# ── AI 助手与开发工具 ────────────────────────────
 # 开发工具与本机配置，不进产品仓库
 .claude/
 .grok
 .cursor
+.agents
+.cursorignore
 .ccgui
 # 本机临时试验不入库；已入库的联调 / L2 / L3 夹具单独放行
 tests/
