@@ -257,4 +257,85 @@ describe('TargetFormDialog', () => {
       expect(result.reason).toContain('不可修改')
     }
   })
+
+  it('全局助手生成的 TargetFormProposal 采纳后支持一键撤销并恢复原有字段值', async () => {
+    useAuthStore.getState().auth.setUser({
+      id: 'assistant-user', displayName: '配置员', email: null, roles: [],
+      permissions: ['ai:assist', 'target:write'],
+    })
+    const screen = await renderDialog()
+    const adoptHandler = useAssistantStore.getState().adoptHandler
+    const rollbackHandler = useAssistantStore.getState().rollbackHandler
+    expect(adoptHandler).not.toBeNull()
+    expect(rollbackHandler).not.toBeNull()
+
+    // 1. 用户先手动填写表单初始值
+    await screen.getByLabelText(/名称/).fill('用户手工名称')
+    await screen.getByLabelText(/提交后等待离开登录页/).fill('15')
+
+    const proposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '推荐配置超时为 30 秒，系统名称为推荐系统',
+      changes: [
+        { fieldId: 'name', value: '推荐系统' },
+        { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+      ],
+    }
+
+    // 2. 采纳提案
+    const adoptResult = await adoptHandler!(proposal)
+    expect(adoptResult.ok).toBe(true)
+    await expect.element(screen.getByLabelText(/名称/)).toHaveValue('推荐系统')
+    await expect.element(screen.getByLabelText(/提交后等待离开登录页/)).toHaveValue(30)
+
+    // 3. 执行撤销
+    const rollbackResult = await rollbackHandler!(proposal)
+    expect(rollbackResult.ok).toBe(true)
+
+    // 4. 字段值恢复到采纳前的数值
+    await expect.element(screen.getByLabelText(/名称/)).toHaveValue('用户手工名称')
+    await expect.element(screen.getByLabelText(/提交后等待离开登录页/)).toHaveValue(15)
+
+    // 5. 再次重复撤销应返回失败（无快照）
+    const secondRollback = await rollbackHandler!(proposal)
+    expect(secondRollback.ok).toBe(false)
+    if (!secondRollback.ok) {
+      expect(secondRollback.reason).toContain('没有可撤销的采纳记录')
+    }
+  })
+
+  it('采纳包含 pendingFields 的草稿时，成功回填已知字段并自动将焦点定位于第一个 pending 字段', async () => {
+    useAuthStore.getState().auth.setUser({
+      id: 'assistant-user', displayName: '配置员', email: null, roles: [],
+      permissions: ['ai:assist', 'target:write'],
+    })
+    const screen = await renderDialog()
+    const adoptHandler = useAssistantStore.getState().adoptHandler
+    expect(adoptHandler).not.toBeNull()
+
+    const proposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '规划名称、编码与超时，待补充入口地址',
+      changes: [
+        { fieldId: 'name', value: '财务系统' },
+        { fieldId: 'code', value: 'finance-system' },
+        { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+      ],
+      pendingFields: ['entryUrl'],
+      clarifyPrompt: '请提供入口地址',
+    }
+
+    const adoptResult = await adoptHandler!(proposal)
+    expect(adoptResult.ok).toBe(true)
+
+    await expect.element(screen.getByLabelText(/名称/)).toHaveValue('财务系统')
+    await expect.element(screen.getByLabelText(/编码/)).toHaveValue('finance-system')
+    await expect.element(screen.getByLabelText(/提交后等待离开登录页/)).toHaveValue(30)
+
+    // Entry URL must be focused
+    await expect.poll(() => document.activeElement?.getAttribute('name')).toBe('entryUrl')
+  })
 })
+

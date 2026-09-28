@@ -15,6 +15,7 @@ import {
   assistantAuthoringProposalSchema,
   assistantProposalSchema,
   operationsActionProposalSchema,
+  targetFormProposalSchema,
 } from '@cairn/shared'
 import { z } from 'zod'
 import type { DbHandle } from '@cairn/db'
@@ -784,6 +785,53 @@ export class AssistantCapabilityRegistry {
       handler: async (ctx) => {
         const { handleKnowledgeAnswer } = await import('./handlers/knowledge-answer.handler.js')
         return handleKnowledgeAnswer(ctx)
+      },
+    })
+
+    // 14. target.propose-form
+    this.register({
+      descriptor: {
+        id: 'target.propose-form',
+        version: '1.0.0',
+        label: '目标系统配置建议',
+        purpose: '结合目标表单上下文与当前事实，按自然语言意图生成配置项修改与向导创建提案',
+        notApplicable: ['跨系统批量配置', '账号密码明文代填'],
+        requiredPermissions: ['ai:assist', 'target:write'],
+        inputSchemaRef: 'targetProposeFormInputSchema',
+        outputSchemaRef: 'targetFormProposalSchema',
+        contextProfileRef: 'target_propose_form:v1',
+        executionMode: 'single_turn',
+        sideEffect: 'read_only',
+        allowedTools: [],
+        policyRef: 'target_propose_form_policy:v1',
+        promptRef: null,
+        validatorRefs: ['schema_validator'],
+        intentMatchers: [
+          { kind: 'keyword', pattern: '新建系统' },
+          { kind: 'keyword', pattern: '创建目标' },
+          { kind: 'keyword', pattern: '修改配置' },
+          { kind: 'keyword', pattern: '设置超时' },
+        ],
+        slotBindings: [
+          { slot: 'question', from: 'question', key: 'question', required: true },
+          { slot: 'targetId', from: 'pageContext', key: 'targetId', required: false },
+          { slot: 'mode', from: 'pageContext', key: 'mode', required: false },
+        ],
+        requiredContextKeys: [],
+      },
+      inputSchema: z.strictObject({
+        question: z.string().optional(),
+        targetId: z.string().optional(),
+        mode: z.enum(['create', 'edit']).optional(),
+        continuation: z.boolean().optional(),
+        previousProposal: z.any().optional(),
+      }),
+      outputSchema: targetFormProposalSchema,
+      handler: async (ctx) => {
+        const { handleTargetProposeForm } = await import(
+          './handlers/target-propose-form.handler.js'
+        )
+        return handleTargetProposeForm(ctx)
       },
     })
   }

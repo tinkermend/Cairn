@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ASSISTANT_PUBLISHED_CAPABILITY_IDS,
   SYSTEM_ROLE_DEFINITIONS,
   applyStepProposal,
+  assistantCapability,
+  assistantPageContextV2Schema,
   availableAssistantCapabilities,
   canAdoptAssistantProposal,
   canAdoptAuthoringProposal,
@@ -901,6 +904,62 @@ describe('单步候选构造', () => {
     if (decision.type === 'dispatch') {
       expect(decision.capabilityId).toBe('in-page.guidance')
       expect(decision.slots.page).toBe('studio')
+    }
+  })
+
+  it('发布能力清单中包含 target.propose-form 且权限为 target:write', () => {
+    expect(ASSISTANT_PUBLISHED_CAPABILITY_IDS).toContain('target.propose-form')
+    const cap = assistantCapability('target.propose-form')
+    expect(cap.requiredPermissions).toEqual(['ai:assist', 'target:read', 'target:write'])
+  })
+
+  it('当处于目标配置表单态且提出修改超时需求时，routeAssistantTurn 优先分派至 target.propose-form', () => {
+    const targetId = 'a1111111-1111-4111-8111-111111111111'
+    const decision = routeAssistantTurn({
+      question: '帮我把这个目标系统的超时改成30秒',
+      pageContext: {
+        page: 'target',
+        targetId,
+        activeForm: {
+          formId: 'target-config',
+          mode: 'edit',
+          targetId,
+          draftValues: { loginLeaveTimeoutSeconds: '10' },
+        },
+      },
+      available: ['target.propose-form', 'scenario.propose-step', 'knowledge.answer'],
+    })
+    expect(decision).toEqual({
+      type: 'dispatch',
+      capabilityId: 'target.propose-form',
+      slots: {
+        targetId,
+        formId: 'target-config',
+        mode: 'edit',
+        draftValues: { loginLeaveTimeoutSeconds: '10' },
+      },
+    })
+  })
+
+  it('assistantPageContextV2Schema 能够正确接纳并验证 activeForm 字段', () => {
+    const validCtx = {
+      version: 2 as const,
+      routeKey: 'targets.detail',
+      pageKind: 'target' as const,
+      page: 'target' as const,
+      targetId: 'a1111111-1111-4111-8111-111111111111',
+      activeForm: {
+        formId: 'target-config',
+        mode: 'edit' as const,
+        targetId: 'a1111111-1111-4111-8111-111111111111',
+        draftValues: { name: 'CRM系统' },
+      },
+    }
+    const parsed = assistantPageContextV2Schema.safeParse(validCtx)
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.activeForm?.formId).toBe('target-config')
+      expect(parsed.data.activeForm?.draftValues?.name).toBe('CRM系统')
     }
   })
 })

@@ -1,5 +1,6 @@
 import {
   MENU_CATALOG,
+  type AssistantActiveForm,
   type AssistantPageContextV2,
   type AssistantPageKind,
 } from '@cairn/shared'
@@ -125,6 +126,7 @@ export function toPageContext(
     draftRevision?: number
     versionId?: string
     isDirty?: boolean
+    activeForm?: AssistantActiveForm
   } | null,
 ): AssistantPageContextV2 | null {
   if (!context) return null
@@ -200,6 +202,7 @@ export function toPageContext(
     ...(context.selectedStepId ? { stepId: context.selectedStepId } : {}),
     ...(draftRevision ? { draftRevision } : {}),
     ...(context.versionId ? { versionId: context.versionId } : {}),
+    ...(context.activeForm ? { activeForm: context.activeForm } : {}),
     ...(context.isDirty !== undefined || draftRevision !== undefined
       ? {
           draft: {

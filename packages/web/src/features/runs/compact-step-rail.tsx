@@ -81,10 +81,16 @@ export function CompactStepRail({
             <span className='truncate'>🎯 运行总览与指标</span>
           </div>
           <span
-            className={`font-mono text-3xs px-1.5 py-0.5 rounded-full ${
+            className={`font-mono text-3xs px-1.5 py-0.5 rounded-full font-semibold ${
               selectedMode === 'overview'
                 ? 'bg-primary-foreground/20 text-primary-foreground'
-                : 'bg-muted text-muted-foreground'
+                : run.status === 'SUCCEEDED'
+                  ? 'bg-status-success-background text-status-success-foreground'
+                  : run.status === 'FAILED'
+                    ? 'bg-status-error-background text-status-error-foreground'
+                    : run.status === 'RUNNING'
+                      ? 'bg-status-info-background text-status-info-foreground'
+                      : 'bg-muted text-muted-foreground'
             }`}
           >
             {run.status}
@@ -160,11 +166,11 @@ export function CompactStepRail({
 
                   <span className='shrink-0'>
                     {step.status === 'SUCCEEDED' ? (
-                      <CheckCircle2 className='size-3.5 text-status-success-foreground' />
+                      <CheckCircle2 className='size-3.5 text-status-success' />
                     ) : step.status === 'FAILED' ? (
-                      <XCircle className='size-3.5 text-status-error-foreground' />
+                      <XCircle className='size-3.5 text-status-error' />
                     ) : step.status === 'RUNNING' ? (
-                      <Clock className='size-3.5 text-status-warning-foreground animate-spin' />
+                      <Clock className='size-3.5 text-status-warning animate-spin' />
                     ) : (
                       <MinusCircle className='size-3.5 text-muted-foreground/60' />
                     )}
@@ -172,7 +178,7 @@ export function CompactStepRail({
 
                   <span
                     className={`truncate text-label ${
-                      step.status === 'FAILED' ? 'text-status-error-foreground font-semibold' : ''
+                      step.status === 'FAILED' ? 'text-status-error font-semibold' : ''
                     }`}
                     title={step.name}
                   >
@@ -189,7 +195,7 @@ export function CompactStepRail({
                 <div className='flex items-center gap-2 shrink-0'>
                   {isLongest ? (
                     <span title='耗时相对较长' className='inline-flex shrink-0'>
-                      <Flame className='size-3 text-status-warning-foreground' />
+                      <Flame className='size-3 text-status-warning' />
                     </span>
                   ) : null}
 
@@ -202,9 +208,9 @@ export function CompactStepRail({
                     <div
                       className={`h-full rounded-full ${
                         step.status === 'FAILED'
-                          ? 'bg-status-error-foreground'
+                          ? 'bg-status-error'
                           : barWidthPercent >= 50
-                            ? 'bg-status-warning-foreground'
+                            ? 'bg-status-warning'
                             : 'bg-primary/50'
                       }`}
                       style={{ width: `${Math.max(4, barWidthPercent)}%` }}

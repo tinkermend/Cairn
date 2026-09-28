@@ -264,6 +264,88 @@ describe('AssistantResultView 结构化提案比对与采纳', () => {
     const adoptBtn = screen.getByRole('button', { name: /采纳到表单/ })
     await expect.element(adoptBtn).toBeDisabled()
   })
+
+  it('正确渲染带 pendingFields 与 clarifyPrompt 的 target_form 提案卡并展示前往补齐按钮', async () => {
+    const onAdopt = vi.fn()
+    const progressiveProposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '已为您规划好「财务系统」的基础配置，但目前缺少最关键的入口地址。',
+      changes: [
+        { fieldId: 'name', value: '财务系统' },
+        { fieldId: 'code', value: 'finance-system' },
+        { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+      ],
+      pendingFields: ['entryUrl'],
+      clarifyPrompt: '请提供系统的业务入口地址（URL）：',
+    }
+
+    const screen = await render(
+      <AssistantResultView
+        result={progressiveProposal}
+        onAdopt={onAdopt}
+      />
+    )
+
+    await expect.element(screen.getByTestId('target-form-pending-warning')).toBeInTheDocument()
+    await expect.element(screen.getByText(/待补充核心必填项：入口 URL/)).toBeInTheDocument()
+    await expect.element(screen.getByTestId('target-form-clarify-prompt')).toBeInTheDocument()
+    await expect.element(screen.getByText('请提供系统的业务入口地址（URL）：')).toBeInTheDocument()
+
+    const adoptBtn = screen.getByRole('button', { name: /采纳并前往补齐/ })
+    await expect.element(adoptBtn).toBeInTheDocument()
+    await adoptBtn.click()
+    expect(onAdopt).toHaveBeenCalledWith(progressiveProposal)
+  })
+
+  it('target_form 提案已采纳后正确展示已应用徽章与撤销采纳按钮，点击时触发 onRollback', async () => {
+    const onRollback = vi.fn()
+    const targetProposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '建议设置名称为业务系统',
+      changes: [{ fieldId: 'name', value: '业务系统' }],
+    }
+
+    const screen = await render(
+      <AssistantResultView
+        result={targetProposal}
+        isAdopted={true}
+        onRollback={onRollback}
+        canRollback={true}
+      />
+    )
+
+    await expect.element(screen.getByText('已应用到表单')).toBeInTheDocument()
+    const rollbackBtn = screen.getByRole('button', { name: /撤销采纳/ })
+    await expect.element(rollbackBtn).toBeInTheDocument()
+    await expect.element(rollbackBtn).not.toBeDisabled()
+
+    await rollbackBtn.click()
+    expect(onRollback).toHaveBeenCalledWith(targetProposal)
+  })
+
+  it('target_form 提案当 canRollback 为 false 时禁用撤销采纳按钮', async () => {
+    const onRollback = vi.fn()
+    const targetProposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '建议设置名称为业务系统',
+      changes: [{ fieldId: 'name', value: '业务系统' }],
+    }
+
+    const screen = await render(
+      <AssistantResultView
+        result={targetProposal}
+        isAdopted={true}
+        onRollback={onRollback}
+        canRollback={false}
+      />
+    )
+
+    const rollbackBtn = screen.getByRole('button', { name: /撤销采纳/ })
+    await expect.element(rollbackBtn).toBeDisabled()
+  })
 })
 
 describe('AssistantResultView 诊断结果与已确认事实呈现', () => {

@@ -8,11 +8,15 @@
 | `allocate-migration.mjs` | `pnpm db:new-migration <name>` | 锁内领取 PostgreSQL 下一号并立刻落盘（MySQL / SQLite 链已冻结，不再领号），避免并发任务扫到同一最大号 |
 | `check-portability.mjs` | `pnpm check:portability` | 数据库可移植：0098 之后的 PG 迁移不得用触发器、函数、DO 块、条件索引、ON CONFLICT、数组、序列、数据库生成 ID 等专有特性（单句可 `-- portability-exception: <原因>` 豁免）；`@cairn/db` 适配层以外的运行时代码，方言写法按 `portability-baseline.json` 只减不增 |
 | `check-deps.mjs` | `pnpm check:deps` | 包边界与依赖方向：package.json 声明的仓内依赖，以及绕开声明的跨包相对路径 import；允许边表在脚本顶部，改边界必须改脚本 |
+| `check-invariants.mjs` | `pnpm check:invariants` | 宪法架构不变量规则表（GET/POST、Worker 不持有 API 地址、快照冻结、租约写入器、Chromium 启动点等）；规则引用的条款必须是 CLAUDE.md 现存标题，含规则自测 |
+| `check-menu-reconciliation.mjs` | `pnpm check:menus` | 菜单目录、助手导览与侧栏单源对账；读 `packages/shared/dist`，改了菜单契约需先构建 |
+| `check-route-assistant.mjs` | `pnpm check:routes` | 核心叶路由的助手元数据声明 |
+| `check-spec-governance.mjs` | `pnpm check:specs` | 活跃方案 ≤ 15 篇、已闭环方案须归档；`docs/spec/` 不进仓库，只在本机手动跑，不进 `pnpm check` / CI |
 | `check-stack.mjs` | `pnpm check:stack` | 本机 api / worker / web 进程探活；不启动进程，也不进 CI |
 | `use-env.mjs` | `pnpm env:use local\|remote`、`pnpm env:status` | 开发连接画像：`.env.local` / `.env.remote` 与 `.env.example` 键集必须对齐；`.env` 只是当前生效指针 |
 | `probe-demonstration-files.mjs` | `node tools/probe-demonstration-files.mjs` | 本机 Web／API／对象存储的 JSON、YAML 文件导入、图片审查、参数／成功条件回填与单步重教；含 390px 窄屏检查 |
 
-`pnpm check` 含依赖、迁移、数据库可移植、架构不变量和探活判定单测，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。`pnpm check:stack` 探本机正在跑的进程，不进 CI。
+`pnpm check` 含依赖、迁移、数据库可移植、架构不变量、菜单与路由对账，以及规则与探活判定单测，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。`pnpm check:stack` 探本机正在跑的进程，不进 CI。源码遍历与「测试文件」口径统一在 `lib/source-scan.mjs`，各检查脚本不各写一份。
 
 ## 本机进程探活
 

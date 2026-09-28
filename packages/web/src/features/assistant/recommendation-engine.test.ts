@@ -470,13 +470,13 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
   it('表单上下文感知：激活目标配置表单时推荐字段解释与配置规则 Chips', () => {
     const chips = resolveContextRecommendations({
       boundContext: {
-        page: 'targets',
+        page: 'target',
         activeForm: {
-          formId: 'target_config',
+          formId: 'target-config',
           mode: 'create',
         },
       },
-      pageContext: { page: 'targets' },
+      pageContext: { page: 'target' },
       capabilities: mockCapabilities(),
       permissions: defaultPermissions,
     })
@@ -486,7 +486,36 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
       '🧹 登录后整理规则',
       '📝 目标编码与命名规则',
     ])
-    expect(chips[0].question).toContain('登录页停留超时不填会怎样？')
-    expect(chips[0].capabilityHint).toBe('knowledge.answer')
+  })
+
+  it('表单上下文感知：激活目标配置表单且具备写权限时推荐表单修改 Chips', () => {
+    const caps = mockCapabilities()
+    caps.items.push({
+      id: 'target.propose-form' as any,
+      label: '目标配置建议',
+      available: true,
+      missingPermissions: [],
+      requiredContext: [],
+    })
+    const chips = resolveContextRecommendations({
+      boundContext: {
+        page: 'target',
+        activeForm: {
+          formId: 'target-config',
+          mode: 'edit',
+        },
+      },
+      pageContext: { page: 'target' },
+      capabilities: caps,
+      permissions: { ...defaultPermissions, canWrite: true },
+    })
+
+    expect(chips.map((c) => c.label)).toEqual([
+      '⏱️ 将登录等待设为30秒',
+      '🧹 开启自动整理欢迎层',
+      '⏱️ 登录超时不填会怎样',
+    ])
+    expect(chips[0].capabilityHint).toBe('target.propose-form')
+    expect(chips[1].capabilityHint).toBe('target.propose-form')
   })
 })

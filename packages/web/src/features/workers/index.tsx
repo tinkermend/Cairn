@@ -49,6 +49,7 @@ import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { StatusBadge } from '@/components/status-badge'
+import { cn } from '@/lib/utils'
 import {
   MISMATCH_LABELS,
   ROUTE_REASON_LABELS,
@@ -330,7 +331,38 @@ export function WorkersPage() {
                               <StatusBadge tone={life.tone}>{life.label}</StatusBadge>
                             </TableCell>
                             <TableCell className='tabular-nums'>
-                              {item.counts.running}/{item.counts.holding}/{item.counts.waitingForAuth}
+                              <div className='flex items-center gap-1.5 font-mono text-label'>
+                                <span
+                                  className={cn(
+                                    'inline-flex items-center px-1.5 py-0.5 rounded text-3xs font-medium',
+                                    item.counts.running > 0
+                                      ? 'bg-status-success-background text-status-success-foreground'
+                                      : 'bg-surface-subtle text-muted-foreground'
+                                  )}
+                                  title={`运行中会话: ${item.counts.running}`}
+                                >
+                                  运 {item.counts.running}
+                                </span>
+                                <span
+                                  className={cn(
+                                    'inline-flex items-center px-1.5 py-0.5 rounded text-3xs font-medium',
+                                    item.counts.holding > 0
+                                      ? 'bg-status-warning-background text-status-warning-foreground'
+                                      : 'bg-surface-subtle text-muted-foreground'
+                                  )}
+                                  title={`保持中会话: ${item.counts.holding}`}
+                                >
+                                  持 {item.counts.holding}
+                                </span>
+                                {item.counts.waitingForAuth > 0 ? (
+                                  <span
+                                    className='inline-flex items-center px-1.5 py-0.5 rounded text-3xs font-medium bg-status-info-background text-status-info-foreground'
+                                    title={`等待认证会话: ${item.counts.waitingForAuth}`}
+                                  >
+                                    待 {item.counts.waitingForAuth}
+                                  </span>
+                                ) : null}
+                              </div>
                             </TableCell>
                             <TableCell>
                               <StatusBadge tone={item.routeAvailability === 'eligible' ? 'success' : 'warning'}>
@@ -353,13 +385,13 @@ export function WorkersPage() {
                                     <DropdownMenuContent align='end' className='w-40'>
                                       {item.status === 'READY' ? (
                                         <DropdownMenuItem onClick={() => setDisablingWorker(item)}>
-                                          <Ban className='mr-2 size-4 text-warning' />
+                                          <Ban className='mr-2 size-4 text-status-warning' />
                                           禁用节点
                                         </DropdownMenuItem>
                                       ) : null}
                                       {item.status === 'DISABLED' ? (
                                         <DropdownMenuItem onClick={() => setEnablingWorker(item)}>
-                                          <CheckCircle2 className='mr-2 size-4 text-success' />
+                                          <CheckCircle2 className='mr-2 size-4 text-status-success' />
                                           启用节点
                                         </DropdownMenuItem>
                                       ) : null}

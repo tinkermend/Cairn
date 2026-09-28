@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
 import {
+  TARGET_CONFIG_FORM_ID,
+  TARGET_CONFIG_FORM_FIELDS,
   createTargetBodySchema,
   validateTargetFormProposalChange,
   type TargetDto,
@@ -56,7 +58,7 @@ export function TargetFormDialog({
   onCreated,
 }: TargetFormDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} variant='inspection'>
       {open ? (
         <TargetFormFields
           key={current?.id ?? 'create'}
@@ -114,7 +116,7 @@ function TargetFormFields({
           statusLabel: isEdit ? '编辑目标' : '新建目标',
           statusTone: 'info',
           activeForm: {
-            formId: 'target-config',
+            formId: TARGET_CONFIG_FORM_ID,
             mode: isEdit ? 'edit' : 'create',
             targetId: current?.id,
           },
@@ -136,9 +138,13 @@ function TargetFormFields({
       : null,
   )
 
+  const preAdoptValuesRef = useRef<Record<string, any> | null>(null)
+
   useEffect(() => {
     if (!user?.permissions.includes('target:write')) return
     const register = useAssistantStore.getState().registerAdoptHandler
+    const registerRollback = useAssistantStore.getState().registerRollbackHandler
+
     register(async (proposal) => {
       if (proposal.kind !== 'target_form') {
         return { ok: false, reason: '仅支持采纳目标系统配置建议' }
@@ -155,18 +161,60 @@ function TargetFormFields({
           return { ok: false, reason: issue }
         }
       }
+
+      // 采纳前记录快照（仅记录 proposal 触碰的字段当前值，避免影响用户手填的其他字段）
+      const snapshot: Record<string, any> = {}
+      for (const change of proposal.changes) {
+        snapshot[change.fieldId] = form.getValues(change.fieldId as any)
+      }
+      preAdoptValuesRef.current = snapshot
+
       for (const change of proposal.changes) {
         form.setValue(change.fieldId as any, change.value, {
           shouldDirty: true,
           shouldValidate: true,
         })
       }
-      toast.success(`已应用 ${proposal.changes.length} 项配置到表单，请核对后保存`)
+      const touchesAccount = proposal.changes.some((c) => c.fieldId === 'authMethod' || c.fieldId === 'captchaMode')
+      if (touchesAccount) {
+        setActiveAccordion('account')
+      }
+      if (proposal.pendingFields && proposal.pendingFields.length > 0) {
+        const firstPending = proposal.pendingFields[0]
+        setTimeout(() => {
+          form.setFocus(firstPending as any)
+        }, 50)
+        const pendingNames = proposal.pendingFields
+          .map((f) => TARGET_CONFIG_FORM_FIELDS.find((item) => item.id === f)?.label ?? f)
+          .join('、')
+        toast.info(`已应用 ${proposal.changes.length} 项配置，请补齐「${pendingNames}」后保存`)
+      } else {
+        toast.success(`已应用 ${proposal.changes.length} 项配置到表单，请核对后保存`)
+      }
       return { ok: true, digest: `已应用 ${proposal.changes.length} 项配置` }
+    })
+
+    registerRollback(async (proposal) => {
+      if (proposal.kind !== 'target_form') {
+        return { ok: false, reason: '仅支持回滚目标系统配置建议' }
+      }
+      if (!preAdoptValuesRef.current) {
+        return { ok: false, reason: '没有可撤销的采纳记录或已保存' }
+      }
+      for (const [fieldId, prevValue] of Object.entries(preAdoptValuesRef.current)) {
+        form.setValue(fieldId as any, prevValue, {
+          shouldDirty: true,
+          shouldValidate: true,
+        })
+      }
+      preAdoptValuesRef.current = null
+      toast.info('已撤销采纳，恢复修改前状态')
+      return { ok: true }
     })
 
     return () => {
       useAssistantStore.getState().registerAdoptHandler(null)
+      useAssistantStore.getState().registerRollbackHandler(null)
     }
   }, [isEdit, form, user?.permissions])
 
@@ -192,6 +240,8 @@ function TargetFormFields({
           captcha,
           sensitiveSelectors: selectorsFromForm(values.sensitiveSelectors),
         })
+        preAdoptValuesRef.current = null
+        useAssistantStore.getState().setLastAdopted(null)
         toast.success('目标系统已更新')
         await queryClient.invalidateQueries({ queryKey: ['targets'] })
         await queryClient.invalidateQueries({
@@ -218,6 +268,8 @@ function TargetFormFields({
           account: accountFromForm(values),
         })
         const created = await createTarget(parsed)
+        preAdoptValuesRef.current = null
+        useAssistantStore.getState().setLastAdopted(null)
         toast.success('目标系统已创建')
         await queryClient.invalidateQueries({ queryKey: ['targets'] })
         onOpenChange(false)

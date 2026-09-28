@@ -18,6 +18,7 @@ const targetOverviewSearchSchema = z.object({
   page: z.coerce.number().int().min(1).optional().catch(undefined),
   pageSize: z.coerce.number().int().refine((size) => [10, 20, 50].includes(size)).optional().catch(undefined),
   selected: z.string().min(1).max(128).optional().catch(undefined),
+  action: z.enum(['create']).optional().catch(undefined),
 })
 
 export const Route = createFileRoute('/_authenticated/targets/')({

@@ -32,6 +32,12 @@ if (!existsSync(webSidebarPath)) {
   issues.push(`找不到 Web 侧栏配置文件: ${webSidebarPath}`)
 }
 
+// 运行期对象来自 shared 编译产物；产物过期时对账的是旧目录，改了 menus.ts / assistant.ts 后需先重新构建。
+const sharedDistPath = resolve(root, 'packages/shared/dist/index.js')
+if (!existsSync(sharedDistPath)) {
+  issues.push('找不到 packages/shared/dist/index.js：先运行 pnpm --filter @cairn/shared build（或 pnpm build）')
+}
+
 if (issues.length > 0) {
   console.error('❌ 基础文件缺失:')
   for (const err of issues) console.error(`  - ${err}`)
@@ -40,12 +46,7 @@ if (issues.length > 0) {
 
 // 动态载入 shared 编译产物验证运行期对象
 async function runChecks() {
-  const { MENU_CATALOG, requireMenuItem } = await import(
-    resolve(root, 'packages/shared/dist/index.js')
-  )
-  const { ASSISTANT_GUIDE_CATALOG } = await import(
-    resolve(root, 'packages/shared/dist/index.js')
-  )
+  const { MENU_CATALOG, requireMenuItem, ASSISTANT_GUIDE_CATALOG } = await import(sharedDistPath)
 
   console.log(`🔍 开始检查平台菜单一致性 (MENU_CATALOG: ${MENU_CATALOG.length} 项)...`)
 

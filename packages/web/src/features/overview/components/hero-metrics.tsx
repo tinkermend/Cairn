@@ -12,6 +12,7 @@ import type {
   OverviewAnalyticsResponse,
   SessionSystemOverviewResponse,
 } from '@cairn/shared'
+import { cn } from '@/lib/utils'
 
 function extractMetricValue(
   metric:
@@ -117,37 +118,65 @@ export function HeroMetrics({
       </div>
 
       {/* 2. 综合执行成功率 */}
-      <div className="flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-small text-muted-foreground">综合执行成功率</span>
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-status-success-background text-status-success-foreground">
-            <CheckCircle2 size={18} aria-hidden />
-          </span>
-        </div>
-        <div className="mt-3">
-          <div className="text-stat font-semibold tabular-nums text-text-primary">
-            {successRate}%
-          </div>
-          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
-            <div
-              className="h-full rounded-full bg-status-success transition-[width] duration-300"
-              style={{ width: `${Math.min(100, Math.max(0, successRate))}%` }}
-            />
-          </div>
-          <div className="mt-1.5 flex items-center justify-between text-label text-muted-foreground">
-            <span>
-              {rateDelta !== null && rateDelta !== undefined ? (
-                <span className={rateDelta >= 0 ? 'text-status-success' : 'text-status-error'}>
-                  {rateDelta >= 0 ? `+${rateDelta}%` : `${rateDelta}%`}
+      {(() => {
+        const rateTone =
+          successRate >= 95
+            ? 'text-status-success'
+            : successRate >= 90
+              ? 'text-status-warning'
+              : 'text-status-error'
+        const rateBg =
+          successRate >= 95
+            ? 'bg-status-success'
+            : successRate >= 90
+              ? 'bg-status-warning'
+              : 'bg-status-error'
+        const rateBadge =
+          successRate >= 95
+            ? 'bg-status-success-background text-status-success-foreground'
+            : successRate >= 90
+              ? 'bg-status-warning-background text-status-warning-foreground'
+              : 'bg-status-error-background text-status-error-foreground'
+
+        return (
+          <div className="flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-small text-muted-foreground">综合执行成功率</span>
+              <span className={cn('flex size-8 shrink-0 items-center justify-center rounded-md', rateBadge)}>
+                <CheckCircle2 size={18} aria-hidden />
+              </span>
+            </div>
+            <div className="mt-3">
+              <div className="flex items-baseline gap-2">
+                <span className="text-stat font-semibold tabular-nums text-text-primary">
+                  {successRate}%
                 </span>
-              ) : (
-                '—'
-              )}
-            </span>
-            <span>目标 ≥95%</span>
+                <span className={cn('text-label font-medium', rateTone)}>
+                  {successRate >= 95 ? '正常达标' : successRate >= 90 ? '接近预警' : '异常风险'}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
+                <div
+                  className={cn('h-full rounded-full transition-[width] duration-300', rateBg)}
+                  style={{ width: `${Math.min(100, Math.max(0, successRate))}%` }}
+                />
+              </div>
+              <div className="mt-1.5 flex items-center justify-between text-label text-muted-foreground">
+                <span>
+                  {rateDelta !== null && rateDelta !== undefined ? (
+                    <span className={rateDelta >= 0 ? 'text-status-success' : 'text-status-error'}>
+                      {rateDelta >= 0 ? `+${rateDelta}%` : `${rateDelta}%`}
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                </span>
+                <span>目标 ≥95%</span>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        )
+      })()}
 
       {/* 3. AI 智能步骤 */}
       <div className="flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card">
@@ -174,7 +203,7 @@ export function HeroMetrics({
       <div className="flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card">
         <div className="flex items-center justify-between gap-2">
           <span className="text-small text-muted-foreground">目标系统与账号</span>
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-subtle text-text-primary">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-status-info-background text-status-info-foreground">
             <Globe size={18} aria-hidden />
           </span>
         </div>
@@ -186,6 +215,13 @@ export function HeroMetrics({
             </span>
           </div>
           <div className="mt-1 flex items-center gap-1.5 text-label text-muted-foreground">
+            <span
+              className={cn(
+                'size-2 rounded-full',
+                healthRate >= 80 ? 'bg-status-success' : 'bg-status-warning'
+              )}
+              aria-hidden
+            />
             <span className="font-medium text-text-primary">{healthRate}%</span>
             <span>健康就绪复用率</span>
           </div>
@@ -196,21 +232,56 @@ export function HeroMetrics({
       <div className="flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card">
         <div className="flex items-center justify-between gap-2">
           <span className="text-small text-muted-foreground">集群算力利用率</span>
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-subtle text-text-primary">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-selection-background text-primary">
             <Activity size={18} aria-hidden />
           </span>
         </div>
         <div className="mt-3">
-          <div className="text-stat font-semibold tabular-nums text-text-primary">
-            {capacityPercent}%
+          <div className="flex items-baseline gap-2">
+            <span className="text-stat font-semibold tabular-nums text-text-primary">
+              {capacityPercent}%
+            </span>
+            <span className="text-label text-muted-foreground">
+              {usedCapacity}/{totalCapacity} 槽位
+            </span>
           </div>
-          <div className="mt-1 flex items-center justify-between text-label text-muted-foreground">
+          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
+            <div
+              className={cn(
+                'h-full rounded-full transition-[width] duration-300',
+                capacityPercent >= 90
+                  ? 'bg-status-error'
+                  : capacityPercent >= 75
+                    ? 'bg-status-warning'
+                    : 'bg-primary'
+              )}
+              style={{ width: `${Math.min(100, Math.max(0, capacityPercent))}%` }}
+            />
+          </div>
+          <div className="mt-1.5 flex items-center justify-between text-label text-muted-foreground">
             <span>
               就绪 {readyWorkers}/{totalWorkers} 节点
             </span>
-            <span className="flex items-center gap-1">
-              <span className="size-1.5 rounded-full bg-status-success" />
-              就绪
+            <span className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  'size-2 rounded-full',
+                  totalWorkers > 0 && readyWorkers === totalWorkers
+                    ? 'bg-status-success'
+                    : totalWorkers > 0 && readyWorkers > 0
+                      ? 'bg-status-warning'
+                      : 'bg-status-error'
+                )}
+                aria-hidden
+              />
+              <span className={cn(
+                'font-medium',
+                totalWorkers > 0 && readyWorkers === totalWorkers
+                  ? 'text-status-success'
+                  : 'text-status-warning'
+              )}>
+                {totalWorkers > 0 && readyWorkers === totalWorkers ? '全部就绪' : '部分就绪'}
+              </span>
             </span>
           </div>
         </div>

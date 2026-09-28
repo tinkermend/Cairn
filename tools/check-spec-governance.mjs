@@ -6,6 +6,9 @@
  * 1. docs/spec/ 根目录仅维护当前推进中的活跃方案（硬性上限 <= 15 篇），防止上下文膨胀。
  * 2. 检查已完成/已在 CHANGELOG 中闭环的方案是否遗留在根目录，强制归档至 docs/spec/archive/。
  * 3. 确保历史方案归档目录健康完好。
+ *
+ * docs/spec/ 按本机忽略策略不进仓库，所以本检查只在本机有意义：不挂在 `pnpm check` / CI 上，
+ * 目录不存在时直接跳过。用 `pnpm check:specs` 手动运行。
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -21,8 +24,8 @@ function runCheck() {
   const issues = [];
 
   if (!existsSync(specDir)) {
-    console.error('❌ docs/spec/ 目录不存在');
-    process.exit(1);
+    console.log('ℹ docs/spec/ 不存在（未进仓库的本机目录），跳过方案文档治理检查');
+    return;
   }
 
   if (!existsSync(archiveDir)) {
@@ -56,7 +59,7 @@ function runCheck() {
       if (parts.length >= 5) {
         const candidateCode = `${parts[3].toUpperCase()}-${parts[4]}`; // e.g. AI-01, RI-02
         if (candidateCode.match(/^[A-Z]+-\d+/)) {
-          const regex = new RegExp(`${candidateCode}[\\s\\S]{0,40}(落地|完成|闭环)`, 'i');
+          const regex = new RegExp(`${candidateCode}[\\s\\S]{0,40}(?<![未没待])(落地|完成|闭环)`, 'i');
           if (regex.test(changelogContent)) {
             issues.push(
               `方案 ${specFile} (代号 ${candidateCode}) 已在 CHANGELOG 中记录为闭环落地，` +

@@ -308,6 +308,8 @@ export async function supervisorRouteWithLlm(
    - 选择 "scenario.discover"，并在 slots 中提取 filter 关键词。
 7. 若用户询问受控单资源运维写操作（如暂停调度、恢复调度、取消运行）：
    - 选择 "operations.action"，并在 slots 中提取 actionKey 与 resourceId。
+7.1 若用户当前处于目标配置或表单态（activeForm 存在且为 'target-config'，或处于 target 页面）且表达了配置修改、参数调整、表单填充等写意图（如“把超时改成30秒”、“开启无验证码”、“将整理预算设为10秒”）：
+   - 选择 "target.propose-form"，并在 slots 中尽量带上 targetId、mode 与字段信息。
 8. 若用户询问平台概念、使用规范、功能配置说明或业务实体事实（非页面局部找按钮动线、非运行失败诊断、非场景步骤解释、且不包含任何修改/执行等写意图）：
    - 选择 "knowledge.answer"，并在 slots 中尽量提取相关关键词或查询意图；若含有明确写意图，禁止选择此能力，强制转入专有操作或澄清。
 9. 若都不匹配或用户在进行与平台完全无关的闲聊，skillId 必须输出 "none"，confidence 设为 0。不要勉强归类。
@@ -337,6 +339,8 @@ slots 的值只能是字符串、数字、布尔值或 null；多个关键词请
           runId: pageContext?.runId ?? null,
           stepId: pageContext?.stepId ?? null,
           targetId: (pageContext as any)?.targetId ?? null,
+          activeForm: (pageContext as any)?.activeForm?.formId ?? null,
+          activeFormMode: (pageContext as any)?.activeForm?.mode ?? null,
         }),
       },
     ],

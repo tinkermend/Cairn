@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  AssistantActiveForm,
   AssistantAuthoringProposal,
   AssistantCapabilityId,
   AssistantCapabilitiesResponse,
@@ -71,11 +72,7 @@ export interface AssistantBoundContext {
     badge?: string
     priority?: number
   }>
-  activeForm?: {
-    formId: 'target-config'
-    mode: 'create' | 'edit'
-    targetId?: string
-  }
+  activeForm?: AssistantActiveForm
 }
 
 type AssistantState = {

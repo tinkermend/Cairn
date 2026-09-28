@@ -461,6 +461,21 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
               },
             }
           }
+        } else if (
+          parentResult.kind === 'target_form' &&
+          parentResult.pendingFields &&
+          parentResult.pendingFields.length > 0 &&
+          availableIds.includes('target.propose-form')
+        ) {
+          decision = {
+            type: 'dispatch',
+            capabilityId: 'target.propose-form',
+            slots: {
+              ...(parentRecord?.slots ?? {}),
+              continuation: true,
+              previousProposal: parentResult,
+            },
+          }
         }
       }
 
@@ -617,6 +632,12 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
           if (normalizedContext?.stepId) fallbackSlots.stepId = normalizedContext.stepId
           if (normalizedContext?.draftRevision) fallbackSlots.draftRevision = normalizedContext.draftRevision
           if (normalizedContext?.versionId) fallbackSlots.versionId = normalizedContext.versionId
+          if (normalizedContext?.activeForm) {
+            fallbackSlots.formId = normalizedContext.activeForm.formId
+            fallbackSlots.mode = normalizedContext.activeForm.mode
+            if (normalizedContext.activeForm.targetId) fallbackSlots.targetId = normalizedContext.activeForm.targetId
+            if (normalizedContext.activeForm.draftValues) fallbackSlots.draftValues = normalizedContext.activeForm.draftValues
+          }
 
           if (chosen === 'knowledge.answer') {
             decision = {

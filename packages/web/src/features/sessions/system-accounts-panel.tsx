@@ -354,7 +354,7 @@ export function SystemAccountsPanel({
                             <span
                               className={`size-2 rounded-full ${
                                 item.ownerWorkerOnline
-                                  ? 'bg-status-success-foreground'
+                                  ? 'bg-status-success'
                                   : 'bg-muted-foreground/40'
                               }`}
                               title={item.ownerWorkerOnline ? 'Worker 在线' : 'Worker 离线'}

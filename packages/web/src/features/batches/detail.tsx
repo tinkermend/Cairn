@@ -15,6 +15,8 @@ import { fetchScenario } from '@/lib/scenarios-api'
 import { fetchDataset } from '@/lib/datasets-api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/status-badge'
+import { batchStatusTone, batchItemStatusTone } from './labels'
 import {
   Table,
   TableBody,
@@ -304,51 +306,97 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
         </div>
       )}
 
+      {/* Multi-segment Progress Bar */}
+      {batch.totalItems > 0 && (
+        <div className='rounded-xl border border-border-card bg-card p-4 shadow-card'>
+          <div className='flex items-center justify-between text-small'>
+            <span className='font-medium text-text-primary'>整体执行进度</span>
+            <span className='font-mono font-semibold tabular-nums text-text-primary'>
+              {percentComplete}% ({batch.successItems + batch.failedItems}/{batch.totalItems})
+            </span>
+          </div>
+          <div className='mt-2.5 flex h-2.5 w-full overflow-hidden rounded-full bg-surface-subtle'>
+            {batch.successItems > 0 && (
+              <div
+                className='bg-status-success transition-[width] duration-300'
+                style={{ width: `${(batch.successItems / batch.totalItems) * 100}%` }}
+                title={`成功: ${batch.successItems}`}
+              />
+            )}
+            {batch.failedItems > 0 && (
+              <div
+                className='bg-status-error transition-[width] duration-300'
+                style={{ width: `${(batch.failedItems / batch.totalItems) * 100}%` }}
+                title={`失败: ${batch.failedItems}`}
+              />
+            )}
+            {batch.reviewItems > 0 && (
+              <div
+                className='bg-status-warning transition-[width] duration-300'
+                style={{ width: `${(batch.reviewItems / batch.totalItems) * 100}%` }}
+                title={`需复核: ${batch.reviewItems}`}
+              />
+            )}
+          </div>
+          <div className='mt-2.5 flex flex-wrap items-center gap-4 text-label text-muted-foreground'>
+            <span className='flex items-center gap-1.5'>
+              <span className='size-2 rounded-full bg-status-success' aria-hidden />
+              成功 {batch.successItems}
+            </span>
+            {batch.failedItems > 0 && (
+              <span className='flex items-center gap-1.5'>
+                <span className='size-2 rounded-full bg-status-error' aria-hidden />
+                失败 {batch.failedItems}
+              </span>
+            )}
+            {batch.reviewItems > 0 && (
+              <span className='flex items-center gap-1.5'>
+                <span className='size-2 rounded-full bg-status-warning' aria-hidden />
+                需人工复核 {batch.reviewItems}
+              </span>
+            )}
+            <span className='flex items-center gap-1.5'>
+              <span className='size-2 rounded-full bg-surface-subtle' aria-hidden />
+              剩余 {Math.max(0, batch.totalItems - batch.successItems - batch.failedItems - batch.reviewItems)}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Progress & Metrics Card */}
       <div className='grid grid-cols-2 md:grid-cols-5 gap-3'>
-        <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
+        <div className='p-4 rounded-xl border border-border-card bg-card flex flex-col justify-between shadow-card'>
           <div className='text-label text-muted-foreground'>运行状态</div>
           <div className='flex items-center gap-2 mt-2'>
-            <Badge
-              variant={
-                batch.status === 'COMPLETED'
-                  ? 'secondary'
-                  : batch.status === 'RUNNING'
-                    ? 'default'
-                    : batch.status === 'PAUSED'
-                      ? 'destructive'
-                      : 'outline'
-              }
-              className='text-label px-2 py-0.5 font-mono'
-            >
+            <StatusBadge tone={batchStatusTone(batch.status)}>
               {batch.status}
-            </Badge>
-            <span className='text-label text-muted-foreground'>{percentComplete}%</span>
+            </StatusBadge>
+            <span className='text-label text-muted-foreground font-mono tabular-nums'>{percentComplete}%</span>
           </div>
         </div>
 
-        <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
+        <div className='p-4 rounded-xl border border-border-card bg-card flex flex-col justify-between shadow-card'>
           <div className='text-label text-muted-foreground'>总执行项</div>
-          <div className='text-stat font-bold font-mono mt-1'>{batch.totalItems}</div>
+          <div className='text-stat font-bold font-mono text-text-primary mt-1'>{batch.totalItems}</div>
         </div>
 
-        <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-label text-status-success-foreground'>成功执行</div>
-          <div className='text-stat font-bold font-mono text-status-success-foreground mt-1'>
+        <div className='p-4 rounded-xl border border-border-card bg-card flex flex-col justify-between shadow-card'>
+          <div className='text-label text-muted-foreground'>成功执行</div>
+          <div className='text-stat font-bold font-mono text-status-success mt-1'>
             {batch.successItems}
           </div>
         </div>
 
-        <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-label text-destructive'>失败错误</div>
-          <div className='text-stat font-bold font-mono text-destructive mt-1'>
+        <div className='p-4 rounded-xl border border-border-card bg-card flex flex-col justify-between shadow-card'>
+          <div className='text-label text-muted-foreground'>失败错误</div>
+          <div className='text-stat font-bold font-mono text-status-error mt-1'>
             {batch.failedItems}
           </div>
         </div>
 
-        <div className='p-4 rounded-xl border bg-card flex flex-col justify-between'>
-          <div className='text-label text-status-warning-foreground'>需人工复核</div>
-          <div className='text-stat font-bold font-mono text-status-warning-foreground mt-1'>
+        <div className='p-4 rounded-xl border border-border-card bg-card flex flex-col justify-between shadow-card'>
+          <div className='text-label text-muted-foreground'>需人工复核</div>
+          <div className='text-stat font-bold font-mono text-status-warning mt-1'>
             {batch.reviewItems}
           </div>
         </div>
@@ -415,22 +463,9 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
                         {item.datasetRowIndex + 1}
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant='outline'
-                          className={`text-label font-mono ${
-                            item.itemStatus === 'SUCCEEDED'
-                              ? 'text-status-success-foreground border-border-default'
-                              : item.itemStatus === 'FAILED'
-                                ? 'text-destructive border-destructive/30'
-                                : item.itemStatus === 'NEEDS_REVIEW'
-                                  ? 'text-status-warning-foreground border-border-default'
-                                  : item.itemStatus === 'RUNNING'
-                                    ? 'text-primary border-primary/30 animate-pulse'
-                                    : 'text-muted-foreground'
-                          }`}
-                        >
+                        <StatusBadge tone={batchItemStatusTone(item.itemStatus)}>
                           {item.itemStatus}
-                        </Badge>
+                        </StatusBadge>
                       </TableCell>
                       <TableCell className='text-small font-mono truncate max-w-28'>
                         {item.outcomeVerdict ?? '-'}

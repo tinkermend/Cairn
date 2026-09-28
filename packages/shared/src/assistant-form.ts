@@ -17,7 +17,17 @@ import {
   LANDING_SETTLE_MODES,
   landingSettleModeSchema,
 } from './landing-settle.js'
-import { MAX_DURATION_MS } from './wire.js'
+import { MAX_DURATION_MS, entityIdSchema } from './wire.js'
+
+export const TARGET_CONFIG_FORM_ID = 'target-config' as const
+
+export const assistantActiveFormSchema = z.strictObject({
+  formId: z.string().min(1).max(100),
+  mode: z.enum(['create', 'edit']),
+  targetId: entityIdSchema.optional(),
+  draftValues: z.record(z.string(), z.string()).optional(),
+})
+export type AssistantActiveForm = z.infer<typeof assistantActiveFormSchema>
 
 export const TARGET_CONFIG_MAX_TIMEOUT_SECONDS = MAX_DURATION_MS / 1000
 
@@ -229,8 +239,61 @@ export const targetFormProposalSchema = z.strictObject({
   targetId: z.string().uuid().optional(),
   summary: z.string().min(1).max(1024),
   changes: z.array(targetFormProposalChangeSchema).min(1).max(16),
+  pendingFields: z.array(targetConfigAssistFieldIdSchema).optional(),
+  clarifyPrompt: z.string().max(256).optional(),
 })
 export type TargetFormProposal = z.infer<typeof targetFormProposalSchema>
+
+export const SUSPICIOUS_DUMMY_URL_PATTERNS = [
+  /example\.(com|org|net)/i,
+  /test\.(com|cn)/i,
+  /待补充/i,
+  /placeholder/i,
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i,
+]
+
+export function sanitizeProposalChanges(
+  changes: TargetFormProposalChange[],
+  mode: 'create' | 'edit'
+): {
+  cleanChanges: TargetFormProposalChange[]
+  detectedPendingFields: TargetConfigAssistFieldId[]
+} {
+  const cleanChanges: TargetFormProposalChange[] = []
+  const detectedPendingFields: TargetConfigAssistFieldId[] = []
+
+  for (const change of changes) {
+    if (change.fieldId === 'entryUrl' || change.fieldId === 'loginUrl') {
+      const isDummy = SUSPICIOUS_DUMMY_URL_PATTERNS.some((pat) =>
+        pat.test(change.value)
+      )
+      if (isDummy) {
+        if (
+          change.fieldId === 'entryUrl' &&
+          !detectedPendingFields.includes('entryUrl')
+        ) {
+          detectedPendingFields.push('entryUrl')
+        }
+        continue
+      }
+    }
+    const issue = validateTargetFormProposalChange(change, mode)
+    if (!issue) {
+      cleanChanges.push(change)
+    }
+  }
+
+  if (
+    mode === 'create' &&
+    !cleanChanges.some((c) => c.fieldId === 'entryUrl')
+  ) {
+    if (!detectedPendingFields.includes('entryUrl')) {
+      detectedPendingFields.push('entryUrl')
+    }
+  }
+
+  return { cleanChanges, detectedPendingFields }
+}
 
 export function validateTargetFormProposalChange(
   change: TargetFormProposalChange,
@@ -248,3 +311,4 @@ export function validateTargetFormProposalChange(
     ? null
     : (result.error.issues[0]?.message ?? `${field.label}格式不合法`)
 }
+

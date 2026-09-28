@@ -8,6 +8,7 @@ import {
   UserCheck,
 } from 'lucide-react'
 import type { MonitoringOverviewResponse } from '@cairn/shared'
+import { cn } from '@/lib/utils'
 
 function extractMetricValue(
   metric:
@@ -56,29 +57,54 @@ export function FleetResilience({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-6 text-body">
           {/* Worker 节点 */}
-          <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded bg-surface-subtle text-muted-foreground">
-              <Server size={15} aria-hidden />
-            </span>
-            <div className="flex flex-col">
-              <span className="text-label text-muted-foreground">执行节点</span>
-              <span className="font-mono text-body font-medium text-text-primary">
-                {readyWorkers}/{totalWorkers} 正常
-              </span>
-            </div>
-          </div>
+          {(() => {
+            const hasProblem = totalWorkers > 0 && readyWorkers < totalWorkers
+            const allDown = totalWorkers > 0 && readyWorkers === 0
+            const workerTone = allDown
+              ? 'text-status-error'
+              : hasProblem
+                ? 'text-status-warning'
+                : 'text-text-primary'
+            const workerBg = allDown
+              ? 'bg-status-error-background text-status-error-foreground'
+              : hasProblem
+                ? 'bg-status-warning-background text-status-warning-foreground'
+                : 'bg-surface-subtle text-muted-foreground'
+
+            return (
+              <div className="flex items-center gap-2">
+                <span className={cn('flex size-7 items-center justify-center rounded', workerBg)}>
+                  <Server size={15} aria-hidden />
+                </span>
+                <div className="flex flex-col">
+                  <span className="text-label text-muted-foreground">执行节点</span>
+                  <span className={cn('font-mono text-body font-medium', workerTone)}>
+                    {readyWorkers}/{totalWorkers} 正常
+                  </span>
+                </div>
+              </div>
+            )
+          })()}
 
           {/* 队列积压 */}
           <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded bg-surface-subtle text-muted-foreground">
+            <span
+              className={cn(
+                'flex size-7 items-center justify-center rounded',
+                claimable > 10
+                  ? 'bg-status-warning-background text-status-warning-foreground'
+                  : 'bg-surface-subtle text-muted-foreground'
+              )}
+            >
               <Layers size={15} aria-hidden />
             </span>
             <div className="flex flex-col">
               <span className="text-label text-muted-foreground">调度排队</span>
               <span
-                className={`font-mono text-body font-medium ${
-                  claimable > 5 ? 'text-status-warning' : 'text-text-primary'
-                }`}
+                className={cn(
+                  'font-mono text-body font-medium',
+                  claimable > 10 ? 'text-status-warning font-semibold' : 'text-text-primary'
+                )}
               >
                 {claimable} 待认领
               </span>
@@ -88,20 +114,22 @@ export function FleetResilience({
           {/* 待人工接管 */}
           <div className="flex items-center gap-2">
             <span
-              className={`flex size-7 items-center justify-center rounded ${
+              className={cn(
+                'flex size-7 items-center justify-center rounded',
                 needsReview > 0
                   ? 'bg-status-warning-background text-status-warning-foreground'
                   : 'bg-surface-subtle text-muted-foreground'
-              }`}
+              )}
             >
               <UserCheck size={15} aria-hidden />
             </span>
             <div className="flex flex-col">
               <span className="text-label text-muted-foreground">人工接管</span>
               <span
-                className={`font-mono text-body font-medium ${
+                className={cn(
+                  'font-mono text-body font-medium',
                   needsReview > 0 ? 'text-status-warning' : 'text-text-primary'
-                }`}
+                )}
               >
                 {needsReview > 0 ? `${needsReview} 起待处理` : '0 待处理'}
               </span>

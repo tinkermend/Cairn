@@ -1,37 +1,77 @@
 #!/usr/bin/env node
 /**
- * 识途宪法架构不变量声明式规则引擎 (Rule-based Architecture Invariant Watchdog)
+ * 识途宪法（CLAUDE.md，AGENTS.md 为其软链）架构不变量的声明式规则表。
  *
- * 将《识途宪法》（AGENTS.md）的核心架构红线转化为声明式规则注册表。
- * 支持单条规则独立维护、提供条款出处与精确修复指引。
+ * 每条规则写明所依据的宪法条款（articles 必须是 CLAUDE.md 里现存的 ### 标题，
+ * tools/lib/invariants.test.mjs 会校验），以及理由与修复指引。
+ * 规则 ID 一经删除不再复用：INV004（凭据脱敏，改由 shared/__tests__/redact.test.ts 覆盖）、
+ * INV005 / INV006（与 check-deps 重复，已并入该脚本）。
+ * 文件范围与「测试文件」口径统一取自 tools/lib/source-scan.mjs。
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { isTestFile, sourceFiles } from './lib/source-scan.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const apiRequire = createRequire(resolve(root, 'packages/api/package.json'))
 const ts = apiRequire('typescript')
 
-function* walkFiles(dir, extensions = ['.ts', '.js', '.tsx']) {
-  if (!existsSync(dir)) return
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (
-      entry.name.startsWith('.') ||
-      entry.name === 'node_modules' ||
-      entry.name === 'dist' ||
-      entry.name === 'build'
-    ) {
-      continue
-    }
-    const full = resolve(dir, entry.name)
-    if (entry.isDirectory()) {
-      yield* walkFiles(full, extensions)
-    } else if (extensions.some((ext) => entry.name.endsWith(ext))) {
-      yield full
+function parse(file, content) {
+  return ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+}
+
+function lineOf(source, node) {
+  return source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
+}
+
+function propertyName(node) {
+  return ts.isPropertyAccessExpression(node) ? node.name.text : ts.isIdentifier(node) ? node.text : undefined
+}
+
+/** 执行期冻结列：Run 启动后的快照、已发布版本的定义。 */
+const FROZEN_COLUMNS = {
+  runs: ['snapshot'],
+  scenarioVersions: ['definition'],
+}
+
+/** 找出对冻结表的 UPDATE：drizzle 的 .update(t).set(v) 与适配层 updateRows / updateRowsCount(db, t, v)。 */
+function frozenUpdateIssues(file, content) {
+  const source = parse(file, content)
+  const issues = []
+  // 只认对象字面量里显式写出的冻结列。展开对象与变量静态看不出内容，不拦——那需要类型层面的约束，
+  // 正则或 AST 规则做不到；这里守的是「有人直接写 snapshot: ...」这条最常见的误改路径。
+  const inspect = (table, values, at) => {
+    if (!values || !ts.isObjectLiteralExpression(values)) return
+    for (const prop of values.properties) {
+      const name = prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ? prop.name.text : undefined
+      if (name && FROZEN_COLUMNS[table].includes(name)) {
+        issues.push(`第 ${lineOf(source, at)} 行改写了 ${table}.${name}：执行期快照与版本定义冻结后不得 UPDATE`)
+      }
     }
   }
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression
+      // x.update(table).set(values)
+      if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'set'
+        && ts.isCallExpression(callee.expression)
+        && propertyName(callee.expression.expression) === 'update') {
+        const table = callee.expression.arguments[0]
+        if (table && ts.isIdentifier(table) && table.text in FROZEN_COLUMNS) inspect(table.text, node.arguments[0], node)
+      }
+      // updateRows(db, table, values, ...)
+      const name = propertyName(callee)
+      if (name === 'updateRows' || name === 'updateRowsCount') {
+        const table = node.arguments[1]
+        if (table && ts.isIdentifier(table) && table.text in FROZEN_COLUMNS) inspect(table.text, node.arguments[2], node)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return issues
 }
 
 /**
@@ -62,100 +102,31 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV002_WORKER_NO_API_CALLBACK',
-    articles: ['执行分层', '持久化事实与调度'],
-    title: 'Worker 执行面严禁通过 API 回调写回执行事实',
-    rationale: 'Worker 是执行面，状态必须原子持久化至数据库，Worker 与 API 不得形成双向业务回调',
+    articles: ['执行分层'],
+    title: 'Worker 执行面不得持有控制面 API 地址',
+    rationale: 'Worker 执行并持久化运行事实，不回调 API 写回事实。控制面地址只经 CAIRN_API_PORT / CAIRN_API_ORIGIN 配置，Worker 读不到地址就无从回调；访问目标系统的 HTTP 请求不受此限',
     targetDir: 'packages/worker/src',
     excludeTests: true,
     check: (file, rel, content) => {
       const issues = []
-      const forbiddenImport = /\b(?:from|import|require)\s*\(?\s*['"](axios|ky|got|superagent)['"]/
-      const impMatch = content.match(forbiddenImport)
-      if (impMatch) {
-        issues.push(`Worker 生产代码严禁引入 HTTP 客户端调用控制面：${impMatch[1]}`)
-      }
-      if (content.includes('/api/v1/') || content.includes('/api/runs')) {
-        issues.push('Worker 生产代码严禁硬编码控制面 API 路由回调，执行事实应通过持久化数据库写入')
+      for (const [name] of content.matchAll(/\bCAIRN_API_(?:PORT|ORIGIN)\b/g)) {
+        issues.push(`Worker 生产代码不得读取控制面地址配置 ${name}；执行事实直接写数据库`)
       }
       return issues
     },
   },
   {
     id: 'INV003_SNAPSHOT_IMMUTABLE',
-    articles: ['运行快照'],
-    title: '执行期快照绝对不可变 (Snapshot Freeze)',
-    rationale: 'Run 启动后必须冻结快照，历史 Run 必须依赖自身 Snapshot 解释，严禁执行期 UPDATE 快照',
+    articles: ['编写与执行分离', '证据与保留策略'],
+    title: '执行期快照与已发布版本定义不可变 (Snapshot Freeze)',
+    rationale: '历史 Run 必须依赖自身 Snapshot 复盘；runs.snapshot 与 scenario_versions.definition 写入后不得 UPDATE',
     targetDir: 'packages/db/src',
     excludeTests: true,
     check: (file, rel, content) => {
-      const issues = []
-      const dangerousPatterns = [
-        /UPDATE\s+runs\s+SET[^;]*snapshot\s*=/i,
-        /UPDATE\s+scenario_versions\s+SET[^;]*definition\s*=/i,
-      ]
-      for (const pattern of dangerousPatterns) {
-        if (pattern.test(content)) {
-          issues.push('数据库层严禁构造 UPDATE 语句覆盖或修改历史运行快照或场景版本定义')
-        }
-      }
-      return issues
-    },
-  },
-  {
-    id: 'INV004_SECRET_REDACTION',
-    articles: ['目标与身份', '凭据与授权'],
-    title: '控制台身份与目标系统凭据彻底隔离，严禁明文暴露',
-    rationale: '目标凭据必须通过 SecretProvider 访问，Evidence 与日志必须自动脱敏，严禁明文字段暴露',
-    targetDir: 'packages/shared/src',
-    excludeTests: true,
-    check: (file, rel, content) => {
-      const issues = []
-      if (/evidenceMetadataSchema|evidencePayloadSchema/.test(content)) {
-        if (/\bpassword\b:\s*z\.string\(\)/.test(content)) {
-          issues.push('Evidence Schema 严禁暴露未加密或未打码的明文 password 字段')
-        }
-      }
-      return issues
-    },
-  },
-  {
-    id: 'INV005_NO_DB_TESTING_IN_PROD',
-    articles: ['可执行约束'],
-    title: '生产业务代码严禁导入 @cairn/db/testing',
-    rationale: '测试基础设施与测试夹具仅限测试使用，严禁泄露至生产发布构建中',
-    targetDir: 'packages',
-    excludeTests: true,
-    check: (file, rel, content) => {
-      const issues = []
-      if (
-        rel.startsWith('packages/api/src') ||
-        rel.startsWith('packages/worker/src') ||
-        rel.startsWith('packages/shared/src')
-      ) {
-        if (content.includes('@cairn/db/testing')) {
-          issues.push('生产源码文件严禁导入 @cairn/db/testing 测试桩')
-        }
-      }
-      return issues
-    },
-  },
-  {
-    id: 'INV006_WORKER_AI_ISOLATION',
-    articles: ['AI 步骤语义', '执行分层', '可执行约束'],
-    title: 'Engine / Runtime / WorkerModule 不得导入 Midscene 适配层',
-    rationale: 'SDK 与假模型只允许留在 worker/src/ai/。Engine 只认端口契约，装配层不得把 ai/midscene 或 @midscene/ 泄漏进调度与生命周期',
-    targetDir: 'packages/worker/src',
-    excludeTests: true,
-    check: (file, rel, content) => {
-      const issues = []
-      const guarded =
-        rel.startsWith('packages/worker/src/engine/') ||
-        rel.startsWith('packages/worker/src/runtime/') ||
-        rel === 'packages/worker/src/worker.module.ts'
-      if (!guarded) return issues
-      const forbidden = /\b(?:from|import|require)\s*\(?\s*['"][^'"]*(?:@midscene\/|ai\/midscene)[^'"]*['"]/
-      if (forbidden.test(content)) {
-        issues.push('engine/、runtime/ 与 worker.module.ts 不得导入 @midscene/ 或 ai/midscene')
+      const issues = frozenUpdateIssues(file, content)
+      if (/UPDATE\s+\S*runs\S*\s+SET[^;]*\bsnapshot\s*=/i.test(content)
+        || /UPDATE\s+\S*scenario_versions\S*\s+SET[^;]*\bdefinition\s*=/i.test(content)) {
+        issues.push('原生 SQL 改写了 runs.snapshot 或 scenario_versions.definition')
       }
       return issues
     },
@@ -224,7 +195,7 @@ export const INVARIANT_RULES = [
     targetDir: 'packages',
     excludeTests: true,
     check: (file, rel, content) => {
-      if (rel.includes(`${sep}dist${sep}`) || rel.includes(`${sep}vendor${sep}`)) return []
+      if (rel.includes('/vendor/')) return []
       const issues = []
       for (const name of [
         'acquireSessionLease',
@@ -320,7 +291,7 @@ export const INVARIANT_RULES = [
     targetDir: 'packages',
     excludeTests: true,
     check: (file, rel, content) => {
-      // 仅约束 web, api, db, authoring 中的生产源码；白名单 authoring-document.ts 与 compiler.ts
+      // 仅约束 web, api, db, authoring 中的生产源码；编译器是 AST 的合法直接使用者
       if (
         !rel.startsWith('packages/web/src') &&
         !rel.startsWith('packages/api/src') &&
@@ -329,12 +300,7 @@ export const INVARIANT_RULES = [
       ) {
         return []
       }
-      if (
-        rel.includes('authoring-document.ts') ||
-        rel.includes('compiler.ts')
-      ) {
-        return []
-      }
+      if (rel === 'packages/authoring/src/compiler.ts') return []
       const issues = []
       const directNodesAccess = /\b(?:doc|document|authoringDoc|scenarioDoc|v2)\.nodes\s*(?:\.|\?\.|\b\[|\s*=)/g
       let match
@@ -352,7 +318,7 @@ export const INVARIANT_RULES = [
     targetDir: 'packages',
     excludeTests: true,
     check: (file, rel, content) => {
-      if (rel.includes('run-api.ts')) return []
+      if (rel === 'packages/shared/src/run-api.ts') return []
       const issues = []
       const forbiddenFind = /\bstepRuns\s*\.\s*find\s*\(\s*(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>[^)]*\bstepId\s*===/g
       let match
@@ -368,7 +334,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV016_NO_READ_SNAPSHOT_CONTENT_IN_API',
-    articles: ['执行分层', '安全'],
+    articles: ['执行分层', '会话与租约'],
     title: 'API 包严禁引用 readSessionStateSnapshotContent',
     rationale: '读取登录态全文仅允许 Worker 执行面调用，API 只读摘要列，禁止泄漏登录态全文',
     targetDir: 'packages/api/src',
@@ -405,14 +371,14 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV018_API_RUN_READ_ACTOR_SCOPE',
-    articles: ['安全', '目标范围'],
+    articles: ['执行分层'],
     title: 'API 读取运行详情与证据必须显式传入 actorId',
     rationale: 'Guard 无法从所有新路由参数推断目标；DB 读取必须显式绑定当前账号，避免按主键读取外目标数据',
     targetDir: 'packages/api/src',
     excludeTests: true,
     check: (file, rel, content) => {
       const guarded = new Set(['getRun', 'loadRunDetail', 'listRunEvidence', 'getEvidenceForRun', 'listRuns', 'loadRunObservation', 'getRunSessionOwner'])
-      const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      const source = parse(file, content)
       const issues = []
       const dbNamespaces = new Set()
       const collectDbNamespaces = (node) => {
@@ -451,11 +417,10 @@ export const INVARIANT_RULES = [
           while (enclosing && !ts.isMethodDeclaration(enclosing)) enclosing = enclosing.parent
           const sessionOwnerLookup = rel === 'packages/api/src/browser-sessions/browser-sessions.service.ts'
             && name === 'getRunSessionOwner'
-            && node.getText(source) === 'getRunSessionOwner(this.handle, ownerId)'
             && enclosing?.name?.getText(source) === 'resolveRunOwner'
           const actor = node.arguments[2]
           if (!sessionOwnerLookup && (name === 'getRunSessionOwner' || !actor || actor.getText(source) === 'undefined' || actor.getText(source) === 'null')) {
-            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
+            const line = lineOf(source, node)
             issues.push(`${name} 第 ${line} 行必须传当前 actorId；可信内部读取需单独设计并接受审查`)
           }
         }
@@ -471,29 +436,18 @@ export function runInvariantChecks() {
   const violations = []
 
   for (const rule of INVARIANT_RULES) {
-    const searchPath = resolve(root, rule.targetDir)
-    if (!existsSync(searchPath)) continue
-
-    for (const file of walkFiles(searchPath, ['.ts', '.js', '.tsx'])) {
-      const rel = relative(root, file)
-      if (rule.excludeTests) {
-        if (file.includes(`${sep}__tests__${sep}`) || /\.(?:spec|test)\./.test(file)) {
-          continue
-        }
-      }
-
+    for (const file of sourceFiles(resolve(root, rule.targetDir))) {
+      if (rule.excludeTests && isTestFile(file)) continue
+      const rel = relative(root, file).split(sep).join('/')
       const content = readFileSync(file, 'utf8')
-      const issues = rule.check(file, rel, content)
-      if (issues && issues.length > 0) {
-        for (const issue of issues) {
-          violations.push({
-            ruleId: rule.id,
-            articles: rule.articles,
-            file: rel,
-            message: issue,
-            rationale: rule.rationale,
-          })
-        }
+      for (const issue of rule.check(file, rel, content) ?? []) {
+        violations.push({
+          ruleId: rule.id,
+          articles: rule.articles,
+          file: rel,
+          message: issue,
+          rationale: rule.rationale,
+        })
       }
     }
   }
@@ -515,5 +469,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     process.exit(1)
   }
 
-  console.log('✅ 识途宪法核心架构不变量检查通过（API GET/POST、Worker 隔离、快照冻结、凭据脱敏、规则引擎）')
+  console.log(`✅ 架构不变量检查通过（${INVARIANT_RULES.length} 条规则）`)
 }

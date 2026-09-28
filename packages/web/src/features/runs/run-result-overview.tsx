@@ -350,11 +350,11 @@ export function RunResultOverview({
                 </span>
                 <span className='shrink-0'>
                   {step.status === 'SUCCEEDED' ? (
-                    <CheckCircle2 className='size-3.5 text-status-success-foreground' />
+                    <CheckCircle2 className='size-3.5 text-status-success' />
                   ) : step.status === 'FAILED' ? (
-                    <XCircle className='size-3.5 text-status-error-foreground' />
+                    <XCircle className='size-3.5 text-status-error' />
                   ) : step.status === 'RUNNING' ? (
-                    <Clock className='size-3.5 text-status-warning-foreground animate-spin' />
+                    <Clock className='size-3.5 text-status-warning animate-spin' />
                   ) : (
                     <MinusCircle className='size-3.5 text-muted-foreground' />
                   )}
@@ -370,9 +370,9 @@ export function RunResultOverview({
                   <div
                     className={`h-full rounded-full transition-[width] motion-reduce:transition-none ${
                       step.status === 'FAILED'
-                        ? 'bg-status-error-foreground'
+                        ? 'bg-status-error'
                         : percentage >= 30
-                          ? 'bg-status-warning-foreground'
+                          ? 'bg-status-warning'
                           : 'bg-primary/70'
                     }`}
                     style={{ width: `${percentage > 0 ? Math.max(2, percentage) : 0}%` }}

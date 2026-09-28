@@ -610,7 +610,8 @@ export function RunsPage() {
                           ) : null}
                         </TableCell>
                         <TableCell>
-                          {item.evidenceStatus === 'INCOMPLETE' ||
+                          {item.evidenceStatus === 'COMPLETE' ||
+                          item.evidenceStatus === 'INCOMPLETE' ||
                           (item.evidenceStatus === 'PENDING' &&
                             isFinishedRunStatus(item.status)) ? (
                             <StatusBadge

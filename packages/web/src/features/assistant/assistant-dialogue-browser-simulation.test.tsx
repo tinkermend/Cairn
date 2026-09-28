@@ -1,5 +1,5 @@
 import '@/styles/index.css'
-import type { AssistantProposal, AssistantTurn } from '@cairn/shared'
+import type { AssistantProposal, AssistantTurn, TargetFormProposal } from '@cairn/shared'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -885,4 +885,165 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
     await expect.element(page.getByText('正在分析 XPath 与 CSS 选择器的特征...')).toBeVisible()
     await expect.element(page.getByRole('button', { name: '复制思考过程' })).toBeVisible()
   })
+
+  describe('表单多轮向导与草稿提案协同交互（普通用户浏览器仿真测试）', () => {
+    it('仿真1 & 2：普通用户输入不完整意图，助手返回带待补槽位的草稿，用户在聊天框直接补全 URL 后提案变绿灯', async () => {
+      const user = userEvent.setup()
+      await render(<AssistantHost />)
+
+      // 1. 模拟普通用户发问：“帮我新建一个财务系统”
+      const input = page.getByRole('textbox', { name: '向助手提问' })
+      await user.fill(input, '帮我新建一个财务系统')
+      await user.keyboard('{Enter}')
+
+      // 模拟后端生成带待补充 entryUrl 的草稿提案
+      const turn1Id = 'a0000001-0000-4000-8000-000000000001'
+      const proposalWithPending: TargetFormProposal = {
+        kind: 'target_form',
+        mode: 'create',
+        summary: '已为您规划好「财务系统」的基础配置与推荐超时，但目前缺少最关键的入口地址。',
+        changes: [
+          { fieldId: 'name', value: '财务系统' },
+          { fieldId: 'code', value: 'finance-system' },
+          { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+        ],
+        pendingFields: ['entryUrl'],
+        clarifyPrompt: '请提供系统的业务入口地址（URL）：',
+      }
+
+      useAssistantStore.setState({
+        turns: [
+          {
+            id: turn1Id,
+            conversationId: 'conv-browser-sim-1',
+            clientTurnId: 'ct-form-1',
+            parentTurnId: null,
+            question: '帮我新建一个财务系统',
+            capabilityId: 'target.propose-form',
+            status: 'COMPLETED',
+            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            result: proposalWithPending,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        activeTurnId: null,
+        busy: false,
+      })
+
+      // 浏览器验证：看到已推导的字段与待补充告警
+      await expect.element(page.getByText('财务系统', { exact: true })).toBeVisible()
+      await expect.element(page.getByText('finance-system')).toBeVisible()
+      await expect.element(page.getByTestId('target-form-pending-warning')).toBeVisible()
+      await expect.element(page.getByText(/待补充核心必填项：入口 URL/)).toBeVisible()
+      await expect.element(page.getByTestId('target-form-clarify-prompt')).toBeVisible()
+      await expect.element(page.getByText('请提供系统的业务入口地址（URL）：')).toBeVisible()
+
+      // 采纳按钮显示为“采纳并前往补齐 ➔”
+      const patchBtn = page.getByRole('button', { name: /采纳并前往补齐/ })
+      await expect.element(patchBtn).toBeVisible()
+
+      // 2. 模拟用户顺着引导直接在聊天框回复 URL：“https://finance.oa.corp”
+      await user.fill(input, 'https://finance.oa.corp')
+      await user.keyboard('{Enter}')
+
+      // 验证客户端提交时带上了上一轮的 replyToTurnId（多轮延续）
+      expect(createAssistantTurn).toHaveBeenCalledWith(
+        'conv-browser-sim-1',
+        expect.objectContaining({
+          question: 'https://finance.oa.corp',
+          replyToTurnId: turn1Id,
+        })
+      )
+
+      // 模拟后端完成增量合并，输出绿灯态提案
+      const turn2Id = 'a0000002-0000-4000-8000-000000000002'
+      const completedProposal: TargetFormProposal = {
+        kind: 'target_form',
+        mode: 'create',
+        summary: '已成功补齐入口地址，并保留了此前的配置规划。',
+        changes: [
+          { fieldId: 'name', value: '财务系统' },
+          { fieldId: 'code', value: 'finance-system' },
+          { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+          { fieldId: 'entryUrl', value: 'https://finance.oa.corp' },
+        ],
+        pendingFields: [],
+      }
+
+      useAssistantStore.setState({
+        turns: [
+          {
+            id: turn2Id,
+            conversationId: 'conv-browser-sim-1',
+            clientTurnId: 'ct-form-2',
+            parentTurnId: turn1Id,
+            question: 'https://finance.oa.corp',
+            capabilityId: 'target.propose-form',
+            status: 'COMPLETED',
+            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            result: completedProposal,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        activeTurnId: null,
+        busy: false,
+      })
+
+      // 浏览器验证：待补充警告消失，采纳按钮恢复为标准的“采纳到表单”
+      await expect.element(page.getByText('已成功补齐入口地址')).toBeVisible()
+      await expect.element(page.getByTestId('target-form-proposal-card').getByText('https://finance.oa.corp')).toBeVisible()
+      const adoptBtn = page.getByRole('button', { name: '采纳到表单' })
+      await expect.element(adoptBtn).toBeVisible()
+    })
+
+    it('仿真3：用户选择极速通道，直接点击“采纳并前往补齐 ➔”', async () => {
+      const mockAdopt = vi.fn().mockResolvedValue({ ok: true })
+      useAssistantStore.getState().registerAdoptHandler(mockAdopt)
+
+      const proposalWithPending: TargetFormProposal = {
+        kind: 'target_form',
+        mode: 'create',
+        summary: '已规划财务系统，待补充入口地址',
+        changes: [
+          { fieldId: 'name', value: '财务系统' },
+          { fieldId: 'code', value: 'finance-system' },
+          { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+        ],
+        pendingFields: ['entryUrl'],
+        clarifyPrompt: '请提供入口地址',
+      }
+
+      useAssistantStore.setState({
+        turns: [
+          {
+            id: 'turn-sim-3',
+            conversationId: 'conv-browser-sim-1',
+            clientTurnId: 'ct-3',
+            parentTurnId: null,
+            question: '帮我配一个财务系统',
+            capabilityId: 'target.propose-form',
+            status: 'COMPLETED',
+            deadlineAt: new Date(Date.now() + 60000).toISOString(),
+            result: proposalWithPending,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        activeTurnId: null,
+        busy: false,
+      })
+
+      await render(<AssistantHost />)
+
+      // 用户直接点击卡片主按钮
+      const patchBtn = page.getByRole('button', { name: /采纳并前往补齐/ })
+      await patchBtn.click()
+
+      // 验证 adoptHandler 被调用且传入了草稿提案
+      expect(mockAdopt).toHaveBeenCalledWith(proposalWithPending)
+    })
+  })
 })
+

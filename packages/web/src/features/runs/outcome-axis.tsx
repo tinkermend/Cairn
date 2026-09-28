@@ -11,7 +11,8 @@ import {
   type RunDetailDto,
 } from '@cairn/shared'
 import { RUNTIME_INVARIANT_KIND_LABELS } from '@/features/authoring/invariant-editor'
-import { StatusBadge } from '@/components/status-badge'
+import { StatusBadge, type StatusTone } from '@/components/status-badge'
+import { cn } from '@/lib/utils'
 import type { EvidenceMetadata } from '@cairn/shared'
 import {
   RUN_OUTCOME_STATUS_HINTS,
@@ -74,13 +75,48 @@ export function OutcomeAxisSummary({
   outcomeStatus: OutcomeStatus
   hasContracts?: boolean
 }) {
+  const executionTone: StatusTone =
+    executionLabel === '执行完成'
+      ? 'success'
+      : executionLabel === '执行异常'
+        ? 'error'
+        : executionLabel === '需人工核查'
+          ? 'warning'
+          : 'neutral'
+
   return (
     <div className='grid gap-3 sm:grid-cols-2'>
-      <div className='rounded-md border border-border-card bg-muted/30 p-3' aria-label='执行轴'>
+      <div
+        className={cn(
+          'rounded-md border p-3 transition-colors',
+          executionTone === 'success'
+            ? 'border-status-success/30 bg-status-success-background/15'
+            : executionTone === 'error'
+              ? 'border-status-error/30 bg-status-error-background/15'
+              : executionTone === 'warning'
+                ? 'border-status-warning/30 bg-status-warning-background/15'
+                : 'border-border-card bg-muted/30'
+        )}
+        aria-label='执行轴'
+      >
         <p className='text-label text-muted-foreground'>执行</p>
-        <p className='mt-1 text-body font-medium'>{executionLabel}</p>
+        <div className='mt-1 flex items-center gap-2'>
+          <StatusBadge tone={executionTone}>{executionLabel}</StatusBadge>
+        </div>
       </div>
-      <div className='rounded-md border border-border-card bg-muted/30 p-3' aria-label='业务结果轴'>
+      <div
+        className={cn(
+          'rounded-md border p-3 transition-colors',
+          outcomeStatus === 'PASS'
+            ? 'border-status-success/30 bg-status-success-background/15'
+            : outcomeStatus === 'FAIL'
+              ? 'border-status-error/30 bg-status-error-background/15'
+              : outcomeStatus === 'WARN'
+                ? 'border-status-warning/30 bg-status-warning-background/15'
+                : 'border-border-card bg-muted/30'
+        )}
+        aria-label='业务结果轴'
+      >
         <p className='text-label text-muted-foreground'>业务结果</p>
         <div className='mt-1 flex flex-wrap items-center gap-2'>
           <StatusBadge tone={runOutcomeStatusTone(outcomeStatus)}>

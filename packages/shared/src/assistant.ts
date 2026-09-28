@@ -23,7 +23,10 @@ import {
   type ScenarioAuthoringDocumentV2,
 } from './authoring-document.js'
 import {
+  TARGET_CONFIG_FORM_ID,
+  assistantActiveFormSchema,
   targetFormProposalSchema,
+  type AssistantActiveForm,
   type TargetFormProposal,
 } from './assistant-form.js'
 
@@ -36,6 +39,7 @@ export const ASSISTANT_HISTORICAL_CAPABILITY_IDS = [
   'platform.guide',
   'scenario.discover',
   'target.business-records.list',
+  'target.propose-form',
   'operations.diagnose',
   'schedules.propose',
   'operations.action',
@@ -54,6 +58,7 @@ export const ASSISTANT_PUBLISHED_CAPABILITY_IDS = [
   'platform.guide',
   'scenario.discover',
   'target.business-records.list',
+  'target.propose-form',
   'in-page.guidance',
   'knowledge.answer',
 ] as const
@@ -250,6 +255,7 @@ export const assistantPageContextV2Schema = z.strictObject({
   targetId: entityIdSchema.optional(),
   versionId: entityIdSchema.optional(),
   draftRevision: z.number().int().min(1).optional(),
+  activeForm: assistantActiveFormSchema.optional(),
   view: z
     .strictObject({
       tab: z.string().max(100).optional(),
@@ -276,6 +282,7 @@ export const assistantPageContextV1Schema = z.strictObject({
   targetId: entityIdSchema.optional(),
   versionId: entityIdSchema.optional(),
   draftRevision: z.number().int().min(1).optional(),
+  activeForm: assistantActiveFormSchema.optional(),
   quote: assistantQuoteContextSchema.optional(),
 })
 export type AssistantPageContextV1 = z.infer<typeof assistantPageContextV1Schema>
@@ -303,6 +310,7 @@ export function normalizeAssistantPageContext(
       v2.stepId ?? (v2.view?.selectedRef?.kind === 'step' ? v2.view.selectedRef.id : undefined)
     const versionId = v2.versionId ?? v2.versionRef?.id
     const draftRevision = v2.draftRevision ?? v2.draft?.savedRevision
+    const activeForm = v2.activeForm
     return {
       ...v2,
       ...(runId ? { runId } : {}),
@@ -311,6 +319,7 @@ export function normalizeAssistantPageContext(
       ...(stepId ? { stepId } : {}),
       ...(versionId ? { versionId } : {}),
       ...(draftRevision !== undefined ? { draftRevision } : {}),
+      ...(activeForm ? { activeForm } : {}),
     }
   }
   const v1 = raw as AssistantPageContextV1
@@ -330,6 +339,7 @@ export function normalizeAssistantPageContext(
     ...(v1.scenarioId ? { scenarioId: v1.scenarioId } : {}),
     ...(v1.targetId ? { targetId: v1.targetId } : {}),
     ...(v1.stepId ? { stepId: v1.stepId } : {}),
+    ...(v1.activeForm ? { activeForm: v1.activeForm } : {}),
     ...(v1.versionId
       ? { versionId: v1.versionId, versionRef: { kind: 'scenario', id: v1.versionId } }
       : {}),
@@ -404,6 +414,12 @@ export const ASSISTANT_CAPABILITIES: readonly AssistantCapabilityDef[] = [
     label: '业务数据列表',
     requiredPermissions: ['ai:assist', 'target:read', 'dataset:read'],
     description: '查询已授权的目标系统业务数据快照与字典',
+  },
+  {
+    id: 'target.propose-form',
+    label: '目标配置建议',
+    requiredPermissions: ['ai:assist', 'target:read', 'target:write'],
+    description: '结合目标表单上下文与当前事实，按自然语言意图生成配置项修改提案',
   },
   {
     id: 'in-page.guidance',
@@ -1373,6 +1389,9 @@ export function inferBusinessRecordEntityType(question: string): 'manufacturer' 
 export function matchAssistantCapabilities(question: string): AssistantCapabilityId[] {
   const hits: AssistantCapabilityId[] = []
   const knowledgeComposeRequest = KNOWLEDGE_QUESTION.test(question) && /(?:建议|补全|编写|生成|补充)/.test(question)
+  const isTargetFormProposeQuestion =
+    /(?:这个目标|目标系统|目标配置|目标表单).*?(?:超时|整理|预算|认证|验证码|地址|设为|改成)|(?:把|将)(?:这个)?目标.*?(?:超时|整理|预算|认证|验证码|地址|设为|改成)/.test(question)
+  if (isTargetFormProposeQuestion) hits.push('target.propose-form')
   if (IN_PAGE_GUIDANCE_QUESTION.test(question)) hits.push('in-page.guidance')
   if (COMPARE_QUESTION.test(question) || isPreviousRunComparisonQuestion(question)) hits.push('run.compare')
   if (DIAGNOSE_QUESTION.test(question)) hits.push('run.diagnose')
@@ -1382,7 +1401,7 @@ export function matchAssistantCapabilities(question: string): AssistantCapabilit
   if (EXPLAIN_QUESTION.test(question) && !knowledgeComposeRequest) hits.push('scenario.explain')
   const hypotheticalDeletion = /(?:删掉|删除|去掉)[^。？?]{0,24}(?:会怎样|会怎么样|会不会|有什么影响|会发生什么)/.test(question)
   const orderedWaitAndCheck = /(?:等|等待)[^。；!?]{0,100}(?:再|然后|后)[^。；!?]{0,100}(?:确认|检查|断言|校验)/.test(question)
-  if ((PROPOSE_QUESTION.test(question) || orderedWaitAndCheck) && !knowledgeComposeRequest && !hypotheticalDeletion) hits.push('scenario.propose-step')
+  if ((PROPOSE_QUESTION.test(question) || orderedWaitAndCheck) && !knowledgeComposeRequest && !hypotheticalDeletion && !isTargetFormProposeQuestion) hits.push('scenario.propose-step')
   if (KNOWLEDGE_QUESTION.test(question)) hits.push('scenario.compose_with_knowledge')
   return hits
 }
@@ -1484,6 +1503,32 @@ export function routeAssistantTurn(input: {
   if (!input.capabilityHint && context?.runId && input.available.includes('run.compare') &&
       isPreviousRunComparisonQuestion(cleanQuestion)) {
     return routeAssistantTurn({ ...input, capabilityHint: 'run.compare' })
+  }
+  if (
+    !input.capabilityHint &&
+    input.available.includes('target.propose-form') &&
+    context?.activeForm?.formId === TARGET_CONFIG_FORM_ID &&
+    (PROPOSE_QUESTION.test(cleanQuestion) ||
+      /(?:超时|整理|预算|认证|验证码|地址|名称|编码|状态|图标|颜色|秒)/.test(cleanQuestion))
+  ) {
+    const slots: Record<string, unknown> = {
+      formId: context.activeForm.formId,
+      mode: context.activeForm.mode,
+      ...(context.activeForm.targetId ? { targetId: context.activeForm.targetId } : {}),
+      ...(context.targetId ? { targetId: context.targetId } : {}),
+      ...(context.activeForm.draftValues ? { draftValues: context.activeForm.draftValues } : {}),
+    }
+    return { type: 'dispatch', capabilityId: 'target.propose-form', slots }
+  }
+  if (input.capabilityHint === 'target.propose-form' && input.available.includes('target.propose-form')) {
+    const slots: Record<string, unknown> = {
+      ...(context?.activeForm?.formId ? { formId: context.activeForm.formId } : {}),
+      ...(context?.activeForm?.mode ? { mode: context.activeForm.mode } : {}),
+      ...(context?.activeForm?.targetId ? { targetId: context.activeForm.targetId } : {}),
+      ...(context?.targetId ? { targetId: context.targetId } : {}),
+      ...(context?.activeForm?.draftValues ? { draftValues: context.activeForm.draftValues } : {}),
+    }
+    return { type: 'dispatch', capabilityId: 'target.propose-form', slots }
   }
   if (!input.capabilityHint && context?.pageKind === 'target' &&
       input.available.includes('platform.guide') && isTargetDeletionGuideQuestion(cleanQuestion)) {
@@ -1666,6 +1711,14 @@ export function routeAssistantTurn(input: {
     if (ctx?.targetId) slots.targetId = ctx.targetId
     if (ctx?.stepId) slots.stepId = ctx.stepId
     if (ctx?.scenarioId) slots.scenarioId = ctx.scenarioId
+  }
+  if (chosen === 'target.propose-form') {
+    slots.question = input.question
+    if (ctx?.activeForm?.formId) slots.formId = ctx.activeForm.formId
+    if (ctx?.activeForm?.mode) slots.mode = ctx.activeForm.mode
+    if (ctx?.activeForm?.targetId) slots.targetId = ctx.activeForm.targetId
+    if (ctx?.targetId) slots.targetId = ctx.targetId
+    if (ctx?.activeForm?.draftValues) slots.draftValues = ctx.activeForm.draftValues
   }
   if (chosen === 'run.diagnose' && !slots.runId && !slots.findRecentFailed) {
     return { type: 'clarify', missingFields: ['runId'], question: '请选择要分析的一次运行。' }

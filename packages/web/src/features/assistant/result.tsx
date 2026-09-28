@@ -401,13 +401,17 @@ function ProposalDiffViewer({
 function TargetFormProposalViewer({
   proposal,
   onAdopt,
+  onRollback,
   adopting,
   isAdopted,
+  canRollback = true,
 }: {
   proposal: TargetFormProposal
   onAdopt?: (proposal: TargetFormProposal) => void
+  onRollback?: (proposal: TargetFormProposal) => void
   adopting?: boolean
   isAdopted?: boolean
+  canRollback?: boolean
 }) {
   const hasValidationError = proposal.changes.some(
     (c) => Boolean(validateTargetFormProposalChange(c, proposal.mode)),
@@ -456,12 +460,54 @@ function TargetFormProposalViewer({
         </ul>
       </div>
 
+      {proposal.pendingFields && proposal.pendingFields.length > 0 ? (
+        <div
+          className='flex items-center gap-2 rounded-lg border border-status-warning-foreground/20 bg-status-warning-background/60 px-3 py-2 text-label text-status-warning-foreground'
+          data-testid='target-form-pending-warning'
+        >
+          <AlertTriangle className='size-3.5 shrink-0' aria-hidden='true' />
+          <span>
+            待补充核心必填项：
+            {proposal.pendingFields
+              .map((f) => TARGET_CONFIG_FORM_FIELDS.find((item) => item.id === f)?.label ?? f)
+              .join('、')}
+          </span>
+        </div>
+      ) : null}
+
+      {proposal.clarifyPrompt ? (
+        <div
+          className='flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-label font-medium text-primary-600'
+          data-testid='target-form-clarify-prompt'
+        >
+          <HelpCircle className='size-3.5 shrink-0' aria-hidden='true' />
+          <span>{proposal.clarifyPrompt}</span>
+        </div>
+      ) : null}
+
       <div className='flex items-center justify-end gap-2 pt-1'>
         {isAdopted ? (
-          <span className='inline-flex items-center gap-1.5 rounded-md bg-status-success-subtle px-2.5 py-1 text-label font-medium text-status-success-foreground'>
-            <Check className='size-3.5' />
-            已应用到表单
-          </span>
+          <div className='flex items-center gap-2'>
+            <span className='inline-flex items-center gap-1.5 rounded-md bg-status-success-subtle px-2.5 py-1 text-label font-medium text-status-success-foreground'>
+              <Check className='size-3.5' />
+              已应用到表单
+            </span>
+            {onRollback ? (
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                disabled={!canRollback}
+                title={canRollback ? '撤销本次采纳' : '表单已有后续修改，无法一键撤销'}
+                className='gap-1 text-label text-text-secondary hover:text-text-primary'
+                onClick={() => onRollback(proposal)}
+                data-testid='target-form-rollback-btn'
+              >
+                <Undo2 className='size-3.5' aria-hidden='true' />
+                撤销采纳
+              </Button>
+            ) : null}
+          </div>
         ) : (
           <Button
             type='button'
@@ -471,9 +517,10 @@ function TargetFormProposalViewer({
             title={hasValidationError ? '提案中包含不合法的字段修改，无法采纳' : undefined}
             className='gap-1.5 text-label font-medium'
             onClick={() => onAdopt?.(proposal)}
+            data-testid='target-form-adopt-btn'
           >
             <Sparkles className='size-3.5' aria-hidden='true' />
-            采纳到表单
+            {proposal.pendingFields && proposal.pendingFields.length > 0 ? '采纳并前往补齐 ➔' : '采纳到表单'}
           </Button>
         )}
       </div>
@@ -1059,8 +1106,10 @@ export function AssistantResultView({
       <TargetFormProposalViewer
         proposal={result}
         onAdopt={onAdopt as any}
+        onRollback={onRollback as any}
         adopting={adopting}
         isAdopted={isAdopted}
+        canRollback={canRollback}
       />
     )
   }

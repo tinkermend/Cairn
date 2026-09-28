@@ -14,7 +14,8 @@ import { fetchScenarios } from '@/lib/scenarios-api'
 import { fetchDatasets } from '@/lib/datasets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/status-badge'
+import { batchStatusTone } from './labels'
 import {
   Select,
   SelectContent,
@@ -201,27 +202,18 @@ export function BatchesPage() {
                           {datasetNames.get(batch.datasetId) ?? batch.datasetId}
                         </TableCell>
                         <TableCell>
-                          <Badge
-                            variant={
-                              batch.status === 'COMPLETED'
-                                ? 'secondary'
-                                : batch.status === 'RUNNING'
-                                  ? 'default'
-                                  : batch.status === 'PAUSED'
-                                    ? 'destructive'
-                                    : 'outline'
-                            }
-                            className='text-label font-mono'
-                          >
+                          <StatusBadge tone={batchStatusTone(batch.status)}>
                             {batch.status}
-                          </Badge>
+                          </StatusBadge>
                         </TableCell>
                         <TableCell className='text-right text-small font-mono'>
-                          <span className='text-status-success-foreground font-bold'>
+                          <span className='text-status-success font-semibold'>
                             {batch.successItems}
                           </span>
                           {' / '}
-                          <span className='text-destructive font-bold'>{batch.failedItems}</span>
+                          <span className={batch.failedItems > 0 ? 'text-status-error font-semibold' : 'text-muted-foreground'}>
+                            {batch.failedItems}
+                          </span>
                           {' / '}
                           <span>{batch.totalItems}</span>
                         </TableCell>

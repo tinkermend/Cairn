@@ -231,7 +231,9 @@ export function RunHeroBanner({
               {RUN_STATUS_LABELS[run.status]}
             </StatusBadge>
 
-            {run.evidenceStatus === 'INCOMPLETE' || (run.evidenceStatus === 'PENDING' && finished) ? (
+            {run.evidenceStatus === 'COMPLETE' ||
+            run.evidenceStatus === 'INCOMPLETE' ||
+            (run.evidenceStatus === 'PENDING' && finished) ? (
               <StatusBadge tone={runEvidenceStatusTone(run.evidenceStatus, run.status)}>
                 {RUN_EVIDENCE_STATUS_LABELS[run.evidenceStatus]}
               </StatusBadge>
@@ -266,9 +268,9 @@ export function RunHeroBanner({
                 <span
                   className={`size-1.5 rounded-full ${
                     connection === 'live'
-                      ? 'bg-status-success-foreground animate-pulse'
+                      ? 'bg-status-success animate-pulse'
                       : connection === 'recovering'
-                        ? 'bg-status-warning-foreground'
+                        ? 'bg-status-warning'
                         : 'bg-muted-foreground'
                   }`}
                 />

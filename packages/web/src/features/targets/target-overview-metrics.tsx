@@ -12,6 +12,7 @@ import { fetchSessionOverview } from '@/lib/sessions-api'
 import { fetchTargetOverview } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Can } from '@/components/rbac/can'
+import { cn } from '@/lib/utils'
 
 interface TargetOverviewMetricsProps {
   target: TargetDto
@@ -61,7 +62,7 @@ export function TargetOverviewMetrics({
             点击管理凭据与角色
           </span>
         </div>
-        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-subtle text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary'>
+        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-status-info-background text-status-info-foreground'>
           <Users className='size-4' />
         </div>
       </button>
@@ -87,6 +88,13 @@ export function TargetOverviewMetrics({
               <span className='text-label text-muted-foreground'>暂时无法获取</span>
             ) : sessionSummary ? (
               <>
+                <span
+                  className={cn(
+                    'size-2 shrink-0 rounded-full',
+                    sessionSummary.available > 0 ? 'bg-status-success' : 'bg-status-warning'
+                  )}
+                  aria-hidden
+                />
                 <span className='font-mono text-section font-semibold text-text-primary'>
                   {sessionSummary.available}
                 </span>
@@ -104,7 +112,7 @@ export function TargetOverviewMetrics({
               : '过期回到登录页后按已录入信息重登'}
           </span>
         </div>
-        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-subtle text-muted-foreground'>
+        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-status-success-background text-status-success-foreground'>
           <Globe className='size-4' />
         </div>
       </div> : null}
@@ -142,7 +150,7 @@ export function TargetOverviewMetrics({
             点击查看业务执行用例
           </span>
         </div>
-        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-subtle text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary'>
+        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-selection-background text-primary'>
           <Layers className='size-4' />
         </div>
       </button>
@@ -170,7 +178,7 @@ export function TargetOverviewMetrics({
             查看该系统已积累的页面与条件
           </span>
         </div>
-        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-subtle text-muted-foreground'>
+        <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-status-warning-background text-status-warning-foreground'>
           <Compass className='size-4' />
         </div>
       </div>

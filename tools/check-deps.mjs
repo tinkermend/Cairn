@@ -10,6 +10,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { importSpecifiers, isTestFile, sourceFiles } from './lib/source-scan.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -34,42 +35,10 @@ const ALLOWED_EDGES = {
   '@cairn/extension-playwright-crx': ['@cairn/shared', '@cairn/authoring'],
 }
 
-/**
- * 声明之外还有一条绕过依赖表的路：跨包相对路径 import。
- *
- * `import '../../worker/src/x'` 不出现在任何 package.json 里，依赖表看不见它。
- * 目前 tsc 的 rootDir 顺带挡着这种写法，但那是编译配置的副作用——副作用可以
- * 在下一次调整 tsconfig 时消失，约束不该建立在它上面。
- */
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'])
-const IGNORED_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.turbo', '.vite'])
-const SPECIFIER_PATTERN = /\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g
 const AI_SDK_PATTERN = /(?:midscene|page-agent|@midscene\/|@page-agent\/)/i
 const WORKER_SRC = resolve(root, 'packages/worker/src')
 const ENGINE_SRC = resolve(WORKER_SRC, 'engine')
 const AI_SRC = resolve(WORKER_SRC, 'ai')
-
-function* sourceFiles(dir) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.') && entry.isDirectory()) continue
-    const full = resolve(dir, entry.name)
-    if (entry.isDirectory()) {
-      if (IGNORED_DIRS.has(entry.name)) continue
-      yield* sourceFiles(full)
-      continue
-    }
-    const dot = entry.name.lastIndexOf('.')
-    if (dot > 0 && SOURCE_EXTENSIONS.has(entry.name.slice(dot))) yield full
-  }
-}
-
-function isTestFile(file) {
-  return (
-    /\.(?:spec|test)\.[cm]?[jt]sx?$/.test(file) ||
-    file.includes(`${sep}__tests__${sep}`) ||
-    file.includes(`${sep}testing${sep}`)
-  )
-}
 
 /**
  * Engine 连测试也不许碰 AI SDK（与 engine.boundary.spec.ts 同一口径）。
@@ -82,7 +51,7 @@ function checkWorkerAiIsolation(report) {
     const inEngine = file.startsWith(ENGINE_SRC + sep)
     if (!inEngine && isTestFile(file)) continue
     const source = readFileSync(file, 'utf8')
-    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+    for (const specifier of importSpecifiers(source)) {
       if (!AI_SDK_PATTERN.test(specifier)) continue
       const rel = relative(root, file)
       if (inEngine) {
@@ -100,7 +69,7 @@ function checkDatabaseBoundary(report) {
     for (const file of sourceFiles(resolve(root, `packages/${area}/src`))) {
       if (isTestFile(file)) continue
       const source = readFileSync(file, 'utf8')
-      for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+      for (const specifier of importSpecifiers(source)) {
         if (forbidden.test(specifier) || specifier === '@cairn/db/testing' || specifier.includes('/testing/') ||
           (specifier.startsWith('@cairn/db/') && !(specifier === '@cairn/db/admin' && file.endsWith(`${sep}db${sep}db.module.ts`)))) {
           report(`业务代码只能使用数据库业务入口：${relative(root, file)} → ${specifier}`)
@@ -141,7 +110,7 @@ function checkOtherPackagesAiIsolation(report) {
     if (!existsSync(dir)) continue
     for (const file of sourceFiles(dir)) {
       const source = readFileSync(file, 'utf8')
-      for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+      for (const specifier of importSpecifiers(source)) {
         if (!AI_SDK_PATTERN.test(specifier)) continue
         report(`非 Worker 包不得引用 Midscene / page-agent：${relative(root, file)} → ${specifier}`)
       }
@@ -149,11 +118,18 @@ function checkOtherPackagesAiIsolation(report) {
   }
 }
 
+/**
+ * 声明之外还有一条绕过依赖表的路：跨包相对路径 import。
+ *
+ * `import '../../worker/src/x'` 不出现在任何 package.json 里，依赖表看不见它。
+ * 目前 tsc 的 rootDir 顺带挡着这种写法，但那是编译配置的副作用——副作用可以
+ * 在下一次调整 tsconfig 时消失，约束不该建立在它上面。
+ */
 function checkRelativeEscapes(packageDir, self, report) {
   const inside = packageDir + sep
   for (const file of sourceFiles(packageDir)) {
     const source = readFileSync(file, 'utf8')
-    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+    for (const specifier of importSpecifiers(source)) {
       if (!specifier.startsWith('.')) continue
       const target = resolve(dirname(file), specifier)
       if (target === packageDir || target.startsWith(inside)) continue
@@ -247,7 +223,7 @@ function checkAuthoringPurity(report) {
   for (const file of sourceFiles(dir)) {
     if (isTestFile(file)) continue
     const source = readFileSync(file, 'utf8')
-    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+    for (const specifier of importSpecifiers(source)) {
       if (!forbidden.test(specifier)) continue
       report(`@cairn/authoring 必须 browser-safe：${relative(root, file)} → ${specifier}`)
     }
@@ -260,7 +236,7 @@ function checkDbNoControlPlaneAccount(report) {
   for (const file of sourceFiles(dir)) {
     if (isTestFile(file)) continue
     const source = readFileSync(file, 'utf8')
-    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+    for (const specifier of importSpecifiers(source)) {
       if (specifier === '@cairn/api' || specifier.startsWith('@cairn/api/')) {
         report(`@cairn/db 不得引用控制面：${relative(root, file)} → ${specifier}`)
       }
@@ -271,22 +247,10 @@ function checkDbNoControlPlaneAccount(report) {
   }
 }
 
-function checkApiNoSnapshotContent(report) {
-  const dir = resolve(root, 'packages/api/src')
-  if (!existsSync(dir)) return
-  for (const file of sourceFiles(dir)) {
-    const source = readFileSync(file, 'utf8')
-    if (source.includes('readSessionStateSnapshotContent')) {
-      report(`API 严禁引用 readSessionStateSnapshotContent（只读摘要列，禁止读取全文）：${relative(root, file)}`)
-    }
-  }
-}
-
 checkOtherPackagesAiIsolation((message) => errors.push(message))
 checkDatabaseBoundary((message) => errors.push(message))
 checkAuthoringPurity((message) => errors.push(message))
 checkDbNoControlPlaneAccount((message) => errors.push(message))
-checkApiNoSnapshotContent((message) => errors.push(message))
 
 for (const dep of SHARED_VERSION_DEPS) {
   const seen = versionsByDep.get(dep)

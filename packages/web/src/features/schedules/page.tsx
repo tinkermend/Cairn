@@ -34,6 +34,8 @@ import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
+import { StatusBadge } from '@/components/status-badge'
+import { cn } from '@/lib/utils'
 import { ScheduleDetailDialog } from './detail'
 import { ScheduleEditorDialog } from './editor'
 import { CONSUMER_LABELS, SKIP_LABELS, lastResult } from './labels'
@@ -261,25 +263,48 @@ export function SchedulesPage() {
                       {formatInstant(item.nextDueAt, item.definition.timezone)}
                     </TableCell>
                     <TableCell>
-                      {lastResult(
-                        item.lastOccurrence?.admissionStatus,
-                        item.lastOccurrence?.reason
-                      )}
+                      <div className='flex items-center gap-1.5'>
+                        {item.lastOccurrence?.admissionStatus && (
+                          <span
+                            className={cn(
+                              'size-2 shrink-0 rounded-full',
+                              item.lastOccurrence.admissionStatus === 'ADMITTED'
+                                ? 'bg-status-success'
+                                : item.lastOccurrence.admissionStatus === 'SKIPPED'
+                                  ? 'bg-status-warning'
+                                  : item.lastOccurrence.admissionStatus === 'FAILED'
+                                    ? 'bg-status-error'
+                                    : 'bg-status-info'
+                            )}
+                            aria-hidden
+                          />
+                        )}
+                        <span className='text-small text-text-primary'>
+                          {lastResult(
+                            item.lastOccurrence?.admissionStatus,
+                            item.lastOccurrence?.reason
+                          )}
+                        </span>
+                      </div>
                     </TableCell>
                     <TableCell>
-                      {item.enabled ? '已启用' : '已停用'}
-                      {item.blockReasons?.length ? (
-                        <p className='text-label text-status-warning-foreground'>
-                          {item.blockReasons
-                            .map(
-                              (reason) =>
-                                SKIP_LABELS[
-                                  reason as keyof typeof SKIP_LABELS
-                                ] ?? reason
-                            )
-                            .join(' · ')}
-                        </p>
-                      ) : null}
+                      <div className='flex flex-col gap-1'>
+                        <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                          {item.enabled ? '已启用' : '已停用'}
+                        </StatusBadge>
+                        {item.blockReasons?.length ? (
+                          <p className='text-label text-status-warning-foreground'>
+                            {item.blockReasons
+                              .map(
+                                (reason) =>
+                                  SKIP_LABELS[
+                                    reason as keyof typeof SKIP_LABELS
+                                  ] ?? reason
+                              )
+                              .join(' · ')}
+                          </p>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className='flex flex-wrap gap-2'>

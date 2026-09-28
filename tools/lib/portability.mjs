@@ -17,7 +17,7 @@ export const MIGRATION_RULES = [
   { id: 'sequence', pattern: /\bCREATE\s+SEQUENCE\b|\b(?:SMALL|BIG)?SERIAL\b|\bnextval\s*\(|\bGENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY\b/i, hint: 'ID 由应用 uuid.v7() 生成，不用数据库序列' },
   { id: 'db-uuid', pattern: /\bgen_random_uuid\s*\(|\buuid_generate_v\d/i, hint: 'ID 由应用 uuid.v7() 生成' },
   { id: 'array-type', pattern: /\b(?:TEXT|VARCHAR|INT|INTEGER|BIGINT|UUID|BOOLEAN|NUMERIC)\s*\[\s*\]|\bARRAY\s*\[/i, hint: '数组列不可移植；用 JSON 列或子表' },
-  { id: 'partial-index', pattern: /\bCREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]*\bWHERE\b/is, hint: '条件索引不是通用能力；用普通索引，或把唯一性裁决放进领域操作' },
+  { id: 'partial-index', pattern: /\bCREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]*\bWHERE\b/is, hint: '条件索引不是通用能力。「至多一条 ACTIVE」这类约束不要退到应用层判重（并发下有竞态）：加一个可空槽位列，ACTIVE 时写入分组键、否则写 NULL，再建普通 UNIQUE 索引——PG / MySQL / SQLite 都允许多个 NULL 并存' },
   { id: 'index-method', pattern: /\bUSING\s+(?:GIN|GIST|BRIN|SPGIST|HASH)\b/i, hint: '专有索引方法' },
   { id: 'json-operator', pattern: /->>|#>>?|@>|<@|\?\||\?&/, hint: 'PG JSON 运算符；JSON 查询走 @cairn/db 适配层' },
   { id: 'upsert', pattern: /\bON\s+CONFLICT\b/i, hint: 'ON CONFLICT 是 PG 专有 upsert 语法；种子数据用 INSERT ... SELECT ... WHERE NOT EXISTS，业务幂等放应用层' },

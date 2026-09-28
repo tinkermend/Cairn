@@ -1,4 +1,5 @@
 import {
+  TARGET_CONFIG_FORM_ID,
   normalizeAssistantPageContext,
   type AssistantCapabilitiesResponse,
   type AssistantCapabilityId,
@@ -55,7 +56,23 @@ export function resolveContextRecommendations(params: {
   const rawChips: AssistantRecommendationChip[] = []
 
   // 2. 根据 boundContext / pageContext 匹配当前场景规则
-  if (bound?.activeForm?.formId === 'target_config') {
+  if (bound?.activeForm?.formId === TARGET_CONFIG_FORM_ID) {
+    if (params.permissions.canWrite) {
+      rawChips.push({
+        id: 'target-form-timeout-propose',
+        label: '⏱️ 将登录等待设为30秒',
+        question: '帮我把这个目标系统的提交后等待离开登录页超时改成30秒。',
+        capabilityHint: 'target.propose-form',
+        priority: 110,
+      })
+      rawChips.push({
+        id: 'target-form-settle-propose',
+        label: '🧹 开启自动整理欢迎层',
+        question: '帮我将登录后整理模式设为按平台整理，并将整理预算设为15秒。',
+        capabilityHint: 'target.propose-form',
+        priority: 108,
+      })
+    }
     rawChips.push({
       id: 'target-form-timeout-help',
       label: '⏱️ 登录超时不填会怎样',
@@ -285,8 +302,11 @@ export function resolveContextRecommendations(params: {
       if (chip.capabilityHint && !availableIds.has(chip.capabilityHint)) {
         return false
       }
-      // 权限闸门：编排提议类能力严格需要 workflow:write 权限
-      if (chip.capabilityHint === 'scenario.propose-step' && !params.permissions.canWrite) {
+      // 权限闸门：编排与配置提议类能力严格需要写权限
+      if (
+        (chip.capabilityHint === 'scenario.propose-step' || chip.capabilityHint === 'target.propose-form') &&
+        !params.permissions.canWrite
+      ) {
         return false
       }
       return true

@@ -430,7 +430,9 @@ export function AssistantPanel({
                               (turn.result.kind === 'authoring_proposal' &&
                                 lastAdoptedProposalId === turn.result.proposalId) ||
                               (turn.result.kind === 'proposal' &&
-                                lastAdoptedProposalId === turn.result.stepId)
+                                lastAdoptedProposalId === turn.result.stepId) ||
+                              (turn.result.kind === 'target_form' &&
+                                lastAdoptedProposalId === turn.id)
                             }
                             onClarify={(optionId, option) => {
                               if (option?.kind === 'scenario') {
@@ -463,11 +465,12 @@ export function AssistantPanel({
                               turn.result?.kind === 'authoring_proposal' || turn.result?.kind === 'proposal' || turn.result?.kind === 'target_form'
                                 ? async (proposal) => {
                                     if (!adoptHandler) {
-                                       toast.error(
-                                        proposal.kind === 'target_form'
-                                          ? '目标表单已关闭，请重新打开表单后再应用'
-                                          : '请先打开对应场景工作区再采纳'
-                                      )
+                                      if (proposal.kind === 'target_form') {
+                                        toast.info('正在打开目标系统配置表单...')
+                                        void navigate({ to: '/targets', search: { action: 'create' } })
+                                        return
+                                      }
+                                      toast.error('请先打开对应场景工作区再采纳')
                                       return
                                     }
                                     setAdopting(true)
@@ -479,7 +482,7 @@ export function AssistantPanel({
                                             ? proposal.proposalId
                                             : 'stepId' in proposal
                                               ? proposal.stepId
-                                              : proposal.kind
+                                              : turn.id
                                         setLastAdopted({ proposalId, digest: adopted.digest ?? '' })
                                         if (proposal.kind !== 'target_form') {
                                           toast.success('已放入本地草稿，尚未保存')
@@ -494,14 +497,24 @@ export function AssistantPanel({
                                 : undefined
                             }
                             onRollback={
-                              (turn.result.kind === 'authoring_proposal' ||
-                                turn.result.kind === 'proposal') &&
-                              rollbackHandler
+                              turn.result.kind === 'authoring_proposal' ||
+                              turn.result.kind === 'proposal' ||
+                              turn.result.kind === 'target_form'
                                 ? async (proposal) => {
+                                    if (!rollbackHandler) {
+                                      toast.error(
+                                        proposal.kind === 'target_form'
+                                          ? '目标表单已关闭或已保存，无法撤销'
+                                          : '请先打开对应场景工作区再撤销'
+                                      )
+                                      return
+                                    }
                                     const res = await rollbackHandler(proposal)
                                     if (res.ok) {
                                       setLastAdopted(null)
-                                      toast.success('已撤销本次采纳')
+                                      if (proposal.kind !== 'target_form') {
+                                        toast.success('已撤销本次采纳')
+                                      }
                                     } else {
                                       toast.error(res.reason || '撤销失败')
                                     }

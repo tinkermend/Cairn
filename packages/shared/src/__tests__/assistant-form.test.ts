@@ -6,6 +6,7 @@ import {
   targetConfigFormFieldSchemas,
   targetFormProposalSchema,
   validateTargetFormProposalChange,
+  sanitizeProposalChanges,
 } from '../assistant-form.js'
 import { createTargetBodySchema, updateTargetBodySchema } from '../target.js'
 
@@ -122,4 +123,49 @@ describe('target config assistant form contract', () => {
     expect(targetConfigFieldValueLabel('name', '')).toBe('留空')
     expect(targetConfigFieldValueLabel('name', '测试名称')).toBe('测试名称')
   })
+
+  it('supports pendingFields and clarifyPrompt in TargetFormProposal schema', () => {
+    const proposalWithPending = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '已规划系统名称与编码，待补充入口地址',
+      changes: [
+        { fieldId: 'name', value: '财务系统' },
+        { fieldId: 'code', value: 'finance-system' },
+      ],
+      pendingFields: ['entryUrl'],
+      clarifyPrompt: '请提供财务系统的入口地址（URL）：',
+    }
+    const result = targetFormProposalSchema.safeParse(proposalWithPending)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.pendingFields).toEqual(['entryUrl'])
+      expect(result.data.clarifyPrompt).toBe('请提供财务系统的入口地址（URL）：')
+    }
+  })
+
+  it('sanitizes dummy URLs and detects missing required entryUrl on create mode', () => {
+    const rawChanges = [
+      { fieldId: 'name', value: '财务系统' } as const,
+      { fieldId: 'code', value: 'finance-system' } as const,
+      { fieldId: 'entryUrl', value: 'https://finance.example.com' } as const,
+    ]
+    const sanitized = sanitizeProposalChanges([...rawChanges], 'create')
+    // entryUrl with example.com must be stripped from cleanChanges
+    expect(sanitized.cleanChanges.some((c) => c.fieldId === 'entryUrl')).toBe(false)
+    expect(sanitized.cleanChanges).toHaveLength(2)
+    // entryUrl must be detected as pending
+    expect(sanitized.detectedPendingFields).toContain('entryUrl')
+
+    // When valid entryUrl is provided, it is kept and pendingFields does not have entryUrl
+    const validChanges = [
+      { fieldId: 'name', value: '财务系统' } as const,
+      { fieldId: 'code', value: 'finance-system' } as const,
+      { fieldId: 'entryUrl', value: 'https://finance.oa.internal' } as const,
+    ]
+    const sanitizedValid = sanitizeProposalChanges([...validChanges], 'create')
+    expect(sanitizedValid.cleanChanges).toHaveLength(3)
+    expect(sanitizedValid.detectedPendingFields).not.toContain('entryUrl')
+  })
 })
+
