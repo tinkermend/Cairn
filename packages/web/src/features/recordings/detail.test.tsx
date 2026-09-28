@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   // 详情页里的目标定位字段（authoring/fields/target.tsx）会查能力清单；
   // 这里返回 undefined，页面按「能力未知」渲染，与真实的加载中状态一致。
   fetchScenarioCapabilities: vi.fn(async () => undefined),
-  fetchRecordingGeneralization: vi.fn<() => Promise<any>>(async () => null),
+  fetchRecordingGeneralization: vi.fn<() => Promise<unknown>>(async () => null),
   observeRecordingGeneralization: vi.fn(() => () => {}),
   submitRecordingGeneralizationRound: vi.fn(),
   acceptRecordingGeneralizationRound: vi.fn(),

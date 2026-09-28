@@ -73,7 +73,7 @@ export function OutcomesDonut({
               : '分析场景运行的发起来源渠道'}
           </p>
         </div>
-        <Tabs value={tab} onValueChange={(v) => setTab(v as any)}>
+        <Tabs value={tab} onValueChange={(v) => setTab(v === 'triggers' ? 'triggers' : 'outcomes')}>
           <TabsList className="h-7 bg-surface-subtle p-0.5">
             <TabsTrigger value="outcomes" className="h-6 px-2 text-label">
               业务成果

@@ -55,7 +55,7 @@ export function ExecutionChart({
   const chartData = React.useMemo(() => {
     return timeline.map((pt) => {
       const d = new Date(pt.bucketAt)
-      let timeLabel = ''
+      let timeLabel: string
       if (range === '24h') {
         timeLabel = d.toLocaleTimeString('zh-CN', {
           hour: '2-digit',

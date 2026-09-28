@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useForm, type PathValue } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -8,6 +8,7 @@ import {
   createTargetBodySchema,
   validateTargetFormProposalChange,
   type TargetDto,
+  type TargetConfigAssistFieldId,
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
@@ -194,7 +195,18 @@ function TargetFormFields({
       : null,
   )
 
-  const preAdoptValuesRef = useRef<Record<string, any> | null>(null)
+  const preAdoptValuesRef = useRef<Array<{ fieldId: TargetConfigAssistFieldId; value: unknown }> | null>(null)
+
+  // 助手建议的字段值已由 validateTargetFormProposalChange 按字段校验，这里按字段写回表单。
+  const setAssistField = useCallback(
+    (fieldId: TargetConfigAssistFieldId, value: unknown) => {
+      form.setValue(fieldId, value as PathValue<TargetFormValues, typeof fieldId>, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    },
+    [form],
+  )
 
   useEffect(() => {
     if (!user?.permissions.includes('target:write')) return
@@ -219,17 +231,13 @@ function TargetFormFields({
       }
 
       // 采纳前记录快照（仅记录 proposal 触碰的字段当前值，避免影响用户手填的其他字段）
-      const snapshot: Record<string, any> = {}
-      for (const change of proposal.changes) {
-        snapshot[change.fieldId] = form.getValues(change.fieldId as any)
-      }
-      preAdoptValuesRef.current = snapshot
+      preAdoptValuesRef.current = proposal.changes.map((change) => ({
+        fieldId: change.fieldId,
+        value: form.getValues(change.fieldId),
+      }))
 
       for (const change of proposal.changes) {
-        form.setValue(change.fieldId as any, change.value, {
-          shouldDirty: true,
-          shouldValidate: true,
-        })
+        setAssistField(change.fieldId, change.value)
       }
       const touchesAccount = proposal.changes.some((c) => c.fieldId === 'authMethod' || c.fieldId === 'captchaMode')
       if (touchesAccount) {
@@ -238,7 +246,7 @@ function TargetFormFields({
       if (proposal.pendingFields && proposal.pendingFields.length > 0) {
         const firstPending = proposal.pendingFields[0]
         setTimeout(() => {
-          form.setFocus(firstPending as any)
+          form.setFocus(firstPending)
         }, 50)
         const pendingNames = proposal.pendingFields
           .map((f) => TARGET_CONFIG_FORM_FIELDS.find((item) => item.id === f)?.label ?? f)
@@ -257,11 +265,8 @@ function TargetFormFields({
       if (!preAdoptValuesRef.current) {
         return { ok: false, reason: '没有可撤销的采纳记录或已保存' }
       }
-      for (const [fieldId, prevValue] of Object.entries(preAdoptValuesRef.current)) {
-        form.setValue(fieldId as any, prevValue, {
-          shouldDirty: true,
-          shouldValidate: true,
-        })
+      for (const { fieldId, value } of preAdoptValuesRef.current) {
+        setAssistField(fieldId, value)
       }
       preAdoptValuesRef.current = null
       toast.info('已撤销采纳，恢复修改前状态')
@@ -272,7 +277,7 @@ function TargetFormFields({
       useAssistantStore.getState().registerAdoptHandler(null)
       useAssistantStore.getState().registerRollbackHandler(null)
     }
-  }, [isEdit, form, user?.permissions])
+  }, [isEdit, form, setAssistField, user?.permissions])
 
   const onSubmit = async (values: TargetFormValues) => {
     setSaving(true)

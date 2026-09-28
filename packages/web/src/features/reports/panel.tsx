@@ -419,8 +419,8 @@ function ReportPanelContent({
                         await retryReportAi(current.id)
                         toast.success('已发起重试 AI 辅助解读')
                         await queryClient.invalidateQueries({ queryKey: ['report', current.id] })
-                      } catch (err: any) {
-                        toast.error(err?.message || '重试失败')
+                      } catch (err) {
+                        toast.error(err instanceof Error && err.message ? err.message : '重试失败')
                       } finally {
                         setRetryingAi(false)
                       }

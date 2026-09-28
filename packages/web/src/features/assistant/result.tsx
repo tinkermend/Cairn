@@ -1105,8 +1105,8 @@ export function AssistantResultView({
     return (
       <TargetFormProposalViewer
         proposal={result}
-        onAdopt={onAdopt as any}
-        onRollback={onRollback as any}
+        onAdopt={onAdopt}
+        onRollback={onRollback}
         adopting={adopting}
         isAdopted={isAdopted}
         canRollback={canRollback}

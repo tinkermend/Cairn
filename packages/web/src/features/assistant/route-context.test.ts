@@ -131,6 +131,49 @@ describe('resolveRouteContext (路由级页面感知底座)', () => {
   })
 })
 
+describe('resolveRouteContext 路由声明优先', () => {
+  const router = createRouter({ routeTree, context: { queryClient: new QueryClient() } })
+  const resolveMatched = (pathname: string) => {
+    const matches = router.matchRoutes(pathname)
+    const leaf = matches[matches.length - 1]
+    return resolveRouteContext(pathname, {
+      assistant: leaf?.staticData?.assistant,
+      params: (leaf?.params ?? {}) as Record<string, string>,
+    })
+  }
+
+  it('场景详情以声明的 studio 为准，并带出场景 ID', () => {
+    expect(resolveMatched('/scenarios/sc-1')).toMatchObject({
+      page: 'studio',
+      routeKey: 'scenarios.$scenarioId',
+      scenarioId: 'sc-1',
+      title: '场景编排',
+    })
+  })
+
+  it('运行详情与会话账号页带出主对象与父级范围', () => {
+    expect(resolveMatched('/runs/run-1')).toMatchObject({ page: 'run', routeKey: 'runs.$runId', runId: 'run-1' })
+    expect(resolveMatched('/sessions/t-1/a-1')).toMatchObject({
+      page: 'session',
+      targetId: 't-1',
+      targetAccountId: 'a-1',
+    })
+  })
+
+  it('声明转换后的页面上下文带主对象引用', () => {
+    expect(toPageContext(resolveMatched('/runs/run-1'))).toMatchObject({
+      routeKey: 'runs.$runId',
+      primaryRef: { kind: 'run', id: 'run-1' },
+    })
+  })
+
+  it('未声明的路由仍按路径兜底', () => {
+    const report = resolveMatched('/reports/rep-1')
+    expect(report).toMatchObject({ page: 'other', title: '测试报告' })
+    expect(report.routeKey).toBeUndefined()
+  })
+})
+
 describe('toPageContext (契约数据转换)', () => {
   it('正确将 routeContext 转换为合法 AssistantPageContext', () => {
     const routeCtx = resolveRouteContext('/schedules')

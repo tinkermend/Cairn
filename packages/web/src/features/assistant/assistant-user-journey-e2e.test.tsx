@@ -5,6 +5,7 @@ import { page, userEvent } from 'vitest/browser'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { createAssistantTurn } from '@/lib/assistant-api'
+import type { CreateAssistantTurnBody } from '@cairn/shared'
 import { AssistantHost } from './host'
 
 const { navigate, routeState } = vi.hoisted(() => ({
@@ -40,7 +41,7 @@ vi.mock('@/lib/assistant-api', () => ({
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   })),
-  createAssistantTurn: vi.fn(async (_convId: string, payload: any) => ({
+  createAssistantTurn: vi.fn(async (_convId: string, payload: CreateAssistantTurnBody) => ({
     id: `turn-user-${lastTurnId++}`,
     conversationId: 'conv-user-journey',
     clientTurnId: payload.clientTurnId || `ct-${Date.now()}`,

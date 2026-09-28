@@ -66,6 +66,7 @@ import { cn } from '@/lib/utils'
 import { OutboundChannelsPanel } from './channels'
 import { OutboundRulesPanel, OutboundAlertRules } from './rules'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 export const statusLabels: Record<OutboundStatus, string> = {
   pending: '等待发送',
   sending: '正在发送',
@@ -235,9 +236,11 @@ function OutboundRecords({
     queryFn: () => fetchOutboundEvents(filter),
   })
 
+  // 筛选或手动刷新会重建订阅：先清掉上一条订阅留下的断线提示。
+  useResetOnChange(filter, () => setStreamError(''))
+  useResetOnChange(refresh, () => setStreamError(''))
   useEffect(() => {
     const abort = new AbortController()
-    setStreamError('')
     void subscribeOutbound(filter, abort.signal, (value) => {
       client.setQueryData(['outbound', filter], value)
     })

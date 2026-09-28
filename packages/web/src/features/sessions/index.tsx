@@ -140,8 +140,9 @@ export function SessionsPage() {
     setView(nextView)
     sessionStorage.setItem('sessions-active-view', nextView)
     void navigate({
+      from: '/sessions/',
       to: '/sessions',
-      search: (prev: any) => ({ ...prev, view: nextView }),
+      search: (prev) => ({ ...prev, view: nextView }),
       replace: true,
     })
   }
@@ -277,6 +278,11 @@ export function SessionsPage() {
   // 自动把搜索框填成它的名字并清空筛选，保证用户看得见（§4.5(1)）；每个 targetId 只自动定位一次，
   // 避免和用户之后自己修改搜索/筛选打架。
   const targetLocateAttempted = useRef<string | null>(null)
+  const applySystemsFilter = (value: SessionSystemOverviewFilter | 'all') => {
+    setSystemsFilter(value)
+    systemsPage.reset()
+  }
+
   const targetNameQuery = useQuery({
     queryKey: ['target-name', searchParams.targetId],
     queryFn: () => fetchTarget(searchParams.targetId!),
@@ -338,11 +344,6 @@ export function SessionsPage() {
       setStreamFilter(undefined)
     }
     streamPage.reset()
-  }
-
-  const applySystemsFilter = (value: SessionSystemOverviewFilter | 'all') => {
-    setSystemsFilter(value)
-    systemsPage.reset()
   }
 
   const currentAsOf = view === 'stream' ? streamQuery.data?.asOf : systemsQuery.data?.asOf

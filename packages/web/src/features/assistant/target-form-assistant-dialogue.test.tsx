@@ -44,7 +44,7 @@ vi.mock('@/lib/targets-api', () => ({
 
 let nextTurnToDeliver: AssistantTurn | null = null
 
-function makeTurn(partial: Partial<AssistantTurn> & { id: string; result: any }): AssistantTurn {
+function makeTurn(partial: Partial<AssistantTurn> & { id: string; result: AssistantTurn['result'] }): AssistantTurn {
   const { id, result, clientTurnId, question, capabilityId, ...rest } = partial
   return {
     id,

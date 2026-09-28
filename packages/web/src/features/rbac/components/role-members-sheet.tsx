@@ -49,13 +49,16 @@ type RoleMembersSheetProps = {
 export function RoleMembersSheet({ role, open, onOpenChange }: RoleMembersSheetProps) {
   const [search, setSearch] = useState('')
   const [addDialogOpen, setAddDialogOpen] = useState(false)
-  const canManage = useCan('role:write') && useCan('account:write')
+  const canWriteRole = useCan('role:write')
+  const canWriteAccount = useCan('account:write')
+  const canManage = canWriteRole && canWriteAccount
   const queryClient = useQueryClient()
 
+  const roleId = role?.id
   const { data, isLoading } = useQuery({
-    queryKey: ['role-accounts', role?.id, search],
-    queryFn: () => (role ? fetchRoleAccounts(role.id, { search }) : null),
-    enabled: !!role && open,
+    queryKey: ['role-accounts', roleId, search],
+    queryFn: () => (roleId ? fetchRoleAccounts(roleId, { search }) : null),
+    enabled: !!roleId && open,
   })
 
   const [removingId, setRemovingId] = useState<string | null>(null)

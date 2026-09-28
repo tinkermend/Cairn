@@ -36,7 +36,7 @@ export function ScenarioRankings({
               : '失败次数与故障率高企、需优先复盘与修复的场景'}
           </p>
         </div>
-        <Tabs value={tab} onValueChange={(v) => setTab(v as any)}>
+        <Tabs value={tab} onValueChange={(v) => setTab(v === 'troubled' ? 'troubled' : 'top')}>
           <TabsList className="h-7 bg-surface-subtle p-0.5">
             <TabsTrigger value="top" className="h-6 px-2 text-label">
               高频榜

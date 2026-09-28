@@ -528,6 +528,17 @@ export function aggregateSessionEvents<
   return groups
 }
 
+/** 活动分组读取的会话事件字段。 */
+export interface SessionActivityEvent {
+  id: string
+  seq?: number
+  type: string
+  payload: Record<string, unknown>
+  createdAt: string
+  operationId?: string | null
+  runId?: string | null
+}
+
 export interface SessionOperationStep {
   id: string
   seq?: number
@@ -541,7 +552,7 @@ export interface SessionOperationStep {
   runId?: string | null
   operationId?: string | null
   count: number
-  items: any[]
+  items: SessionActivityEvent[]
 }
 
 export interface SessionActivityGroup {
@@ -560,17 +571,7 @@ export interface SessionActivityGroup {
   steps: SessionOperationStep[]
 }
 
-export function groupSessionEventsByActivity<
-  T extends {
-    id: string
-    seq?: number
-    type: string
-    payload: Record<string, unknown>
-    createdAt: string
-    operationId?: string | null
-    runId?: string | null
-  },
->(events: T[]): SessionActivityGroup[] {
+export function groupSessionEventsByActivity<T extends SessionActivityEvent>(events: T[]): SessionActivityGroup[] {
   if (events.length === 0) return []
 
   const chronological = [...events].sort(

@@ -15,6 +15,7 @@ import { QueryErrorState } from '@/components/query-error-state'
 import { StatusBadge } from '@/components/status-badge'
 import { stepTypeLabel } from '@/features/authoring/labels'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 const observationLabels = {
   captured: '已采集',
   approximate: '近似观察',
@@ -205,9 +206,12 @@ export function Observation({
   )
   const [url, setUrl] = useState<string>()
   const [error, setError] = useState(false)
-  useEffect(() => {
+  // 换了截图来源就先清空旧图与错误，再按需加载新图。
+  useResetOnChange(`${detail?.recordingDraftId}:${artifact?.id}:${artifact?.status}`, () => {
     setUrl(undefined)
     setError(false)
+  })
+  useEffect(() => {
     if (!detail || artifact?.status !== 'available') return
     let active = true
     let local: string | undefined

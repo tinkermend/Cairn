@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { FormProvider, useForm } from 'react-hook-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -67,25 +67,24 @@ export function OutboundRulesPanel({
     queryFn: () => fetchOutboundPolicy(selected),
     enabled: Boolean(selected),
   })
-  const canWrite = useCan('workflow:write') && useCan('run:read')
+  const canWriteWorkflow = useCan('workflow:write')
+  const canReadRuns = useCan('run:read')
+  const canWrite = canWriteWorkflow && canReadRuns
 
-  useEffect(() => {
-    if (!selected && scenarios.data?.items?.length) {
-      setSelected(scenarios.data.items[0].id)
-    }
-  }, [selected, scenarios.data?.items])
+  const scenarioList = scenarios.data?.items
+  // 列表到达后默认选中第一项：在渲染中调整 state，免得 effect 多渲染一轮。
+  if (!selected && scenarioList?.length) {
+    setSelected(scenarioList[0].id)
+  }
 
+  const selectedScenario = scenario.data
   const scenarioItems = useMemo(() => {
-    const list = scenarios.data?.items ? [...scenarios.data.items] : []
-    if (selected && scenario.data && !list.some((s) => s.id === selected)) {
-      list.unshift({
-        id: selected,
-        name: scenario.data.name,
-        targetId: scenario.data.targetId,
-      } as any)
+    const list: Array<{ id: string; name: string; targetId: string | null }> = scenarioList ? [...scenarioList] : []
+    if (selected && selectedScenario && !list.some((s) => s.id === selected)) {
+      list.unshift({ id: selected, name: selectedScenario.name, targetId: selectedScenario.targetId })
     }
     return list
-  }, [scenarios.data?.items, selected, scenario.data])
+  }, [scenarioList, selected, selectedScenario])
 
   return (
     <div className='grid gap-5 lg:grid-cols-[320px_1fr] items-start'>

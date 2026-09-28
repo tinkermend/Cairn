@@ -1,5 +1,10 @@
-import type { SuiteMemberAdmission, SuiteRunStatus, SuiteStatus, SuiteVerdict } from '@cairn/shared'
-import { SUITE_VERDICT_LABELS } from '@cairn/shared'
+import {
+  type SuiteMemberAdmission,
+  type SuiteRunStatus,
+  type SuiteStatus,
+  type SuiteVerdict,
+  SUITE_VERDICT_LABELS,
+} from '@cairn/shared'
 import type { StatusTone } from '@/components/status-badge'
 
 export const SUITE_STATUS_LABELS: Record<SuiteStatus, string> = {

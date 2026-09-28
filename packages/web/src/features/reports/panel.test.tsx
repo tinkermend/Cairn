@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { DEFAULT_REPORT_CONFIG } from '@cairn/shared'
+import { DEFAULT_REPORT_CONFIG, type ReportDto } from '@cairn/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { ReportPanel } from './panel'
@@ -72,7 +72,8 @@ const report = {
     stage: 'final',
     contentCompleteness: 'partial',
   },
-}
+  createdAt: '2026-09-26T00:00:00Z',
+} as ReportDto
 
 describe('报告生成与导出', () => {
   beforeEach(() => {
@@ -95,7 +96,7 @@ describe('报告生成与导出', () => {
       artifactIds: [],
     })
   })
-  const setup = (props?: { initialReport?: any }) =>
+  const setup = (props?: { initialReport?: ReportDto }) =>
     render(
       <QueryClientProvider
         client={
@@ -162,7 +163,7 @@ describe('报告生成与导出', () => {
       aiJob: {
         id: 'ai-job-1',
         reportId: report.id,
-        baseRevisionId: report.currentRevision.id,
+        baseRevisionId: report.currentRevision!.id,
         status: 'failed' as const,
         error: '模型网关超时 504',
         model: 'deepseek-v3',
@@ -172,9 +173,9 @@ describe('报告生成与导出', () => {
     }
     mocks.list.mockResolvedValue({ items: [failedReport], nextCursor: undefined })
     const { fetchReport } = await import('@/lib/reports-api')
-    ;(fetchReport as any).mockResolvedValue(failedReport)
+    ;vi.mocked(fetchReport).mockResolvedValue(failedReport)
 
-    const screen = await setup({ initialReport: failedReport as any })
+    const screen = await setup({ initialReport: failedReport })
     await expect.element(screen.getByText('AI 总结暂未生成')).toBeVisible()
     await expect.element(screen.getByText('失败原因：模型网关超时 504')).toBeVisible()
     const retryBtn = screen.getByRole('button', { name: '重试 AI 总结' })

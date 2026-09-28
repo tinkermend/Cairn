@@ -2,8 +2,7 @@ import { useId, useMemo, useState } from 'react'
 import { Eye, EyeOff, KeyRound, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
-import type { TargetAccountDto, CredentialValidityWrite } from '@cairn/shared'
-import { computeMaintenanceDueAt } from '@cairn/shared'
+import { computeMaintenanceDueAt, type TargetAccountDto, type CredentialValidityWrite } from '@cairn/shared'
 import { updateTargetAccount } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
 import {
@@ -61,17 +60,18 @@ export function TargetAccountPasswordDialog({
   }
 
   // 计算当前选择的有效期写入结构
+  const validityPolicy = account?.validityPolicy
   const effectiveValidity = useMemo<CredentialValidityWrite>(() => {
     const defaultTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
     if (preset === 'keep') {
-      if (account?.validityPolicy && account.validityPolicy.mode !== 'unknown') {
-        if (account.validityPolicy.mode === 'permanent') {
+      if (validityPolicy && validityPolicy.mode !== 'unknown') {
+        if (validityPolicy.mode === 'permanent') {
           return { mode: 'permanent' }
         }
         return {
-          mode: account.validityPolicy.mode,
-          amount: account.validityPolicy.amount ?? 90,
-          timeZone: account.validityPolicy.timeZone ?? defaultTz,
+          mode: validityPolicy.mode,
+          amount: validityPolicy.amount ?? 90,
+          timeZone: validityPolicy.timeZone ?? defaultTz,
         }
       }
       return { mode: 'days', amount: 90, timeZone: defaultTz }
@@ -84,7 +84,7 @@ export function TargetAccountPasswordDialog({
     }
     const days = Math.max(1, parseInt(customDays, 10) || 90)
     return { mode: 'days', amount: days, timeZone: defaultTz }
-  }, [preset, customDays, account?.validityPolicy])
+  }, [preset, customDays, validityPolicy])
 
   // 预览预计到期时间
   const previewText = useMemo(() => {

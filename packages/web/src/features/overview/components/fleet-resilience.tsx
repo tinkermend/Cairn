@@ -160,7 +160,7 @@ export function FleetResilience({
           {needsReview > 0 && (
             <Link
               to="/runs"
-              search={{ status: 'NEEDS_REVIEW' as any }}
+              search={{ status: 'NEEDS_REVIEW' }}
               className="rounded bg-status-warning-background px-2.5 py-1 text-label font-medium text-status-warning-foreground hover:opacity-90"
             >
               处理接管运行 ({needsReview})

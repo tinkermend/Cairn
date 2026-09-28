@@ -58,10 +58,8 @@ export function SuiteReportView({
       .find((b) => b.type === 'suite_business_summary')
     if (!raw) return null
     const parsed = suiteSummaryBlockSchema.safeParse(raw)
-    if (!parsed.success) {
-      console.error('Failed to parse suite_business_summary:', parsed.error)
-      return null
-    }
+    // 汇总块不符合契约时不展示业务汇总，报告其余部分照常呈现。
+    if (!parsed.success) return null
     const legacy = !Object.prototype.hasOwnProperty.call(raw, 'undeterminedCount')
     const projected = legacy
       ? projectSuiteSummaryForDisplay(parsed.data, document.source)

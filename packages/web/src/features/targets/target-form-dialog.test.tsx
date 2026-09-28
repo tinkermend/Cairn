@@ -233,7 +233,7 @@ describe('TargetFormDialog', () => {
         <TargetFormDialog
           open
           onOpenChange={vi.fn()}
-          current={{ id: 'tgt-1', name: '原系统', code: 'orig-code', entryUrl: 'https://orig.com' } as any}
+          current={{ id: 'tgt-1', name: '原系统', code: 'orig-code', entryUrl: 'https://orig.com' } as TargetDto}
         />
       </QueryClientProvider>
     )

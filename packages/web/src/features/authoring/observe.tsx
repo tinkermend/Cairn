@@ -230,7 +230,7 @@ export function AuthoringObserveProvider({
     if (!disambiguationModal) return
     const { visibleText, accessibleName, observation } = disambiguationModal
     let target = observation.target!
-    let previewText = visibleText
+    let previewText: string
 
     if (choice === 'visible_text') {
       const rest = target.candidates.filter(

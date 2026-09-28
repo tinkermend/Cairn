@@ -53,7 +53,7 @@ const navigateMock = vi.fn()
 const accountDialogMock = vi.fn()
 
 vi.mock('./account-form-dialog', () => ({
-  AccountFormDialog: (props: any) => {
+  AccountFormDialog: (props: { open: boolean; defaultUsername?: string }) => {
     accountDialogMock(props)
     return props.open ? (
       <div data-testid='account-form-dialog' data-username={props.defaultUsername}>

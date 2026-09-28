@@ -150,7 +150,7 @@ export function GeneratorConfigEditor({
           <Select
             value={generator.kind}
             disabled={disabled}
-            onValueChange={(val: any) => {
+            onValueChange={(val: string) => {
               if (val === 'mock_preset') {
                 onChange({ kind: 'mock_preset', preset: 'phone_cn', unique: true })
               } else if (val === 'random_number') {

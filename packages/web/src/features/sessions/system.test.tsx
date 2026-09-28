@@ -220,14 +220,14 @@ describe('SystemAccountsPanel', () => {
 
   it('访问 /sessions/$targetId 会重定向至 /sessions?view=systems&targetId=...', async () => {
     signIn(['session:read'])
-    let redirected: any = null
+    let redirected: { options?: unknown } | null = null
     try {
       // @ts-expect-error invoke beforeLoad directly
       await TargetIdRoute.options.beforeLoad({ params: { targetId: TARGET_ID } })
     } catch (error) {
-      redirected = error
+      redirected = error as { options?: unknown }
     }
-    expect(redirected.options).toMatchObject({
+    expect(redirected?.options).toMatchObject({
       to: '/sessions',
       search: { view: 'systems', targetId: TARGET_ID },
       replace: true,

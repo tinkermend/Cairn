@@ -109,6 +109,7 @@ export function TargetDetailPage() {
   const [accountSearch, setAccountSearch] = useState('')
   const [accountStatus, setAccountStatus] = useState<'all' | 'active' | 'disabled'>('all')
   const [prefillUsername, setPrefillUsername] = useState<string | undefined>(search?.prefill_username)
+  const [addAccountOpen, setAddAccountOpen] = useState(false)
 
   useEffect(() => {
     if (search?.action === 'create-account' && user) {
@@ -184,7 +185,6 @@ export function TargetDetailPage() {
 
   const [editOpen, setEditOpen] = useState(false)
   const [infoOpen, setInfoOpen] = useState(false)
-  const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [editingAccount, setEditingAccount] = useState<TargetAccountDto | undefined>()
   const [passwordAccount, setPasswordAccount] = useState<TargetAccountDto | null>(null)
   const [removingTarget, setRemovingTarget] = useState(false)

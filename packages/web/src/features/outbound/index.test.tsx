@@ -2,9 +2,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { OutboundPage } from './index'
+import type { MockLinkProps, MockAuthState } from '@/test-utils/router-mocks'
 
-vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children, to, ...props }: any) => (
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  Link: ({ children, to, ...props }: MockLinkProps) => (
     <a href={to} {...props}>
       {children}
     </a>
@@ -14,12 +16,12 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@/stores/auth-store', () => ({
-  useAuthStore: (selector: any) =>
+  useAuthStore: (selector: (state: MockAuthState) => unknown) =>
     selector({
       auth: {
         user: {
           id: 'user-1',
-          name: '管理员',
+          displayName: '管理员',
           permissions: [
             'outbound:read',
             'outbound:operate',

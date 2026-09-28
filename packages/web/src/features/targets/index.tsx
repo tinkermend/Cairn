@@ -46,7 +46,7 @@ export function TargetsPage() {
   const user = useAuthStore((state) => state.auth.user)
   const canCreate = canCreateTarget(user)
   const canReadSession = useCan('session:read')
-  const [createOpen, setCreateOpen] = useState(Boolean((search as any)?.action === 'create' && canCreate))
+  const [createOpen, setCreateOpen] = useState(Boolean(search.action === 'create' && canCreate))
   const [editing, setEditing] = useState<TargetDto | null>(null)
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null)
   const [removing, setRemoving] = useState<TargetOverviewItem | null>(null)
@@ -54,10 +54,10 @@ export function TargetsPage() {
   const [selectionMissing, setSelectionMissing] = useState(Boolean(search.selected))
 
   useEffect(() => {
-    if ((search as any)?.action === 'create' && canCreate) {
+    if (search.action === 'create' && canCreate) {
       setCreateOpen(true)
     }
-  }, [(search as any)?.action, canCreate])
+  }, [search.action, canCreate])
   const mainRef = useRef<HTMLElement | null>(null)
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [searchDraft, setSearchDraft] = useState({ base: search.q ?? '', value: search.q ?? '' })

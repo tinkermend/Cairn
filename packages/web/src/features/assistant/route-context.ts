@@ -2,8 +2,10 @@ import {
   MENU_CATALOG,
   type AssistantActiveForm,
   type AssistantPageContextV2,
+  type AssistantObjectRefKind,
   type AssistantPageKind,
 } from '@cairn/shared'
+import type { RouteAssistantMeta } from '@/lib/route-assistant-meta'
 
 export interface AssistantRouteContext {
   page: AssistantPageKind
@@ -12,6 +14,42 @@ export interface AssistantRouteContext {
   statusLabel: string
   summaryText: string
   statusTone: 'neutral'
+  /** 以下字段只在当前叶路由声明了 staticData.assistant 时出现。 */
+  routeKey?: string
+  runId?: string
+  scenarioId?: string
+  targetId?: string
+  targetAccountId?: string
+}
+
+/** 当前叶路由的匹配信息：路由声明的助手元数据与路径参数。 */
+export interface RouteMatchInfo {
+  assistant?: RouteAssistantMeta
+  params: Record<string, string>
+}
+
+const REF_FIELD: Partial<Record<AssistantObjectRefKind, 'runId' | 'scenarioId' | 'targetId' | 'targetAccountId'>> = {
+  run: 'runId',
+  scenario: 'scenarioId',
+  target: 'targetId',
+  account: 'targetAccountId',
+}
+
+/**
+ * 路由声明优先：叶路由在 staticData.assistant 上声明了页面类型与主对象时，以声明为准并带上实体 ID；
+ * 未声明的页面按路径前缀兜底（标题与说明始终取菜单目录）。
+ */
+export function resolveRouteContext(pathname: string, match?: RouteMatchInfo): AssistantRouteContext {
+  const base = resolveByPath(pathname)
+  const meta = match?.assistant
+  if (!meta) return base
+  const resolved: AssistantRouteContext = { ...base, page: meta.pageKind, routeKey: meta.routeKey }
+  for (const ref of [meta.primaryObject, ...(meta.scopeRefs ?? [])]) {
+    const field = ref && REF_FIELD[ref.kind]
+    const id = ref && match.params[ref.idParam]
+    if (field && id) resolved[field] = id
+  }
+  return resolved
 }
 
 type RouteRule = {
@@ -55,7 +93,7 @@ const ADDITIONAL_ROUTES: RouteRule[] = [
   },
 ]
 
-export function resolveRouteContext(pathname: string): AssistantRouteContext {
+function resolveByPath(pathname: string): AssistantRouteContext {
   const normalized = pathname.replace(/\/+$/, '') || '/'
 
   // 1. 优先匹配精确根路径

@@ -32,10 +32,10 @@ export function EvidenceResultCell({ item }: { item: EvidenceSearchItem }) {
   const isStep = item.stepOrdinal != null
   const { runStatus, attemptStatus, outcomeStatus, hitKind } = item
 
-  let badgeTone: StatusTone = 'neutral'
-  let badgeLabel = ''
-  let subText: string | null = null
-  let subTextVariant: 'muted' | 'success' | 'error' = 'muted'
+  let badgeTone: StatusTone
+  let badgeLabel: string
+  let subText: string | null
+  let subTextVariant: 'muted' | 'success' | 'error'
 
   if (isSuccess(runStatus)) {
     if (isFailed(attemptStatus)) {

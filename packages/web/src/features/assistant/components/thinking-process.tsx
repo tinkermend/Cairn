@@ -54,14 +54,13 @@ export function ThinkingProcessBlock({
   const contentRef = useRef<HTMLDivElement>(null)
   const userScrolledRef = useRef(false)
 
-  // 实时计时器
+  // 实时计时器；思考结束后改用服务端给出的时长。
+  const displaySeconds =
+    !isLive && thinkingDurationMs && thinkingDurationMs > 0
+      ? Math.max(1, Math.round(thinkingDurationMs / 1000))
+      : elapsedSeconds
   useEffect(() => {
-    if (!isLive) {
-      if (thinkingDurationMs && thinkingDurationMs > 0) {
-        setElapsedSeconds(Math.max(1, Math.round(thinkingDurationMs / 1000)))
-      }
-      return
-    }
+    if (!isLive) return
 
     const startTime = Date.now()
     const timer = setInterval(() => {
@@ -102,8 +101,8 @@ export function ThinkingProcessBlock({
   const displayDuration =
     thinkingDurationMs && thinkingDurationMs > 0
       ? Math.max(1, Math.round(thinkingDurationMs / 1000))
-      : elapsedSeconds > 0
-        ? elapsedSeconds
+      : displaySeconds > 0
+        ? displaySeconds
         : null
 
   // 1. 实时思考中：尚未产生思考文本（排队、理解问题、查找事实阶段）
@@ -118,8 +117,8 @@ export function ThinkingProcessBlock({
         <div role='status' className='flex min-w-0 items-center gap-2 text-label text-text-secondary'>
           <Loader2 className='size-3.5 shrink-0 animate-spin text-primary-600' aria-hidden='true' />
           <span>{stageLabel(stage, queuePosition)}</span>
-          {elapsedSeconds > 0 ? (
-            <span className='shrink-0 text-caption text-text-muted'>用时 {elapsedSeconds} 秒</span>
+          {displaySeconds > 0 ? (
+            <span className='shrink-0 text-caption text-text-muted'>用时 {displaySeconds} 秒</span>
           ) : null}
         </div>
         {onCancel ? (
@@ -157,9 +156,9 @@ export function ThinkingProcessBlock({
             >
               <Brain className='size-3.5 shrink-0 animate-pulse text-primary-600' aria-hidden='true' />
               <span className='truncate whitespace-nowrap'>大模型正在思考分析…</span>
-              {elapsedSeconds > 0 ? (
+              {displaySeconds > 0 ? (
                 <span className='shrink-0 text-caption text-primary-600/80 whitespace-nowrap'>
-                  ({elapsedSeconds}s)
+                  ({displaySeconds}s)
                 </span>
               ) : null}
               {isOpen ? (

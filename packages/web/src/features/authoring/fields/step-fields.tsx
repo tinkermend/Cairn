@@ -1,4 +1,5 @@
 import {
+  EXPR_FUNCTIONS,
   EXECUTION_ERROR_CATEGORIES,
   type ExecutionErrorCategory,
   type OutputShape,
@@ -1251,12 +1252,14 @@ export function StepFields({
               <Select
                 value={expr.fn}
                 disabled={disabled}
-                onValueChange={(fnVal: any) =>
+                onValueChange={(value) => {
+                  const fnVal = EXPR_FUNCTIONS.find((fn) => fn === value)
+                  if (!fnVal) return
                   onChange({
                     ...step,
                     input: { expression: { ...expr, fn: fnVal } },
                   })
-                }
+                }}
               >
                 <SelectTrigger className='w-full'>
                   <SelectValue />

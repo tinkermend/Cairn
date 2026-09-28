@@ -35,6 +35,7 @@ import {
   setAccountSessionRetention,
 } from '@/lib/sessions-api'
 import { disposeWorkerSession } from '@/lib/workers-api'
+import { useNow } from '@/hooks/use-now'
 import { useAuthStore } from '@/stores/auth-store'
 import { useBreadcrumb } from '@/stores/breadcrumb-store'
 import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
@@ -242,17 +243,6 @@ export function describeOperationBanner(input: {
     expired: false,
     showWorkersLink: false,
   }
-}
-
-/** 只在需要倒计时的时候每秒走一次本地时钟，不触发任何请求。 */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [active])
-  return now
 }
 
 export function sessionRetentionHint(input: {

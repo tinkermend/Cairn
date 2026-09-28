@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouterState } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import {
@@ -41,24 +41,26 @@ export function useAssistantContextBinding(
   const unbindPageContext = useAssistantStore((s) => s.unbindPageContext)
   const signature = bindingSignature(context)
   const contextRef = useRef(context)
-  contextRef.current = context
-  const ownerTokenRef = useRef(
+  const [ownerToken] = useState(() =>
     typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `owner-${Math.random().toString(36).slice(2)}`,
   )
 
+  // 先同步最新上下文，再按签名决定是否重新绑定；effect 按声明顺序执行。
   useEffect(() => {
-    const current = contextRef.current
-    bindPageContext(current, ownerTokenRef.current)
-  }, [signature, bindPageContext])
+    contextRef.current = context
+  })
 
   useEffect(() => {
-    const token = ownerTokenRef.current
+    bindPageContext(contextRef.current, ownerToken)
+  }, [signature, bindPageContext, ownerToken])
+
+  useEffect(() => {
     return () => {
-      unbindPageContext(token)
+      unbindPageContext(ownerToken)
     }
-  }, [unbindPageContext])
+  }, [unbindPageContext, ownerToken])
 }
 
 /**
