@@ -30,6 +30,6 @@
 
 登录主张为“化繁为简，识途即行”。“识途”取意“老马识途”的识路与行路，强调快速构建场景、AI 与确定性操作融合执行，并通过多任务协同提升测试与巡检效率。证据支撑运行追溯与复盘。
 
-登录页顶部副标题为“可观测场景执行平台”。右侧采用 GPT Image 制作的[动效底图](../../../packages/web/src/assets/brand/login-motion-base.webp)与[节点 / 面板素材](../../../packages/web/src/assets/brand/login-motion-parts.webp)，新增资源共约 67 KB。[生成提示词](login-motion-prompts.md)记录素材来源及生成方式。素材用 SVG 轮廓裁切为独立元素，坐标统一为 1024 × 1536；不直接展示素材中的白色底。
+登录页顶部与控制台侧栏副标题为“智能场景执行平台”。右侧采用 GPT Image 制作的[动效底图](../../../packages/web/src/assets/brand/login-motion-base.webp)与[节点 / 面板素材](../../../packages/web/src/assets/brand/login-motion-parts.webp)，新增资源共约 67 KB。[生成提示词](login-motion-prompts.md)记录素材来源及生成方式。素材用 SVG 轮廓裁切为独立元素，坐标统一为 1024 × 1536；不直接展示素材中的白色底。
 
 节点依次点亮并轻微抬起，光点沿轨道前进，小面板依次浮现。动效约 6.3 秒后静止，鼠标再次进入右图可重播；这是品牌演示，不表示实际运行状态。切入后台时暂停，窄屏及减少动态效果模式不加载分层资源，加载失败保留原静态配图。

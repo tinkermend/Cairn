@@ -44,6 +44,24 @@ vi.mock('@/lib/targets-api', () => ({
 
 let nextTurnToDeliver: AssistantTurn | null = null
 
+function makeTurn(partial: Partial<AssistantTurn> & { id: string; result: any }): AssistantTurn {
+  const { id, result, clientTurnId, question, capabilityId, ...rest } = partial
+  return {
+    id,
+    conversationId: 'conv-target-form-sim-1',
+    clientTurnId: clientTurnId ?? `client-${id}`,
+    parentTurnId: null,
+    question: question ?? 'mock question',
+    capabilityId: capabilityId ?? 'target.propose-form',
+    status: 'COMPLETED',
+    deadlineAt: new Date(Date.now() + 60000).toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    result,
+    ...rest,
+  } as AssistantTurn
+}
+
 vi.mock('@/lib/assistant-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/assistant-api')>()
   return {
@@ -174,17 +192,12 @@ describe('用户视角全流程走查：识途助手自然语言表单修改提�
       ],
     }
 
-    nextTurnToDeliver = {
+    nextTurnToDeliver = makeTurn({
       id: 'turn-crm-proposal-1',
-      conversationId: 'conv-target-form-sim-1',
       clientTurnId: 'client-turn-1',
-      parentTurnId: null,
       question: '帮我推荐登录超时与整理配置',
-      status: 'COMPLETED',
-      createdAt: '2026-09-28T00:00:01.000Z',
-      updatedAt: '2026-09-28T00:00:02.000Z',
       result: simulatedProposal,
-    }
+    })
 
     const questionInput = page.getByRole('textbox', { name: '向助手提问' })
     await questionInput.fill('帮我推荐登录超时与整理配置')
@@ -193,18 +206,13 @@ describe('用户视角全流程走查：识途助手自然语言表单修改提�
 
     useAssistantStore.setState({
       turns: [
-        {
+        makeTurn({
           id: 'turn-crm-proposal-1',
-          conversationId: 'conv-target-form-sim-1',
           clientTurnId: 'client-turn-1',
-          parentTurnId: null,
           question: '帮我推荐登录超时与整理配置',
           capabilityId: 'target.propose-form',
-          status: 'COMPLETED',
-          createdAt: '2026-09-28T00:00:01.000Z',
-          updatedAt: '2026-09-28T00:00:02.000Z',
           result: simulatedProposal,
-        },
+        }),
       ],
       activeTurnId: null,
       busy: false,
@@ -275,17 +283,17 @@ describe('用户视角全流程走查：识途助手自然语言表单修改提�
       authMethod: 'password',
       captchaMode: 'none',
       status: 'active',
-      iconKey: null,
-      accentKey: null,
+      iconKey: 'globe',
+      accentKey: 'blue',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       probeStatus: 'READY',
       probeHttpCode: 200,
       probeCheckedAt: new Date().toISOString(),
       probeLatencyMs: 50,
-      loginFields: [],
+      loginFields: null,
       sensitiveSelectors: [],
-    }
+    } as unknown as TargetDto
 
     await render(
       <QueryClientProvider client={queryClient}>
@@ -312,17 +320,12 @@ describe('用户视角全流程走查：识途助手自然语言表单修改提�
 
     useAssistantStore.setState({
       turns: [
-        {
+        makeTurn({
           id: 'turn-illegal-code-1',
-          conversationId: 'conv-target-form-sim-1',
           clientTurnId: 'client-turn-2',
-          parentTurnId: null,
           question: '帮我把编码改成 finance-v2',
-          status: 'COMPLETED',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
           result: illegalEditProposal,
-        },
+        }),
       ],
       busy: false,
     })
@@ -369,21 +372,16 @@ describe('用户视角全流程走查：识途助手自然语言表单修改提�
     // 若只读用户尝试手敲发问修改，后端返回无权限拒绝结果
     useAssistantStore.setState({
       turns: [
-        {
+        makeTurn({
           id: 'turn-denied-1',
-          conversationId: 'conv-target-form-sim-1',
           clientTurnId: 'client-turn-3',
-          parentTurnId: null,
           question: '帮我把超时改成30秒',
-          status: 'COMPLETED',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
           result: {
             kind: 'unsupported',
             reasonCode: 'PERMISSION_DENIED',
             message: '需要 target:write 权限才能生成目标配置提案。',
           },
-        },
+        }),
       ],
       busy: false,
     })
@@ -424,17 +422,12 @@ describe('用户视角全流程走查：识途助手自然语言表单修改提�
 
     useAssistantStore.setState({
       turns: [
-        {
+        makeTurn({
           id: 'turn-pending-url-1',
-          conversationId: 'conv-target-form-sim-1',
           clientTurnId: 'client-turn-4',
-          parentTurnId: null,
           question: '帮我配一个进销存后台',
-          status: 'COMPLETED',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
           result: proposalWithPending,
-        },
+        }),
       ],
       busy: false,
     })

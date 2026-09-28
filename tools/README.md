@@ -10,13 +10,14 @@
 | `check-deps.mjs` | `pnpm check:deps` | 包边界与依赖方向：package.json 声明的仓内依赖，以及绕开声明的跨包相对路径 import；允许边表在脚本顶部，改边界必须改脚本 |
 | `check-invariants.mjs` | `pnpm check:invariants` | 宪法架构不变量规则表（GET/POST、Worker 不持有 API 地址、快照冻结、租约写入器、Chromium 启动点等）；规则引用的条款必须是 CLAUDE.md 现存标题，含规则自测 |
 | `check-menu-reconciliation.mjs` | `pnpm check:menus` | 菜单目录、助手导览与侧栏单源对账；读 `packages/shared/dist`，改了菜单契约需先构建 |
-| `check-route-assistant.mjs` | `pnpm check:routes` | 核心叶路由的助手元数据声明 |
 | `check-spec-governance.mjs` | `pnpm check:specs` | 活跃方案 ≤ 15 篇、已闭环方案须归档；`docs/spec/` 不进仓库，只在本机手动跑，不进 `pnpm check` / CI |
 | `check-stack.mjs` | `pnpm check:stack` | 本机 api / worker / web 进程探活；不启动进程，也不进 CI |
 | `use-env.mjs` | `pnpm env:use local\|remote`、`pnpm env:status` | 开发连接画像：`.env.local` / `.env.remote` 与 `.env.example` 键集必须对齐；`.env` 只是当前生效指针 |
 | `probe-demonstration-files.mjs` | `node tools/probe-demonstration-files.mjs` | 本机 Web／API／对象存储的 JSON、YAML 文件导入、图片审查、参数／成功条件回填与单步重教；含 390px 窄屏检查 |
 
-`pnpm check` 含依赖、迁移、数据库可移植、架构不变量、菜单与路由对账，以及规则与探活判定单测，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。`pnpm check:stack` 探本机正在跑的进程，不进 CI。源码遍历与「测试文件」口径统一在 `lib/source-scan.mjs`，各检查脚本不各写一份。
+`pnpm check` 含依赖、迁移、数据库可移植、架构不变量、菜单对账，以及规则与探活判定单测；它不挂在 `pnpm test` / `test:*` 前面，单包测试不必先构建全仓。`.github/workflows/ci.yml` 在 push 与 PR 上按顺序执行（install → build → check → lint → typecheck → migrate → test），本机要跑全套就 `pnpm check && pnpm test`。`pnpm check:stack` 探本机正在跑的进程，不进 CI。源码遍历与「测试文件」口径统一在 `lib/source-scan.mjs`，各检查脚本不各写一份。
+
+路由助手元数据不再由脚本按文本检查：`packages/web/src/lib/route-assistant-meta.ts` 给 `staticData.assistant` 加了类型（pageKind / 对象种类取自 shared 契约，由 tsc 校验全部路由），核心路由登记与详情页规则在同目录的 vitest 里，`pnpm check:routes` 单独跑它。
 
 ## 本机进程探活
 

@@ -14,7 +14,7 @@ export function AuthLayout({ children }: AuthLayoutProps) {
           <div className='space-y-1'>
             <div className='text-stat font-semibold text-foreground'>识途</div>
             <p className='text-body leading-6 text-text-secondary'>
-              可观测场景执行平台
+              智能场景执行平台
             </p>
           </div>
         </header>
