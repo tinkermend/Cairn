@@ -12,6 +12,8 @@ import {
   monitorProfileListResponseSchema,
   monitorSeriesResponseSchema,
   monitorStreamControlSchema,
+  monitorTargetSlaResponseSchema,
+  monitorAiModelResponseSchema,
   monitoringOverviewResponseSchema,
   platformConfigCurrentSchema,
   type MonitorAlertChannelBody,
@@ -28,6 +30,8 @@ import {
   type MonitorSeriesQueryInput,
   type MonitorSeriesResponse,
   type MonitorStreamControl,
+  type MonitorTargetSlaResponse,
+  type MonitorAiModelResponse,
   type MonitoringOverviewResponse,
   type PlatformConfigCurrent,
 } from '@cairn/shared'
@@ -38,6 +42,15 @@ import { useAuthStore } from '@/stores/auth-store'
 
 export function fetchMonitoringOverview(): Promise<MonitoringOverviewResponse> {
   return apiFetch('/api/monitoring/overview', monitoringOverviewResponseSchema)
+}
+
+export function fetchTargetSla(windowHours?: number): Promise<MonitorTargetSlaResponse> {
+  const query = windowHours ? `?windowHours=${windowHours}` : ''
+  return apiFetch(`/api/monitoring/targets/sla${query}`, monitorTargetSlaResponseSchema)
+}
+
+export function fetchAiModels(): Promise<MonitorAiModelResponse> {
+  return apiFetch('/api/monitoring/ai/models', monitorAiModelResponseSchema)
 }
 
 export function fetchMonitorProfiles(query: MonitorProfileListQuery): Promise<MonitorProfileListResponse> {

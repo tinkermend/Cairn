@@ -6,6 +6,8 @@ export type DiskSample = {
   profileBytes: number | null
   profileCount: number | null
   profileDiskFreeBytes: number | null
+  diskTotalBytes: number | null
+  diskUsagePercent: number | null
   midsceneBytes: number | null
   sampledAt: Date
 }
@@ -13,15 +15,17 @@ export type DiskSample = {
 export async function sampleProfileDisk(profileDir: string, workerId: string): Promise<DiskSample> {
   const sampledAt = new Date()
   const root = resolve(profileDir)
-  const [usage, free, midscene] = await Promise.all([
+  const [usage, disk, midscene] = await Promise.all([
     directoryStats(root),
-    diskFree(root),
+    diskStats(root),
     directoryBytes(join(tmpdir(), `cairn-midscene-${workerId}`)).catch(() => null),
   ])
   return {
     profileBytes: usage.bytes,
     profileCount: usage.count,
-    profileDiskFreeBytes: free,
+    profileDiskFreeBytes: disk.freeBytes,
+    diskTotalBytes: disk.totalBytes,
+    diskUsagePercent: disk.usagePercent,
     midsceneBytes: midscene,
     sampledAt,
   }
@@ -56,11 +60,18 @@ async function directoryBytes(root: string): Promise<number> {
   return total
 }
 
-async function diskFree(root: string): Promise<number | null> {
+async function diskStats(root: string): Promise<{ freeBytes: number | null; totalBytes: number | null; usagePercent: number | null }> {
   try {
     const info = await statfs(root)
-    return Number(info.bavail) * Number(info.bsize)
+    const bsize = Number(info.bsize)
+    const totalBytes = Number(info.blocks) * bsize
+    const freeBytes = Number(info.bavail) * bsize
+    const usagePercent =
+      totalBytes > 0
+        ? Math.min(100, Math.max(0, Math.round(((totalBytes - freeBytes) / totalBytes) * 100)))
+        : null
+    return { freeBytes, totalBytes, usagePercent }
   } catch {
-    return null
+    return { freeBytes: null, totalBytes: null, usagePercent: null }
   }
 }

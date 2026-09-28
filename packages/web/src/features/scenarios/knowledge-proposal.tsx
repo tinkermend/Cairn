@@ -1,16 +1,17 @@
 import { useRef, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   authoringSteps,
+  canFlattenKnowledgeAuthoringDocument,
   scenarioDocumentDigest,
   isAuthoringDocumentV2,
-  walkAuthoringNodes,
   type ScenarioAuthoringDocumentV2,
   type AuthoringProposal,
   type ScenarioDocument,
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
+import { fetchScenario } from '@/lib/scenarios-api'
 import {
   acceptKnowledgeProposal,
   createKnowledgeProposal,
@@ -40,7 +41,7 @@ type KnowledgeProposalProps = {
   draftRevision: number
   document: ScenarioDocument | ScenarioAuthoringDocumentV2
   disabled?: boolean
-  onAccepted: (draftRevision: number, document: ScenarioDocument) => void
+  onAccepted: (draftRevision: number, document: ScenarioDocument | ScenarioAuthoringDocumentV2) => void
 }
 
 export function KnowledgeProposal(props: KnowledgeProposalProps) {
@@ -48,15 +49,11 @@ export function KnowledgeProposal(props: KnowledgeProposalProps) {
 }
 
 function KnowledgeProposalContent(props: KnowledgeProposalProps) {
+  const queryClient = useQueryClient()
   const flatDocument: ScenarioDocument | undefined = isAuthoringDocumentV2(
     props.document
   )
-    ? walkAuthoringNodes(props.document).some(
-        ({ node }) =>
-          node.kind === 'module' ||
-          node.kind === 'block' ||
-          (node.kind === 'step' && (node.outcomes?.length ?? 0) > 0),
-      )
+    ? !canFlattenKnowledgeAuthoringDocument(props.document)
       ? undefined
       : {
           schemaVersion: 1,
@@ -116,11 +113,18 @@ function KnowledgeProposalContent(props: KnowledgeProposalProps) {
         documentDigest: await scenarioDocumentDigest(flatDocument!),
       })
     },
-    onSuccess: (result) => {
-      toast.success('已接受到草稿，尚未发布')
+    onSuccess: async (result) => {
       setProposal(result.proposal)
-      if (result.proposal.document)
-        props.onAccepted(result.draftRevision, result.proposal.document)
+      try {
+        const scenario = await fetchScenario(props.scenarioId)
+        if (!scenario.draft || scenario.draft.revision < result.draftRevision)
+          throw new Error('已接受的草稿修订尚不可读取')
+        props.onAccepted(scenario.draft.revision, scenario.draft.document)
+        toast.success('已接受到草稿，尚未发布')
+      } catch {
+        void queryClient.invalidateQueries({ queryKey: ['scenarios', props.scenarioId] })
+        toast.warning('建议已接受，但暂时无法刷新草稿。请刷新场景后核对保存结果。')
+      }
     },
     onError: (error) => {
       if (
@@ -157,7 +161,7 @@ function KnowledgeProposalContent(props: KnowledgeProposalProps) {
   if (!flatDocument)
     return (
       <p className='text-small text-muted-foreground'>
-        知识建议目前只支持独立步骤草稿；此草稿含模块调用或业务结果规则，请在场景编排器中维护。
+        知识建议目前只支持独立步骤且无额外编排设置的草稿；请在场景编排器中维护当前定义。
       </p>
     )
   const busy =

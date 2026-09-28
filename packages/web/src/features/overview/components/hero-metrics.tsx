@@ -182,7 +182,7 @@ export function HeroMetrics({
           <div className="text-stat font-semibold tabular-nums text-text-primary">
             {targetCount}{' '}
             <span className="text-body font-normal text-muted-foreground">
-              系统 / {readyAccounts} 账号
+              系统 / {totalAccounts} 账号（{readyAccounts} 就绪）
             </span>
           </div>
           <div className="mt-1 flex items-center gap-1.5 text-label text-muted-foreground">

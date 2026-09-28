@@ -1305,22 +1305,24 @@ export async function pageHasSensitiveContent(
   selectors: readonly string[] = [],
 ): Promise<boolean> {
   try {
-    if (pageClosed(page)) return false
+    // A failed inspection is unknown, not proof that the page is safe to
+    // disclose to another model or consumer of the screenshot metadata.
+    if (pageClosed(page)) return true
     const pwLoc = page.locator('input[type="password"]')
-    const pwCount = await pwLoc.count().catch(() => 0)
+    const pwCount = await pwLoc.count()
     for (let i = 0; i < pwCount; i++) {
-      if (await pwLoc.nth(i).isVisible().catch(() => false)) return true
+      if (await pwLoc.nth(i).isVisible()) return true
     }
     for (const selector of selectors) {
       if (!selector) continue
       const loc = page.locator(selector)
-      const count = await loc.count().catch(() => 0)
+      const count = await loc.count()
       for (let i = 0; i < count; i++) {
-        if (await loc.nth(i).isVisible().catch(() => false)) return true
+        if (await loc.nth(i).isVisible()) return true
       }
     }
   } catch {
-    // ignore
+    return true
   }
   return false
 }

@@ -8,6 +8,7 @@ import {
   type DbEnv,
   type EnvValidationError,
 } from '@cairn/shared'
+import { withLocalWorkerEndpoints } from './worker-endpoints'
 
 /**
  * 进程配置的唯一入口。
@@ -43,7 +44,7 @@ let cachedApi: ApiEnv | undefined
 /** 已校验的进程配置。首次读取时才校验，失败即退出。 */
 export function resolveApiEnv(): ApiEnv {
   if (cachedApi) return cachedApi
-  const parsed = apiEnvSchema.safeParse(process.env)
+  const parsed = apiEnvSchema.safeParse(withLocalWorkerEndpoints(process.env))
   if (!parsed.success) reportEnvFailure('cairn-api', parsed.error)
   cachedApi = parsed.data
   return cachedApi

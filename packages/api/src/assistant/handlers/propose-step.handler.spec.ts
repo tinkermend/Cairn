@@ -7,7 +7,8 @@ import {
 vi.mock('@cairn/db', () => ({
   getScenario: vi.fn(),
   getTargetKnowledgeContext: vi.fn(),
-  newId: vi.fn(() => '99999999-9999-4999-8999-999999999999'),
+  getMapAssetDetail: vi.fn(),
+  newId: vi.fn(() => crypto.randomUUID()),
   DomainError: class DomainError extends Error {
     constructor(public kind: string, public code: string, message: string) {
       super(message)
@@ -19,7 +20,7 @@ vi.mock('./common.js', () => ({
   requireVisibleTarget: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { getScenario, getTargetKnowledgeContext } from '@cairn/db'
+import { getMapAssetDetail, getScenario, getTargetKnowledgeContext } from '@cairn/db'
 import { handleScenarioProposeStep } from './propose-step.handler.js'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 
@@ -113,6 +114,7 @@ describe('propose-step.handler 场景编排结构化提议', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getScenario).mockResolvedValue(sampleScenarioV2())
+    vi.mocked(getMapAssetDetail).mockRejectedValue(new Error('地图详情不可用'))
   })
 
   it('将真实地图定位与资产引用传给编排模型，并拒绝伪造的引用', async () => {
@@ -139,6 +141,39 @@ describe('propose-step.handler 场景编排结构化提议', () => {
     expect(getTargetKnowledgeContext).toHaveBeenCalledWith(expect.anything(), targetKnowledge.targetId,
       expect.objectContaining({ maxPages: 3 }))
     expect(generated).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ targetKnowledge }), undefined)
+    expect(result).toMatchObject({ kind: 'unsupported', reasonCode: 'MAP_ASSET_UNKNOWN' })
+  })
+
+  it.each([
+    ['添加未观测候选', { framePath: [], candidates: [
+      { by: 'role', value: 'link', name: '删除' },
+      { by: 'role', value: 'button', name: '搜索' },
+    ] }],
+    ['改写 iframe 路径', { framePath: [{ name: '其它窗口' }], candidates: [
+      { by: 'role', value: 'button', name: '搜索' },
+    ] }],
+    ['添加未观测语义定位', { framePath: [], candidates: [
+      { by: 'role', value: 'button', name: '搜索' },
+    ], semantic: '删除当前记录' }],
+  ])('地图引用真实但%s时仍拒绝提案', async (_name, locator) => {
+    const assetRef = 'p:page:o:button:i:default:d:1'
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:tokens', menuPath: ['令牌'], title: '令牌列表', urlPattern: 'https://example.com/tokens',
+        views: [{ viewStateKey: 'view:tokens', label: 'default', elements: [{
+          assetRef, category: 'action_button', name: '搜索', stability: 'high',
+          locator: { framePath: [], candidates: [{ by: 'role', value: 'button', name: '搜索' }] },
+        }] }] }],
+    } as never)
+    const base = mockContext()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      session: { generateScenarioAuthoringProposal: vi.fn(async () => ({ operations: [{
+        kind: 'insert_step', id: 'temp', step: { id: 'step', name: '点击搜索', type: 'click',
+          input: { target: { assetRef, ...locator } } },
+      }] })) } as never,
+    }))
     expect(result).toMatchObject({ kind: 'unsupported', reasonCode: 'MAP_ASSET_UNKNOWN' })
   })
 
@@ -169,6 +204,97 @@ describe('propose-step.handler 场景编排结构化提议', () => {
       } },
     })
     expect(model.generateScenarioAuthoringProposal).not.toHaveBeenCalled()
+  })
+
+  it('等待后再校验表格列时生成有序的两个操作，不把单个断言冒充完整提案', async () => {
+    const assetRef = 'p:page:o:column:i:default:d:1'
+    vi.mocked(getMapAssetDetail).mockResolvedValue({
+      assetRefKey: assetRef, name: 'API Key', evidenceAvailability: 'unavailable',
+      observationCoverage: 'unknown', applicability: 'unknown',
+    } as never)
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444',
+      releaseId: '66666666-6666-4666-8666-666666666666',
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:keys', menuPath: ['API Keys'], title: 'API Keys',
+        urlPattern: 'https://example.com/keys', views: [{ viewStateKey: 'view:keys', label: 'default',
+          elements: [{ assetRef, category: 'table_column', name: 'API Key', stability: 'medium',
+            locator: { framePath: [], candidates: [{ by: 'role', value: 'columnheader', name: 'API Key' }] } }] }] }],
+    } as never)
+    const base = mockContext()
+    const anchorStepId = '11111111-1111-4111-8111-111111111111'
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
+      slots: { ...base.slots, stepId: anchorStepId },
+      question: '在 API Keys 页面，查完后等表格出现，再确认表格有 API Key 列。',
+      session: { generateScenarioAuthoringProposal: vi.fn() } as never,
+    }))
+    expect(result.kind).toBe('authoring_proposal')
+    if (result.kind !== 'authoring_proposal') return
+    expect(result.operations).toHaveLength(2)
+    const [wait, check] = result.operations
+    expect(wait).toMatchObject({ kind: 'insert_step', anchorStepId,
+      step: { type: 'wait', input: { kind: 'visible', target: { assetRef } } } })
+    expect(check).toMatchObject({ kind: 'insert_step', step: { type: 'assert', input: {
+      target: { assetRef }, expect: { kind: 'exists' },
+    } } })
+    expect(check?.kind === 'insert_step' && wait?.kind === 'insert_step' && check.anchorStepId).toBe(wait?.kind === 'insert_step' ? wait.step.id : undefined)
+    expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
+      code: 'MAP_SOURCE_NEEDS_REVIEW', severity: 'warning',
+      message: expect.stringContaining('原始证据不可回看'),
+    })]))
+    expect(getMapAssetDetail).toHaveBeenCalledWith(expect.anything(),
+      '44444444-4444-4444-8444-444444444444', 'column',
+      expect.objectContaining({ releaseId: '66666666-6666-4666-8666-666666666666' }))
+  })
+
+  it('缺少结果区定位时不调用模型猜测，也不生成等待加校验的半成品提案', async () => {
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:orders', menuPath: ['订单'], title: '订单',
+        urlPattern: 'https://example.com/orders', views: [{ viewStateKey: 'view:orders', label: 'default',
+          elements: [{ assetRef: 'p:orders:o:status:i:default:d:1', category: 'display', name: '状态',
+            stability: 'medium', locator: { framePath: [], candidates: [{ by: 'label', value: '状态' }] } }] }] }],
+    } as never)
+    const generate = vi.fn(async () => ({ operations: [{ kind: 'insert_step', id: 'temp',
+      step: { id: 'step', name: '检查状态', type: 'assert', effectType: 'READ_ONLY',
+        input: { target: { framePath: [], candidates: [{ by: 'label', value: '状态' }] },
+          expect: { kind: 'text_contains', value: '成功' } } } }] }))
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...mockContext().actor, permissions: ['ai:assist', 'workflow:write', 'target:read', 'map:read'] },
+      slots: { scenarioId: '33333333-3333-4333-8333-333333333333', draftRevision: 2,
+        stepId: '22222222-2222-4222-8222-222222222222' },
+      question: '查完订单后等结果区出现，再检查状态是成功。',
+      session: { generateScenarioAuthoringProposal: generate } as never,
+    }))
+    expect(generate).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ kind: 'clarify', missingFields: ['waitTarget', 'assertTarget'] })
+  })
+
+  it('其它业务页面的结果区与状态定位不能冒充订单页事实', async () => {
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:invoice', menuPath: ['发票'], title: '发票查询',
+        urlPattern: 'https://example.com/invoices', views: [{ viewStateKey: 'view:invoice', label: 'default',
+          elements: [
+            { assetRef: null, category: 'display', name: '结果区', stability: 'medium',
+              locator: { framePath: [], candidates: [{ by: 'css', value: '#results' }] } },
+            { assetRef: null, category: 'display', name: '状态', stability: 'medium',
+              locator: { framePath: [], candidates: [{ by: 'css', value: '#status' }] } },
+          ] }] }],
+    } as never)
+    const generate = vi.fn()
+    const result = await handleScenarioProposeStep(mockContext({
+      actor: { ...mockContext().actor, permissions: ['ai:assist', 'workflow:write', 'target:read', 'map:read'] },
+      slots: { scenarioId: '33333333-3333-4333-8333-333333333333', draftRevision: 2,
+        stepId: '22222222-2222-4222-8222-222222222222' },
+      question: '查完订单后等结果区出现，再检查状态是成功。',
+      session: { generateScenarioAuthoringProposal: generate } as never,
+    }))
+    expect(result).toMatchObject({ kind: 'clarify', missingFields: ['waitTarget', 'assertTarget'] })
+    expect(generate).not.toHaveBeenCalled()
   })
 
   it('对非英文列名也按唯一的已观测资产生成断言', async () => {
@@ -319,7 +445,10 @@ describe('propose-step.handler 场景编排结构化提议', () => {
     }
   })
 
-  it('敏感密码明文字面量提议应被拦截 (N08)', async () => {
+  it.each([
+    '添加输入密码步骤，密码是 PlainTextPassword123',
+    '把这一步的密码直接写成 DummyTestPassword123!，给我修改建议。',
+  ])('敏感密码明文字面量提议应被拦截且不回显 (%s)', async (question) => {
     const mockModelSession = {
       generateScenarioAuthoringProposal: vi.fn(async () => ({
         operations: [
@@ -339,18 +468,29 @@ describe('propose-step.handler 场景编排结构化提议', () => {
 
     const ctx = mockContext({
       session: mockModelSession as any,
-      question: '添加输入密码步骤，密码是 PlainTextPassword123',
+      question,
     })
 
     const result = await handleScenarioProposeStep(ctx)
     expect(result.kind).toBe('unsupported')
     if (result.kind === 'unsupported') {
-      expect(result.reasonCode).toBe('TASK_UNSUPPORTED')
-      expect(result.message).toContain('密码或凭据不能以明文字符串字面量填入')
+      expect(result.reasonCode).toBe('SENSITIVE_LITERAL_FORBIDDEN')
+      expect(result.message).toContain('不能把明文口令或凭据写入场景步骤')
+      expect(result.message).not.toMatch(/PlainTextPassword123|DummyTestPassword123/)
     }
+    expect(mockModelSession.generateScenarioAuthoringProposal).not.toHaveBeenCalled()
   })
 
   it('成功在 V2 结构化文档上生成编排候选，保留顶层属性与 scenarioOutcomes，输出 diff 与静态预检', async () => {
+    vi.mocked(getTargetKnowledgeContext).mockResolvedValue({
+      targetId: '44444444-4444-4444-8444-444444444444', releaseId: null,
+      generatedAt: '2026-09-27T00:00:00.000Z', menuTree: [], truncated: false,
+      pages: [{ pageKey: 'page:orders', menuPath: ['订单'], title: '订单页面',
+        urlPattern: 'https://example.com/orders', views: [{ viewStateKey: 'view:orders', label: 'default',
+          elements: [{ assetRef: null, category: 'input', name: '订单号输入框', stability: 'medium',
+            locator: { framePath: [], semantic: '订单号输入框',
+              candidates: [{ by: 'css', value: '#order-input' }] } }] }] }],
+    } as never)
     const mockModelSession = {
       generateScenarioAuthoringProposal: vi.fn(async () => ({
         operations: [
@@ -375,7 +515,9 @@ describe('propose-step.handler 场景编排结构化提议', () => {
       })),
     }
 
+    const base = mockContext()
     const ctx = mockContext({
+      actor: { ...base.actor, permissions: [...base.actor.permissions, 'map:read'] },
       session: mockModelSession as any,
       question: '在打开订单页面后添加输入订单号步骤',
     })
@@ -394,5 +536,33 @@ describe('propose-step.handler 场景编排结构化提议', () => {
       expect(result.validation.compiler).toBe('passed')
       expect(result.candidateDigest).toBeDefined()
     }
+  })
+
+  it('模型没有地图或用户选择器依据时不接受猜测的 CSS 定位', async () => {
+    const result = await handleScenarioProposeStep(mockContext({
+      question: '在打开订单页面后添加输入订单号步骤',
+      session: { generateScenarioAuthoringProposal: vi.fn(async () => ({ operations: [{
+        kind: 'insert_step', id: 'temp-1', anchorStepId: '11111111-1111-4111-8111-111111111111',
+        step: { id: 'temp-step-1', name: '输入订单号', type: 'fill',
+          input: { target: { candidates: [{ by: 'css', value: '#order-input' }] }, from: 'orderId' } },
+      }] })) } as never,
+    }))
+    expect(result).toMatchObject({ kind: 'clarify', missingFields: ['targetLocator'] })
+  })
+
+  it('用户明确提供未观测 CSS 时允许可审查提案并标明定位未验证', async () => {
+    const result = await handleScenarioProposeStep(mockContext({
+      question: '在打开订单页面后用 #order-input 输入订单号',
+      session: { generateScenarioAuthoringProposal: vi.fn(async () => ({ operations: [{
+        kind: 'insert_step', id: 'temp-1', anchorStepId: '11111111-1111-4111-8111-111111111111',
+        step: { id: 'temp-step-1', name: '输入订单号', type: 'fill',
+          input: { target: { candidates: [{ by: 'css', value: '#order-input' }] }, from: 'orderId' } },
+      }] })) } as never,
+    }))
+    expect(result.kind).toBe('authoring_proposal')
+    if (result.kind !== 'authoring_proposal') return
+    expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
+      code: 'MAP_SOURCE_USER_SELECTOR_UNVERIFIED', severity: 'warning',
+    })]))
   })
 })

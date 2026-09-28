@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { useOptionalSidebar } from '@/components/ui/sidebar'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { AssistantPanel } from './panel'
 import { cn } from '@/lib/utils'
@@ -20,37 +21,43 @@ export function AssistantDockSidebar({
   const overlayRef = useRef<HTMLElement>(null)
   const dockRef = useRef<HTMLElement>(null)
   const openerRef = useRef<HTMLElement | null>(null)
-  const wasNarrowRef = useRef(false)
+  const wasOverlayRef = useRef(false)
 
-  const [isNarrow, setIsNarrow] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < 1280 : false,
+  const sidebar = useOptionalSidebar()
+  const sidebarState = sidebar?.state ?? 'expanded'
+  const isMobile = sidebar?.isMobile ?? false
+  const [windowWidth, setWindowWidth] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth : 1440,
   )
 
   useEffect(() => {
     const handleResize = () => {
-      setIsNarrow(window.innerWidth < 1280)
+      setWindowWidth(window.innerWidth)
     }
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
+  const sidebarWidth = isMobile ? 0 : sidebarState === 'collapsed' ? 72 : 208
+  const shouldOverlay = isMobile || windowWidth < 768 || windowWidth - sidebarWidth - dockWidth < 640
+
   // 初始打开焦点管理
   useEffect(() => {
-    if (open && isNarrow) {
+    if (open && shouldOverlay) {
       openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       const input = overlayRef.current?.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)')
       input?.focus({ preventScroll: true })
     }
-  }, [open, isNarrow])
+  }, [open, shouldOverlay])
 
   // 视口从窄变宽时的焦点保持
   useLayoutEffect(() => {
-    if (open && wasNarrowRef.current && !isNarrow) {
+    if (open && wasOverlayRef.current && !shouldOverlay) {
       const input = dockRef.current?.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)')
       ;(input ?? dockRef.current)?.focus({ preventScroll: true })
     }
-    wasNarrowRef.current = open && isNarrow
-  }, [open, isNarrow])
+    wasOverlayRef.current = open && shouldOverlay
+  }, [open, shouldOverlay])
 
   const handleClose = () => {
     onClose()
@@ -139,8 +146,8 @@ export function AssistantDockSidebar({
 
   if (!open) return null
 
-  // 小于 1280px 时降级为右侧滑出抽屉 Overlay
-  if (isNarrow) {
+  // 主区不足 640px 或移动端时，以覆盖式抽屉保留工作区宽度。
+  if (shouldOverlay) {
     return createPortal(
       <div
         data-assistant-sidebar='true'

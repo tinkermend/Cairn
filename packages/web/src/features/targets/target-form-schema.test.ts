@@ -10,6 +10,7 @@ import {
   loginLeaveTimeoutToForm,
   selectorsFromForm,
   targetFormSchema,
+  targetEditFormSchema,
   valuesFromTarget,
 } from './target-form-schema'
 
@@ -40,6 +41,7 @@ describe('targetFormSchema', () => {
 
     const valid = targetFormSchema.safeParse({
       ...EMPTY_TARGET_FORM_VALUES,
+      code: 'system-a',
       name: '系统A',
       entryUrl: 'https://a.com',
       accountDisplayName: '演示号',
@@ -47,6 +49,12 @@ describe('targetFormSchema', () => {
       accountPassword: 'secret',
     })
     expect(valid.success).toBe(true)
+  })
+
+  it('编辑历史目标时不因只读旧编码阻止其他字段保存', () => {
+    const values = { ...EMPTY_TARGET_FORM_VALUES, code: 'LEGACY_CODE', name: '旧系统', entryUrl: 'https://example.com' }
+    expect(targetFormSchema.safeParse(values).success).toBe(false)
+    expect(targetEditFormSchema.safeParse(values).success).toBe(true)
   })
 
   it('loginFieldsFromForm 正确打包非空定位器', () => {

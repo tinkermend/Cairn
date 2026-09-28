@@ -70,6 +70,31 @@ function nextId() {
 }
 
 describe('OM-E 知识编排', () => {
+  it('已发布做法的必需输入未被步骤使用时，不生成貌似完整的业务建议', () => {
+    const result = composeKnowledgeSuggestion({
+      question: '根据已发布的模型配额审计做法生成建议',
+      targetId,
+      draft: draft(),
+      terms: [],
+      modules: [moduleKnowledge({
+        name: '模型配额审计',
+        inputs: [{ key: 'model_name', label: '模型唯一标识', required: true }],
+        unusedRequiredInputs: [{ key: 'model_name', label: '模型唯一标识' }],
+      })],
+      mapAssets: [],
+      nextId,
+    })
+    expect(result.status).toBe('unsupported')
+    expect(result.document).toBeUndefined()
+    expect(result.diffs).toEqual([])
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'KNOWLEDGE_MODULE_INPUT_UNUSED' }),
+    ]))
+    expect(result.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'module_version', moduleVersionId: versionId }),
+    ]))
+  })
+
   it('OME04 同别名多个术语必须待选择', () => {
     const result = composeKnowledgeSuggestion({
       question: '按订单办理',

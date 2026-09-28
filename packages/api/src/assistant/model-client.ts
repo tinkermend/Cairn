@@ -13,6 +13,7 @@ export type PlatformModelResult = {
   text: string
   reasoningText?: string
   model: string
+  finishReason?: string
   usage?: { promptTokens?: number; completionTokens?: number }
 }
 
@@ -64,6 +65,7 @@ export function createOpenAiCompatibleClient(): PlatformModelClient {
               text: streamed.text,
               reasoningText: streamed.reasoningText,
               model: streamed.model ?? input.model,
+              finishReason: streamed.finishReason,
               usage: streamed.usage,
             }
           }
@@ -85,6 +87,7 @@ export function createOpenAiCompatibleClient(): PlatformModelClient {
         text: result.text,
         reasoningText: result.reasoningText,
         model: result.model ?? input.model,
+        finishReason: result.finishReason,
         usage: result.usage,
       }
     },

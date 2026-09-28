@@ -7,10 +7,15 @@ import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { compileModuleContent } from '@cairn/authoring'
 import {
   BUSINESS_SOURCE_CURSOR_EXPIRED,
+  FACTORY_MAP_JOB_POLICY,
   MENU_CATALOG,
   PERMISSIONS,
+  arrivalTargetForName,
+  moduleWarningKey,
+  type AssistantDiscoveryResult,
   createAccountBodySchema,
   createTargetBodySchema,
   unpackAssistantResultEnvelope,
@@ -19,10 +24,20 @@ import {
 import {
   RbacStore,
   TargetsStore,
+  acceptKnowledgeProposal,
+  createActionModule,
+  createRunWithSnapshot,
   createScenarioWithVersion,
+  getKnowledgeProposal,
   getOrCreatePlatformConfig,
+  getScenario,
+  getTargetKnowledgeContext,
   newId,
+  publishActionModule,
+  publishScenarioDraft,
   recordAssistantTurnEvent,
+  saveActionModuleDraft,
+  saveScenarioDraft,
 } from '@cairn/db'
 import { eq, openIsolatedDb, schemaFor } from '@cairn/db/testing'
 import { DB_HANDLE } from '../db/db.module.js'
@@ -87,6 +102,7 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
   let asyncRunner: AssistantAsyncRunner
   let capabilityRegistry: AssistantCapabilityRegistry
   let datasetAId: string
+  let supplierDatasetId: string
 
   beforeAll(async () => {
     db = await openIsolatedDb(`cairn_e2e_abc_${newId().replaceAll('-', '')}`)
@@ -240,6 +256,42 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
         validationStatus: 'valid',
         createdAt: now,
         updatedAt: now,
+      },
+    ])
+
+    supplierDatasetId = newId()
+    await db.db.insert(datasets).values({
+      id: supplierDatasetId,
+      name: 'ERP供应商主数据表.xlsx',
+      targetId: targetAId,
+      sourceType: 'excel',
+      sourceFilename: 'suppliers_erp.xlsx',
+      rowCount: 2,
+      columnsMeta: [
+        { key: 'code', name: '供应商编号', type: 'string', sampleValues: [] },
+        { key: 'name', name: '供应商名称', type: 'string', sampleValues: [] },
+        { key: 'status', name: '状态', type: 'string', sampleValues: [] },
+      ],
+      createdByAccountId: userA.id,
+      createdAt: now,
+      updatedAt: now,
+    })
+    await db.db.insert(datasetRows).values([
+      {
+        id: newId(),
+        datasetId: supplierDatasetId,
+        rowIndex: 0,
+        rowData: { code: 'SUP-100', name: '华东物料供应', status: 'active' },
+        validStatus: 'valid',
+        createdAt: now,
+      },
+      {
+        id: newId(),
+        datasetId: supplierDatasetId,
+        rowIndex: 1,
+        rowData: { code: 'SUP-200', name: '北方设备服务', status: 'active' },
+        validStatus: 'valid',
+        createdAt: now,
       },
     ])
 
@@ -502,6 +554,77 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
         result: expect.objectContaining({ kind: 'discovery' }),
       })
     })
+
+    it('普通用户询问供应商时，只返回已批准供应商快照并给出来源时点', async () => {
+      currentActor = userA
+      const server = app.getHttpServer()
+      const created = await request(server)
+        .post(`/targets/${targetAId}/business-sources/candidates`)
+        .send({
+          datasetId: supplierDatasetId,
+          entityType: 'supplier',
+          mappingConfig: {
+            keyColumn: 'code',
+            displayNameColumn: 'name',
+            statusColumn: 'status',
+            fieldWhitelist: ['code', 'name', 'status'],
+          },
+          completenessBasis: '供应商主数据全量扫描校验',
+          sourceObservedAt: '2026-09-21T08:30:00.000Z',
+        })
+        .expect(201)
+
+      const build = await claimBusinessSourceBuildJob(db, 'supplier-e2e')
+      expect(build?.id).toBe(created.body.candidateId)
+      const rows = await getDatasetRows(db, supplierDatasetId, { limit: 100 })
+      await commitBusinessSourceBatch(db, build!.id, rows.items.map((row: any) => ({
+        targetId: targetAId,
+        entityType: 'supplier',
+        recordKey: String(row.rowData.code),
+        displayName: String(row.rowData.name),
+        recordStatus: String(row.rowData.status),
+        originalDatasetId: supplierDatasetId,
+        datasetRowId: row.id,
+        datasetRowIndex: row.rowIndex,
+        payload: { code: row.rowData.code, name: row.rowData.name, status: row.rowData.status },
+      })))
+      await finishBusinessSourceBuild(db, build!.id, {
+        status: 'ready',
+        summary: { totalRows: 2, validCount: 2, rejectedCount: 0, issues: [] },
+      })
+      await request(server)
+        .post(`/targets/${targetAId}/business-sources/candidates/${build!.id}/approve`)
+        .send({
+          expectedRevision: created.body.bindingRevision,
+          approvalBasis: '人工复核 ERP 供应商名单无误',
+        })
+        .expect(201)
+
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversationAId}/turns`)
+        .send({
+          clientTurnId: `turn-supplier-${newId()}`,
+          question: '这个目标里有哪些供应商？',
+          pageContext: { page: 'target', targetId: targetAId },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversationAId, turn.body.turnId)
+      expect(answer.status).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('target.business-records.list')
+      expect(answer.result).toMatchObject({
+        kind: 'discovery',
+        scope: { targetId: targetAId, entityType: 'supplier' },
+        coverage: { totalVisible: 2 },
+      })
+      const result = answer.result as AssistantDiscoveryResult
+      expect(result.candidates.map((item) => item.name)).toEqual(['华东物料供应', '北方设备服务'])
+      expect(result.candidates.every((item) => item.kind === 'supplier')).toBe(true)
+      expect(result.message).toContain('供应商主数据全量扫描校验')
+      expect(result.message).toContain('来源数据集「ERP供应商主数据表.xlsx」')
+      expect(result.message).toContain('源数据采集时间：2026-09-21T08:30:00.000Z')
+      expect(result.coverage.observedAt).toBe('2026-09-21T08:30:00.000Z')
+      expect(result.candidates.map((item) => item.name)).not.toContain('富士康工业互联')
+    })
   })
 
   describe('2. 游标失效安全契约 (409 Conflict) 与撤回边界', () => {
@@ -605,6 +728,7 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
       for (const question of [
         '有哪些关于智慧运维管理平台的场景？',
         '列出智慧运维管理平台的场景，方便我找到要查看的场景。',
+        '智慧运维管理平台下面有哪些场景？',
       ]) {
         for (const withContext of [false, true]) {
           it(`${question}（${withContext ? '目标详情页' : '无页面上下文'}）返回该目标的四个场景`, async () => {
@@ -615,7 +739,6 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
               .send({
                 clientTurnId: `discover-named-${newId()}`,
                 question,
-                capabilityHint: 'scenario.discover',
                 ...(withContext ? { pageContext: { page: 'target', targetId: namedTargetId } } : {}),
               })
               .expect(202)
@@ -731,6 +854,52 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
       expect(replay.text).not.toContain('SENSITIVE_REASONING_MARKER')
     }, 90_000)
 
+    it('同一会话切换场景列表目标筛选时，不沿用上一目标和游标', async () => {
+      currentActor = adminActor
+      const conv = await request(app.getHttpServer()).post('/assistant/conversations').send({}).expect(201)
+      const send = async (question: string, targetId?: string) => {
+        const submitted = await request(app.getHttpServer())
+          .post(`/assistant/conversations/${conv.body.id}/turns`)
+          .send({
+            clientTurnId: `discover-scope-${newId()}`,
+            question,
+            capabilityHint: 'scenario.discover',
+            pageContext: {
+              version: 2,
+              routeKey: 'scenarios.index',
+              pageKind: 'scenario',
+              page: 'scenario',
+              ...(targetId ? { targetId } : {}),
+            },
+          })
+          .expect(202)
+        return waitForTurn(conv.body.id, submitted.body.turnId)
+      }
+
+      const selected = await send('这个系统有哪些场景？', targetAId)
+      expect(selected.result?.kind).toBe('discovery')
+      expect(selected.result.scope.targetId).toBe(targetAId)
+      expect(selected.result.scope.filter).toBeUndefined()
+      expect(selected.result.candidates.length).toBeGreaterThan(0)
+      expect(selected.result.candidates.every((candidate: { targetId: string }) => candidate.targetId === targetAId)).toBe(true)
+
+      const cleared = await send('帮我找场景')
+      expect(cleared.result?.kind).toBe('discovery')
+      expect(cleared.result.scope.targetId).toBeUndefined()
+      expect(cleared.slots?.targetId).toBeUndefined()
+      expect(cleared.slots?.cursor).toBeUndefined()
+
+      const missingTarget = await send('这个系统有哪些场景？')
+      expect(missingTarget.result?.kind).toBe('discovery')
+      expect(missingTarget.result.candidates).toEqual([])
+      expect(missingTarget.result.message).toContain('请先在场景列表选择目标')
+
+      const switched = await send('这个系统有哪些场景？', targetBId)
+      expect(switched.result?.kind).toBe('discovery')
+      expect(switched.result.scope.targetId).toBe(targetBId)
+      expect(switched.result.candidates.every((candidate: { targetId: string }) => candidate.targetId === targetBId)).toBe(true)
+    }, 90_000)
+
     it('内部异常只返回可理解的错误信息，不回显原始异常文本', async () => {
       currentActor = userA
       const registration = capabilityRegistry.get('scenario.discover')!
@@ -748,11 +917,62 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
           .expect(202)
         const failed = await waitForTurn(conv.body.id, turn.body.turnId)
         expect(failed.status).toBe('FAILED')
-        expect(failed.result?.message).toBe('助手处理失败，请稍后重试')
+        expect(failed.stopReason).toBe('internal_loading_facts')
+        expect(failed.result?.message).toContain('读取平台事实')
+        expect(failed.result?.message).toContain(turn.body.turnId)
         expect(JSON.stringify(failed)).not.toContain('PRIVATE_INTERNAL_EXCEPTION_MARKER')
       } finally {
         registration.handler = originalHandler
       }
+    })
+
+    it('同名场景按目标消歧，受限用户只看到自己可编辑的目标', async () => {
+      const sharedName = '订单对账场景'
+      const alpha = await createScenarioWithVersion(db, {
+        targetId: targetAId,
+        name: sharedName,
+        steps: [{ ...echoStep, id: newId() }],
+        actor: adminActor,
+      })
+      const beta = await createScenarioWithVersion(db, {
+        targetId: targetBId,
+        name: sharedName,
+        steps: [{ ...echoStep, id: newId() }],
+        actor: adminActor,
+      })
+      const ask = async (actor: RequestAccount) => {
+        currentActor = actor
+        const server = app.getHttpServer()
+        const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+        const turn = await request(server)
+          .post(`/assistant/conversations/${conversation.body.id}/turns`)
+          .send({
+            clientTurnId: `turn-duplicate-${newId()}`,
+            question: '找一下订单对账场景，我要继续编辑。',
+            pageContext: { page: 'home' },
+          })
+          .expect(202)
+        return waitForTurn(conversation.body.id, turn.body.turnId)
+      }
+
+      const adminAnswer = await ask(adminActor)
+      expect(adminAnswer.status).toBe('COMPLETED')
+      expect(adminAnswer.capabilityId).toBe('scenario.discover')
+      const adminResult = adminAnswer.result as AssistantDiscoveryResult
+      expect(adminResult.kind).toBe('discovery')
+      expect(adminResult.candidates.map((item) => ({
+        id: item.id, name: item.name, targetId: item.targetId, targetName: item.targetName,
+      }))).toEqual(expect.arrayContaining([
+        { id: alpha.id, name: sharedName, targetId: targetAId, targetName: '系统-甲 (ERP)' },
+        { id: beta.id, name: sharedName, targetId: targetBId, targetName: '系统-乙 (CRM)' },
+      ]))
+
+      const restrictedAnswer = await ask(userA)
+      expect(restrictedAnswer.status).toBe('COMPLETED')
+      const restrictedResult = restrictedAnswer.result as AssistantDiscoveryResult
+      expect(restrictedResult.candidates.map((item) => item.id)).toContain(alpha.id)
+      expect(restrictedResult.candidates.map((item) => item.id)).not.toContain(beta.id)
+      expect(JSON.stringify(restrictedResult)).not.toContain('系统-乙 (CRM)')
     })
   })
 
@@ -909,6 +1129,684 @@ describe('方案 A、B、C 全链路端到端集成测试 (Plans A+B+C E2E Verif
         const resTurn2 = await waitForTurn(conv.body.id, turn2.body.turnId)
         expect(resTurn2.status).not.toBe('FAILED')
       }
+    })
+  })
+
+  describe('7. 执行完成与业务结果失败的真实事实分离', () => {
+    it('普通用户问业务检查为何没过时，引用 Outcome FAIL 而不把 Run 说成执行失败', async () => {
+      const stepId = newId()
+      const contractId = newId()
+      const scenario = await createScenarioWithVersion(db, {
+        targetId: targetAId,
+        name: '订单状态核验受控场景',
+        steps: [{ ...echoStep, id: newId() }],
+        actor: userA,
+      })
+      await saveScenarioDraft(db, scenario.id, {
+        revision: 1,
+        document: {
+          authoringSchemaVersion: 2,
+          nodes: [{
+            kind: 'step',
+            step: {
+              id: stepId,
+              name: '检查订单状态',
+              type: 'assert',
+              effectType: 'READ_ONLY',
+              input: { expect: { kind: 'text_equals', value: '已完成' } },
+            },
+            outcomes: [{
+              id: contractId,
+              scope: 'step',
+              meaning: '订单状态必须为已完成',
+              severity: 'MUST',
+              onViolation: 'continue',
+              provenance: 'manual',
+              rule: {
+                kind: 'deterministic',
+                target: { framePath: [], candidates: [{ by: 'css', value: '#order-status' }] },
+                expect: { kind: 'text_equals', value: '已完成' },
+              },
+            }],
+          }],
+        },
+        actor: userA,
+      })
+      await publishScenarioDraft(db, scenario.id, { revision: 2, actor: userA })
+      const created = await createRunWithSnapshot(db, {
+        scenarioId: scenario.id,
+        actor: { id: userA.id },
+      })
+      const runId = created.detail.id
+      const stepRunId = created.detail.stepRuns[0]!.id
+      const attemptId = newId()
+      const now = new Date()
+      const { runs, stepRuns, attempts, outcomeResults } = schemaFor(db.db)
+      await db.db.update(runs).set({
+        status: 'SUCCEEDED', outcomeStatus: 'FAIL', evidenceStatus: 'COMPLETE',
+        startedAt: new Date(now.getTime() - 1000), finishedAt: now, updatedAt: now,
+      }).where(eq(runs.id, runId))
+      await db.db.update(stepRuns).set({
+        status: 'SUCCEEDED', outcomeStatus: 'FAIL',
+        startedAt: new Date(now.getTime() - 900), finishedAt: now,
+      }).where(eq(stepRuns.id, stepRunId))
+      await db.db.insert(attempts).values({
+        id: attemptId, stepRunId, attemptNo: 1, status: 'SUCCEEDED',
+        startedAt: new Date(now.getTime() - 900), finishedAt: now,
+        output: { passed: false },
+      })
+      await db.db.insert(outcomeResults).values({
+        id: newId(), runId, stepRunId, attemptId, contractId,
+        scope: 'step', meaning: '订单状态必须为已完成', severity: 'MUST',
+        onViolation: 'continue', provenance: 'manual', verdict: 'FAIL',
+        expected: '已完成', actual: '待审核', evaluatedAt: now,
+      })
+
+      currentActor = userA
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-outcome-fail-${newId()}`,
+          question: '运行显示完成，为什么业务检查没通过？',
+          pageContext: { page: 'run', runId, targetId: targetAId },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('run.diagnose')
+      expect(answer.result?.kind).toBe('diagnosis')
+      const factText = answer.result.facts.map((fact: { text: string }) => fact.text).join('\n')
+      expect(factText).toContain('运行状态为 SUCCEEDED')
+      expect(factText).toContain('运行业务结果为 FAIL')
+      expect(factText).toContain('业务检查「订单状态必须为已完成」结果为 FAIL')
+      expect(factText).not.toContain('运行状态为 FAILED')
+      expect(answer.result.hypotheses).toEqual([])
+      expect(answer.result.missingInformation).toEqual(expect.arrayContaining([
+        expect.stringContaining('不能确定具体差异'),
+      ]))
+      expect(answer.result.facts.find((fact: { id: string }) => fact.id.startsWith('outcome-'))?.citations)
+        .toEqual(expect.arrayContaining([`run:${runId}`, `stepRun:${stepRunId}`]))
+    })
+  })
+
+  describe('8. 当前筛选范围内的多类失败归并', () => {
+    it('普通用户问这些失败是否同因时，只按可见目标的三条 Run 分成两组', async () => {
+      const betaScenario = await createScenarioWithVersion(db, {
+        targetId: targetBId,
+        name: '乙目标隔离运行场景',
+        steps: [{ ...echoStep, id: newId() }],
+        actor: adminActor,
+      })
+      const createFailed = async (scenarioId: string, actorId: string, code: string) => {
+        const created = await createRunWithSnapshot(db, {
+          scenarioId,
+          actor: { id: actorId },
+        })
+        const runId = created.detail.id
+        const stepRunId = created.detail.stepRuns[0]!.id
+        const now = new Date()
+        const { runs, stepRuns, attempts } = schemaFor(db.db)
+        await db.db.update(runs).set({
+          status: 'FAILED', outcomeStatus: 'NOT_EVALUATED', evidenceStatus: 'PENDING',
+          startedAt: new Date(now.getTime() - 1000), finishedAt: now, updatedAt: now,
+        }).where(eq(runs.id, runId))
+        await db.db.update(stepRuns).set({
+          status: 'FAILED', startedAt: new Date(now.getTime() - 900), finishedAt: now,
+        }).where(eq(stepRuns.id, stepRunId))
+        await db.db.insert(attempts).values({
+          id: newId(), stepRunId, attemptNo: 1, status: 'FAILED',
+          startedAt: new Date(now.getTime() - 900), finishedAt: now,
+          error: {
+            code,
+            category: code === 'TIMEOUT' ? 'TIMEOUT' : 'EXECUTOR',
+            retryable: false,
+            safeMessage: `${code} 可展示说明`,
+            cause: { message: 'PRIVATE_DETAIL_MARKER' },
+          },
+        })
+        return runId
+      }
+      const a1 = await createFailed(scenarioAId, userA.id, 'AI_NOT_FOUND')
+      const a2 = await createFailed(scenarioAId, userA.id, 'AI_NOT_FOUND')
+      const a3 = await createFailed(scenarioAId, userA.id, 'TIMEOUT')
+      const b = await createFailed(betaScenario.id, adminActor.id, 'TARGET_B_PRIVATE')
+
+      currentActor = userA
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-failure-groups-${newId()}`,
+          question: '这些失败是同一个原因吗？',
+          pageContext: {
+            version: 2, routeKey: 'runs.list', pageKind: 'run', page: 'run',
+            view: { filters: { status: 'FAILED', targetId: targetAId } },
+          },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('knowledge.answer')
+      expect(answer.result?.kind).toBe('knowledge_answer')
+      const result = answer.result as Extract<NonNullable<typeof answer.result>, { kind: 'knowledge_answer' }>
+      expect(result.summary).toContain('3 条 FAILED 运行')
+      expect(result.summary).toContain('分为 2 个错误表现组')
+      expect(result.summary).toContain('不能确认它们同因')
+      expect(result.summary).toContain('AI_NOT_FOUND（2 次）')
+      expect(result.summary).toContain('TIMEOUT（1 次）')
+      expect(result.claims[0]?.citations).toEqual(expect.arrayContaining([
+        `run:${a1}`, `run:${a2}`, `run:${a3}`,
+      ]))
+      expect(JSON.stringify(result)).not.toContain(b)
+      expect(JSON.stringify(result)).not.toContain('TARGET_B_PRIVATE')
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_DETAIL_MARKER')
+    })
+  })
+
+  describe('9. P10 昨晚调度被跳过的受控正例', () => {
+    it('从真实调度版本和触发记录按原句回答，并引用实际跳过事件', async () => {
+      const scheduleId = newId()
+      const versionId = newId()
+      const occurrenceId = newId()
+      const yesterday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' })
+        .format(new Date(Date.now() - 24 * 60 * 60 * 1000))
+      const now = new Date()
+      const { schedules, scheduleVersions, scheduleOccurrences } = schemaFor(db.db)
+      await db.db.insert(schedules).values({
+        id: scheduleId, name: '订单夜间巡检', targetId: targetAId,
+        consumerKey: 'scenario_run', enabled: 1, revision: 1,
+        currentVersionId: versionId, createdBy: adminActor.id,
+        createdAt: new Date('2025-01-01T00:00:00.000Z'), updatedAt: now,
+      })
+      await db.db.insert(scheduleVersions).values({
+        id: versionId, scheduleId, revision: 1, name: '订单夜间巡检',
+        timezone: 'Asia/Shanghai', weekdays: [1, 2, 3, 4, 5, 6, 7],
+        windowStart: '22:00', windowEnd: '23:00', misfire: 'skip',
+        timeRule: { kind: 'calendar', timezone: 'Asia/Shanghai', weekdays: [1, 2, 3, 4, 5, 6, 7],
+          windows: [{ ruleId: 'night', windowStart: '22:00', windowEnd: '23:00' }], misfire: 'skip' },
+        consumer: { type: 'scenario_run', targetId: targetAId,
+          scenarioId: scenarioAId, scenarioVersionId: newId(), accountBinding: {}, input: {} },
+        authorizedActorId: adminActor.id, contentDigest: 'p10-controlled-skip',
+      })
+      await db.db.insert(scheduleOccurrences).values({
+        id: occurrenceId, scheduleId, scheduleVersionId: versionId,
+        source: 'scheduled', ruleId: 'night', localSlotKey: `${yesterday}:night`,
+        localStartDate: yesterday, windowStartUtc: new Date(`${yesterday}T14:00:00.000Z`),
+        windowEndUtc: new Date(`${yesterday}T15:00:00.000Z`),
+        timeRuleVersion: 'schedule-time@2', admissionStatus: 'SKIPPED',
+        reason: 'WORKER_UNAVAILABLE', createdAt: now,
+      })
+
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-schedule-skipped-${newId()}`,
+          question: '昨晚这条调度怎么没跑？',
+          pageContext: { version: 2, routeKey: 'schedules.index', pageKind: 'schedule', page: 'schedule',
+            primaryRef: { kind: 'schedule', id: scheduleId },
+            scopeRefs: [{ kind: 'target', id: targetAId }], targetId: targetAId },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('knowledge.answer')
+      expect(answer.result?.kind).toBe('knowledge_answer')
+      const result = answer.result as Extract<NonNullable<typeof answer.result>, { kind: 'knowledge_answer' }>
+      expect(result.summary).toContain(yesterday)
+      expect(result.summary).toContain('Asia/Shanghai')
+      expect(result.summary).toContain('已跳过 1 次')
+      expect(result.summary).toContain('WORKER_UNAVAILABLE')
+      expect(result.summary).toContain('在准入阶段被跳过')
+      expect(result.claims[0]?.citations).toContain(`occurrence:${occurrenceId}`)
+      currentActor = makeAccount(adminActor.id, adminActor.permissions.filter((permission) => permission !== 'schedule:read'))
+      const revoked = await request(server)
+        .get(`/assistant/conversations/${conversation.body.id}/turns/${turn.body.turnId}`).expect(200)
+      expect(revoked.body.result?.kind).toBe('inaccessible')
+      currentActor = adminActor
+    })
+  })
+
+  describe('10. P09 认证失败与运行占用的受控正例', () => {
+    it('从真实账号会话与活动租约按原句报告认证错误及占用运行', async () => {
+      const { targetAccounts, browserSessions, sessionLeases } = schemaFor(db.db)
+      const [targetAccount] = await db.db.select({ id: targetAccounts.id })
+        .from(targetAccounts).where(eq(targetAccounts.targetId, targetAId)).limit(1)
+      expect(targetAccount).toBeDefined()
+      const targetAccountId = targetAccount!.id
+      const created = await createRunWithSnapshot(db, {
+        scenarioId: scenarioAId, targetAccountId, actor: { id: adminActor.id },
+      })
+      const runId = created.detail.id
+      const sessionId = newId()
+      const now = new Date()
+      await db.db.insert(browserSessions).values({
+        id: sessionId, targetId: targetAId, targetAccountId,
+        status: 'OPEN', health: 'UNHEALTHY', authState: 'EXPIRED',
+        ownerWorkerId: 'fixture-worker', generation: 1, fencingToken: 1,
+        profileKey: 'p09-fixture-profile', reusePolicy: 'NEW_PAGE',
+        idleTtlSeconds: 300, maxLifetimeSeconds: 3600,
+        expiresAt: new Date(now.getTime() + 3600_000),
+        lastAuthError: 'LOGIN_PAGE_UNREACHABLE',
+        lastAuthCheckedAt: new Date(now.getTime() - 60_000),
+        lastAuthSuccessAt: new Date(now.getTime() - 24 * 3600_000),
+      })
+      await db.db.insert(sessionLeases).values({
+        id: newId(), sessionId, sessionGeneration: 1, sessionFencingToken: 1,
+        runId, runFencingToken: 1, purpose: 'EXECUTION', ownerKind: 'RUN', holderWorkerId: 'fixture-worker',
+        status: 'ACTIVE', acquiredAt: new Date(now.getTime() - 5 * 60_000),
+        heartbeatAt: now, expiresAt: new Date(now.getTime() + 30 * 60_000),
+      })
+
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-session-lease-${newId()}`,
+          question: '这个账号为什么一直等登录？现在谁占着会话？',
+          pageContext: { version: 2, routeKey: 'sessions.$targetId.$accountId',
+            pageKind: 'session', page: 'session',
+            primaryRef: { kind: 'account', id: targetAccountId },
+            scopeRefs: [{ kind: 'target', id: targetAId }, { kind: 'account', id: targetAccountId }],
+            targetId: targetAId },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('knowledge.answer')
+      expect(answer.result?.kind).toBe('knowledge_answer')
+      const result = answer.result as Extract<NonNullable<typeof answer.result>, { kind: 'knowledge_answer' }>
+      expect(result.summary).toContain('LOGIN_PAGE_UNREACHABLE')
+      expect(result.summary).toContain('目标登录页打不开')
+      expect(result.summary).toContain(`占用运行 ID ${runId}`)
+      expect(result.summary).toContain('不能断定现在可用')
+      expect(result.nextActions).toContainEqual(expect.objectContaining({
+        kind: 'run.detail', href: `/runs/${runId}`,
+      }))
+      currentActor = makeAccount(adminActor.id, adminActor.permissions.filter((permission) => permission !== 'run:read'))
+      const revoked = await request(server)
+        .get(`/assistant/conversations/${conversation.body.id}/turns/${turn.body.turnId}`).expect(200)
+      expect(revoked.body.result?.kind).toBe('inaccessible')
+      currentActor = adminActor
+    })
+  })
+
+  describe('11. P03 订单步骤的 customerId 上游依赖', () => {
+    it('按已保存 outputKey 说明来源和删除前一步的影响', async () => {
+      const queryStepId = newId()
+      const fillStepId = newId()
+      const scenario = await createScenarioWithVersion(db, {
+        targetId: targetAId,
+        name: '订单客户查询',
+        steps: [
+          { id: queryStepId, name: '查询订单并提取客户编号', type: 'extract',
+            effectType: 'READ_ONLY', outputKey: 'customerId',
+            input: { target: { framePath: [], candidates: [{ by: 'css', value: '#customer-id' }] }, as: 'text' } },
+          { id: fillStepId, name: '填写客户编号查询', type: 'fill', effectType: 'SIDE_EFFECT',
+            input: { target: { framePath: [], candidates: [{ by: 'css', value: '#customer-search' }] }, from: 'customerId' } },
+        ],
+        actor: adminActor,
+      })
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-customer-binding-${newId()}`,
+          question: '这一步用的 customerId 从哪来？删掉前一步会怎样？',
+          pageContext: { version: 2, routeKey: 'scenarios.$scenarioId.studio',
+            pageKind: 'studio', page: 'studio', scenarioId: scenario.id, targetId: targetAId,
+            primaryRef: { kind: 'scenario', id: scenario.id },
+            scopeRefs: [{ kind: 'target', id: targetAId }],
+            view: { selectedRef: { kind: 'step', id: fillStepId } } },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('scenario.explain')
+      expect(answer.result?.kind).toBe('explanation')
+      expect(answer.result.stepSummary).toContain('customerId 来自前序步骤「查询订单并提取客户编号」')
+      expect(answer.result.stepSummary).toContain('删除它会移除当前步骤所引用的 customerId 来源')
+      expect(answer.result.stepSummary).not.toContain('没有找到它的已定义来源')
+    })
+  })
+
+  describe('12. P04 订单等待加校验的原句与事实边界', () => {
+    it('已保存草稿但没有结果区地图时，明确追问两个目标且不生成半成品提案', async () => {
+      const anchorStepId = newId()
+      const scenario = await createScenarioWithVersion(db, {
+        targetId: targetAId, name: '订单查询编排',
+        steps: [{ ...echoStep, id: anchorStepId, name: '查询订单' }], actor: userA,
+      })
+      await saveScenarioDraft(db, scenario.id, {
+        revision: 1,
+        document: { authoringSchemaVersion: 2, nodes: [{ kind: 'step',
+          step: { ...echoStep, id: anchorStepId, name: '查询订单' } }] },
+        actor: userA,
+      })
+      currentActor = userA
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-order-wait-check-${newId()}`,
+          question: '查完订单后等结果区出现，再检查状态是成功。',
+          pageContext: { version: 2, routeKey: 'scenarios.$scenarioId.studio',
+            pageKind: 'studio', page: 'studio', scenarioId: scenario.id, targetId: targetAId,
+            primaryRef: { kind: 'scenario', id: scenario.id },
+            scopeRefs: [{ kind: 'target', id: targetAId }],
+            view: { selectedRef: { kind: 'step', id: anchorStepId } } },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status).toBe('CLARIFY')
+      expect(answer.capabilityId).toBe('scenario.propose-step')
+      expect(answer.result?.kind).toBe('clarify')
+      expect(answer.result.missingFields).toEqual(['waitTarget', 'assertTarget'])
+      expect(answer.result.question).toContain('没有足够的页面事实')
+    })
+
+    it('同一已观测页面有唯一结果区与状态定位时，生成顺序正确且不自动保存的提案', async () => {
+      const { targetAccounts, mapMenuEntries, mapJobs, mapIngestPages } = schemaFor(db.db)
+      const [targetAccount] = await db.db.select({ id: targetAccounts.id })
+        .from(targetAccounts).where(eq(targetAccounts.targetId, targetBId)).limit(1)
+      expect(targetAccount).toBeDefined()
+      const entryId = newId()
+      const jobId = newId()
+      await db.db.insert(mapMenuEntries).values({
+        id: entryId, targetId: targetBId, entryVersion: 1, entryName: '订单管理',
+        entryUrl: 'https://beta.example.com/orders', arrivalName: '订单管理',
+        arrivalTarget: arrivalTargetForName('订单管理'), enabled: 1, orderIndex: 1,
+        createdBy: adminActor.id, updatedBy: adminActor.id,
+      })
+      await db.db.insert(mapJobs).values({
+        id: jobId, targetId: targetBId, targetAccountId: targetAccount!.id,
+        jobKind: 'map_ingest', jobStatus: 'completed', revision: 1,
+        remainingBudgetSeconds: 0, scope: 'entries', policyRevision: 1,
+        requestJson: {}, frozenPolicyJson: FACTORY_MAP_JOB_POLICY,
+        createdBy: adminActor.id,
+      })
+      await db.db.insert(mapIngestPages).values({
+        id: newId(), jobId, entryId, targetId: targetBId, targetAccountId: targetAccount!.id,
+        pageKey: 'page:order-results', viewStateKey: 'view:order-results',
+        presentationStateKey: 'presentation:order-results', arrivalMethod: 'goto',
+        menuPathJson: ['订单管理', '订单查询'], title: '订单查询',
+        urlPattern: 'https://beta.example.com/orders',
+        elementsJson: [
+          { fingerprint: 'order-results', category: 'display', role: 'region', name: '结果区',
+            locator: { framePath: [], candidates: [{ by: 'css', value: '#order-results' }] } },
+          { fingerprint: 'order-status', category: 'display', role: 'status', name: '状态',
+            locator: { framePath: [], candidates: [{ by: 'css', value: '#order-status' }] } },
+        ],
+        completeness: 'complete', reasonsJson: [], observedAt: new Date(),
+      })
+      const mapped = await getTargetKnowledgeContext(db, targetBId, {
+        intent: '查完订单后等结果区出现，再检查状态是成功。', maxPages: 3,
+      })
+      expect(mapped.pages[0]?.views[0]?.elements.map((element) => element.name))
+        .toEqual(['结果区', '状态'])
+      const anchorStepId = newId()
+      const scenario = await createScenarioWithVersion(db, {
+        targetId: targetBId, name: '订单查询编排',
+        steps: [{ ...echoStep, id: anchorStepId, name: '查询订单' }], actor: adminActor,
+      })
+      await saveScenarioDraft(db, scenario.id, {
+        revision: 1,
+        document: { authoringSchemaVersion: 2, nodes: [{ kind: 'step',
+          step: { ...echoStep, id: anchorStepId, name: '查询订单' } }] },
+        actor: adminActor,
+      })
+      const before = await (await import('@cairn/db')).getScenario(db, scenario.id)
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-order-wait-check-grounded-${newId()}`,
+          question: '查完订单后等结果区出现，再检查状态是成功。',
+          pageContext: { version: 2, routeKey: 'scenarios.$scenarioId.studio',
+            pageKind: 'studio', page: 'studio', scenarioId: scenario.id, targetId: targetBId,
+            primaryRef: { kind: 'scenario', id: scenario.id },
+            scopeRefs: [{ kind: 'target', id: targetBId }],
+            view: { selectedRef: { kind: 'step', id: anchorStepId } } },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status, JSON.stringify(answer)).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('scenario.propose-step')
+      expect(answer.result?.kind).toBe('authoring_proposal')
+      expect(answer.result.operations).toHaveLength(2)
+      const [wait, check] = answer.result.operations
+      expect(wait).toMatchObject({ kind: 'insert_step', anchorStepId,
+        step: { type: 'wait', input: { kind: 'visible', target: {
+          candidates: [{ by: 'css', value: '#order-results' }] } } } })
+      expect(check).toMatchObject({ kind: 'insert_step', anchorStepId: wait.step.id,
+        step: { type: 'assert', input: { target: {
+          candidates: [{ by: 'css', value: '#order-status' }] },
+          expect: { kind: 'text_contains', value: '成功' } } } })
+      const preview = await request(server)
+        .get(`/assistant/conversations/${conversation.body.id}/turns/${turn.body.turnId}/proposal-preview`)
+        .expect(200)
+      expect(preview.body.canAdopt).toBe(true)
+      expect(preview.body.operations).toHaveLength(2)
+      const saved = await (await import('@cairn/db')).getScenario(db, scenario.id)
+      expect(saved.draft?.revision).toBe(before.draft?.revision)
+      expect(saved.draft?.document).toEqual(before.draft?.document)
+    })
+  })
+
+  describe('13. P12 普通用户问订单页入口的已观测地图正例', () => {
+    it('从隔离库真实采集记录返回菜单和路径，历史读取时重新核对权限', async () => {
+      const { targetAccounts, mapMenuEntries, mapJobs, mapIngestPages } = schemaFor(db.db)
+      const [targetAccount] = await db.db.select({ id: targetAccounts.id })
+        .from(targetAccounts).where(eq(targetAccounts.targetId, targetAId)).limit(1)
+      expect(targetAccount).toBeDefined()
+      const entryId = newId()
+      const jobId = newId()
+      await db.db.insert(mapMenuEntries).values({
+        id: entryId, targetId: targetAId, entryVersion: 1,
+        entryName: '订单管理', entryUrl: 'https://alpha.example.com/orders/search',
+        arrivalName: '订单管理', arrivalTarget: arrivalTargetForName('订单管理'),
+        enabled: 1, orderIndex: 1, createdBy: adminActor.id, updatedBy: adminActor.id,
+      })
+      await db.db.insert(mapJobs).values({
+        id: jobId, targetId: targetAId, targetAccountId: targetAccount!.id,
+        jobKind: 'map_ingest', jobStatus: 'completed', revision: 1,
+        remainingBudgetSeconds: 0, scope: 'entries', policyRevision: 1,
+        requestJson: {}, frozenPolicyJson: FACTORY_MAP_JOB_POLICY,
+        createdBy: adminActor.id,
+      })
+      await db.db.insert(mapIngestPages).values({
+        id: newId(), jobId, entryId, targetId: targetAId, targetAccountId: targetAccount!.id,
+        pageKey: 'page:orders-search', viewStateKey: 'view:orders-search',
+        presentationStateKey: 'presentation:orders-search', arrivalMethod: 'goto',
+        menuPathJson: ['订单管理', '订单查询'], title: '订单查询',
+        urlPattern: 'https://alpha.example.com/orders/search',
+        elementsJson: [], completeness: 'complete', reasonsJson: [], observedAt: new Date(),
+      })
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-order-entry-${newId()}`,
+          question: '这个系统的订单页入口在哪里？',
+          pageContext: { version: 2, routeKey: 'targets.$targetId', pageKind: 'target',
+            page: 'target', targetId: targetAId,
+            primaryRef: { kind: 'target', id: targetAId }, scopeRefs: [] },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status, JSON.stringify(answer)).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('in-page.guidance')
+      expect(answer.result?.kind).toBe('in_page_guidance')
+      expect(answer.result.directAnswer).toContain('订单管理 → 订单查询')
+      expect(answer.result.directAnswer).toContain('/orders/search')
+      const history = await request(server)
+        .get(`/assistant/conversations/${conversation.body.id}/turns/${turn.body.turnId}`).expect(200)
+      expect(history.body.result?.directAnswer).toContain('/orders/search')
+      currentActor = makeAccount(adminActor.id,
+        adminActor.permissions.filter((permission) => permission !== 'map:read'))
+      const revoked = await request(server)
+        .get(`/assistant/conversations/${conversation.body.id}/turns/${turn.body.turnId}`).expect(200)
+      expect(JSON.stringify(revoked.body.result ?? {})).not.toContain('/orders/search')
+      currentActor = adminActor
+    })
+  })
+
+  describe('14. 知识辅助编写的可编辑正例', () => {
+    it('已发布做法与草稿必需输入齐全时，生成有来源的差异并可采纳', async () => {
+      const module = await createActionModule(db, {
+        idempotencyKey: newId(), targetId: targetAId, key: `order.query${newId().replaceAll('-', '').slice(0, 8)}`,
+        name: '查询订单', actor: { id: adminActor.id },
+      })
+      const content = {
+        contract: {
+          inputs: [{ key: 'keyword', label: '关键词', valueType: 'string' as const, required: true }],
+          outputs: [{ key: 'result', label: '结果', shape: { kind: 'scalar' as const, type: 'string' as const } }],
+          effectCeiling: 'READ_ONLY' as const,
+          preconditions: [],
+          postconditions: [{ meaning: '有结果', verification: { kind: 'output_required' as const, outputKey: 'result' } }],
+        },
+        implementations: [{
+          implementationKey: 'default', kind: 'structured_steps' as const,
+          steps: [{ id: newId(), name: '查询订单', type: 'echo' as const,
+            effectType: 'READ_ONLY' as const, outputKey: 'internal', input: { from: 'keyword' } }],
+          outputMapping: { result: 'internal' },
+        }],
+      }
+      const moduleDraft = await saveActionModuleDraft(db, module.id, {
+        baseRevision: module.draftRevision ?? 0, content, actor: { id: adminActor.id },
+      })
+      const confirmedWarnings = compileModuleContent(content, { mode: 'release' }).diagnostics
+        .filter((item) => item.severity === 'warning').map(moduleWarningKey)
+      await publishActionModule(db, module.id, {
+        idempotencyKey: newId(), expectedRevision: moduleDraft.draftRevision ?? 0,
+        confirmedWarnings, actor: { id: adminActor.id }, skipReleaseGate: true,
+      })
+
+      const scenario = await createScenarioWithVersion(db, {
+        targetId: targetAId, name: '订单查询草稿',
+        steps: [{ ...echoStep, id: newId(), outputKey: 'baseline' }], actor: adminActor,
+      })
+      const saved = await saveScenarioDraft(db, scenario.id, {
+        revision: scenario.draft!.revision,
+        document: { schemaVersion: 1, inputs: [{ key: 'keyword', label: '关键词' }],
+          steps: [{ ...echoStep, id: newId(), outputKey: 'baseline' }] },
+        actor: adminActor,
+      })
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-compose-knowledge-${newId()}`,
+          question: '根据已发布的查询订单做法给当前草稿生成可编辑建议。',
+          pageContext: { version: 2, routeKey: 'scenarios.$scenarioId.studio', pageKind: 'studio',
+            page: 'studio', scenarioId: scenario.id, targetId: targetAId,
+            draftRevision: saved.draft!.revision,
+            primaryRef: { kind: 'scenario', id: scenario.id },
+            scopeRefs: [{ kind: 'target', id: targetAId }] },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status, JSON.stringify(answer)).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('scenario.compose_with_knowledge')
+      expect(answer.result, JSON.stringify(answer.result)).toMatchObject({ kind: 'knowledge_proposal', status: 'proposed', executable: true })
+      expect(answer.result.diffs.length).toBeGreaterThan(0)
+      expect(answer.result.sources).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'module_version', moduleId: module.id })]))
+      const proposal = await getKnowledgeProposal(db, scenario.id, answer.result.proposalId)
+      expect(proposal.document?.steps).toHaveLength(2)
+      expect(proposal.document?.steps[1]).toMatchObject({ name: '查询订单', type: 'echo', input: { from: 'keyword' } })
+      const accepted = await acceptKnowledgeProposal(db, scenario.id, proposal.proposalId, {
+        idempotencyKey: newId(), expectedDraftRevision: saved.draft!.revision,
+        documentDigest: answer.result.documentDigest,
+      }, { id: adminActor.id })
+      expect(accepted.proposal.proposalStatus).toBe('accepted')
+      expect(accepted.draftRevision).toBe(saved.draft!.revision + 1)
+      const adopted = await getScenario(db, scenario.id)
+      expect(adopted.draft?.document).toMatchObject({
+        authoringSchemaVersion: 2, locatorProtocol: 2,
+        nodes: [
+          { kind: 'step', step: { name: '回显步骤' } },
+          { kind: 'step', step: { name: '查询订单', input: { from: 'keyword' } } },
+        ],
+      })
+    })
+
+    it('已发布做法的必需输入未被实现使用时，不要求用户补无效参数', async () => {
+      const module = await createActionModule(db, {
+        idempotencyKey: newId(), targetId: targetAId,
+        key: `model.audit${newId().replaceAll('-', '').slice(0, 8)}`,
+        name: '模型配额审计', actor: { id: adminActor.id },
+      })
+      const content = {
+        contract: {
+          inputs: [{ key: 'model_name', label: '模型唯一标识', valueType: 'string' as const, required: true }],
+          outputs: [{ key: 'result', label: '结果', shape: { kind: 'scalar' as const, type: 'string' as const } }],
+          effectCeiling: 'READ_ONLY' as const, preconditions: [],
+          postconditions: [{ meaning: '有结果', verification: { kind: 'output_required' as const, outputKey: 'result' } }],
+        },
+        implementations: [{ implementationKey: 'default', kind: 'structured_steps' as const,
+          steps: [{ id: newId(), name: '读取通用统计', type: 'echo' as const,
+            effectType: 'READ_ONLY' as const, outputKey: 'internal', input: { value: '通用统计' } }],
+          outputMapping: { result: 'internal' } }],
+      }
+      const moduleDraft = await saveActionModuleDraft(db, module.id, {
+        baseRevision: module.draftRevision ?? 0, content, actor: { id: adminActor.id },
+      })
+      const warnings = compileModuleContent(content, { mode: 'release' }).diagnostics
+        .filter((item) => item.severity === 'warning')
+      expect(warnings.some((item) => item.code === 'MODULE_INPUT_UNUSED')).toBe(true)
+      await publishActionModule(db, module.id, {
+        idempotencyKey: newId(), expectedRevision: moduleDraft.draftRevision ?? 0,
+        confirmedWarnings: warnings.map(moduleWarningKey),
+        actor: { id: adminActor.id }, skipReleaseGate: true,
+      })
+      const scenario = await createScenarioWithVersion(db, {
+        targetId: targetAId, name: '模型配额草稿',
+        steps: [{ ...echoStep, id: newId() }], actor: adminActor,
+      })
+      const before = await getScenario(db, scenario.id)
+      currentActor = adminActor
+      const server = app.getHttpServer()
+      const conversation = await request(server).post('/assistant/conversations').send({}).expect(201)
+      const turn = await request(server)
+        .post(`/assistant/conversations/${conversation.body.id}/turns`)
+        .send({
+          clientTurnId: `turn-compose-unused-input-${newId()}`,
+          question: '根据已发布的模型配额审计做法给当前草稿生成建议。',
+          pageContext: { version: 2, routeKey: 'scenarios.$scenarioId.studio', pageKind: 'studio',
+            page: 'studio', scenarioId: scenario.id, targetId: targetAId,
+            draftRevision: scenario.draft!.revision,
+            primaryRef: { kind: 'scenario', id: scenario.id },
+            scopeRefs: [{ kind: 'target', id: targetAId }] },
+        })
+        .expect(202)
+      const answer = await waitForTurn(conversation.body.id, turn.body.turnId)
+      expect(answer.status, JSON.stringify(answer)).toBe('COMPLETED')
+      expect(answer.capabilityId).toBe('scenario.compose_with_knowledge')
+      expect(answer.result).toMatchObject({ kind: 'knowledge_proposal', status: 'unsupported',
+        executable: false, diffs: [],
+        diagnostics: [expect.objectContaining({ code: 'KNOWLEDGE_MODULE_INPUT_UNUSED' })] })
+      expect(answer.result.reason).toContain('请修订做法并发布新版本')
+      expect(answer.result.sources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'module_version', moduleId: module.id }),
+      ]))
+      const after = await getScenario(db, scenario.id)
+      expect(after.draft).toEqual(before.draft)
     })
   })
 })

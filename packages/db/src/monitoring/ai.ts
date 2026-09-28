@@ -6,6 +6,7 @@ import {
   percentile,
   unknownMetric,
   type MonitorAiCard,
+  type MonitorAiModelItem,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { schemaFor } from '../native.js'
@@ -96,4 +97,62 @@ function instant(value: unknown): string | null {
   if (value == null) return null
   const date = value instanceof Date ? value : new Date(String(value))
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+export async function summarizeAiModels(db: Db, asOf: Date): Promise<MonitorAiModelItem[]> {
+  const { scenarioAiCalls } = schemaFor(db)
+  const since = new Date(asOf.getTime() - MONITOR_AI_WINDOW_HOURS * 3600 * 1000)
+  const windowMinutes = Math.max(1, MONITOR_AI_WINDOW_HOURS * 60)
+
+  const rows = await db
+    .select({
+      model: scenarioAiCalls.model,
+      totalCalls: sql`count(*)`,
+      failedCalls: sql`sum(case when ${scenarioAiCalls.phase} = 'failed' then 1 else 0 end)`,
+      inputTokens: sql`coalesce(sum(${scenarioAiCalls.inputTokens}), 0)`,
+      outputTokens: sql`coalesce(sum(${scenarioAiCalls.outputTokens}), 0)`,
+      rateLimitHits: sql`sum(case when ${scenarioAiCalls.errorCode} in ('RATE_LIMITED', '429', 'RESOURCE_EXHAUSTED') then 1 else 0 end)`,
+    })
+    .from(scenarioAiCalls)
+    .where(sql`${scenarioAiCalls.createdAt} >= ${since}`)
+    .groupBy(scenarioAiCalls.model)
+
+  // P95 按模型分组在应用层算（percentile_cont 是 PG 专有聚合函数，换库没有对应物）：
+  // 抓一批最近的原始耗时样本，按 model 分桶后各自调用 percentile()。
+  const durationRows = await db
+    .select({ model: scenarioAiCalls.model, durationMs: scenarioAiCalls.durationMs })
+    .from(scenarioAiCalls)
+    .where(and(sql`${scenarioAiCalls.createdAt} >= ${since}`, isNotNull(scenarioAiCalls.durationMs)))
+    .orderBy(desc(scenarioAiCalls.createdAt))
+    .limit(MONITOR_AI_P95_SAMPLE_LIMIT)
+
+  const durationsByModel = new Map<string, number[]>()
+  for (const row of durationRows) {
+    if (row.durationMs == null || !Number.isFinite(row.durationMs)) continue
+    const key = row.model ?? 'default'
+    const bucket = durationsByModel.get(key) ?? []
+    bucket.push(row.durationMs)
+    durationsByModel.set(key, bucket)
+  }
+
+  return rows.map((r) => {
+    const total = Number(r.totalCalls ?? 0)
+    const failed = Number(r.failedCalls ?? 0)
+    const errorRate = total > 0 ? Math.round((failed / total) * 100) : 0
+    const inTokens = Number(r.inputTokens ?? 0)
+    const outTokens = Number(r.outputTokens ?? 0)
+    const model = r.model ?? 'default'
+    const durations = durationsByModel.get(model) ?? []
+    const p95 = durations.length ? percentile(durations, 95) : null
+    return {
+      model,
+      totalCalls: total,
+      failedCalls: failed,
+      errorRate,
+      p95DurationMs: p95 != null ? Math.round(p95) : 0,
+      inputTokensPerMin: Math.round((inTokens / windowMinutes) * 10) / 10,
+      outputTokensPerMin: Math.round((outTokens / windowMinutes) * 10) / 10,
+      rateLimitHits: Number(r.rateLimitHits ?? 0),
+    }
+  })
 }

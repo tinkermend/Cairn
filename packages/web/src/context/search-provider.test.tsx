@@ -155,6 +155,16 @@ describe('SearchProvider and CommandMenu', () => {
     await expect.element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)).toBeInTheDocument()
   })
 
+  it('不含 Ctrl/Cmd 的 Alt 自定义组合键也能打开命令盘', async () => {
+    expect(useKeybindingsStore.getState().setCustomKey('palette.open', 'alt+shift+p').ok).toBe(true)
+    const screen = await renderWithSearchProvider(<Search />)
+    await expect.element(screen.getByRole('button', { name: '搜索或跳转' })).toHaveAttribute(
+      'aria-keyshortcuts', 'Alt+Shift+P'
+    )
+    await userEvent.keyboard('{Alt>}{Shift>}p{/Shift}{/Alt}')
+    await expect.element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)).toBeInTheDocument()
+  })
+
   it('navigates to a top-level route and closes the palette when a nav item is selected', async () => {
     signIn([...PERMISSIONS])
     const screen = await renderWithSearchProvider()

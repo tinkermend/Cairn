@@ -47,7 +47,8 @@ describe('AI-02 B1: 诊断聚焦点与运行对比可比性', () => {
       const waitFact = pack.facts.find((f) => f.id === 'focus_wait')
       expect(waitFact).toBeDefined()
       expect(waitFact?.text).toContain('等待聚焦')
-      expect(waitFact?.text).toContain('排查调度队列或双租约等待')
+      expect(waitFact?.text).toContain('没有可确认的调度等待原因')
+      expect(waitFact?.text).not.toContain('双租约')
     } finally {
       spy.mockRestore()
     }

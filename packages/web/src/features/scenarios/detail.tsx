@@ -8,8 +8,6 @@ import {
   entityIdSchema,
   normalizeAuthoringDocument,
   scenarioDocumentDigest,
-  type AssistantAuthoringProposal,
-  type AssistantProposal,
   type AuthoringOperation,
   canExecuteRun,
   canTrialRun,
@@ -728,7 +726,10 @@ export function ScenarioDetailPage() {
     const revision = scenario.draft.revision
     const current = document
 
-    registerAdoptHandler(async (proposal: AssistantProposal | AssistantAuthoringProposal) => {
+    registerAdoptHandler(async (proposal) => {
+      if (proposal.kind === 'target_form') {
+        return { ok: false, reason: '目标表单提案不可在场景画布中应用' }
+      }
       if (proposal.kind === 'authoring_proposal') {
         const v2 = normalizeAuthoringDocument(current)
         const allowed = await canAdoptAuthoringProposal({
@@ -801,7 +802,10 @@ export function ScenarioDetailPage() {
       return { ok: true, digest: newDigest }
     })
 
-    registerRollbackHandler(async (proposal: AssistantProposal | AssistantAuthoringProposal) => {
+    registerRollbackHandler(async (proposal) => {
+      if (proposal.kind === 'target_form') {
+        return { ok: false, reason: '目标表单提案不可在场景画布中回滚' }
+      }
       if (proposal.kind === 'authoring_proposal' && preAdoptSnapshotRef.current) {
         applyStructure(preAdoptSnapshotRef.current, null)
         preAdoptSnapshotRef.current = null

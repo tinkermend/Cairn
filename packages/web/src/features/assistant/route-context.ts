@@ -113,6 +113,7 @@ export function resolveRouteContext(pathname: string): AssistantRouteContext {
 export function toPageContext(
   context: {
     page: AssistantPageKind
+    routeKey?: string
     filters?: Record<string, string | number | boolean>
     entityId?: string
     runId?: string
@@ -131,7 +132,10 @@ export function toPageContext(
   const runId = context.runId ?? (context.page === 'run' ? context.entityId : undefined)
   const scenarioId = context.scenarioId ?? (context.page === 'studio' ? context.entityId : undefined)
   const targetId = context.targetId ?? (context.page === 'target' ? context.entityId : undefined)
-  const sessionId = context.sessionId ?? (context.page === 'session' ? context.entityId : undefined)
+  // A session page can represent an account with no live Session. Its
+  // entityId then names the account, so only an explicit sessionId may bind
+  // a Session fact or historical citation.
+  const sessionId = context.sessionId
   const targetAccountId = context.targetAccountId
   const draftRevision =
     typeof context.draftRevision === 'number' && context.draftRevision >= 1
@@ -185,7 +189,7 @@ export function toPageContext(
 
   return {
     version: 2,
-    routeKey: context.page,
+    routeKey: context.routeKey ?? context.page,
     pageKind: context.page,
     page: context.page,
     ...(primaryRef ? { primaryRef } : {}),

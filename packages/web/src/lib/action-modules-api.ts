@@ -302,7 +302,6 @@ export type ModuleTestCaseListItem = z.infer<typeof moduleTestCaseListItemSchema
 
 export const moduleTestCaseListResponseSchema = z.object({
   items: z.array(moduleTestCaseListItemSchema),
-  total: z.number().int().nonnegative(),
 })
 export type ModuleTestCaseListResponse = z.infer<typeof moduleTestCaseListResponseSchema>
 
@@ -404,5 +403,4 @@ export type {
   RunModuleTestCaseBody,
   CreateModuleTestBatchBody,
 }
-
 

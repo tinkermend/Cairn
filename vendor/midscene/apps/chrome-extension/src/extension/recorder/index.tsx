@@ -2,7 +2,7 @@
 import { Form, Modal, message } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import type { RecordingSession } from '../../store';
-import { useRecordStore, useRecordingSessionStore } from '../../store';
+import { useCairnStore, useRecordStore, useRecordingSessionStore } from '../../store';
 import { RecordDetail } from './components/RecordDetail';
 import { RecordList } from './components/RecordList';
 import { SessionModals } from './components/SessionModals';
@@ -218,6 +218,12 @@ export default function Recorder() {
 
   // Create session handler
   const handleCreateNewSession = async () => {
+    const cairn = useCairnStore.getState();
+    if (cairn.authStatus !== 'authenticated' || !cairn.token || !cairn.account) {
+      message.error('请先登录识途，再开始录制');
+      return;
+    }
+
     // Switch to detail view
     setViewMode('detail');
 

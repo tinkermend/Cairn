@@ -131,6 +131,7 @@ import { countManagedBrowserProcesses, scanManagedBrowserProcesses } from "./bro
 import { sampleProfileDisk, type DiskSample } from "./disk-sample";
 import { sampleProcessResources } from "./process-sample";
 import { SingleFlightTasks } from "./single-flight-tasks.js";
+import { getStepHardTimeoutCount } from "./step-timeout-stats.js";
 
 const TICK_INTERVAL_MS = 1_000;
 const CLAIM_FILL_BUDGET = 16;
@@ -1105,8 +1106,11 @@ export class LifecycleService
           profileBytes: this.diskSample?.profileBytes ?? null,
           profileCount: this.diskSample?.profileCount ?? null,
           profileDiskFreeBytes: this.diskSample?.profileDiskFreeBytes ?? null,
+          diskTotalBytes: this.diskSample?.diskTotalBytes ?? null,
           midsceneBytes: this.diskSample?.midsceneBytes ?? null,
           browserProcessCount: this.browserProcessCount,
+          browserHostLostCount: (this.sessions as any)?.hostPool?.getHostLostCount() ?? null,
+          stepHardTimeoutCount: getStepHardTimeoutCount(),
           diskSampledAt: this.diskSample?.sampledAt ?? null,
           listenHost: net.listenHost,
           listenPort: net.listenPort,

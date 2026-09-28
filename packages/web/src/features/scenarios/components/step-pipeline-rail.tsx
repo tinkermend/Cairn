@@ -227,7 +227,7 @@ export function StepPipelineRail({
   const nodeCount = items.length
 
   // 试跑状态处理：提取每个步骤最新的 stepRun 和当前正在执行的 stepId
-  const { stepRunMap, runningStepId, effectiveRunningId } = useMemo(() => {
+  const { stepRunMap, effectiveRunningId } = useMemo(() => {
     const map = new Map<string, StepRunDto>()
     if (!trialRun || !trialRun.stepRuns) {
       return { stepRunMap: map, runningStepId: null, effectiveRunningId: null }

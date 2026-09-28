@@ -49,12 +49,12 @@ export function QueuesSection({
 
   const badge =
     backlogCount === 0 ? (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-success/30 bg-status-success/10 px-2 py-0.5 text-label font-medium text-status-success">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-success/30 bg-status-success-background px-2.5 py-0.5 text-label font-medium text-status-success-foreground">
         <span className="size-1.5 rounded-full bg-status-success" />
         队列畅通 · 无积压
       </span>
     ) : (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-warning/30 bg-status-warning/10 px-2 py-0.5 text-label font-medium text-status-warning">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-warning/30 bg-status-warning-background px-2.5 py-0.5 text-label font-medium text-status-warning-foreground">
         <span className="size-1.5 rounded-full bg-status-warning" />
         {backlogCount} 项积压待处理
       </span>
@@ -87,11 +87,23 @@ function QueuesContent({ data }: { data: MonitorQueuesCard }) {
             <span className="text-label text-muted-foreground">吞吐待办</span>
           </div>
 
-          <div className="flex items-baseline justify-between rounded-md bg-surface-subtle p-3">
+          <div
+            className={cn(
+              'flex items-baseline justify-between rounded-md p-3 border transition-colors',
+              isClaimableActive
+                ? 'bg-status-warning-background border-status-warning/30'
+                : 'bg-status-success-background/40 border-status-success/20'
+            )}
+          >
             <div>
               <span className="text-label text-muted-foreground">待领取 Run</span>
               <div className="flex items-baseline gap-2">
-                <span className="font-mono text-stat font-bold tabular-nums text-foreground">
+                <span
+                  className={cn(
+                    'font-mono text-stat font-bold tabular-nums',
+                    isClaimableActive ? 'text-status-warning-foreground' : 'text-status-success-foreground'
+                  )}
+                >
                   {formatMetric(data.claimableRuns)}
                 </span>
                 <span className="text-label text-muted-foreground">
@@ -100,11 +112,11 @@ function QueuesContent({ data }: { data: MonitorQueuesCard }) {
               </div>
             </div>
             {isClaimableActive ? (
-              <span className="rounded-full bg-status-warning/10 px-2 py-0.5 text-label font-medium text-status-warning">
+              <span className="rounded-full border border-status-warning/30 bg-status-warning-background px-2 py-0.5 text-label font-bold text-status-warning-foreground">
                 排队中
               </span>
             ) : (
-              <span className="rounded-full bg-status-success/10 px-2 py-0.5 text-label font-medium text-status-success">
+              <span className="rounded-full border border-status-success/30 bg-status-success-background px-2 py-0.5 text-label font-bold text-status-success-foreground">
                 空闲
               </span>
             )}
@@ -113,7 +125,14 @@ function QueuesContent({ data }: { data: MonitorQueuesCard }) {
           <div className="mt-3 space-y-2 text-label">
             <div className="flex items-center justify-between border-b border-border-divider/50 py-1.5">
               <span className="text-muted-foreground">无人可领的 Run</span>
-              <span className={cn('font-mono font-medium', isUnclaimableActive ? 'font-bold text-status-warning' : 'text-foreground')}>
+              <span
+                className={cn(
+                  'font-mono font-medium',
+                  isUnclaimableActive
+                    ? 'rounded bg-status-warning-background px-1.5 py-0.5 font-bold text-status-warning-foreground'
+                    : 'text-foreground'
+                )}
+              >
                 {formatMetric(data.unclaimableRuns)}
               </span>
             </div>
@@ -125,7 +144,14 @@ function QueuesContent({ data }: { data: MonitorQueuesCard }) {
             </div>
             <div className="flex items-center justify-between py-1.5">
               <span className="text-muted-foreground">待核查 Run</span>
-              <span className={cn('font-mono font-medium', isReviewActive ? 'font-bold text-status-warning' : 'text-foreground')}>
+              <span
+                className={cn(
+                  'font-mono font-medium',
+                  isReviewActive
+                    ? 'rounded bg-status-warning-background px-1.5 py-0.5 font-bold text-status-warning-foreground'
+                    : 'text-foreground'
+                )}
+              >
                 {formatMetric(data.needsReview)}
               </span>
             </div>
@@ -252,12 +278,12 @@ export function AnomaliesSection({
 
   const badge =
     anomalyCount === 0 ? (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-success/30 bg-status-success/10 px-2 py-0.5 text-label font-medium text-status-success">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-success/30 bg-status-success-background px-2.5 py-0.5 text-label font-medium text-status-success-foreground">
         <span className="size-1.5 rounded-full bg-status-success" />
         租约与数据平稳 · 无异常
       </span>
     ) : (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-error/30 bg-status-error/10 px-2 py-0.5 text-label font-medium text-status-error">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-status-error/30 bg-status-error-background px-2.5 py-0.5 text-label font-medium text-status-error-foreground">
         <span className="size-1.5 rounded-full bg-status-error" />
         {anomalyCount} 项异常风险
       </span>
@@ -301,28 +327,56 @@ function AnomaliesContent({ data }: { data: MonitorAnomaliesCard }) {
               <span className="text-muted-foreground">过期 ACTIVE 租约</span>
               <p className="text-label text-muted-foreground">Run / Session</p>
             </div>
-            <span className={cn('font-mono font-medium', hasExpiredLeases ? 'font-bold text-status-error' : 'text-foreground')}>
+            <span
+              className={cn(
+                'font-mono font-medium',
+                hasExpiredLeases
+                  ? 'rounded bg-status-error-background px-1.5 py-0.5 font-bold text-status-error-foreground'
+                  : 'text-foreground'
+              )}
+            >
               {formatMetric(data.leases.expiredActiveRunLeases)} / {formatMetric(data.leases.expiredActiveSessionLeases)}
             </span>
           </div>
 
           <div className="flex items-center justify-between border-b border-border-divider/50 py-1.5">
             <span className="text-muted-foreground">遗留认证占用</span>
-            <span className={cn('font-mono font-medium', hasAuthHolds ? 'font-bold text-status-warning' : 'text-foreground')}>
+            <span
+              className={cn(
+                'font-mono font-medium',
+                hasAuthHolds
+                  ? 'rounded bg-status-warning-background px-1.5 py-0.5 font-bold text-status-warning-foreground'
+                  : 'text-foreground'
+              )}
+            >
               {formatMetric(data.leases.leftoverAuthHolds)}
             </span>
           </div>
 
           <div className="flex items-center justify-between border-b border-border-divider/50 py-1.5">
             <span className="text-muted-foreground">孤儿 Attempt</span>
-            <span className={cn('font-mono font-medium', hasOrphanAttempts ? 'font-bold text-status-warning' : 'text-foreground')}>
+            <span
+              className={cn(
+                'font-mono font-medium',
+                hasOrphanAttempts
+                  ? 'rounded bg-status-warning-background px-1.5 py-0.5 font-bold text-status-warning-foreground'
+                  : 'text-foreground'
+              )}
+            >
               {formatMetric(data.leases.orphanAttempts)}
             </span>
           </div>
 
           <div className="flex items-center justify-between py-1.5">
             <span className="text-muted-foreground">恢复次数触顶</span>
-            <span className={cn('font-mono font-medium', hasRecoveryCapped ? 'font-bold text-status-warning' : 'text-foreground')}>
+            <span
+              className={cn(
+                'font-mono font-medium',
+                hasRecoveryCapped
+                  ? 'rounded bg-status-warning-background px-1.5 py-0.5 font-bold text-status-warning-foreground'
+                  : 'text-foreground'
+              )}
+            >
               {formatMetric(data.leases.recoveryCappedRuns)}
             </span>
           </div>
@@ -386,7 +440,7 @@ function AnomaliesContent({ data }: { data: MonitorAnomaliesCard }) {
               {formatMetric(data.clockSkew.maxAbsSkewMs, ' 毫秒')}
             </div>
           </div>
-          <span className="rounded-full bg-status-success/10 px-2 py-0.5 text-label font-medium text-status-success">
+          <span className="rounded-full border border-status-success/30 bg-status-success-background px-2.5 py-0.5 text-label font-bold text-status-success-foreground">
             NTP 稳定
           </span>
         </div>
@@ -416,7 +470,14 @@ function AnomalyRow({
     <div className="flex items-center justify-between rounded px-2 py-1.5 transition-colors hover:bg-surface-subtle">
       <span className="text-muted-foreground">{title}</span>
       <div className="flex items-center gap-1">
-        <span className={cn('font-mono font-medium', isError ? 'font-bold text-status-error' : 'text-foreground')}>
+        <span
+          className={cn(
+            'font-mono font-medium',
+            isError
+              ? 'rounded bg-status-error-background px-1.5 py-0.5 font-bold text-status-error-foreground'
+              : 'text-foreground'
+          )}
+        >
           {value}
         </span>
         {to && <ArrowUpRight className="size-3 text-muted-foreground" aria-hidden />}
@@ -452,12 +513,12 @@ export function AiSection({
   const hasError = data.errors.availability === 'known' && data.errors.value > 0
 
   const badge = hasError ? (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-status-error/30 bg-status-error/10 px-2 py-0.5 text-label font-medium text-status-error">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-status-error/30 bg-status-error-background px-2.5 py-0.5 text-label font-medium text-status-error-foreground">
       <span className="size-1.5 rounded-full bg-status-error" />
       调用存在失败
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-status-success/30 bg-status-success/10 px-2 py-0.5 text-label font-medium text-status-success">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-status-success/30 bg-status-success-background px-2.5 py-0.5 text-label font-medium text-status-success-foreground">
       <span className="size-1.5 rounded-full bg-status-success" />
       AI 服务正常
     </span>

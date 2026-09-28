@@ -12,6 +12,13 @@ import {
   extractScenarioSearchKeyword,
   hasAllPermissions,
   inferAssistantCapability,
+  isTargetDeletionGuideQuestion,
+  isTargetAccountFactQuestion,
+  isScenarioRunResultQuestion,
+  isScenarioFailureDigestQuestion,
+  isPreviousRunComparisonQuestion,
+  isPlatformKnowledgeAvailabilityQuestion,
+  isRecordingOnboardingGuideQuestion,
   normalizeAssistantPageContext,
   routeAssistantTurn,
   unpackAssistantResultEnvelope,
@@ -39,6 +46,8 @@ import { TargetsService } from '../targets/targets.service'
 import { createOpenAiCompatibleClient, type PlatformModelClient } from './model-client'
 import { AssistantModelSession, classifyAssistantCapability, supervisorRouteWithLlm } from './model-session'
 import { AssistantCapabilityRegistry } from './registry'
+import { namedTargetForAccountOrRunQuestion } from './handlers/knowledge-answer.handler'
+import { isTargetPageEntryQuestion } from './handlers/in-page-guidance.handler'
 import type { RequestAccount as Actor } from '../common/request-account'
 
 import { AuthService } from '../auth/auth.service'
@@ -223,8 +232,10 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
   private async runTurn(exec: ActiveExecution): Promise<void> {
     const { turnId, actor, body, processingToken, abortController, deadlineAt } = exec
     let currentSeq = 0
+    let currentStage: AssistantStage = 'routing'
 
     const recordStage = async (stage: AssistantStage, note?: string) => {
+      currentStage = stage
       currentSeq++
       await this.recordEvent(
         turnId,
@@ -283,6 +294,12 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       await recordStage('routing')
       if (abortController.signal.aborted) throw new Error('ABORTED')
 
+      // A user can abandon a pending clarification and ask a new question in
+      // the same message. Keep the original text in the persisted request, but
+      // route and answer only the new question.
+      const question = body.question.trim().replace(/^(?:算了|不用了)[,，。;；\s]+(?=\S)/, '')
+      const startsNewTask = question !== body.question.trim()
+      const effectiveBody = startsNewTask ? { ...body, question } : body
       const availableDescriptors = this.registry
         .listDescriptors()
         .filter((desc) => hasAllPermissions(actor.permissions, desc.requiredPermissions))
@@ -298,13 +315,13 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      const isResetIntent = /^(换个场景|换一个场景|换场景|不用刚才那个|重新选)$/i.test(body.question.trim())
-      const isNextPageIntent = /^(下一页|继续找|加载更多|查看更多)(?:\s*[/／]\s*继续找)?[！!。.\s]*$/.test(body.question.trim())
+      const isResetIntent = /^(换个场景|换一个场景|换场景|不用刚才那个|重新选)$/i.test(question)
+      const isNextPageIntent = /^(下一页|继续找|加载更多|查看更多)(?:\s*[/／]\s*继续找)?[！!。.\s]*$/.test(question)
 
       let decision: AssistantRouteDecision | null = null
 
       // Check selected option or ordinal reference against parent clarify options or discovery candidates
-      if (!isResetIntent && parentResult) {
+      if (!isResetIntent && !startsNewTask && parentResult) {
         if (
           isNextPageIntent &&
           parentResult.kind === 'discovery' &&
@@ -326,7 +343,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
             chosenOpt = parentResult.options.find((o) => o.id === body.selectedOptionId) ?? null
           }
           if (!chosenOpt) {
-            const optIdx = parseOrdinalIndex(body.question, parentResult.options.length)
+            const optIdx = parseOrdinalIndex(question, parentResult.options.length)
             if (optIdx !== null) {
               chosenOpt = parentResult.options[optIdx] ?? null
             }
@@ -334,7 +351,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
           if (!chosenOpt) {
             chosenOpt =
               parentResult.options.find(
-                (o) => o.id === body.question.trim() || o.label === body.question.trim(),
+                (o) => o.id === question || o.label === question,
               ) ?? null
           }
 
@@ -405,7 +422,9 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
                   },
                 }
               }
-            } else if (opt.kind === 'capability') {
+            } else if (opt.kind === 'capability' ||
+              (parentResult.missingFields.includes('capabilityId') &&
+                availableIds.includes(opt.id as AssistantCapabilityId))) {
               decision = {
                 type: 'dispatch',
                 capabilityId: opt.id as AssistantCapabilityId,
@@ -429,7 +448,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
             }
           }
         } else if (parentResult.kind === 'discovery' && parentResult.candidates?.length) {
-          const candIdx = parseOrdinalIndex(body.question, parentResult.candidates.length)
+          const candIdx = parseOrdinalIndex(question, parentResult.candidates.length)
           if (candIdx !== null) {
             const cand = parentResult.candidates[candIdx]!
             decision = {
@@ -445,10 +464,123 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      // Capability overviews are a fixed description of the currently
+      // available assistant skills, including permission restrictions.
+      if (
+        !decision &&
+        session &&
+        availableIds.includes('knowledge.answer') &&
+        /^(?:识途(?:助手)?|你|助手)(?:都)?(?:能|可以)(?:帮我|替我)?(?:做|处理)(?:什么|哪些)(?:事|事情|任务|工作)?[？?。！!]*$/.test(question)
+      ) {
+        decision = { type: 'dispatch', capabilityId: 'knowledge.answer', slots: {} }
+      }
+
+      if (!decision && !body.capabilityHint && availableIds.includes('platform.guide') &&
+        isRecordingOnboardingGuideQuestion(question)) {
+        decision = routeAssistantTurn({ question,
+          pageContext: body.pageContext, available: availableIds })
+      }
+
+      // A target-page account health question asks for current authorized
+      // account/session facts. Page landmarks must not steer it into a button
+      // guide that cannot answer or be safely replayed from history.
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        normalizeAssistantPageContext(body.pageContext)?.pageKind === 'target' &&
+        normalizeAssistantPageContext(body.pageContext)?.targetId &&
+        isTargetAccountFactQuestion(question)) {
+        decision = routeAssistantTurn({ question, pageContext: body.pageContext, available: availableIds })
+      }
+
+      // On an account session page, authentication history and occupancy are
+      // facts about the selected account. Do not let the supervisor interpret
+      // "认证" as an unrelated target business-record request.
+      const accountPage = normalizeAssistantPageContext(body.pageContext)
+      const accountRef = accountPage?.primaryRef?.kind === 'account'
+        ? accountPage.primaryRef
+        : accountPage?.scopeRefs?.find((ref) => ref.kind === 'account')
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        accountPage?.pageKind === 'session' && accountPage.targetId && accountRef &&
+        (isTargetAccountFactQuestion(question) ||
+          (/(?:最近|上次|最后).{0,24}(?:认证|登录)/.test(question) && /成功|失败|通过/.test(question))) &&
+        !/(?:另一个|其他账号|在哪|哪里|入口|按钮|菜单|路径|修改|删除|关闭|释放|重置|提交)/.test(question)) {
+        decision = { type: 'dispatch', capabilityId: 'knowledge.answer',
+          slots: { targetId: accountPage.targetId, targetAccountId: accountRef.id } }
+      }
+
+      // The systems list binds a target but no account. A question about its
+      // accounts/sessions must remain a target-scoped fact lookup even when the
+      // model supervisor occasionally chooses unrelated business records.
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        accountPage?.pageKind === 'session' && accountPage.targetId && !accountRef &&
+        isTargetAccountFactQuestion(question)) {
+        decision = { type: 'dispatch', capabilityId: 'knowledge.answer',
+          slots: { targetId: accountPage.targetId } }
+      }
+
+      // Actual completion of a scene is a Run fact. The supervisor must not
+      // infer it from a saved success rule or substitute a failed-Run search.
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        normalizeAssistantPageContext(body.pageContext)?.scenarioId &&
+        !normalizeAssistantPageContext(body.pageContext)?.runId &&
+        isScenarioRunResultQuestion(question)) {
+        decision = routeAssistantTurn({ question, pageContext: body.pageContext, available: availableIds })
+      }
+
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        normalizeAssistantPageContext(body.pageContext)?.scenarioId &&
+        !normalizeAssistantPageContext(body.pageContext)?.runId &&
+        isScenarioFailureDigestQuestion(question)) {
+        decision = routeAssistantTurn({ question, pageContext: body.pageContext, available: availableIds })
+      }
+
+      // An entry inside the selected target system is a map fact. Route it
+      // before the supervisor can substitute generic console navigation.
+      if (!decision && !body.capabilityHint && availableIds.includes('in-page.guidance') &&
+        normalizeAssistantPageContext(body.pageContext)?.pageKind === 'target' &&
+        normalizeAssistantPageContext(body.pageContext)?.targetId &&
+        isTargetPageEntryQuestion('target', question)) {
+        decision = {
+          type: 'dispatch', capabilityId: 'in-page.guidance',
+          slots: { question, page: 'target', targetId: normalizeAssistantPageContext(body.pageContext)!.targetId },
+        }
+      }
+
+      if (!decision && !body.capabilityHint && availableIds.includes('run.compare') &&
+        normalizeAssistantPageContext(body.pageContext)?.runId &&
+        isPreviousRunComparisonQuestion(question)) {
+        decision = routeAssistantTurn({ question, pageContext: body.pageContext, available: availableIds })
+      }
+
+      if (
+        !decision && !body.capabilityHint &&
+        normalizeAssistantPageContext(body.pageContext)?.pageKind === 'target' &&
+        availableIds.includes('platform.guide') &&
+        isTargetDeletionGuideQuestion(question)
+      ) {
+        decision = routeAssistantTurn({ question, pageContext: body.pageContext, available: availableIds })
+      }
+
+      // A named target's accounts/runs are entity facts. Resolve the name only
+      // inside the actor's visible target list before any model can steer the
+      // request into an unrelated business-record capability.
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        !normalizeAssistantPageContext(body.pageContext)?.targetId &&
+        namedTargetForAccountOrRunQuestion(question)) {
+        decision = { type: 'dispatch', capabilityId: 'knowledge.answer', slots: {} }
+      }
+
+      // Platform data-availability questions need fact lookup. An occasional
+      // low-confidence classifier must not turn "do you have this data?" into
+      // an unrelated eight-skill menu.
+      if (!decision && !body.capabilityHint && availableIds.includes('knowledge.answer') &&
+        isPlatformKnowledgeAvailabilityQuestion(question)) {
+        decision = { type: 'dispatch', capabilityId: 'knowledge.answer', slots: {} }
+      }
+
       // 1. If explicit capabilityHint provided or parent clarify selected, route directly
       if (!decision && body.capabilityHint) {
         decision = routeAssistantTurn({
-          question: body.question,
+          question,
           capabilityHint: body.capabilityHint,
           pageContext: body.pageContext,
           available: availableIds,
@@ -464,7 +596,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         }))
         const supervisorRoute = await supervisorRouteWithLlm(
           session,
-          cleanAssistantQuestion(body.question),
+          cleanAssistantQuestion(question),
           skills,
           body.pageContext,
           abortController.signal,
@@ -491,23 +623,58 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
               type: 'dispatch',
               capabilityId: 'knowledge.answer',
               slots: {
-                ...fallbackSlots,
                 ...supervisorRoute.slots,
+                // A model may suggest search terms, but it cannot replace
+                // resource IDs bound to the currently visible page.
+                ...fallbackSlots,
               },
             }
           } else {
             const tentative = routeAssistantTurn({
-              question: body.question,
+              question,
               capabilityHint: chosen,
               pageContext: body.pageContext,
-              available: availableIds,
+              // The Supervisor has resolved competing intent keywords. Keep
+              // run comparison's deterministic ID extraction in this route.
+              available: chosen === 'run.compare' ? [chosen] : availableIds,
             })
             if (tentative.type === 'dispatch') {
+              // A scoped page question can correct a model's Run diagnosis
+              // choice. Slots from that rejected skill must not select facts
+              // for the capability that actually handles the turn.
+              const modelSlots = tentative.capabilityId === chosen ? { ...supervisorRoute.slots } : {}
+              if (chosen === 'run.compare') {
+                // Only IDs named in the question or bound to the current Run
+                // page can select records. A model-supplied ID is not evidence.
+                delete modelSlots.baseRunId
+                delete modelSlots.targetRunId
+                delete modelSlots.compareRunId
+                delete modelSlots.comparePrevious
+              }
+              if (chosen === 'in-page.guidance') {
+                // The target bound to the visible page controls map access.
+                // A model-supplied ID cannot replace it in historical slots.
+                delete modelSlots.targetId
+                delete modelSlots.page
+              }
+              if (chosen === 'platform.guide') {
+                // The current target is selected by the visible page, never
+                // by a model-provided slot in a navigation answer.
+                delete modelSlots.targetId
+              }
               decision = {
                 ...tentative,
                 slots: {
+                  ...modelSlots,
+                  // Deterministic route values and page-bound resources take
+                  // precedence over model guesses.
                   ...tentative.slots,
-                  ...supervisorRoute.slots,
+                  ...fallbackSlots,
+                  // The local guide-topic parser recognizes exact menu
+                  // wording. Do not let a broad model topic replace it.
+                  ...(chosen === 'platform.guide' && tentative.slots.topic
+                    ? { topic: tentative.slots.topic }
+                    : {}),
                 },
               }
             } else if (
@@ -519,15 +686,31 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
                 type: 'dispatch',
                 capabilityId: chosen,
                 slots: {
-                  ...fallbackSlots,
                   ...supervisorRoute.slots,
+                  ...fallbackSlots,
                 },
               }
             } else {
               decision = tentative
             }
           }
-        } else if (supervisorRoute && (supervisorRoute.confidence < 0.5 || supervisorRoute.skillId === 'none')) {
+        } else if (supervisorRoute?.skillId === 'none') {
+          const localRoute = routeAssistantTurn({
+            question,
+            pageContext: body.pageContext,
+            available: availableIds,
+          })
+          const isWeatherQuestion = /天气|气温|降雨|下雨|风力|空气质量/.test(question)
+          decision = localRoute.type === 'unsupported' && localRoute.reasonCode === 'TASK_UNSUPPORTED'
+            ? {
+                type: 'unsupported',
+                reasonCode: 'OUT_OF_SCOPE',
+                message: isWeatherQuestion
+                  ? '识途助手无法查询天气等外部实时信息。你可以询问已授权的场景、运行、目标系统事实或平台操作。'
+                  : '这项请求超出识途助手当前可用的平台能力，无法代你执行或确认完成。你可以询问已授权的场景、运行、目标系统事实或平台操作。',
+              }
+            : localRoute
+        } else if (supervisorRoute && supervisorRoute.confidence < 0.5) {
           decision = clarifyAvailableCapabilities(availableIds)
         }
       }
@@ -535,7 +718,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       // 3. Fallback for offline/test environments without active AI session
       if (!decision) {
         decision = routeAssistantTurn({
-          question: body.question,
+          question,
           capabilityHint: body.capabilityHint,
           pageContext: body.pageContext,
           available: availableIds,
@@ -543,7 +726,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       }
 
       // Slot inheritance from parent turn if applicable
-      if (!isResetIntent && parentRecord?.slots && decision.type === 'dispatch') {
+      if (!isResetIntent && !startsNewTask && parentRecord?.slots && decision.type === 'dispatch') {
         if (!decision.slots.scenarioId && parentRecord.slots.scenarioId) {
           decision.slots.scenarioId = parentRecord.slots.scenarioId
         }
@@ -574,11 +757,11 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         const originalCapId: AssistantCapabilityId =
           (decision as any).capabilityId ??
           (body.capabilityHint as AssistantCapabilityId) ??
-          (inferAssistantCapability(body.question) ?? 'scenario.explain')
+          (inferAssistantCapability(question) ?? 'scenario.explain')
 
         const kw =
-          extractScenarioSearchKeyword(body.question) ||
-          /(?:解释|分析|查看|看下|编排|修改|更新)\s*([^\s,，。？?]+?)(?:场景|工作流)/.exec(body.question)?.[1]
+          extractScenarioSearchKeyword(question) ||
+          /(?:解释|分析|查看|看下|编排|修改|更新)\s*([^\s,，。？?]+?)(?:场景|工作流)/.exec(question)?.[1]
         if (kw) {
           const matching = await listScenarios(this.db, { search: kw, limit: 100 }, actor.id).catch(() => ({ items: [] }))
           if (matching.items.length > 1) {
@@ -669,12 +852,13 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
             }
           } else {
             // Execute capability handler
+            currentStage = 'loading_facts'
             result = await registration.handler({
               db: this.db,
               actor,
               slots: routeDecision.slots,
-              question: body.question,
-              body,
+              question,
+              body: effectiveBody,
               session,
               platformConfig: this.platformConfig,
               targets: this.targets,
@@ -689,6 +873,34 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       }
 
       await recordStage('persisting')
+      if (capabilityId === 'knowledge.answer' && result.kind === 'knowledge_answer') {
+        const page = normalizeAssistantPageContext(effectiveBody.pageContext)
+        // The handler can load the Run from pageContext even when a selected
+        // capability came from a clarification with no Run slot. Persist that
+        // exact source scope for authorization when the completed turn is read.
+        if (page?.runId && result.claims.some((claim) => claim.citations.includes(`run:${page.runId}`))) {
+          slots = { ...(slots ?? {}), runId: page.runId }
+        }
+        if (page?.pageKind === 'session' && page.targetId) {
+          const accountId = page.primaryRef?.kind === 'account'
+            ? page.primaryRef.id
+            : page.scopeRefs?.find((ref) => ref.kind === 'account')?.id
+          const sessionId = page.primaryRef?.kind === 'session'
+            ? page.primaryRef.id
+            : page.view?.selectedRef?.kind === 'session' ? page.view.selectedRef.id : undefined
+          slots = {
+            ...(slots ?? {}), targetId: page.targetId,
+            ...(accountId ? { targetAccountId: accountId } : {}),
+            ...(sessionId ? { sessionId } : {}),
+          }
+        }
+        if (page?.pageKind === 'schedule') {
+          const scheduleId = page.primaryRef?.kind === 'schedule'
+            ? page.primaryRef.id
+            : page.view?.selectedRef?.kind === 'schedule' ? page.view.selectedRef.id : undefined
+          if (scheduleId) slots = { ...(slots ?? {}), scheduleId }
+        }
+      }
       const status = result.kind === 'clarify' ? 'CLARIFY' : 'COMPLETED'
       const reasoningInfo = session?.getReasoningInfo()
       await completeAssistantTurn(this.db, {
@@ -702,7 +914,8 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
       })
     } catch (error) {
-      this.logger.error(`runTurn error:`, error)
+      const errorName = error instanceof Error ? error.name : typeof error
+      this.logger.error(`Assistant turn ${turnId} failed during ${currentStage} (${errorName})`, error instanceof Error ? error.stack : undefined)
       const reasoningInfo = session?.getReasoningInfo()
       if (abortController.signal.aborted) {
         await completeAssistantTurn(this.db, {
@@ -716,18 +929,26 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       } else {
         const isDomain = error instanceof DomainError
         const hidden = isDomain && (error.kind === 'not_found' || error.kind === 'forbidden')
+        const stageLabels: Record<AssistantStage, string> = {
+          accepted: '接收请求',
+          routing: '理解问题',
+          loading_facts: '读取平台事实',
+          generating: '生成回答',
+          validating: '校验回答',
+          persisting: '保存回答',
+        }
         await completeAssistantTurn(this.db, {
           turnId,
           ownerAccountId: actor.id,
           processingToken,
           status: hidden ? 'COMPLETED' : 'FAILED',
-          stopReason: isDomain ? error.code : 'provider_error',
+          stopReason: isDomain ? error.code : `internal_${currentStage}`,
           result: hidden
             ? { kind: 'inaccessible', message: '相关运行或目标已不可访问' }
             : {
                 kind: 'unsupported',
                 reasonCode: isDomain ? error.code : 'TURN_FAILED',
-                message: isDomain ? error.message : '助手处理失败，请稍后重试',
+                message: isDomain ? error.message : `助手在${stageLabels[currentStage]}时遇到内部错误，暂时无法完成。请重试；若持续出现，请向管理员提供轮次编号 ${turnId}。`,
               },
           thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
         }).catch(() => undefined)

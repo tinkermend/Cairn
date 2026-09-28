@@ -506,6 +506,7 @@ export async function listBusinessRecords(
     .select({
       snapshot: targetBusinessSourceSnapshots,
       datasetCreatedAt: datasets.createdAt,
+      datasetName: datasets.name,
     })
     .from(targetBusinessSourceSnapshots)
     .leftJoin(datasets, eq(targetBusinessSourceSnapshots.datasetId, datasets.id))
@@ -561,6 +562,7 @@ export async function listBusinessRecords(
     coverage: {
       status: 'complete',
       completenessBasis: source.completenessBasis,
+      sourceName: snapshot?.datasetName ?? undefined,
       observedAt: snapshot?.snapshot.sourceObservedAt?.toISOString() ?? null,
       importedAt: snapshot?.datasetCreatedAt?.toISOString() ?? snapshot?.snapshot.createdAt.toISOString() ?? '',
     },

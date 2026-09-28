@@ -1,3 +1,5 @@
+import { TARGET_CONFIG_FORM_FIELDS, targetConfigFieldHelp } from '@cairn/shared'
+
 export interface PublishedHelpItem {
   id: string
   title: string
@@ -13,12 +15,12 @@ export interface PublishedHelpItem {
 export const PUBLISHED_HELP_CATALOG: readonly PublishedHelpItem[] = [
   {
     id: 'help:studio-retry',
-    title: 'Studio 步骤重试策略配置',
+    title: 'Studio 步骤重试上限与执行策略',
     category: 'studio',
     tags: ['studio', 'retry', 'step', '重试', '步骤'],
-    keywords: ['重试', 'retry', '最大次数', '间隔', '退避', '重试策略', '步骤重试'],
+    keywords: ['重试', 'retry', '重试上限', 'retryLimit', '步骤超时', '执行与容错策略', '步骤重试'],
     content:
-      '在场景工作室（Studio）中，每个确定性步骤均可配置重试策略。支持最大重试次数（maxAttempts）、初始退避延迟与最大退避延迟。遇到瞬态异常时，运行时将根据策略自动重试当前 Attempt；当重试成功后，后续步骤继续执行，证据轴中会完整保留重试过程中的所有 Attempt 记录。',
+      '在「场景」打开场景工作区，选中要调整的步骤，在右侧步骤检查器展开「执行与容错策略」，填写「重试上限（0~10 次）」；0 表示不自动重试。必要时可填「步骤超时（毫秒）」，然后保存草稿。当前步骤配置字段是 policy.retryLimit 与 policy.timeoutMs；界面没有 maxAttempts、初始退避延迟或最大退避延迟输入项。ai_action 不允许自动重试；业务断言失败、取消及不符合错误类别或副作用安全条件的失败也不会因为设了上限就自动重试。发生重试时，每次 Attempt 保留在运行证据中。',
     requiredPermissions: ['ai:assist'],
     pageRoute: '/scenarios',
     anchor: 'step-retry',
@@ -28,7 +30,7 @@ export const PUBLISHED_HELP_CATALOG: readonly PublishedHelpItem[] = [
     title: 'Studio 场景步骤编排与类型',
     category: 'studio',
     tags: ['studio', 'steps', 'orchestration', '场景', '步骤'],
-    keywords: ['步骤', '编排', '导航', '点击', '输入', '断言', '提取', '步骤类型'],
+    keywords: ['步骤', '编排', '导航', '点击', '输入', '断言', '提取', '步骤类型', '草稿', '保存', '试跑'],
     content:
       '识途场景由有序的步骤列表组成。确定性步骤包括页面导航（navigate）、元素点击（click）、表单填充（fill）、内容提取（extract）与业务断言（assert）。每个步骤通过统一 Execution Context 传递输出供后续步骤引用。草稿未保存时仅在画布生效，保存后方可作为发布版本或试跑输入。',
     requiredPermissions: ['ai:assist'],
@@ -42,7 +44,7 @@ export const PUBLISHED_HELP_CATALOG: readonly PublishedHelpItem[] = [
     tags: ['run', 'review', 'status', '运行', '状态', '证据'],
     keywords: ['运行', '执行状态', '业务结果', '证据状态', '三轴', '复盘', 'runStatus'],
     content:
-      '每个 Run 拥有相互解耦的三轴状态表达：执行生命周期（PENDING / RUNNING / COMPLETED / FAILED）、业务结果判定（SUCCESS / FAILED / UNCERTAIN）以及证据完整性（COMPLETE / INCOMPLETE / ABSENT）。只有在必要证据齐全时才判定为完整交付，排查问题时可通过时序轴与 Attempt 证据直接溯源。',
+      '每个 Run 分别记录执行状态（如 QUEUED、RUNNING、SUCCEEDED、FAILED、NEEDS_REVIEW）、业务结果（PASS、WARN、FAIL、UNKNOWN、NOT_EVALUATED）和证据状态（PENDING、COMPLETE、INCOMPLETE）。执行成功不等于业务检查通过；证据不完整也不能宣称已核实全部结果。排查时可从运行详情查看步骤、Attempt 和证据记录。',
     requiredPermissions: ['ai:assist', 'run:read'],
     pageRoute: '/runs',
     anchor: 'run-lifecycle',
@@ -54,7 +56,7 @@ export const PUBLISHED_HELP_CATALOG: readonly PublishedHelpItem[] = [
     tags: ['run', 'diagnose', 'failure', '失败', '诊断', '报错'],
     keywords: ['失败', '报错', '卡住', '超时', '异常', '定位', '诊断'],
     content:
-      '运行失败时，平台记录首个失败步骤及其关联的 Attempt 错误详情、错误类型、现场截图与控制台日志。助手可结合执行上下文与证据链路自动诊断根因（如元素定位失效、网络响应超时、会话失效或认证过期），并给出重试或修复建议。重试成功的步骤不会冲刷历史失败 Attempt。',
+      '运行失败时，平台记录失败步骤及关联 Attempt 的错误信息；现场截图与日志若采集成功，可在运行证据中核对。助手当前核对已授权的结构化状态、可展示错误信息和证据元数据，不直接读取截图图像或完整日志内容。错误码说明已记录的失败表现；当前不会仅凭模型推测更深层根因。助手会给出失败步骤的证据核查入口，也不会把有副作用的步骤直接建议重跑。重试成功不会冲刷历史失败 Attempt。',
     requiredPermissions: ['ai:assist', 'run:read'],
     pageRoute: '/runs',
     anchor: 'run-diagnose',
@@ -119,7 +121,21 @@ export const PUBLISHED_HELP_CATALOG: readonly PublishedHelpItem[] = [
     pageRoute: '/platform-config',
     anchor: 'platform-overview',
   },
+  ...TARGET_CONFIG_FORM_FIELDS.map((field) => ({
+    id: `help:target-config-${field.id}`,
+    title: `目标系统配置：${field.label}`,
+    category: 'target' as const,
+    tags: ['目标系统', '配置', field.label],
+    keywords: [field.label, ...field.aliases],
+    content: `${field.label}：${targetConfigFieldHelp(field.id)}${field.requiredOnCreate ? ' 创建时必填。' : ' 创建时选填。'}`,
+    requiredPermissions: ['ai:assist', 'target:read'],
+    pageRoute: '/targets',
+  })),
 ]
+
+export function effectiveHelpCatalog(): readonly PublishedHelpItem[] {
+  return PUBLISHED_HELP_CATALOG
+}
 
 export interface HelpSnippetResult {
   id: string
@@ -137,6 +153,7 @@ export function retrieveHelpSnippets(
     topK?: number
     maxChars?: number
     permissions?: string[]
+    catalog?: readonly PublishedHelpItem[]
   },
 ): HelpSnippetResult[] {
   const topK = options?.topK ?? 3
@@ -152,7 +169,7 @@ export function retrieveHelpSnippets(
 
   const candidates: HelpSnippetResult[] = []
 
-  for (const item of PUBLISHED_HELP_CATALOG) {
+  for (const item of options?.catalog ?? PUBLISHED_HELP_CATALOG) {
     // 权限检查
     if (userPermissions && item.requiredPermissions.length > 0) {
       const hasPerm = item.requiredPermissions.every((p) => userPermissions.has(p))
@@ -170,6 +187,8 @@ export function retrieveHelpSnippets(
       const kwLower = kw.toLowerCase()
       if (queryNormalized.includes(kwLower)) {
         score += 5
+        // A concrete form-field phrase should outrank broad target help such as "登录".
+        if (item.id.startsWith('help:target-config-') && kw.length >= 4) score += 20
       }
     }
     for (const tag of item.tags) {

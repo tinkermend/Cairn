@@ -1,25 +1,28 @@
 import {
   type AssistantDiagnosis,
+  type AssistantFact,
   type AssistantNextAction,
   citationKey,
   hasAllPermissions,
+  readScreenshotPayload,
+  SCREENSHOT_ROLE_LABELS,
   quoteStepFocusId,
   quoteTargetSystemId,
   quotedStepIdOnRun,
 } from '@cairn/shared'
 import { DomainError } from '@cairn/db'
 import type { AssistantCapabilityHandlerContext } from '../registry'
-import { assembleDiagnoseContext, validateGrounding } from '../context-assembler'
-import { generateDiagnosisHypotheses } from '../model-session'
+import { assembleDiagnoseContext, hasSpecificDiagnosisFailureEvidence } from '../context-assembler'
 import { requireVisibleTarget } from './common'
 
 export async function handleRunDiagnose(
   ctx: AssistantCapabilityHandlerContext,
 ): Promise<AssistantDiagnosis> {
-  const { actor, slots, body, session, db, targets, signal, onProgress } = ctx
+  const { actor, slots, body, db, targets, onProgress } = ctx
   await onProgress?.('loading_facts', '正在检索运行事实与证据轴...')
 
   let runId = String(slots.runId ?? body.pageContext?.runId ?? '')
+  let recentFailureWindow: { from: string; to: string } | null = null
   if (!runId && (slots.findRecentFailed || /最近失败|最近一次失败/.test(body.question))) {
     const { listRuns } = await import('@cairn/db')
     const observedAt = new Date()
@@ -41,6 +44,7 @@ export async function handleRunDiagnose(
     const failedRun = runsList.items[0]
     if (failedRun) {
       runId = failedRun.id
+      recentFailureWindow = { from: sevenDaysAgo, to: observedAt.toISOString() }
     } else {
       return {
         kind: 'diagnosis',
@@ -108,8 +112,60 @@ export async function handleRunDiagnose(
     quote,
   }, actor.id)
 
+  // The actor-scoped Run observation exposes ExecutionError.safeMessage to the
+  // console. Use only that display-safe field; never project error.cause,
+  // attempt output, or page content into assistant facts.
+  const failureMessageByFactId = new Map<string, string>()
+  for (const step of observation.run.stepRuns) {
+    const error = step.attempts.at(-1)?.error
+    if (error?.safeMessage) {
+      const displayMessage = error.safeMessage.replace(/\s+/g, ' ').trim()
+      if (displayMessage && displayMessage !== error.code) {
+        failureMessageByFactId.set(`step-${step.id}-error`, displayMessage)
+      }
+    }
+  }
+  const facts: AssistantFact[] = pack.facts.map((fact) => {
+    const displayMessage = failureMessageByFactId.get(fact.id)
+    if (displayMessage) {
+      const prefix = `${fact.text} 说明：`
+      return { ...fact, text: prefix + displayMessage.slice(0, Math.max(0, 1024 - prefix.length)) }
+    }
+    if (fact.id === 'status' && observation.run.status === 'NEEDS_REVIEW') {
+      return { ...fact, text: `${fact.text} 需先人工核查实际页面结果；未知副作用不能直接重跑。` }
+    }
+    return fact
+  })
+
   const nextActions: AssistantNextAction[] = [...pack.nextActions]
-  if (hasAllPermissions(actor.permissions, ['target:read'])) {
+  const firstFailedStep = observation.run.stepRuns.find((step) =>
+    step.status === 'FAILED' || Boolean(step.attempts.at(-1)?.error))
+  if (firstFailedStep) {
+    const evidenceAction = nextActions.find((item) => item.kind === 'run.evidence')
+    if (evidenceAction) {
+      evidenceAction.label = observation.run.status === 'NEEDS_REVIEW'
+        ? `核查「${firstFailedStep.name.slice(0, 18)}」操作后的实际状态`
+        : `先核对「${firstFailedStep.name.slice(0, 20)}」失败现场证据`
+      evidenceAction.href = `/runs/${observation.run.id}?stepRunId=${encodeURIComponent(firstFailedStep.id)}`
+    }
+  }
+  if (observation.run.status === 'NEEDS_REVIEW') {
+    const reviewAction = nextActions.find((item) => item.kind === 'run.review') ?? {
+      kind: 'run.review' as const,
+      label: '先人工核查运行结果',
+      href: `/runs/${observation.run.id}`,
+      citations: [citationKey('run', observation.run.id)],
+    }
+    const index = nextActions.findIndex((item) => item.kind === 'run.review')
+    if (index >= 0) nextActions.splice(index, 1)
+    nextActions.unshift(reviewAction)
+  }
+  const accountEvidence = observation.run.status === 'WAITING_FOR_AUTH' ||
+    observation.run.placement?.state === 'session_not_ready' ||
+    observation.run.placement?.state === 'session_lost' ||
+    observation.run.stepRuns.some((step) => step.attempts.some((attempt) =>
+      /^(?:AUTH_|RUN_ACCOUNT_|SESSION_)/.test(attempt.error?.code ?? '')))
+  if (accountEvidence && hasAllPermissions(actor.permissions, ['target:read'])) {
     nextActions.push({
       kind: 'target.accounts',
       label: '查看目标账号',
@@ -127,29 +183,75 @@ export async function handleRunDiagnose(
   }
 
   const missingInformation = [...pack.missingInformation]
-  let hypotheses: AssistantDiagnosis['hypotheses'] = []
-
-  if (session) {
-    await onProgress?.('generating', '大模型正在分析根因假设...')
-    const generated = await generateDiagnosisHypotheses(
-      session,
-      body.question,
-      pack.text,
-      pack.citations,
-      signal,
-    )
-
-    await onProgress?.('validating', '正在验证假设事实引用与可信度...')
-    const { valid, invalid } = validateGrounding(generated.hypotheses, pack.citations)
-    hypotheses = valid
-
-    if (generated.error) {
-      missingInformation.push('模型未能提出经引用校验的可能原因')
-    } else if (hypotheses.length === 0 && invalid.length > 0) {
-      missingInformation.push('模型生成的根因假设未通过事实引用校验')
-    } else if (hypotheses.length === 0) {
-      missingInformation.push('模型没有给出可引用的可能原因')
-    }
+  const recordedScreenshot = observation.evidence.items.some((item) =>
+    item.type === 'screenshot' && item.status === 'available')
+  // The capture pipeline records a conservative quality signal without
+  // sending image pixels to the assistant. Surface only a flagged signal from
+  // an authorized evidence item; never treat it as a visual root cause.
+  const flaggedScreenshot = observation.evidence.items
+    .filter((item) => item.type === 'screenshot' && item.status === 'available')
+    .map((item) => ({ item, payload: readScreenshotPayload(item.payload) }))
+    .filter((entry) => entry.payload?.diagnosis === 'suspected_blank' || entry.payload?.diagnosis === 'still_loading')
+    .sort((left, right) => {
+      const failedAttemptId = firstFailedStep?.attempts.at(-1)?.id
+      const rank = (entry: typeof left) =>
+        (entry.item.attemptId === failedAttemptId ? 4 : 0) +
+        (entry.payload?.role === 'on_error' ? 2 : 0) +
+        (entry.payload?.diagnosis === 'suspected_blank' ? 1 : 0)
+      return rank(right) - rank(left)
+    })[0]
+  if (flaggedScreenshot && facts.length < 24) {
+    const signalText = flaggedScreenshot.payload?.diagnosis === 'suspected_blank'
+      ? '采集端自动检查标记这张截图“疑似空白”'
+      : '采集端自动检查标记这张截图“疑似仍在加载”'
+    const screenshotStep = observation.run.stepRuns.find((step) => step.id === flaggedScreenshot.item.stepRunId)
+    const captureLabel = flaggedScreenshot.payload
+      ? `${SCREENSHOT_ROLE_LABELS[flaggedScreenshot.payload.role]}截图（${flaggedScreenshot.payload.capturedAt}）`
+      : '截图'
+    facts.push({
+      id: `screenshot-${flaggedScreenshot.item.id}`,
+      text: `${screenshotStep ? `步骤「${screenshotStep.name.slice(0, 48)}」的` : ''}${captureLabel}：${signalText}；这只是采集时的质量信号，不能据此确认页面位置或失败根因。`,
+      citations: [citationKey('evidence', flaggedScreenshot.item.id)],
+    })
+  }
+  const asksForImageContents = /截图|图像|画面/.test(body.question) &&
+    /页面|停在|显示|看到|是什么|哪里/.test(body.question)
+  if (recordedScreenshot) {
+    const limitation = observation.run.status === 'SUCCEEDED'
+      ? observation.run.outcomeStatus === 'FAIL'
+        ? '运行中有已记录的截图，但本次分析没有读取图像内容；不能据此确认截图页面状态或业务检查差异。请在运行证据中人工核对。'
+        : '运行中有已记录的截图，但本次分析没有读取图像内容；不能描述截图里的具体页面状态。'
+      : '运行中有已记录的截图，但本次分析没有读取图像内容；无法确认具体页面内容、所在位置或失败根因。请在运行证据中人工核对。'
+    missingInformation.push(limitation)
+  } else if (asksForImageContents) {
+    missingInformation.push('本次运行没有可供分析的截图证据；无法判断页面当时停在哪里。')
+  }
+  const unverifiedBusinessFailure = observation.run.status === 'SUCCEEDED' &&
+    observation.run.outcomeStatus === 'FAIL'
+  const recordedErrors = observation.run.stepRuns.flatMap((step) =>
+    step.attempts.map((attempt) => attempt.error).filter((error) => error !== null))
+  const genericExecutorFailure = observation.run.status === 'FAILED' && recordedErrors.length > 0 &&
+    recordedErrors.every((error) => error.code === 'EXECUTOR_ERROR' &&
+      (!error.safeMessage || error.safeMessage.trim() === '执行器执行失败'))
+  const ambiguousLocatorFailure = observation.run.status === 'FAILED' && recordedErrors.length > 0 &&
+    recordedErrors.every((error) => error.code === 'AI_NOT_FOUND' &&
+      /定位不唯一或目标被遮挡/.test(error.safeMessage ?? ''))
+  if (unverifiedBusinessFailure) {
+    missingInformation.push('已确认执行完成但业务检查失败；当前回答没有可核对的期望值与实际值，不能确定具体差异。请在运行详情核对该业务检查与现场证据。')
+  }
+  if (genericExecutorFailure) {
+    missingInformation.push('当前只记录到通用执行器错误，无法确定是浏览器、网络、脚本还是页面导致；请先核对失败步骤的运行证据与错误详情。')
+  }
+  if (ambiguousLocatorFailure) {
+    missingInformation.push('错误说明只表明目标定位不唯一或可能被遮挡，不能确认是哪一种，也不能断定元素不存在；请核对失败步骤的截图与定位信息。')
+  }
+  if (hasSpecificDiagnosisFailureEvidence(observation.run)) {
+    missingInformation.push('已记录的错误码与安全说明可解释失败表现；更深层的原因没有独立证据，不能直接断定。请核对失败步骤的现场证据。')
+  }
+  if (observation.run.status === 'FAILED' && (!firstFailedStep || recordedErrors.length === 0)) {
+    missingInformation.push('运行标记为失败，但没有可定位的失败步骤和具体错误记录；不能推断根因。请先核对运行详情与证据轴。')
+  } else if (observation.run.status !== 'FAILED' && /(?:为什么失败|失败原因|根因|出错)/.test(body.question)) {
+    missingInformation.push(`本次运行当前状态为 ${observation.run.status}，没有已确认的执行失败根因；请先核对执行状态与业务结果。`)
   }
 
   return {
@@ -157,8 +259,14 @@ export async function handleRunDiagnose(
     observedAt: new Date().toISOString(),
     eventSeq: observation.eventSeq,
     focus: pack.focus,
-    facts: pack.facts,
-    hypotheses,
+    facts: recentFailureWindow
+      ? [{
+          id: 'fact-recent-failed-window',
+          text: `在 ${recentFailureWindow.from} 至 ${recentFailureWindow.to} 的当前可见业务运行中，至少找到 1 条状态为 FAILED 的记录；以下诊断的是最近一条。`,
+          citations: [citationKey('run', runId)],
+        }, ...facts].slice(0, 24)
+      : facts,
+    hypotheses: [],
     missingInformation,
     missingReasons: pack.missingReasons,
     nextActions,

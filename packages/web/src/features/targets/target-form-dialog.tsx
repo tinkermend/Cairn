@@ -1,15 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   createTargetBodySchema,
+  validateTargetFormProposalChange,
   type TargetDto,
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { canCreateTargetWithCredential } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { createTarget, updateTarget } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,6 +36,7 @@ import {
   loginFieldsFromForm,
   loginLeaveTimeoutFromForm,
   selectorsFromForm,
+  targetEditFormSchema,
   targetFormSchema,
   valuesFromTarget,
   type TargetFormValues,
@@ -95,9 +99,76 @@ function TargetFormFields({
   }
 
   const form = useForm<TargetFormValues>({
-    resolver: zodResolver(targetFormSchema),
+    resolver: zodResolver(isEdit ? targetEditFormSchema : targetFormSchema),
     defaultValues: current ? valuesFromTarget(current) : EMPTY_TARGET_FORM_VALUES,
   })
+
+  useAssistantContextBinding(
+    user?.permissions.includes('ai:assist')
+      ? {
+          page: 'target',
+          targetId: current?.id,
+          summaryText: isEdit
+            ? `正在编辑目标系统：${current?.name}`
+            : '正在新建目标系统',
+          statusLabel: isEdit ? '编辑目标' : '新建目标',
+          statusTone: 'info',
+          activeForm: {
+            formId: 'target-config',
+            mode: isEdit ? 'edit' : 'create',
+            targetId: current?.id,
+          },
+          chips: [
+            {
+              label: '超时配置说明',
+              question: '目标系统配置里的登录页停留超时是选填吗？不填会怎样？',
+            },
+            {
+              label: '整理预算说明',
+              question: '目标系统的登录后整理预算有什么作用？',
+            },
+            {
+              label: '认证方式说明',
+              question: '目标系统的认证方式可选值有哪些？',
+            },
+          ],
+        }
+      : null,
+  )
+
+  useEffect(() => {
+    if (!user?.permissions.includes('target:write')) return
+    const register = useAssistantStore.getState().registerAdoptHandler
+    register(async (proposal) => {
+      if (proposal.kind !== 'target_form') {
+        return { ok: false, reason: '仅支持采纳目标系统配置建议' }
+      }
+      if (isEdit && proposal.mode === 'create') {
+        return { ok: false, reason: '当前为编辑模式，无法采纳新建建议' }
+      }
+      if (!isEdit && proposal.mode === 'edit') {
+        return { ok: false, reason: '当前为新建模式，无法采纳编辑建议' }
+      }
+      for (const change of proposal.changes) {
+        const issue = validateTargetFormProposalChange(change, isEdit ? 'edit' : 'create')
+        if (issue) {
+          return { ok: false, reason: issue }
+        }
+      }
+      for (const change of proposal.changes) {
+        form.setValue(change.fieldId as any, change.value, {
+          shouldDirty: true,
+          shouldValidate: true,
+        })
+      }
+      toast.success(`已应用 ${proposal.changes.length} 项配置到表单，请核对后保存`)
+      return { ok: true, digest: `已应用 ${proposal.changes.length} 项配置` }
+    })
+
+    return () => {
+      useAssistantStore.getState().registerAdoptHandler(null)
+    }
+  }, [isEdit, form, user?.permissions])
 
   const onSubmit = async (values: TargetFormValues) => {
     setSaving(true)

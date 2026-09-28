@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
-import { REPORT_LIMITS, reportDocumentSchema, type JsonValue, type ReportConfig, type ReportMaterialDto } from '@cairn/shared'
+import { REPORT_LIMITS, reportDocumentSchema, SCREENSHOT_DIAGNOSIS_LABELS, type JsonValue, type ReportConfig, type ReportMaterialDto } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { atomic, locked, schemaFor } from '../native.js'
 import { newId } from '../id.js'
@@ -24,7 +24,11 @@ export function reportScreenshotRefs(source: Record<string, JsonValue>): Evidenc
     const isFinding = findingEvidenceIds.has(String(evidence.evidenceId))
     const anomalous = isFinding || (!!step && (['FAILED', 'NEEDS_REVIEW', 'CANCELLED'].includes(String(step.status)) || ['FAIL', 'WARN', 'UNKNOWN'].includes(String(step.outcomeStatus)) || array(step.attempts).some((attempt) => !!attempt.error)))
     const diagnosis = typeof evidence.diagnosis === 'string' ? evidence.diagnosis : undefined
-    const caption = `${String(source.scenarioName ?? '场景')} · ${String(step?.name ?? '运行截图')}${diagnosis === 'suspected_blank' ? ' · 截图疑似空白' : ''}`
+    const diagnosisNote =
+      diagnosis === 'suspected_blank' || diagnosis === 'still_loading'
+        ? ` · ${SCREENSHOT_DIAGNOSIS_LABELS[diagnosis]}`
+        : ''
+    const caption = `${String(source.scenarioName ?? '场景')} · ${String(step?.name ?? '运行截图')}${diagnosisNote}`
     return { evidenceId: String(evidence.evidenceId), runId: String(source.runId), status: String(evidence.status), digest: typeof evidence.digest === 'string' ? evidence.digest : null,
       caption, anomalous, attemptId: evidence.attemptId ? String(evidence.attemptId) : undefined, role: typeof evidence.role === 'string' ? evidence.role : undefined, seq: typeof evidence.seq === 'number' ? evidence.seq : 0, diagnosis }
   }))
@@ -43,7 +47,7 @@ function preferSameRoleShots(items: EvidenceRef[]): EvidenceRef[] {
   }
   const picked = [...groups.values()].map((group) =>
     [...group].sort((left, right) => {
-      const blank = (item: EvidenceRef) => (item.diagnosis === 'suspected_blank' ? 1 : 0)
+      const blank = (item: EvidenceRef) => (item.diagnosis === 'suspected_blank' || item.diagnosis === 'still_loading' ? 1 : 0)
       return blank(left) - blank(right) || (right.seq ?? 0) - (left.seq ?? 0)
     })[0]!,
   )

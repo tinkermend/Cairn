@@ -33,7 +33,9 @@ import { type LiveHandle, type SessionManagerContext } from './session-live.js'
 import {
   diagnoseScreenshot,
   isOmittableInitialBlank,
+  pageLooksLoading,
   waitForVisibleContent,
+  waitWhileLoading,
 } from './screenshot-quality.js'
 
 const RETAKE_BUDGET_MS = 2_000
@@ -257,10 +259,24 @@ export async function runManagedPage<T>(this: SessionManagerContext,
         }
       }
       let screenshotDiagnosis = screenshotBytes ? await diagnoseScreenshot(current, screenshotBytes) : undefined
-      if (canRetake && screenshotBytes && screenshotDiagnosis === 'suspected_blank' && !signal?.aborted) {
+      // 疑似空白必补拍；不是空白但仍能看到整页级加载遮罩/动画时，同样值得再等一次——
+      // 不改判定语义（extraShot 仍记真实诊断，不冒充 suspected_blank），只是把「导航后
+      // 内容还没画完」的补拍窗口从纯色空白扩大到「有壳无实质内容」的加载态。
+      const stillLoading =
+        canRetake && screenshotBytes && screenshotDiagnosis !== 'suspected_blank' && !signal?.aborted
+          ? await pageLooksLoading(current)
+          : false
+      if (canRetake && screenshotBytes && (screenshotDiagnosis === 'suspected_blank' || stillLoading) && !signal?.aborted) {
         const firstBytes = screenshotBytes
         const firstAt = screenshotCapturedAt ?? new Date().toISOString()
-        await waitForVisibleContent(current, RETAKE_BUDGET_MS, signal)
+        const firstDiagnosis = screenshotDiagnosis
+        // 疑似空白：等到「有可见内容」；加载遮罩触发的补拍：等到「遮罩/动画消失」——
+        // 壳层文字从一开始就在，用前者的等待条件会立刻判满足，根本等不到遮罩后的内容。
+        if (stillLoading && firstDiagnosis !== 'suspected_blank') {
+          await waitWhileLoading(current, RETAKE_BUDGET_MS, signal)
+        } else {
+          await waitForVisibleContent(current, RETAKE_BUDGET_MS, signal)
+        }
         if (!signal?.aborted) {
           const retake = await screenshotPage(current, shotOpts).catch(() => undefined)
           if (retake) {
@@ -270,12 +286,23 @@ export async function runManagedPage<T>(this: SessionManagerContext,
               capturedAt: firstAt,
               pageRef,
               seq: 0,
-              diagnosis: 'suspected_blank',
+              diagnosis: firstDiagnosis,
             })
             screenshotBytes = retake
             screenshotCapturedAt = new Date().toISOString()
             screenshotSeq = 1
             screenshotDiagnosis = await diagnoseScreenshot(current, retake)
+            // 补拍是被加载遮罩触发的，且预算耗尽后遮罩仍在：如实标「疑似仍在加载」，
+            // 不能让它跟一张正常渲染完的图长得一样、却把用户蒙在鼓里。
+            if (
+              stillLoading &&
+              firstDiagnosis !== 'suspected_blank' &&
+              screenshotDiagnosis === 'not_flagged' &&
+              !signal?.aborted &&
+              (await pageLooksLoading(current))
+            ) {
+              screenshotDiagnosis = 'still_loading'
+            }
           }
         }
       }

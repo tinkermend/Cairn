@@ -42,6 +42,9 @@ vi.mock('@cairn/db', async (importOriginal) => {
     summarizeQueues: vi.fn(),
     summarizeAnomalies: vi.fn(),
     summarizeAi: vi.fn(),
+    summarizeAiModels: vi.fn(),
+    summarizeSla: vi.fn(),
+    summarizeTargetSla: vi.fn(),
     listMonitorProfiles: vi.fn(),
     listMonitorAlerts: vi.fn(),
     listMonitorAlertRules: vi.fn(),
@@ -66,6 +69,9 @@ const {
   summarizeQueues,
   summarizeAnomalies,
   summarizeAi,
+  summarizeAiModels,
+  summarizeSla,
+  summarizeTargetSla,
   listMonitorProfiles,
   listMonitorAlerts,
   listMonitorAlertRules,
@@ -241,6 +247,40 @@ function mockHappyPath() {
     lastErrorAt: null,
     lastErrorClass: null,
   })
+  vi.mocked(summarizeSla).mockResolvedValue({
+    windowHours: 24,
+    totalRuns: 10,
+    succeededRuns: 9,
+    failedRuns: 1,
+    successRate: 90,
+    p95DurationMs: 1200,
+    throughputRpm: 0.01,
+  })
+  vi.mocked(summarizeTargetSla).mockResolvedValue([
+    {
+      targetId: 't-1',
+      targetName: '财务系统',
+      totalRuns: 10,
+      successRate: 90,
+      failedRuns: 1,
+      p95DurationMs: 1200,
+      activeAccounts: 2,
+      totalAccounts: 2,
+      captchaIntercepts: 0,
+    },
+  ])
+  vi.mocked(summarizeAiModels).mockResolvedValue([
+    {
+      model: 'gpt-4o',
+      totalCalls: 100,
+      failedCalls: 2,
+      errorRate: 2,
+      p95DurationMs: 3500,
+      inputTokensPerMin: 120,
+      outputTokensPerMin: 40,
+      rateLimitHits: 0,
+    },
+  ])
   vi.mocked(listApiInstanceCard).mockResolvedValue({
     ready: unknownMetric('not_collected'),
     lost: unknownMetric('not_collected'),
@@ -688,6 +728,23 @@ describe('Monitoring HTTP', () => {
     load.mockRestore()
     await svc.overview()
     expect(summarizeFleet).toHaveBeenCalledTimes(2)
+    await app.close()
+  })
+
+  it('读取 targets/sla 与 ai/models 成功', async () => {
+    const app = await buildApp({ actor: account(['monitor:read']) })
+    mockHappyPath()
+
+    const slaRes = await request(app.getHttpServer()).get('/monitoring/targets/sla').expect(200)
+    expect(slaRes.body.items).toHaveLength(1)
+    expect(slaRes.body.items[0].targetName).toBe('财务系统')
+    expect(slaRes.body.items[0].successRate).toBe(90)
+
+    const aiRes = await request(app.getHttpServer()).get('/monitoring/ai/models').expect(200)
+    expect(aiRes.body.items).toHaveLength(1)
+    expect(aiRes.body.items[0].model).toBe('gpt-4o')
+    expect(aiRes.body.items[0].p95DurationMs).toBe(3500)
+
     await app.close()
   })
 })

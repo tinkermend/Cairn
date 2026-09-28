@@ -4,7 +4,7 @@ import { sha256Hex } from './internal-auth.js'
 import { hasPermission, nextCursorSchema, type PermissionCode } from './rbac.js'
 import { assertExpectSchema } from './browser-command.js'
 import { outputFieldNameSchema } from './output-schema.js'
-import { stepRunFor, stepRunsOf, type RunObservation } from './run-api.js'
+import { stepRunFor, stepRunsOf, type RunObservation, type RunPlacementState } from './run-api.js'
 import { scenarioDocumentSchema, type CompileDiagnostic, type ScenarioDocument } from './scenario.js'
 import {
   contextKeySchema,
@@ -22,6 +22,10 @@ import {
   authoringDocumentDigest,
   type ScenarioAuthoringDocumentV2,
 } from './authoring-document.js'
+import {
+  targetFormProposalSchema,
+  type TargetFormProposal,
+} from './assistant-form.js'
 
 export const ASSISTANT_HISTORICAL_CAPABILITY_IDS = [
   'run.diagnose',
@@ -84,6 +88,7 @@ export type AssistantStage = (typeof ASSISTANT_STAGES)[number]
 export const assistantStageSchema = z.enum(ASSISTANT_STAGES)
 
 export const ASSISTANT_CITATION_KINDS = [
+  'target',
   'run',
   'stepRun',
   'attempt',
@@ -100,7 +105,7 @@ export type AssistantCitationKind = (typeof ASSISTANT_CITATION_KINDS)[number]
 export const assistantCitationKeySchema = z
   .string()
   .regex(
-    /^(run|stepRun|attempt|evidence|step|occurrence|schedule|dataset|session|incident):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    /^(target|run|stepRun|attempt|evidence|step|occurrence|schedule|dataset|session|incident):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     '引用键须为 kind:uuid',
   )
 export type AssistantCitationKey = z.infer<typeof assistantCitationKeySchema>
@@ -380,7 +385,7 @@ export const ASSISTANT_CAPABILITIES: readonly AssistantCapabilityDef[] = [
     id: 'scenario.compose_with_knowledge',
     label: '知识辅助编写',
     requiredPermissions: ['ai:assist', 'workflow:read', 'workflow:write', 'target:read', 'map:read'],
-    description: '基于已授权术语、地图与已发布做法生成可编辑草稿建议',
+    description: '为仅含独立步骤、且必需输入齐全的已保存草稿，基于已授权知识生成可编辑建议',
   },
   {
     id: 'platform.guide',
@@ -426,6 +431,17 @@ export const ASSISTANT_WAITING_PLACEMENTS = [
   'owner_required',
   'session_lost',
 ] as const
+
+/** Only surface actionable scheduler waits in user-facing run diagnoses. */
+export function assistantWaitingPlacementDescription(state: RunPlacementState): string | null {
+  switch (state) {
+    case 'owner_required': return '正在等待持有该账号会话的执行节点领取运行。'
+    case 'owner_at_capacity': return '账号会话所在执行节点的执行槽已满，运行正在排队。'
+    case 'session_not_ready': return '账号会话尚未就绪，运行正在等待。'
+    case 'session_lost': return '账号会话已失联，需先核查会话状态再继续。'
+    default: return null
+  }
+}
 
 export const SENSITIVE_FILL_HINT = /password|passwd|secret|token|otp|\bpin\b|密码|口令|验证码/i
 
@@ -697,11 +713,19 @@ export const ASSISTANT_GUIDE_CATALOG: readonly AssistantGuideEntry[] = [
   },
   {
     topic: 'scenarios',
+    capabilityId: 'menu.recordings',
+    title: '录制草稿',
+    href: '/recordings',
+    requiredPermissions: ['target:read', 'workflow:write'],
+    steps: '1. 先确认目标系统及可用账号；在「录制草稿」通过识途录制器采集操作并上传，或导入录制文件。2. 打开草稿检查步骤、敏感字段和未解析项，再点击「回填到场景」，选择「以草稿新建场景」并填写名称。',
+  },
+  {
+    topic: 'scenarios',
     capabilityId: 'menu.scenarios',
     title: '场景编排',
     href: '/scenarios',
     requiredPermissions: ['workflow:read'],
-    steps: '打开「编写」分组下的「场景编排」，选择已绑定目标的场景。',
+    steps: '3. 在新场景工作区审查回填结果，补齐输入、定位方式和业务成功条件，保存草稿。4. 点击「试跑当前草稿」，按需选择目标账号，查看运行步骤、业务结果与证据；确认通过后再发布。创建、回填和保存需要场景写权限；只读账号可查看场景。',
   },
   {
     topic: 'studio',
@@ -756,7 +780,9 @@ export type AssistantGuideItem = z.infer<typeof assistantGuideItemSchema>
 
 export const assistantGuideSchema = z.strictObject({
   kind: z.literal('guide'),
-  items: z.array(assistantGuideItemSchema).max(8),
+  // A topic can have multiple destinations (recording and editing share
+  // "scenarios"), so the full authorized catalog may exceed its topic count.
+  items: z.array(assistantGuideItemSchema).max(ASSISTANT_GUIDE_CATALOG.length),
 })
 export type AssistantGuide = z.infer<typeof assistantGuideSchema>
 
@@ -786,6 +812,7 @@ export type AssistantUnsupported = z.infer<typeof assistantUnsupportedSchema>
 export const assistantInaccessibleSchema = z.strictObject({
   kind: z.literal('inaccessible'),
   message: z.string().min(1).max(256),
+  reasonCode: z.enum(['ACCESS_DENIED', 'UNVERIFIED_HISTORY']).optional(),
 })
 
 export const assistantCompareSchema = z.strictObject({
@@ -946,6 +973,16 @@ export const PAGE_LANDMARK_MANIFESTS: Record<string, PageLandmarkDefinition> = {
     pageTitle: '目标系统详情 (Target)',
     regions: [
       {
+        regionName: '识途助手快捷提问',
+        actions: [
+          {
+            name: '检查账号健康度',
+            trigger: '打开右侧「识途助手」面板，在新对话的「场景推荐」中点击「🔑 检查账号健康度」',
+            description: '在助手模型已启用且拥有目标与会话读取权限时显示；点击后查询当前目标关联账号的认证状态与会话租约',
+          },
+        ],
+      },
+      {
         regionName: '账号与认证凭据',
         actions: [
           {
@@ -1035,7 +1072,10 @@ export const assistantKnowledgeAnswerResultSchema = z.strictObject({
   summary: z.string().min(1),
   claims: z.array(assistantKnowledgeAnswerClaimSchema),
   missing: z.array(assistantKnowledgeAnswerMissingSchema).default([]),
+  // New answers use asOf for the time the answer was assembled. Older stored
+  // results may have used it for a source snapshot, so do not relabel legacy asOf in the UI.
   asOf: z.string(),
+  sourceAsOf: utcInstantSchema.optional(),
   nextActions: z.array(assistantNextActionSchema).optional(),
 })
 export type AssistantKnowledgeAnswerResult = z.infer<typeof assistantKnowledgeAnswerResultSchema>
@@ -1047,6 +1087,7 @@ export const assistantResultSchema = z.discriminatedUnion('kind', [
   assistantProposalSchema,
   assistantKnowledgeProposalSchema,
   assistantAuthoringProposalSchema,
+  targetFormProposalSchema,
   assistantGuideSchema,
   assistantDiscoveryResultSchema,
   assistantClarifySchema,
@@ -1056,6 +1097,7 @@ export const assistantResultSchema = z.discriminatedUnion('kind', [
   assistantKnowledgeAnswerResultSchema,
 ])
 export type AssistantResult = z.infer<typeof assistantResultSchema>
+export type { TargetFormProposal }
 
 export const assistantResultEnvelopeSchema = z.strictObject({
   version: z.union([z.literal(1), z.literal(2)]),
@@ -1216,10 +1258,7 @@ export const assistantRouteDecisionSchema = z.discriminatedUnion('type', [
     type: z.literal('clarify'),
     missingFields: z.array(z.string().min(1).max(64)).max(8),
     question: z.string().min(1).max(512),
-    options: z
-      .array(z.strictObject({ id: z.string().min(1).max(64), label: z.string().min(1).max(128) }))
-      .max(8)
-      .optional(),
+    options: z.array(assistantClarifyOptionSchema).max(8).optional(),
   }),
   z.strictObject({
     type: z.literal('unsupported'),
@@ -1253,7 +1292,7 @@ export function availableAssistantCapabilities(granted: readonly string[]): Assi
             ? ['baseRunId', 'targetRunId']
           : capability.id === 'scenario.compose_with_knowledge'
             ? ['scenarioId', 'draftRevision']
-          : capability.id.startsWith('scenario.')
+          : capability.id === 'scenario.explain' || capability.id === 'scenario.propose-step'
             ? ['scenarioId']
             : [],
     })
@@ -1261,19 +1300,27 @@ export function availableAssistantCapabilities(granted: readonly string[]): Assi
 }
 
 const IN_PAGE_GUIDANCE_QUESTION =
-  /添加步骤|怎么添加|加步骤|在页面哪里|页面上哪里|按钮在哪|怎么保存|保存草稿|快捷键|怎么拖拽|怎么排序|怎么修改参数|页面怎么/
-const GUIDE_QUESTION = /功能入口|怎么看|如何配置|菜单|怎样查看|在哪.*配置|哪里.*配置/
-const DIAGNOSE_QUESTION = /为什么失败|失败原因|一直等|慢在|诊断这次|分析本次|这次运行|最近失败|最近一次失败/
+  /添加步骤|怎么添加|加步骤|在页面哪里|页面上哪里|按钮在哪|怎么保存|保存草稿|快捷键|怎么拖拽|怎么排序|怎么修改参数|页面怎么|(?:这个|该|当前|目标|业务)系统(?:里|内|中)?的?[^。？?]{0,30}(?:页|页面|列表)[^。？?]{0,15}(?:入口|在哪|哪里|路径|怎么进|怎么打开)/
+const GUIDE_QUESTION = /功能入口|怎么看|如何配置|菜单|怎样查看|在哪.*配置|哪里.*配置|(?:如何|怎么).*从零.*(?:录制|场景)|录制.*新场景/
+const RECENT_FAILED_RUN_QUESTION = /最近失败|最近一次失败|(?:最近|近)\s*(?:\d+|[一二三四五六七八九十]+)\s*天[^。？?]*失败/
+const DIAGNOSE_QUESTION = /为什么失败|失败原因|一直等|慢在|诊断这次|分析本次|这次运行|最近失败|最近一次失败|(?:业务检查|业务结果|业务断言)[^。？?]{0,24}(?:没通过|未通过|不通过|失败)|(?:最近|近)\s*(?:\d+|[一二三四五六七八九十]+)\s*天[^。？?]*失败/
 const COMPARE_QUESTION = /对比|比较|差异|两.?次运行|较上一次/
-const DISCOVER_QUESTION = /有哪些场景|查找场景|搜索场景|列出场景|看下场景|所有场景|场景列表|(找|搜索|查找|列出|查看|看下).*(场景|工作流)|找对账/
-const BUSINESS_RECORDS_QUESTION = /有哪些(厂家|制造商|供应商)|查询(厂家|制造商|供应商)|(厂家|制造商|供应商)列表/
+const RUN_ID_IN_QUESTION = /(?<![\da-f])[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}(?![\da-f])/gi
+const DISCOVER_QUESTION = /有哪些.*场景|查找场景|搜索场景|列出场景|看下场景|所有场景|场景列表|(找|搜索|查找|列出|查看|看下).*(场景|工作流)|找对账/
+const BUSINESS_RECORDS_QUESTION = /(?:有哪些|列出|查询|查一下|查下|查找|搜索|检索)[^。？?]{0,30}(?:厂家|制造商|供应商)|(?:厂家|制造商|供应商)[^。？?]{0,20}(?:名单|列表|有哪些)/
 const EXPLAIN_QUESTION = /这个场景|这一步|在做什么|解释步骤|引用不到/
 const PROPOSE_QUESTION =
-  /改成|写清楚|修改建议|改用前一步|把.{1,16}改|编排|修改这步|(在|紧接着).*(后|之后|前|之前)(加|增加|插入|新增).*步|(删掉|删除|去掉).*(步|步骤)|(移动|调换|挪动).*(步|步骤)/
-const KNOWLEDGE_QUESTION = /按知识|根据术语|用做法|根据地图|知识建议|补全场景|按订单号|根据已有知识/
+  /改成|写清楚|修改建议|改用前一步|把.{1,16}改|修改这步|(在|紧接着).*(后|之后|前|之前)(加|增加|插入|新增).*步|(删掉|删除|去掉).*(步|步骤)|(移动|调换|挪动).*(步|步骤)/
+const KNOWLEDGE_QUESTION = /按知识|根据术语|用做法|根据地图|知识建议|补全场景|按订单号|根据已有知识|(?:根据|基于|参考)[^。？?]{0,100}(?:已发布[^。？?]{0,60}做法|地图)/
 
 export function cleanAssistantQuestion(question: string): string {
   return question.replace(/^⚠️[^\n]*\n+/g, '').trim()
+}
+
+/** Resolve a relative comparison only when the visible page binds the current Run. */
+export function isPreviousRunComparisonQuestion(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question)
+  return /上一次|上次|前一次|前一条/.test(cleaned) && /对比|比较|相比|变化|差异|区别/.test(cleaned)
 }
 
 export function extractScenarioSearchKeyword(question: string): string | undefined {
@@ -1312,16 +1359,30 @@ export function inferAssistantFocus(question: string): AssistantFocus | undefine
   return undefined
 }
 
+/** 业务快照的实体类型以用户明确点名的对象为准，不能猜成默认的厂家。 */
+export function inferBusinessRecordEntityType(question: string): 'manufacturer' | 'supplier' | 'ambiguous' | undefined {
+  const cleaned = cleanAssistantQuestion(question)
+  const manufacturer = /厂家|制造商/.test(cleaned)
+  const supplier = /供应商/.test(cleaned)
+  if (manufacturer && supplier) return 'ambiguous'
+  if (manufacturer) return 'manufacturer'
+  if (supplier) return 'supplier'
+  return undefined
+}
+
 export function matchAssistantCapabilities(question: string): AssistantCapabilityId[] {
   const hits: AssistantCapabilityId[] = []
+  const knowledgeComposeRequest = KNOWLEDGE_QUESTION.test(question) && /(?:建议|补全|编写|生成|补充)/.test(question)
   if (IN_PAGE_GUIDANCE_QUESTION.test(question)) hits.push('in-page.guidance')
-  if (COMPARE_QUESTION.test(question)) hits.push('run.compare')
+  if (COMPARE_QUESTION.test(question) || isPreviousRunComparisonQuestion(question)) hits.push('run.compare')
   if (DIAGNOSE_QUESTION.test(question)) hits.push('run.diagnose')
   if (!IN_PAGE_GUIDANCE_QUESTION.test(question) && GUIDE_QUESTION.test(question)) hits.push('platform.guide')
   if (DISCOVER_QUESTION.test(question)) hits.push('scenario.discover')
   if (BUSINESS_RECORDS_QUESTION.test(question)) hits.push('target.business-records.list')
-  if (EXPLAIN_QUESTION.test(question)) hits.push('scenario.explain')
-  if (PROPOSE_QUESTION.test(question)) hits.push('scenario.propose-step')
+  if (EXPLAIN_QUESTION.test(question) && !knowledgeComposeRequest) hits.push('scenario.explain')
+  const hypotheticalDeletion = /(?:删掉|删除|去掉)[^。？?]{0,24}(?:会怎样|会怎么样|会不会|有什么影响|会发生什么)/.test(question)
+  const orderedWaitAndCheck = /(?:等|等待)[^。；!?]{0,100}(?:再|然后|后)[^。；!?]{0,100}(?:确认|检查|断言|校验)/.test(question)
+  if ((PROPOSE_QUESTION.test(question) || orderedWaitAndCheck) && !knowledgeComposeRequest && !hypotheticalDeletion) hits.push('scenario.propose-step')
   if (KNOWLEDGE_QUESTION.test(question)) hits.push('scenario.compose_with_knowledge')
   return hits
 }
@@ -1346,11 +1407,60 @@ export function clarifyAvailableCapabilities(
     type: 'clarify',
     missingFields: ['capabilityId'],
     question: '没有识别出你想做的事，请选择一项继续。',
-    options: available.slice(0, 8).map((id) => ({ id, label: assistantCapability(id).label })),
+    options: available.slice(0, 8).map((id) => ({ id, label: assistantCapability(id).label, kind: 'capability' as const })),
   }
 }
 
 const PAGE_DEICTIC_QUESTION = /这里|这个|这一页|本页|为什么不行|怎么回事|什么问题|咋回事/
+const DETERMINISTIC_STEP_HELP_QUESTION = /(?:确定性步骤|规则步骤)[^。？?]{0,80}(?:可以|能否|是否支持)[^。？?]{0,80}(?:重试|超时)|(?:确定性步骤|规则步骤)[^。？?]{0,80}(?:重试|超时)[^。？?]{0,80}(?:怎么设置|如何配置)/
+const PLATFORM_KNOWLEDGE_AVAILABILITY_QUESTION = /^(?:识途(?:平台)?|平台)(?:里|内|中|上)?(?:有没有|有无|是否有|有|能否查到|能查到)[^。？?]{1,80}(?:数据|资料|知识|信息|记录)(?:吗|呢)?[？?。]?$/
+
+/** A question about what the platform knows must reach fact lookup, even if
+ * the classifier cannot name a more specialized capability. */
+export function isPlatformKnowledgeAvailabilityQuestion(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question)
+  return PLATFORM_KNOWLEDGE_AVAILABILITY_QUESTION.test(cleaned) &&
+    !/(?:删除|删掉|修改|写入|提交|导入|生成|创建)/.test(cleaned) &&
+    !BUSINESS_RECORDS_QUESTION.test(cleaned)
+}
+
+/** First-use recording questions ask for a workflow guide, not a knowledge
+ * summary of how scenario steps are represented internally. */
+export function isRecordingOnboardingGuideQuestion(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question)
+  return /(?:如何|怎么|怎样|在哪里|哪儿)[^。？?]{0,100}(?:录制|创建)[^。？?]{0,60}(?:场景|工作流)/.test(cleaned) &&
+    !/(?:替我|直接帮我|自动)(?:录制|创建)/.test(cleaned)
+}
+
+export function isTargetDeletionGuideQuestion(question: string): boolean {
+  return /(?:删(?:除|掉)?(?:当前|这个|该)?目标|目标(?:系统)?[^。？?]{0,12}删(?:除|掉))/.test(question)
+}
+
+/** Current target account and session state is a fact lookup, even when the
+ * page has an account-health button that tempts the model into page guidance. */
+export function isTargetAccountFactQuestion(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question)
+  return !/(?:在哪|哪里|入口|按钮|菜单|路径|怎么打开|怎么进入|怎么去)/.test(cleaned) &&
+    !/(?:删(?:除|掉)|修改|写入|提交|创建|启用|停用|关闭|释放|回收|接管|重置)/.test(cleaned) &&
+    /(?:(?:账号|账户)[^。？?]{0,60}(?:健康|可用|就绪|认证|会话|租约)|(?:健康|认证|会话|租约)[^。？?]{0,60}(?:账号|账户))/.test(cleaned)
+}
+
+/** A question about an actual run needs Run records, not the saved scenario definition. */
+export function isScenarioRunResultQuestion(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question)
+  return /场景|流程/.test(cleaned) &&
+    /成功|通过|跑过|运行过|试跑过/.test(cleaned) &&
+    /已经|刚才|最近|上次|实际|现在|目前|有没有|是否|了吗|了没|跑过/.test(cleaned) &&
+    !/如何|怎么|怎样|标准|条件|规则|判断/.test(cleaned)
+}
+
+/** A multi-run failure question on a scenario page must stay in that scenario. */
+export function isScenarioFailureDigestQuestion(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question)
+  return /场景|流程/.test(cleaned) && /失败|报错|错误/.test(cleaned) &&
+    /最近|近\s*(?:\d+|[一二三四五六七八九十]+)\s*天|这些|多次|一批|归纳|汇总|聚类|主要/.test(cleaned) &&
+    !/哪个按钮|在哪里|哪里看|怎么打开/.test(cleaned)
+}
 
 function pageRoutingPrior(
   page: AssistantPageContext['page'] | undefined,
@@ -1368,6 +1478,63 @@ export function routeAssistantTurn(input: {
 }): AssistantRouteDecision {
   const cleanQuestion = cleanAssistantQuestion(input.question)
   const matchingHits = matchAssistantCapabilities(cleanQuestion).filter((id) => input.available.includes(id))
+  const context = normalizeAssistantPageContext(input.pageContext)
+  const hasRunContext = Boolean(context?.runId || cleanQuestion.match(RUN_ID_IN_QUESTION)?.length)
+  const hasKnowledge = input.available.includes('knowledge.answer')
+  if (!input.capabilityHint && context?.runId && input.available.includes('run.compare') &&
+      isPreviousRunComparisonQuestion(cleanQuestion)) {
+    return routeAssistantTurn({ ...input, capabilityHint: 'run.compare' })
+  }
+  if (!input.capabilityHint && context?.pageKind === 'target' &&
+      input.available.includes('platform.guide') && isTargetDeletionGuideQuestion(cleanQuestion)) {
+    return {
+      type: 'dispatch', capabilityId: 'platform.guide',
+      slots: { question: input.question, topic: 'targets', ...(context.targetId ? { targetId: context.targetId } : {}) },
+    }
+  }
+  if (hasKnowledge && !input.capabilityHint && context?.pageKind === 'target' &&
+      context.targetId && isTargetAccountFactQuestion(cleanQuestion)) {
+    return { type: 'dispatch', capabilityId: 'knowledge.answer', slots: { targetId: context.targetId } }
+  }
+  if (hasKnowledge && !input.capabilityHint && context?.scenarioId && !context.runId &&
+      isScenarioRunResultQuestion(cleanQuestion)) {
+    return { type: 'dispatch', capabilityId: 'knowledge.answer', slots: { scenarioId: context.scenarioId } }
+  }
+  if (hasKnowledge && !input.capabilityHint && context?.scenarioId && !context.runId &&
+      isScenarioFailureDigestQuestion(cleanQuestion)) {
+    return { type: 'dispatch', capabilityId: 'knowledge.answer', slots: { scenarioId: context.scenarioId } }
+  }
+  if (hasKnowledge && !input.capabilityHint && DETERMINISTIC_STEP_HELP_QUESTION.test(cleanQuestion)) {
+    return { type: 'dispatch', capabilityId: 'knowledge.answer', slots: {} }
+  }
+  if (hasKnowledge && !input.capabilityHint && isPlatformKnowledgeAvailabilityQuestion(cleanQuestion)) {
+    return { type: 'dispatch', capabilityId: 'knowledge.answer', slots: {} }
+  }
+  if (!input.capabilityHint && input.available.includes('platform.guide') &&
+    isRecordingOnboardingGuideQuestion(cleanQuestion)) {
+    return { type: 'dispatch', capabilityId: 'platform.guide',
+      slots: { question: input.question, topic: 'scenarios' } }
+  }
+  const mayBeRunMisroute = !input.capabilityHint ||
+    input.capabilityHint === 'run.diagnose' || input.capabilityHint === 'knowledge.answer'
+  const asksAboutSession = /账号|会话|登录|认证|租约|占用|排队/.test(cleanQuestion)
+  const asksAboutSchedule = /调度|触发|跳过|没跑|未跑|没有跑/.test(cleanQuestion)
+  const asksAboutFailureGroup = /(?:这些|这批|多次|一批|全部|所有).*(?:失败|报错|错误)|(?:失败|报错|错误).*(?:同一个|共同|归纳|汇总|聚类)/.test(cleanQuestion)
+  // A status question on a session or schedule page is about that resource,
+  // even if the wording also resembles a Run diagnosis. Likewise, plural
+  // failures on a filtered Run list ask for an aggregate, not one Run ID.
+  if (hasKnowledge && mayBeRunMisroute && !hasRunContext && (
+    (context?.pageKind === 'session' && asksAboutSession) ||
+    (context?.pageKind === 'schedule' && asksAboutSchedule) ||
+    (context?.pageKind === 'run' && context.view?.filters?.status === 'FAILED' && asksAboutFailureGroup)
+  )) {
+    const slots: Record<string, unknown> = {}
+    if (context?.targetId) slots.targetId = context.targetId
+    if (context?.primaryRef?.kind === 'session') slots.sessionId = context.primaryRef.id
+    if (context?.primaryRef?.kind === 'schedule') slots.scheduleId = context.primaryRef.id
+    if (context?.view?.selectedRef?.kind === 'schedule') slots.scheduleId = context.view.selectedRef.id
+    return { type: 'dispatch', capabilityId: 'knowledge.answer', slots }
+  }
   const inferred = matchingHits.length === 1 ? matchingHits[0]! : null
   const hint = input.capabilityHint
   if (hint && !input.available.includes(hint)) {
@@ -1382,7 +1549,7 @@ export function routeAssistantTurn(input: {
       type: 'clarify',
       missingFields: ['capabilityId'],
       question: '识别到多个可能的操作，请选择一项继续。',
-      options: matchingHits.slice(0, 8).map((id) => ({ id, label: assistantCapability(id).label })),
+      options: matchingHits.slice(0, 8).map((id) => ({ id, label: assistantCapability(id).label, kind: 'capability' as const })),
     }
   }
   if (hint && matchingHits.length > 0 && !matchingHits.includes(hint)) {
@@ -1390,10 +1557,10 @@ export function routeAssistantTurn(input: {
     return {
       type: 'clarify',
       missingFields: ['capabilityId'],
-      question: '本次要做运行诊断，还是查找功能入口？请选一项后继续。',
+      question: '这句话也可能是在请求另一项助手能力，请选择本次要执行的操作。',
       options: [
-        { id: hint, label: assistantCapability(hint).label },
-        { id: competing, label: assistantCapability(competing).label },
+        { id: hint, label: assistantCapability(hint).label, kind: 'capability' },
+        { id: competing, label: assistantCapability(competing).label, kind: 'capability' },
       ],
     }
   }
@@ -1419,16 +1586,41 @@ export function routeAssistantTurn(input: {
     }
   }
   const slots: Record<string, unknown> = {}
-  const ctx = input.pageContext
+  const ctx = context
   if (chosen === 'run.diagnose') {
     if (ctx?.runId) slots.runId = ctx.runId
     if (ctx?.stepId) slots.stepId = ctx.stepId
-    if (!slots.runId && /最近失败|最近一次失败/.test(input.question)) {
+    if (!slots.runId && RECENT_FAILED_RUN_QUESTION.test(input.question)) {
       slots.findRecentFailed = true
     }
   }
   if (chosen === 'run.compare') {
-    if (ctx?.runId) slots.baseRunId = ctx.runId
+    const explicitRunIds = [...cleanQuestion.matchAll(RUN_ID_IN_QUESTION)].map((match) => match[0]!.toLowerCase())
+    const pageRunId = normalizeAssistantPageContext(ctx)?.runId
+    if (explicitRunIds.length > 2) {
+      return {
+        type: 'clarify',
+        missingFields: ['baseRunId', 'targetRunId'],
+        question: '问题里有超过两个运行 ID，请明确指定要对比的两个运行。',
+      }
+    }
+    if (explicitRunIds.length === 2) {
+      slots.baseRunId = explicitRunIds[0]
+      slots.targetRunId = explicitRunIds[1]
+    } else {
+      if (pageRunId) slots.baseRunId = pageRunId
+      if (explicitRunIds[0] && explicitRunIds[0] !== pageRunId) slots.targetRunId = explicitRunIds[0]
+      if (pageRunId && explicitRunIds.length === 0 && isPreviousRunComparisonQuestion(cleanQuestion)) {
+        slots.comparePrevious = true
+      }
+    }
+    if (slots.baseRunId && slots.baseRunId === slots.targetRunId) {
+      return {
+        type: 'clarify',
+        missingFields: ['targetRunId'],
+        question: '请选择另一条不同的运行进行对比。',
+      }
+    }
   }
   if (chosen.startsWith('scenario.') && ctx?.scenarioId) {
     slots.scenarioId = ctx.scenarioId
@@ -1443,9 +1635,16 @@ export function routeAssistantTurn(input: {
   }
   if (chosen === 'target.business-records.list') {
     if (ctx?.targetId) slots.targetId = ctx.targetId
-    slots.entityType = 'manufacturer'
+    const entityType = inferBusinessRecordEntityType(cleanQuestion)
+    if (entityType === 'ambiguous') {
+      return { type: 'clarify', missingFields: ['entityType'], question: '你想查厂家／制造商，还是供应商？请先选一种业务记录。' }
+    }
+    if (entityType) slots.entityType = entityType
     if (!slots.targetId) {
       return { type: 'clarify', missingFields: ['targetId'], question: '请选择要查询的目标系统。' }
+    }
+    if (!entityType) {
+      return { type: 'clarify', missingFields: ['entityType'], question: '请明确要查厂家／制造商，还是供应商业务记录。' }
     }
   }
   if (chosen === 'run.diagnose') {
@@ -1457,19 +1656,21 @@ export function routeAssistantTurn(input: {
   }
   if (chosen === 'platform.guide') {
     slots.question = input.question
+    if (ctx?.targetId) slots.targetId = ctx.targetId
     const topic = inferGuideTopic(input.question)
     if (topic) slots.topic = topic
   }
   if (chosen === 'in-page.guidance') {
     slots.question = input.question
     if (ctx?.page) slots.page = ctx.page
+    if (ctx?.targetId) slots.targetId = ctx.targetId
     if (ctx?.stepId) slots.stepId = ctx.stepId
     if (ctx?.scenarioId) slots.scenarioId = ctx.scenarioId
   }
   if (chosen === 'run.diagnose' && !slots.runId && !slots.findRecentFailed) {
     return { type: 'clarify', missingFields: ['runId'], question: '请选择要分析的一次运行。' }
   }
-  if (chosen === 'run.compare' && (!slots.baseRunId || !slots.targetRunId)) {
+  if (chosen === 'run.compare' && (!slots.baseRunId || (!slots.targetRunId && !slots.comparePrevious))) {
     return {
       type: 'clarify',
       missingFields: [!slots.baseRunId ? 'baseRunId' : 'targetRunId'],
@@ -1534,11 +1735,15 @@ export async function canAdoptAssistantProposal(input: {
 
 export async function canAdoptAuthoringProposal(input: {
   proposal: AssistantAuthoringProposal
+  scenarioId: string
   revision: number
   document: ScenarioAuthoringDocumentV2
   hasFieldDrafts: boolean
   remoteConflict: boolean
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (input.scenarioId !== input.proposal.scenarioId) {
+    return { ok: false, reason: '这条建议属于其他场景，请打开对应场景工作区后再采纳' }
+  }
   if (input.hasFieldDrafts) return { ok: false, reason: '当前步骤还有未提交的字段草稿，不能覆盖' }
   if (input.remoteConflict) return { ok: false, reason: '远端草稿已变化，请基于当前草稿重新生成' }
   if (input.revision !== input.proposal.base.draftRevision) {
@@ -1670,18 +1875,10 @@ export function projectRunFacts(
     citations.push(...keys)
   }
   add('status', `运行状态为 ${run.status}，证据轴为 ${run.evidenceStatus}。`, [citationKey('run', run.id)])
-  add(
-    'placement',
-    `调度位置为 ${run.placement.state}${run.placement.sessionStatus ? `，会话 ${run.placement.sessionStatus}` : ''}。`,
-    [citationKey('run', run.id)],
-  )
+  const placementDescription = assistantWaitingPlacementDescription(run.placement.state)
+  if (placementDescription) add('placement', placementDescription, [citationKey('run', run.id)])
   if (run.status === 'WAITING_FOR_AUTH') {
     add('auth', '运行正在等待目标系统认证，不是步骤失败。', [citationKey('run', run.id)])
-  }
-  if ((ASSISTANT_WAITING_PLACEMENTS as readonly string[]).includes(run.placement.state)) {
-    add('resource', `运行因 ${run.placement.state} 等待资源或原 Worker，主状态仍可能是 ${run.status}。`, [
-      citationKey('run', run.id),
-    ])
   }
   if (run.status === 'NEEDS_REVIEW') {
     add('review', '运行进入人工核查。未知副作用不得无条件重放。', [citationKey('run', run.id)])

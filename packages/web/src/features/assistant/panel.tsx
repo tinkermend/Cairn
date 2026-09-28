@@ -460,10 +460,14 @@ export function AssistantPanel({
                               void submit({ replyToTurnId: turn.id })
                             }}
                             onAdopt={
-                              turn.result.kind === 'authoring_proposal' || turn.result.kind === 'proposal'
+                              turn.result?.kind === 'authoring_proposal' || turn.result?.kind === 'proposal' || turn.result?.kind === 'target_form'
                                 ? async (proposal) => {
                                     if (!adoptHandler) {
-                                      toast.error('请先打开对应场景工作区再采纳')
+                                       toast.error(
+                                        proposal.kind === 'target_form'
+                                          ? '目标表单已关闭，请重新打开表单后再应用'
+                                          : '请先打开对应场景工作区再采纳'
+                                      )
                                       return
                                     }
                                     setAdopting(true)
@@ -471,9 +475,15 @@ export function AssistantPanel({
                                       const adopted = await adoptHandler(proposal)
                                       if (adopted.ok) {
                                         const proposalId =
-                                          'proposalId' in proposal ? proposal.proposalId : proposal.stepId
+                                          'proposalId' in proposal
+                                            ? proposal.proposalId
+                                            : 'stepId' in proposal
+                                              ? proposal.stepId
+                                              : proposal.kind
                                         setLastAdopted({ proposalId, digest: adopted.digest ?? '' })
-                                        toast.success('已放入本地草稿，尚未保存')
+                                        if (proposal.kind !== 'target_form') {
+                                          toast.success('已放入本地草稿，尚未保存')
+                                        }
                                       } else {
                                         toast.error(adopted.reason || '采纳失败')
                                       }

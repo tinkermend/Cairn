@@ -170,6 +170,23 @@ async function listWorkerSamples(db: Db, asOf: Date): Promise<MonitorWorkerSampl
     eventLoopDelayMs: sampleMetric(row.sampledEventLoopDelayMs),
     browserProcessCount: sampleMetric(row.sampledBrowserProcessCount),
     clockSkewMs: sampleMetric(row.processClockSkewMs),
+    diskFreeBytes: sampleMetric(row.sampledProfileDiskFreeBytes),
+    diskUsagePercent:
+      row.sampledDiskTotalBytes != null && row.sampledDiskTotalBytes > 0 && row.sampledProfileDiskFreeBytes != null
+        ? knownMetric(
+            Math.min(
+              100,
+              Math.max(
+                0,
+                Math.round(
+                  ((row.sampledDiskTotalBytes - row.sampledProfileDiskFreeBytes) / row.sampledDiskTotalBytes) * 100,
+                ),
+              ),
+            ),
+          )
+        : unknownMetric('not_reported'),
+    browserHostLostCount: sampleMetric(row.sampledBrowserHostLostCount),
+    stepHardTimeoutCount: sampleMetric(row.sampledStepHardTimeoutCount),
     sampledAt: row.heartbeatAt ? row.heartbeatAt.toISOString() : asOf.toISOString(),
   }))
 }

@@ -729,8 +729,11 @@ export type WorkerRow = {
   sampledProfileBytes: number | null
   sampledProfileCount: number | null
   sampledProfileDiskFreeBytes: number | null
+  sampledDiskTotalBytes: number | null
   sampledMidsceneBytes: number | null
   sampledBrowserProcessCount: number | null
+  sampledBrowserHostLostCount: number | null
+  sampledStepHardTimeoutCount: number | null
   processClockSkewMs: number | null
   sampledDiskAt: Date | null
 }

@@ -157,6 +157,16 @@ describe('toPageContext (契约数据转换)', () => {
     })
   })
 
+  it('目标知识地图保留具体路由与目标对象供助手检索', () => {
+    expect(toPageContext({ page: 'target', routeKey: 'targets.$targetId.map',
+      targetId: '11111111-1111-4111-8111-111111111111' })).toMatchObject({
+      routeKey: 'targets.$targetId.map',
+      pageKind: 'target',
+      targetId: '11111111-1111-4111-8111-111111111111',
+      primaryRef: { kind: 'target', id: '11111111-1111-4111-8111-111111111111' },
+    })
+  })
+
   it('会话详情转换：正确映射 primaryRef、scopeRefs 与 view.selectedRef', () => {
     const pageCtx = toPageContext({
       page: 'session',
@@ -183,6 +193,7 @@ describe('toPageContext (契约数据转换)', () => {
       page: 'session',
       targetId: 'tgt-1',
       targetAccountId: 'acc-admin',
+      entityId: 'acc-admin',
     })
     expect(pageCtx).toMatchObject({
       version: 2,
@@ -194,5 +205,6 @@ describe('toPageContext (契约数据转换)', () => {
       ],
     })
     expect(pageCtx?.view?.selectedRef).toBeUndefined()
+    expect(pageCtx?.primaryRef?.kind).toBe('account')
   })
 })

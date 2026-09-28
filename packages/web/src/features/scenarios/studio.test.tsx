@@ -1,6 +1,9 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  authoringDocumentDigest,
+  authoringSteps,
+  normalizeAuthoringDocument,
   runPlacement,
   scenarioCapabilitiesFor,
   WAIT_KINDS_AVAILABLE_NOW,
@@ -9,10 +12,14 @@ import {
   type ScenarioCapabilities,
   type ScenarioDetailDto,
   type TargetDto,
+  type AssistantAuthoringProposal,
+  type AuthoringOperation,
 } from '@cairn/shared'
+import { applyAuthoringOperations } from '@cairn/authoring'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { ApiRequestError } from '@/lib/api-client'
 import { ScenarioDetailPage } from './detail'
 
@@ -423,6 +430,46 @@ describe('Scenario Studio', () => {
         ],
       },
     })
+  })
+
+  it('订单两步提案只能采纳到所属场景，采纳后保存完整等待与校验步骤', async () => {
+    const { screen } = await renderPage()
+    await expect.element(screen.getByText('打开商城')).toBeInTheDocument()
+    await vi.waitFor(() => expect(useAssistantStore.getState().adoptHandler).not.toBeNull())
+    const base = normalizeAuthoringDocument(document)
+    const baseDigest = await authoringDocumentDigest(base)
+    const waitStepId = '99999999-9999-4999-8999-999999999999'
+    const operations: AuthoringOperation[] = [{
+      kind: 'insert_step', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab', anchorStepId: STEP_ID,
+      step: { id: waitStepId, name: '等待结果区出现', type: 'wait', effectType: 'READ_ONLY',
+        input: { kind: 'visible', target: { framePath: [], candidates: [{ by: 'css', value: '#order-results' }] } } },
+    }, {
+      kind: 'insert_step', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac', anchorStepId: waitStepId,
+      step: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaad', name: '检查状态为成功', type: 'assert',
+        effectType: 'READ_ONLY', input: { target: { framePath: [], candidates: [{ by: 'css', value: '#order-status' }] },
+          expect: { kind: 'text_contains', value: '成功' } } },
+    }]
+    const candidate = applyAuthoringOperations(base, operations)
+    if (!candidate.ok) throw new Error(candidate.error.message)
+    const proposal: AssistantAuthoringProposal = {
+      kind: 'authoring_proposal', proposalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaae',
+      scenarioId: SCENARIO_ID,
+      base: { draftRevision: 1, documentDigest: baseDigest, dependencyFingerprint: `${TARGET_ID}:1` },
+      operations, candidateDigest: await authoringDocumentDigest(candidate.document),
+      intentCoverage: [{ intentId: 'primary', operationIds: operations.map((op) => op.id) }],
+      diffs: candidate.diffs, diagnostics: [], executable: true,
+      validation: { schema: 'passed', expansion: 'passed', compiler: 'passed' },
+    }
+    const adopt = useAssistantStore.getState().adoptHandler!
+    expect(await adopt({ ...proposal, scenarioId: TARGET_ID })).toMatchObject({
+      ok: false, reason: expect.stringContaining('其他场景'),
+    })
+    expect(await adopt(proposal)).toMatchObject({ ok: true })
+    await screen.getByRole('button', { name: '保存草稿' }).click()
+    await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalledTimes(1))
+    const saved = mocks.saveScenarioDraft.mock.calls[0]![1].document
+    expect(authoringSteps(normalizeAuthoringDocument(saved)).map((step) => step.type))
+      .toEqual(['navigate', 'wait', 'assert'])
   })
 
   it('保存冲突时保留本地输入并提示重新加载', async () => {
@@ -1018,7 +1065,7 @@ describe('Scenario Studio', () => {
       .toBeInTheDocument()
   })
 
-  it('带 runId 时展示可折叠试跑摘要和最近获取时间', async () => {
+  it('带已完成 runId 时弹出试跑结果弹窗并展示试跑摘要与详情', async () => {
     signIn([
       'workflow:read',
       'workflow:write',
@@ -1027,6 +1074,9 @@ describe('Scenario Studio', () => {
       'target:read',
     ])
     router.search = { runId: RUN_ID, import: undefined }
+    runMocks.fetchRunObservation.mockResolvedValue(
+      trialObservation(trialRun({ status: 'SUCCEEDED' }))
+    )
     const { screen } = await renderPage()
     await expect
       .element(screen.getByRole('heading', { name: '试跑结果' }))

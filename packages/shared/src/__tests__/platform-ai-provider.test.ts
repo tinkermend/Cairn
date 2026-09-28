@@ -12,18 +12,20 @@ import {
   platformAiConnectionReady,
   PLATFORM_AI_OUTPUT_LIMIT,
   PLATFORM_AI_OUTPUT_LIMIT_CODE,
+  PLATFORM_AI_OUTPUT_TRUNCATED_CODE,
   PLATFORM_AI_PROVIDER_PRESETS,
   PLATFORM_AI_THINKING_UNSUPPORTED,
   postPlatformAiChatCompletion,
   readPlatformAiChatResult,
+  streamPlatformAiChatCompletion,
 } from '../platform-ai-provider.js'
 import { FACTORY_PLATFORM_AI, PLATFORM_AI_PROVIDERS, platformAiConfigSchema } from '../platform-config.js'
 
 const messages = [{ role: 'user' as const, content: 'ping' }]
 
 describe('平台 AI 提供商拼装与读回', () => {
-  it('思考关：glm / deepseek / minimax 不带思考字段，千问显式关闭', () => {
-    for (const provider of ['glm', 'deepseek', 'minimax'] as const) {
+  it('思考关：DeepSeek 显式关闭默认思考；glm / minimax 不带思考字段，千问显式关闭', () => {
+    for (const provider of ['glm', 'minimax'] as const) {
       const body = buildPlatformAiChatBody({
         provider,
         thinkingMode: 'off',
@@ -42,6 +44,14 @@ describe('平台 AI 提供商拼装与读回', () => {
       expect(body).not.toHaveProperty('thinking')
       expect(body).not.toHaveProperty('enable_thinking')
     }
+    expect(buildPlatformAiChatBody({
+      provider: 'deepseek',
+      thinkingMode: 'off',
+      model: 'deepseek-flash',
+      messages,
+      maxTokens: 16,
+      json: true,
+    })).toMatchObject({ thinking: { type: 'disabled' } })
     expect(
       buildPlatformAiChatBody({
         provider: 'qwen',
@@ -121,6 +131,16 @@ describe('平台 AI 提供商拼装与读回', () => {
     ).toThrowError(/没有返回可用文本/)
   })
 
+  it('保留供应商的结束原因，并识别达到生成上限的空正文', () => {
+    expect(readPlatformAiChatResult({
+      choices: [{ message: { content: '{"answer":' }, finish_reason: 'length' }],
+      model: 'demo',
+    }, 'business')).toMatchObject({ text: '{"answer":', finishReason: 'length' })
+    expect(() => readPlatformAiChatResult({
+      choices: [{ message: { content: '' }, finish_reason: 'length' }],
+    }, 'business')).toThrowError(expect.objectContaining({ code: PLATFORM_AI_OUTPUT_TRUNCATED_CODE }))
+  })
+
   it('助手、分析与连通测试共用拼装，调用方不再手写 completion JSON', () => {
     for (const relative of [
       '../../../api/src/assistant/model-client.ts',
@@ -198,6 +218,22 @@ describe('平台 AI 提供商拼装与读回', () => {
 describe('平台 AI 传输', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('流式结果保留 finish_reason，供助手区分截断与普通格式错误', async () => {
+    const encoder = new TextEncoder()
+    const read = vi.fn()
+      .mockResolvedValueOnce({ done: false, value: encoder.encode('data: {"model":"demo","choices":[{"delta":{"content":"{\\"answer\\":"},"finish_reason":null}]}\n\n') })
+      .mockResolvedValueOnce({ done: false, value: encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n') })
+      .mockResolvedValueOnce({ done: true, value: undefined })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      body: { getReader: () => ({ read, cancel: vi.fn(async () => undefined) }) },
+    })))
+    const result = await streamPlatformAiChatCompletion({
+      baseUrl: 'https://api.example/v1', apiKey: 'k', body: { model: 'demo' }, timeoutMs: 1000,
+    })
+    expect(result).toMatchObject({ text: '{"answer":', finishReason: 'length' })
   })
 
   it('使用 redirect:error，并在超过 256KB 时停止读取', async () => {

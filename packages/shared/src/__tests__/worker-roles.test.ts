@@ -5,7 +5,12 @@ import { KNOWLEDGE_ANALYSIS_PROTOCOL } from '../analysis-jobs.js'
 import { MAP_SCHEDULER_PROTOCOL, UNIFIED_SCHEDULER_PROTOCOL } from '../schedules.js'
 import { SERVICE_WEBHOOK_DELIVERY_PROTOCOL } from '../service-webhooks.js'
 import { SUITE_SCHEDULER_PROTOCOL } from '../suites.js'
-import { parseWorkerRoles, protocolCapabilitiesForRoles, registrationRequiresOccupancy } from '../worker-roles.js'
+import {
+  advertisesRunExecution,
+  parseWorkerRoles,
+  protocolCapabilitiesForRoles,
+  registrationRequiresOccupancy,
+} from '../worker-roles.js'
 
 describe('Worker 角色', () => {
   it('缺省 all，协议按角色三分，导出与集合推进不要求占用', () => {
@@ -38,5 +43,13 @@ describe('Worker 角色', () => {
     expect(protocolCapabilitiesForRoles(parseWorkerRoles('analyst'))).toEqual([KNOWLEDGE_ANALYSIS_PROTOCOL])
     expect(registrationRequiresOccupancy([KNOWLEDGE_ANALYSIS_PROTOCOL])).toBe(false)
     expect(registrationRequiresOccupancy(['map-jobs@1'])).toBe(true)
+  })
+
+  it('only executor-capable registrations count as run claimers', () => {
+    for (const role of ['scheduler', 'analyst', 'maintenance'] as const)
+      expect(advertisesRunExecution(protocolCapabilitiesForRoles(parseWorkerRoles(role)))).toBe(false)
+    expect(advertisesRunExecution(protocolCapabilitiesForRoles(parseWorkerRoles('executor')))).toBe(true)
+    expect(advertisesRunExecution(protocolCapabilitiesForRoles(parseWorkerRoles('all')))).toBe(true)
+    expect(advertisesRunExecution([])).toBe(true)
   })
 })

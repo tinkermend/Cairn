@@ -124,6 +124,20 @@ export function protocolCapabilitiesForRoles(roles: WorkerRoleSet): string[] {
   )
 }
 
+/**
+ * 按登记的协议判断该 Worker 是否会领取 Run。只广告调度/分析/维护协议的分角色节点不领取；
+ * 空协议视作早于协议登记的旧执行二进制，按会领取处理。
+ */
+export function advertisesRunExecution(capabilities: readonly string[] | undefined): boolean {
+  const items = capabilities ?? []
+  return (
+    items.length === 0 ||
+    items.some(
+      (item) => !MAINTENANCE_PROTOCOLS.has(item) && !SCHEDULER_PROTOCOLS.has(item) && !ANALYST_PROTOCOLS.has(item),
+    )
+  )
+}
+
 /** 只有广告了执行/会话类协议才必须声明占用；调度与维护节点可以空协议登记。 */
 export function registrationRequiresOccupancy(capabilities: readonly string[] | undefined): boolean {
   return (capabilities ?? []).some((item) => !OCCUPANCY_EXEMPT_PROTOCOLS.has(item))

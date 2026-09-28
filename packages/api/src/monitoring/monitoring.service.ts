@@ -17,9 +17,12 @@ import {
   recordManualObjectStoreProbe,
   silenceMonitorAlert,
   summarizeAi,
+  summarizeAiModels,
   summarizeAnomalies,
   summarizeFleet,
   summarizeQueues,
+  summarizeSla,
+  summarizeTargetSla,
   updateAlertingRules,
   upsertAlertChannel,
   type DbHandle,
@@ -36,6 +39,7 @@ import {
   knownMetric,
   localAlertSecretRef,
   monitorAiCardSchema,
+  monitorAiModelResponseSchema,
   monitorAlertItemSchema,
   monitorAlertListResponseSchema,
   monitorAlertRulesResponseSchema,
@@ -47,11 +51,15 @@ import {
   monitorQueuesCardSchema,
   monitorSeriesResponseSchema,
   monitorServiceCardSchema,
+  monitorSlaCardSchema,
   monitorStreamControlSchema,
+  monitorTargetSlaResponseSchema,
   monitoringOverviewResponseSchema,
   platformConfigCurrentSchema,
   unknownMetric,
   type MonitorAiCard,
+  type MonitorAiModelResponse,
+  type MonitorSlaCard,
   type MonitorAlertChannelBody,
   type MonitorAlertListQuery,
   type MonitorAlertRulesUpdateBody,
@@ -66,6 +74,7 @@ import {
   type MonitorSeriesResponse,
   type MonitorServiceCard,
   type MonitorStreamControl,
+  type MonitorTargetSlaResponse,
   type MonitorUnavailableReason,
   type MonitoringOverviewResponse,
 } from '@cairn/shared'
@@ -125,7 +134,7 @@ export class MonitoringService {
   private async loadOverview(): Promise<MonitoringOverviewResponse> {
     const asOf = await this.resolveAsOf()
     const sampledAt = asOf.toISOString()
-    const [service, capacity, queues, anomalies, ai] = await Promise.all([
+    const [service, capacity, queues, anomalies, ai, sla] = await Promise.all([
       this.loadService(asOf, sampledAt),
       this.loadPartition(
         'capacity',
@@ -149,11 +158,40 @@ export class MonitoringService {
         monitorAnomaliesCardSchema,
       ),
       this.loadPartition('ai', 'aggregate', sampledAt, () => summarizeAi(this.handle, asOf), monitorAiCardSchema),
+      this.loadPartition('sla', 'aggregate', sampledAt, () => summarizeSla(this.handle, asOf), monitorSlaCardSchema),
     ])
     return monitoringOverviewResponseSchema.parse({
       asOf: sampledAt,
-      partitions: { service, capacity, queues, anomalies, ai },
+      partitions: { service, capacity, queues, anomalies, ai, sla },
     })
+  }
+
+  async targetsSla(windowHours?: number): Promise<MonitorTargetSlaResponse> {
+    try {
+      const asOf = await this.resolveAsOf()
+      const items = await summarizeTargetSla(this.handle, asOf, windowHours)
+      return monitorTargetSlaResponseSchema.parse({
+        asOf: asOf.toISOString(),
+        windowHours: windowHours ?? 24,
+        items,
+      })
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async aiModels(): Promise<MonitorAiModelResponse> {
+    try {
+      const asOf = await this.resolveAsOf()
+      const items = await summarizeAiModels(this.handle, asOf)
+      return monitorAiModelResponseSchema.parse({
+        asOf: asOf.toISOString(),
+        windowHours: 24,
+        items,
+      })
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
   async series(query: MonitorSeriesQuery): Promise<MonitorSeriesResponse> {
@@ -524,7 +562,9 @@ export class MonitoringService {
     }
   }
 
-  private async loadPartition<T extends MonitorCapacityCard | MonitorQueuesCard | MonitorAnomaliesCard | MonitorAiCard>(
+  private async loadPartition<
+    T extends MonitorCapacityCard | MonitorQueuesCard | MonitorAnomaliesCard | MonitorAiCard | MonitorSlaCard,
+  >(
     name: string,
     source: 'registry' | 'aggregate',
     sampledAt: string,

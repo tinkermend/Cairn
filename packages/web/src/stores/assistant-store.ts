@@ -9,6 +9,7 @@ import type {
   AssistantQuoteContext,
   AssistantStage,
   AssistantTurn,
+  TargetFormProposal,
 } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -32,17 +33,18 @@ export function summarizeConversationTitle(question: string, maxLen = 30): strin
 }
 
 export type AssistantAdoptHandler = (
-  proposal: AssistantProposal | AssistantAuthoringProposal,
+  proposal: AssistantProposal | AssistantAuthoringProposal | TargetFormProposal,
 ) => Promise<{ ok: true; digest?: string } | { ok: false; reason: string }>
 
 export type AssistantRollbackHandler = (
-  proposal: AssistantProposal | AssistantAuthoringProposal,
+  proposal: AssistantProposal | AssistantAuthoringProposal | TargetFormProposal,
 ) => Promise<{ ok: true } | { ok: false; reason: string }>
 
 export type AssistantWindowMode = 'floating' | 'docked'
 
 export interface AssistantBoundContext {
   page: AssistantPageContext['page']
+  routeKey?: string
   filters?: Record<string, string | number | boolean>
   listHasFailures?: boolean
   entityId?: string
@@ -58,7 +60,7 @@ export interface AssistantBoundContext {
   versionId?: string
   statusSummary?: string
   statusLabel?: string
-  statusTone?: 'success' | 'error' | 'warning' | 'info' | 'neutral'
+  statusTone?: 'neutral' | 'success' | 'warning' | 'destructive' | 'info' | 'error'
   summaryText?: string
   isDirty?: boolean
   chips?: Array<{
@@ -69,6 +71,11 @@ export interface AssistantBoundContext {
     badge?: string
     priority?: number
   }>
+  activeForm?: {
+    formId: 'target-config'
+    mode: 'create' | 'edit'
+    targetId?: string
+  }
 }
 
 type AssistantState = {

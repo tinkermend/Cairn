@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { workerLifecycle } from './labels'
+import { classifyWorkerRole, workerLifecycle } from './labels'
 
 describe('workerLifecycle', () => {
   it('把四值状态与心跳新鲜度拆开显示', () => {
@@ -25,3 +25,19 @@ describe('workerLifecycle', () => {
     })
   })
 })
+
+describe('classifyWorkerRole', () => {
+  it('按 workerId 正确识别 4 角色与单机全能兜底', () => {
+    expect(classifyWorkerRole('local-worker-executor')).toBe('executor')
+    expect(classifyWorkerRole('cairn-worker-executor-0')).toBe('executor')
+    expect(classifyWorkerRole('local-worker-scheduler')).toBe('scheduler')
+    expect(classifyWorkerRole('cairn-worker-scheduler-1')).toBe('scheduler')
+    expect(classifyWorkerRole('local-worker-analyst')).toBe('analyst')
+    expect(classifyWorkerRole('cairn-worker-analyst-2')).toBe('analyst')
+    expect(classifyWorkerRole('local-worker-maintenance')).toBe('maintenance')
+    expect(classifyWorkerRole('cairn-worker-maintenance-0')).toBe('maintenance')
+    expect(classifyWorkerRole('local-worker')).toBe('monolithic')
+    expect(classifyWorkerRole('worker-1')).toBe('monolithic')
+  })
+})
+

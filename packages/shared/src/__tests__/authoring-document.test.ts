@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   authoringNodeId,
   authoringSteps,
+  canFlattenKnowledgeAuthoringDocument,
   insertNodeAfter,
   insertNodeAt,
   isAuthoringDocumentV2,
@@ -25,6 +26,33 @@ import {
 } from '../index.js'
 
 describe('ScenarioAuthoringDocument V2', () => {
+  it('知识建议允许默认定位协议的独立步骤，拒绝会丢失的成功条件', () => {
+    const base = normalizeAuthoringDocument({
+      schemaVersion: 1, inputs: [], steps: [{
+        id: '11111111-1111-4111-8111-111111111111', name: '基线',
+        type: 'echo', effectType: 'READ_ONLY', input: { value: 'ok' },
+      }],
+    })
+    expect(canFlattenKnowledgeAuthoringDocument({ ...base, locatorProtocol: 2 })).toBe(true)
+    const withOutcome = scenarioAuthoringDocumentV2Schema.parse({
+      ...base,
+      scenarioOutcomes: [{
+        id: '55555555-5555-4555-8555-555555555555', scope: 'scenario',
+        meaning: '完成', severity: 'MUST', onViolation: 'halt', provenance: 'manual',
+        rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+      }],
+    })
+    expect(canFlattenKnowledgeAuthoringDocument(withOutcome)).toBe(false)
+    const withOrigin = scenarioAuthoringDocumentV2Schema.parse({
+      ...base,
+      nodes: [{ ...base.nodes[0], origin: {
+        moduleVersionId: '22222222-2222-4222-8222-222222222222',
+        invocationId: '33333333-3333-4333-8333-333333333333',
+      } }],
+    })
+    expect(canFlattenKnowledgeAuthoringDocument(withOrigin)).toBe(false)
+  })
+
   it('声明正确的 Worker 协议常量', () => {
     expect(MODULE_MANIFEST_PROTOCOL).toBe('snapshot.moduleManifest@1')
     expect(CANDIDATE_GROUPS_PROTOCOL).toBe('snapshot.candidateGroups@1')
@@ -392,4 +420,3 @@ describe('包裹为条件块 / 解除包裹（复查修复）', () => {
     expect(parsedSolidification.kind).toBe('ai_solidification')
   })
 })
-

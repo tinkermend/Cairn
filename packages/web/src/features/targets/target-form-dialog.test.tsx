@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { TargetFormDialog } from './target-form-dialog'
+import type { TargetDto, TargetFormProposal } from '@cairn/shared'
 
 const apiMocks = vi.hoisted(() => ({ createTarget: vi.fn(), updateTarget: vi.fn() }))
 vi.mock('@/lib/targets-api', () => apiMocks)
@@ -22,6 +24,7 @@ describe('TargetFormDialog', () => {
     apiMocks.createTarget.mockReset()
     apiMocks.updateTarget.mockReset()
     apiMocks.createTarget.mockResolvedValue({ id: 'new-target' })
+    useAssistantStore.setState({ boundContext: null, adoptHandler: null })
   })
 
   it('提交时把所选图标和身份色写入新目标', async () => {
@@ -51,7 +54,7 @@ describe('TargetFormDialog', () => {
     await expect.element(getByRole('heading', { name: '新建目标系统' })).toBeInTheDocument()
     await expect.element(getByLabelText('入口 URL')).toBeInTheDocument()
     await expect.element(getByLabelText('认证方式')).toBeInTheDocument()
-    await expect.element(getByText('小写字母开头的 slug，2–63 字符，创建后不可改。')).toBeInTheDocument()
+    await expect.element(getByText('系统唯一标识；小写字母开头，2–63 字符，创建后不可修改。')).toBeInTheDocument()
     await expect.element(getByLabelText('显示名')).toBeInTheDocument()
     await expect.element(getByLabelText('登录名')).toBeInTheDocument()
 
@@ -62,6 +65,11 @@ describe('TargetFormDialog', () => {
     await expect.element(getByText(/知道输入框的 id 或 name 就填/)).toBeInTheDocument()
 
     expect(document.body.textContent).not.toMatch(/探测登录|打开录制|启发式管理|会话|插件/)
+  })
+
+  it('字段提示正确展示代码定义的字段说明', async () => {
+    const screen = await renderDialog()
+    await expect.element(screen.getByText('系统唯一标识；小写字母开头，2–63 字符，创建后不可修改。')).toBeInTheDocument()
   })
 
   it('仅有目标全范围管理权时允许登记账号，但隐藏首个账号的密码输入', async () => {
@@ -145,7 +153,7 @@ describe('TargetFormDialog', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { getByRole, getByLabelText, getByText } = await render(
       <QueryClientProvider client={client}>
-        <TargetFormDialog open onOpenChange={vi.fn()} current={currentTarget as any} />
+        <TargetFormDialog open onOpenChange={vi.fn()} current={currentTarget as unknown as TargetDto} />
       </QueryClientProvider>
     )
 
@@ -153,7 +161,7 @@ describe('TargetFormDialog', () => {
     await expect.element(getByText('系统身份与入口')).toBeInTheDocument()
     await expect.element(getByText('运行准入与装配')).toBeInTheDocument()
     await expect.element(getByLabelText(/编码/)).toBeDisabled()
-    await expect.element(getByText('系统唯一标识，创建后不可修改。')).toBeInTheDocument()
+    await expect.element(getByText('系统唯一标识；小写字母开头，2–63 字符，创建后不可修改。')).toBeInTheDocument()
 
     const nameInput = getByLabelText(/名称/)
     await nameInput.fill('更新后的系统')
@@ -163,5 +171,90 @@ describe('TargetFormDialog', () => {
       name: '更新后的系统',
       entryUrl: 'https://existing.test',
     })
+  })
+
+  it('打开新建弹窗时，向全局助手绑定目标配置上下文与推荐 Prompt', async () => {
+    useAuthStore.getState().auth.setUser({
+      id: 'assistant-user', displayName: '配置员', email: null, roles: [],
+      permissions: ['ai:assist', 'target:write'],
+    })
+    await renderDialog()
+    const bound = useAssistantStore.getState().boundContext
+    expect(bound?.page).toBe('target')
+    expect(bound?.activeForm).toEqual({ formId: 'target-config', mode: 'create', targetId: undefined })
+    expect(bound?.chips?.some((chip) => chip.label.includes('超时'))).toBe(true)
+  })
+
+  it('全局助手生成的 TargetFormProposal 可一键采纳至当前表单并成功保存', async () => {
+    useAuthStore.getState().auth.setUser({
+      id: 'assistant-user', displayName: '配置员', email: null, roles: [],
+      permissions: ['ai:assist', 'target:write'],
+    })
+    const screen = await renderDialog()
+    const adoptHandler = useAssistantStore.getState().adoptHandler
+    expect(adoptHandler).not.toBeNull()
+
+    const proposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '推荐配置超时为 30 秒，系统名称为测试系统',
+      changes: [
+        { fieldId: 'name', value: '测试系统' },
+        { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+      ],
+    }
+
+    const adoptResult = await adoptHandler!(proposal)
+    expect(adoptResult.ok).toBe(true)
+
+    await expect.element(screen.getByLabelText(/名称/)).toHaveValue('测试系统')
+    await expect.element(screen.getByLabelText(/提交后等待离开登录页/)).toHaveValue(30)
+
+    await screen.getByLabelText(/编码/).fill('test-system')
+    await screen.getByLabelText('入口 URL').fill('https://example.com')
+    await screen.getByRole('button', { name: '保存' }).click()
+
+    await expect.poll(() => apiMocks.createTarget.mock.calls[0]?.[0]).toMatchObject({
+      name: '测试系统',
+      code: 'test-system',
+      entryUrl: 'https://example.com',
+      loginLeaveTimeoutMs: 30_000,
+    })
+  })
+
+  it('在编辑模式下，采纳包含只读 code 的提案会被安全拦截', async () => {
+    useAuthStore.getState().auth.setUser({
+      id: 'assistant-user', displayName: '配置员', email: null, roles: [],
+      permissions: ['ai:assist', 'target:write'],
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await render(
+      <QueryClientProvider client={client}>
+        <TargetFormDialog
+          open
+          onOpenChange={vi.fn()}
+          current={{ id: 'tgt-1', name: '原系统', code: 'orig-code', entryUrl: 'https://orig.com' } as any}
+        />
+      </QueryClientProvider>
+    )
+
+    const adoptHandler = useAssistantStore.getState().adoptHandler
+    expect(adoptHandler).not.toBeNull()
+
+    const invalidProposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'edit',
+      targetId: 'tgt-1',
+      summary: '尝试修改只读编码',
+      changes: [
+        { fieldId: 'code', value: 'new-code' },
+      ],
+    }
+
+    const result = await adoptHandler!(invalidProposal)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toContain('不可修改')
+    }
   })
 })

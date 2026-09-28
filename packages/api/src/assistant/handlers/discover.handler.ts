@@ -5,17 +5,25 @@ import {
   extractScenarioSearchKeyword,
   normalizeAssistantPageContext,
 } from '@cairn/shared'
-import { listScenarios } from '@cairn/db'
+import { assertTargetPermission, listScenarios } from '@cairn/db'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 
 function namedTargetInQuestion(question: string): string | undefined {
   const cleaned = cleanAssistantQuestion(question)
   const match = /(?:关于|有关|列出|查看|查询|查找|找出|搜索|找|查)\s*([^，。？?！!]{2,100}?)\s*的(?:所有|全部|现有|可用)?场景/.exec(cleaned)
+    ?? /^(?:请问|帮我看看|我想知道)?\s*([^，。？?！!]{2,100}?)\s*(?:下面|下|里面|里|中|上|目前)?有哪些(?:可用|现有|全部|所有)?场景/.exec(cleaned)
   return match?.[1]?.trim() || undefined
 }
 
 function isPlainSearchTerm(value: string): boolean {
-  return value.length <= 40 && !/(?:有哪些|列出|查看|查找|搜索|场景|工作流|关于|有关|方便|帮我|请问|目标系统)/.test(value)
+  return value.length <= 40 &&
+    !/^(?:全部|所有|现有|可用|当前|这个|该|本|这些|系统|目标|列表|更多)$/.test(value) &&
+    !/(?:有哪些|列出|查看|查找|搜索|场景|工作流|关于|有关|方便|帮我|请问|目标系统)/.test(value)
+}
+
+function isDiscoveryContinuation(question: string): boolean {
+  const cleaned = cleanAssistantQuestion(question).replace(/[？?！!。.\s]+$/, '')
+  return /^(?:下一页|下页|继续(?:找|查|看)?|还有(?:吗|更多)?)(?:场景)?$/.test(cleaned)
 }
 
 export async function handleScenarioDiscover(
@@ -24,7 +32,21 @@ export async function handleScenarioDiscover(
   const { actor, slots, db, targets, onProgress, question, body } = ctx
   await onProgress?.('loading_facts', '正在检索授权范围内的场景...')
 
-  const currentTargetId = normalizeAssistantPageContext(body.pageContext)?.targetId
+  const pageContext = normalizeAssistantPageContext(body.pageContext)
+  const currentTargetId = pageContext?.targetId
+  const previousTargetId = typeof slots.targetId === 'string' && slots.targetId ? slots.targetId : undefined
+  // The scenario list filter is the current user-selected scope. When it
+  // changes (including back to "all"), an earlier turn's target and cursor
+  // must not silently narrow a new search in the same conversation.
+  if (pageContext?.routeKey === 'scenarios.index' && pageContext.page === 'scenario' &&
+    currentTargetId !== previousTargetId) {
+    delete slots.targetId
+    delete slots.cursor
+    delete slots.filter
+    delete slots.search
+    if (!/(?:启用|停用|活动)/.test(question)) delete slots.status
+    if (!/(?:模块|普通场景|用户场景)/.test(question)) delete slots.purpose
+  }
   let targetId = currentTargetId ?? (typeof slots.targetId === 'string' && slots.targetId ? slots.targetId : undefined)
   let targetName: string | undefined
   const namedTarget = namedTargetInQuestion(question)
@@ -58,9 +80,28 @@ export async function handleScenarioDiscover(
     }
   }
 
+  if (!targetId && /(?:这个|当前|该|本)(?:目标系统|目标|系统|平台)[^，。？?]{0,12}(?:场景|工作流)/.test(question)) {
+    delete slots.targetId
+    delete slots.cursor
+    delete slots.filter
+    delete slots.search
+    return {
+      kind: 'discovery',
+      candidates: [],
+      scope: { entityType: 'scenario' },
+      coverage: { totalVisible: 0, hasMore: false, observedAt: new Date().toISOString() },
+      message: '当前没有选定具体目标系统。请先在场景列表选择目标，或直接告诉我目标系统名称。',
+    }
+  }
+
   const rawSearch = typeof slots.filter === 'string' && slots.filter ? slots.filter.trim() : (typeof slots.search === 'string' ? slots.search.trim() : undefined)
   const extracted = extractScenarioSearchKeyword(question)
-  const search = targetName ? undefined : (extracted ?? (rawSearch && isPlainSearchTerm(rawSearch) ? rawSearch : undefined))
+  const search = targetName ? undefined : (extracted ?? (
+    rawSearch && isPlainSearchTerm(rawSearch) &&
+    (cleanAssistantQuestion(question).includes(rawSearch) || isDiscoveryContinuation(question))
+      ? rawSearch
+      : undefined
+  ))
   // Keep persisted slots aligned with the actual query so “下一页” preserves
   // target scope and never restores a model-supplied sentence fragment.
   if (targetId) slots.targetId = targetId
@@ -93,6 +134,13 @@ export async function handleScenarioDiscover(
   await Promise.all(
     uniqueTargetIds.map(async (tid) => {
       try {
+        await assertTargetPermission(db, actor.id, tid, 'target:read')
+      } catch {
+        // workflow:read and target:read may be scoped by different roles.
+        // A scenario alone must not reveal a target the actor cannot read.
+        return
+      }
+      try {
         const t = await targets.getTarget(tid)
         targetMap.set(tid, t.name)
       } catch {
@@ -101,7 +149,7 @@ export async function handleScenarioDiscover(
     }),
   )
 
-  const candidates: AssistantDiscoveryCandidate[] = queryResult.items.map((s) => ({
+  const candidates: AssistantDiscoveryCandidate[] = queryResult.items.filter((s) => targetMap.has(s.targetId)).map((s) => ({
     id: s.id,
     name: s.purpose && s.purpose !== 'user' ? `[模块] ${s.name}` : s.name,
     targetId: s.targetId,

@@ -21,24 +21,14 @@ import { StatusBadge } from '@/components/status-badge'
 import { FailureAlert } from './facts'
 import {
   formatAsOf,
-  freshnessLabel,
-  partitionFailure,
   type RefreshIntervalSeconds,
 } from './labels'
 import { connectionLabel, useMonitoringObservation } from './use-monitoring-observation'
 import { PlatformHealthBadge, StatusBanner } from './components/status-banner'
-import { CapacityOverview } from './components/capacity-overview'
-import { InfrastructureGrid } from './components/infrastructure-grid'
+import { GlobalOverview } from './components/global-overview'
 import { MonitoringChartsGrid } from './components/monitoring-charts-grid'
-import {
-  AiSection,
-  AnomaliesSection,
-  QueuesSection,
-} from './components/operational-metrics'
-import {
-  ProfilesSection,
-  WorkersSection,
-} from './components/drilldown-sections'
+import { DrilldownTabs } from './components/drilldown-tabs'
+import { ProfilesSection } from './components/drilldown-sections'
 
 export function MonitoringPage() {
   const {
@@ -151,55 +141,42 @@ function overviewError(error: unknown, onRetry: () => void) {
 function MonitoringBody({
   snapshot,
   canReadWorkers,
-  canProbe,
 }: {
   snapshot: MonitoringOverviewResponse
   canReadWorkers: boolean
   canProbe: boolean
 }) {
-  const { service, capacity, queues, anomalies, ai } = snapshot.partitions
+  const { service, capacity, queues, anomalies, ai, sla } = snapshot.partitions
 
   return (
-    <div className="flex min-w-0 flex-col gap-3.5">
+    <div className="flex min-w-0 flex-col gap-4">
       {/* 1. 动态告警横幅（仅在存在未恢复告警时展示，日常健康时不占空间） */}
       <StatusBanner />
 
-      {/* 2. 核心服务连通状态 (紧凑高密度卡片) */}
-      {service.availability === 'available' ? (
-        <InfrastructureGrid
-          data={service.data}
-          freshness={freshnessLabel(service.source, service.sampledAt)}
-          canProbe={canProbe}
-        />
-      ) : (
-        <FailureAlert {...partitionFailure(service.reasonCode)} />
-      )}
+      {/* 2. 第一层：全局概览（4 列高密度 KPI 卡片，每张卡片按自身分区独立降级） */}
+      <GlobalOverview
+        service={service}
+        capacity={capacity}
+        sla={sla?.availability === 'available' ? sla.data : undefined}
+        ai={ai?.availability === 'available' ? ai.data : undefined}
+      />
 
-      {/* 3. 核心容量水位与舰队看板 */}
-      {capacity.availability === 'available' ? (
-        <CapacityOverview
-          data={capacity.data}
-          freshness={freshnessLabel(capacity.source, capacity.sampledAt)}
-        />
-      ) : (
-        <FailureAlert {...partitionFailure(capacity.reasonCode)} />
-      )}
-
-      {/* 5. 核心大盘：2x2 四大时序图表网格 */}
+      {/* 3. 第二层：时序态势大盘（2x2 四大平滑面积图） */}
       <MonitoringChartsGrid asOf={snapshot.asOf} />
 
-      {/* 6. 紧凑型运维指标矩阵 */}
-      <QueuesSection partition={queues} />
-      <AnomaliesSection partition={anomalies} />
-      <AiSection partition={ai} />
-
-      {/* 7. 执行节点列表 */}
+      {/* 4. 第三层：分类下钻专区（目标系统 SLA、Worker 节点、AI 治理、队列与租约） */}
       {capacity.availability === 'available' ? (
-        <WorkersSection partition={capacity.data} canReadWorkers={canReadWorkers} />
+        <DrilldownTabs
+          capacity={capacity.data}
+          queues={queues}
+          anomalies={anomalies}
+          canReadWorkers={canReadWorkers}
+        />
       ) : null}
 
-      {/* 8. 浏览器与 Profile */}
+      {/* 5. 浏览器环境与会话画像 */}
       <ProfilesSection />
     </div>
   )
 }
+

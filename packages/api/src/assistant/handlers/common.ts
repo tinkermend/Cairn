@@ -17,7 +17,7 @@ export async function requireVisibleTarget(
     await assertTargetPermission(db, actor.id, targetId, 'target:read')
   }
   try {
-    await targets.getTarget(targetId)
+    return await targets.getTarget(targetId)
   } catch (error) {
     if (error instanceof NotFoundException) {
       throw new DomainError('not_found', 'TARGET_NOT_FOUND', '目标系统不存在')

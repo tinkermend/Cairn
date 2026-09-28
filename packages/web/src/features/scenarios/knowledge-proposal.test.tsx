@@ -14,9 +14,11 @@ const mocks = vi.hoisted(() => ({
   acceptKnowledgeProposal: vi.fn(),
   rejectKnowledgeProposal: vi.fn(),
   fetchKnowledgeProposal: vi.fn(),
+  fetchScenario: vi.fn(),
 }))
 
 vi.mock('@/lib/knowledge-api', () => mocks)
+vi.mock('@/lib/scenarios-api', () => ({ fetchScenario: mocks.fetchScenario }))
 
 const document = {
   schemaVersion: RUNTIME_SCHEMA_VERSION,
@@ -112,6 +114,7 @@ describe('知识建议', () => {
       updatedAt: '2026-09-16T00:00:00.000Z',
     }
     mocks.createKnowledgeProposal.mockResolvedValue(fixture)
+    mocks.fetchScenario.mockReset()
   })
 
   it('OME04/12 歧义术语要求选择，错误后保留输入', async () => {
@@ -175,6 +178,14 @@ describe('知识建议', () => {
       proposal: { ...fixture, proposalStatus: 'accepted' },
       draftRevision: 2,
     })
+    const savedDocument = {
+      authoringSchemaVersion: 2 as const,
+      schemaVersion: RUNTIME_SCHEMA_VERSION,
+      locatorProtocol: 2 as const,
+      inputs: next.inputs,
+      nodes: next.steps.map((step) => ({ kind: 'step' as const, step })),
+    }
+    mocks.fetchScenario.mockResolvedValue({ draft: { revision: 2, document: savedDocument } })
     const screen = await renderCard({ onAccepted })
     await screen.getByRole('button', { name: '生成知识建议' }).click()
     await expect.element(screen.getByText('接受后的步骤（2 步）')).toBeVisible()
@@ -194,8 +205,42 @@ describe('知识建议', () => {
       path: '../../../../../.run/ome-review/proposal-desktop.png',
     })
     await screen.getByRole('button', { name: '接受到草稿' }).click()
-    expect(onAccepted).toHaveBeenCalledWith(2, next)
+    await vi.waitFor(() => expect(onAccepted).toHaveBeenCalledWith(2, savedDocument))
     expect(mocks.acceptKnowledgeProposal).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchScenario).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111')
+  })
+
+  it('接受已成功但草稿刷新失败时，不把成功操作误报为接受失败', async () => {
+    fixture = { ...fixture, proposalStatus: 'proposed', document, diffs: [{ fieldPath: ['steps', '0'] }] }
+    mocks.createKnowledgeProposal.mockResolvedValue(fixture)
+    mocks.acceptKnowledgeProposal.mockResolvedValue({
+      proposal: { ...fixture, proposalStatus: 'accepted' }, draftRevision: 2,
+    })
+    mocks.fetchScenario.mockRejectedValue(new Error('temporary read failure'))
+    const onAccepted = vi.fn()
+    const screen = await renderCard({ onAccepted })
+    await screen.getByRole('button', { name: '生成知识建议' }).click()
+    await screen.getByRole('button', { name: '接受到草稿' }).click()
+    await expect.element(screen.getByText(/状态：已接受/)).toBeVisible()
+    expect(onAccepted).not.toHaveBeenCalled()
+  })
+
+  it('带场景成功条件的 V2 草稿不显示生成入口', async () => {
+    const v2 = {
+      authoringSchemaVersion: 2 as const,
+      schemaVersion: RUNTIME_SCHEMA_VERSION,
+      inputs: [],
+      nodes: document.steps.map((step) => ({ kind: 'step' as const, step })),
+      scenarioOutcomes: [{
+        id: '55555555-5555-4555-8555-555555555555', scope: 'scenario' as const,
+        meaning: '步骤完成', severity: 'MUST' as const, onViolation: 'halt' as const,
+        provenance: 'manual' as const,
+        rule: { kind: 'deterministic' as const, expect: { kind: 'visible' as const } },
+      }],
+    }
+    const screen = await renderCard({ document: v2 })
+    await expect.element(screen.getByText(/只支持独立步骤且无额外编排设置/)).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '生成知识建议' })).not.toBeInTheDocument()
   })
 
   it('多个做法可以选定版本，窄屏错误后保留需求与建议', async () => {

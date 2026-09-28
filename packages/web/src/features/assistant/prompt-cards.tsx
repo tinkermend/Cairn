@@ -77,9 +77,9 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
       },
       {
         id: 'diag-compare',
-        title: '对比两次运行',
-        description: '提供另一运行后查看步骤与耗时差异',
-        question: '我想对比当前运行与另一次运行；请先提示我指定另一运行。',
+        title: '对比上一次运行',
+        description: '自动查找同场景、同目标系统的上一条运行',
+        question: '这次运行和上一次相比有什么变化？',
         capabilityHint: 'run.compare',
         icon: Layers,
       },
@@ -154,6 +154,7 @@ export function PromptCards({
   const canAssist = useCan('ai:assist')
   const canWrite = useCan('workflow:write')
   const canReadTarget = useCan('target:read')
+  const canReadSession = useCan('session:read')
   const canReadSchedule = useCan('schedule:read')
   const canReadRun = useCan('run:read')
 
@@ -181,11 +182,11 @@ export function PromptCards({
         boundContext,
         pageContext,
         capabilities,
-        permissions: { canAssist, canWrite, canReadTarget, canReadSchedule, canReadRun },
+        permissions: { canAssist, canWrite, canReadTarget, canReadSession, canReadSchedule, canReadRun },
       })
     }
     return []
-  }, [boundContext, pageContext, capabilities, availableIds, canAssist, canWrite, canReadTarget, canReadSchedule, canReadRun])
+  }, [boundContext, pageContext, capabilities, availableIds, canAssist, canWrite, canReadTarget, canReadSession, canReadSchedule, canReadRun])
 
   const recommendedCategory = useMemo((): PromptCategory | null => {
     if (recommendedChips.length === 0) return null

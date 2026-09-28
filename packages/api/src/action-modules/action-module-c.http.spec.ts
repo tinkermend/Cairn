@@ -301,7 +301,7 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
     }).expect(400)
     expect(blocked.body.code).toBe('SCENARIO_COMPILE_BLOCKED')
     expect(blocked.body.details.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'SCENARIO_UNKNOWN_STEP_TYPE' }),
+      expect.objectContaining({ code: 'SCENARIO_AI_UNAVAILABLE' }),
     ]))
   })
 

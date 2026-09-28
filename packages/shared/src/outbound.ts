@@ -146,7 +146,7 @@ export const outboundPayloadSchema = z.strictObject({
       alertId: entityIdSchema,
       ruleId: z.string().max(64),
       ruleName: z.string().max(128),
-      scope: z.enum(['platform', 'worker', 'api']),
+      scope: z.enum(['platform', 'worker', 'api', 'target']),
       scopeId: z.string().max(256),
       severity: z.enum(['warning', 'critical']),
       metricKey: z.string().max(128).nullable(),

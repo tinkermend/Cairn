@@ -45,6 +45,7 @@ export {
 
 export const TARGET_STATUSES = ['active', 'disabled'] as const
 export type TargetStatus = (typeof TARGET_STATUSES)[number]
+export const TARGET_STATUS_LABELS: Record<TargetStatus, string> = { active: '启用', disabled: '停用' }
 
 /** Stable local identity choices. These keys never accept image URLs or CSS values. */
 export const TARGET_ICON_KEYS = ['globe', 'building', 'layers', 'database', 'cloud', 'shopping-bag', 'landmark', 'factory'] as const
@@ -59,9 +60,13 @@ export const targetAccentKeySchema = z.enum(TARGET_ACCENT_KEYS)
 
 export const AUTH_METHODS = ['password', 'manual'] as const
 export type AuthMethod = (typeof AUTH_METHODS)[number]
+export const AUTH_METHOD_LABELS: Record<AuthMethod, string> = { password: '账号密码', manual: '仅手工登录' }
 
 export const CAPTCHA_MODES = ['none', 'image', 'slider', 'sms', 'other'] as const
 export type CaptchaMode = (typeof CAPTCHA_MODES)[number]
+export const CAPTCHA_MODE_LABELS: Record<CaptchaMode, string> = {
+  none: '无验证码', image: '图形验证码', slider: '滑动验证码', sms: '短信验证码', other: '其他',
+}
 
 export const TARGET_ERROR_CODES = [
   'TARGET_NOT_FOUND',
@@ -90,6 +95,7 @@ export type TargetErrorCode = (typeof TARGET_ERROR_CODES)[number]
 export const targetCodeSchema = z
   .string()
   .regex(/^[a-z][a-z0-9-]{1,62}$/, '编码须为小写字母开头的 slug（2–63 字符）')
+export const targetNameSchema = z.string().trim().min(1).max(128)
 
 /**
  * 已落库的编码。创建仍走 targetCodeSchema；出站不能再用同一条正则打回，
@@ -104,7 +110,7 @@ export const persistedTargetCodeSchema = z.string().min(1).max(256)
 const UrlCtor = (globalThis as unknown as { URL: new (input: string) => { username: string; password: string } })
   .URL
 
-const httpUrlSchema = z
+export const httpUrlSchema = z
   .string()
   .trim()
   .min(1)
@@ -122,7 +128,7 @@ const httpUrlSchema = z
     }
   }, 'URL 不得内嵌凭据')
 
-const optionalLoginUrlSchema = z.preprocess((value) => {
+export const optionalLoginUrlSchema = z.preprocess((value) => {
   if (typeof value === 'string' && value.trim() === '') return null
   return value
 }, httpUrlSchema.nullable().optional())
@@ -267,7 +273,7 @@ export type CreateTargetAccountBody = z.infer<typeof createTargetAccountBodySche
 export const createTargetBodySchema = z
   .strictObject({
     code: targetCodeSchema,
-    name: z.string().trim().min(1).max(128),
+    name: targetNameSchema,
     entryUrl: httpUrlSchema,
     loginUrl: optionalLoginUrlSchema,
     authMethod: authMethodSchema.default('password'),
@@ -294,7 +300,7 @@ export type CreateTargetBody = z.infer<typeof createTargetBodySchema>
 
 export const updateTargetBodySchema = z
   .strictObject({
-    name: z.string().trim().min(1).max(128).optional(),
+    name: targetNameSchema.optional(),
     entryUrl: httpUrlSchema.optional(),
     loginUrl: optionalLoginUrlSchema,
     authMethod: authMethodSchema.optional(),

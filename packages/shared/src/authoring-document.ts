@@ -985,6 +985,18 @@ export function authoringHasOutcomes(document: ScenarioAuthoringDocumentV2): boo
   )
 }
 
+/** 知识提案目前保存平面步骤；只允许不会丢失 V2 定义的草稿进入该流程。 */
+export function canFlattenKnowledgeAuthoringDocument(document: ScenarioAuthoringDocumentV2): boolean {
+  return !authoringHasOutcomes(document) &&
+    !authoringHasControlBlocks(document) &&
+    !authoringHasModuleInvocations(document) &&
+    !walkAuthoringNodes(document).some((item) => item.node.kind === 'step' && item.node.origin !== undefined) &&
+    document.outputs === undefined &&
+    document.resolution === undefined &&
+    document.locatorPlan === undefined &&
+    (document.locatorProtocol === undefined || document.locatorProtocol === 2)
+}
+
 /** V1 取 steps；V2 递归展平收集 StepNode，调用节点不计入。 */
 export function authoringSteps(
   document: ScenarioAuthoringDocumentV2 | { steps: Step[] } | null | undefined,

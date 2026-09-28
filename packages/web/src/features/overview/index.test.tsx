@@ -182,6 +182,7 @@ describe('OverviewPage', () => {
     await expect.element(screen.getByText('综合执行成功率')).toBeInTheDocument()
     await expect.element(screen.getByText('AI 智能调用')).toBeInTheDocument()
     await expect.element(screen.getByText('目标系统与账号')).toBeInTheDocument()
+    await expect.element(screen.getByText('系统 / 10 账号（9 就绪）')).toBeInTheDocument()
     await expect.element(screen.getByText('集群算力利用率')).toBeInTheDocument()
   })
 

@@ -1167,6 +1167,7 @@ export const bindOperationSession = operation(impl2.bindOperationSession);
 
 import * as scheduleImpl from "./schedules/index.js";
 export const getSchedule = operation(scheduleImpl.getSchedule);
+export const getScheduleOccurrence = operation(scheduleImpl.getScheduleOccurrence);
 export const listSchedules = operation(scheduleImpl.listSchedules);
 export const writeSchedule = operation(scheduleImpl.writeSchedule);
 export const setScheduleEnabled = operation(scheduleImpl.setScheduleEnabled);
@@ -1285,6 +1286,9 @@ export const purgeScenarioAiCalls = operation(
 );
 export const readMonitorSeries = operation(monitoringImpl.readMonitorSeries);
 export const summarizeAi = operation(monitoringImpl.summarizeAi);
+export const summarizeAiModels = operation(monitoringImpl.summarizeAiModels);
+export const summarizeSla = operation(monitoringImpl.summarizeSla);
+export const summarizeTargetSla = operation(monitoringImpl.summarizeTargetSla);
 export const collectPlatformSamples = operation(
   monitoringImpl.collectPlatformSamples,
 );

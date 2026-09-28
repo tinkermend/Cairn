@@ -8,6 +8,8 @@ import {
   SESSION_OCCUPANCY_PROTOCOL,
   DEMONSTRATION_PROTOCOL,
   normalizeAuthoringDocument,
+  parseWorkerRoles,
+  protocolCapabilitiesForRoles,
   stepRunFor,
   walkAuthoringNodes,
   syncSha256Bytes,
@@ -468,15 +470,30 @@ describe.each(DRIVERS)(
           lostAfterSeconds: 60,
           protocolCapabilities: protocols.filter((p) => p !== capability),
         }
+        // 分角色的调度/分析/维护节点不领 Run，不应被当作旧执行节点拦截。
+        const roleWorkers = (['scheduler', 'analyst', 'maintenance'] as const).map((role) => ({
+          workerId: `di-${role}-${newId()}`,
+          instanceId: newId(),
+          capacity: 1,
+          lostAfterSeconds: 60,
+          protocolCapabilities: protocolCapabilitiesForRoles(parseWorkerRoles(role)),
+        }))
+        for (const worker of roleWorkers) await registerWorker(handle.db, worker)
+        await assertDemonstrationExecutorRolloutTx(handle.db, snapshot)
         await registerWorker(handle.db, old)
         await expect(
           assertDemonstrationExecutorRolloutTx(handle.db, snapshot),
-        ).rejects.toMatchObject({ code: 'DEMONSTRATION_EXECUTOR_UPGRADE_REQUIRED' })
+        ).rejects.toMatchObject({
+          code: 'DEMONSTRATION_EXECUTOR_UPGRADE_REQUIRED',
+          details: { workers: [{ workerId: old.workerId, missing: [capability] }] },
+        })
         await expect(
           createRunWithSnapshot(handle.db, { scenarioId: current.id, actor: actor(), aiExecution }),
         ).rejects.toMatchObject({ code: 'DEMONSTRATION_EXECUTOR_UPGRADE_REQUIRED' })
         expect(await claimRun(handle, { ...old, leaseTtlSeconds: 60 })).toBeNull()
         await markWorkerStopped(handle.db, old.workerId, old.instanceId)
+        for (const worker of roleWorkers)
+          await markWorkerStopped(handle.db, worker.workerId, worker.instanceId)
         const upgraded = {
           ...old,
           workerId: `di-new-${newId()}`,

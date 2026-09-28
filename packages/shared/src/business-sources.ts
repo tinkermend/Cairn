@@ -103,6 +103,7 @@ export const businessRecordsResponseSchema = z.strictObject({
   coverage: z.strictObject({
     status: z.enum(['complete', 'partial', 'unknown']),
     completenessBasis: z.string(),
+    sourceName: z.string().optional(),
     observedAt: z.string().nullable(),
     importedAt: z.string(),
   }),

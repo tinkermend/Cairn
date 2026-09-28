@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi } from '@tanstack/react-router'
 import { ArrowLeft, Compass, ShieldCheck } from 'lucide-react'
@@ -9,6 +9,7 @@ import { fetchTarget } from '@/lib/targets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
 import { useBreadcrumb } from '@/stores/breadcrumb-store'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Main } from '@/components/layout/main'
@@ -81,6 +82,16 @@ export function TargetMapPage() {
     queryKey: ['target', targetId],
     queryFn: () => fetchTarget(targetId),
   })
+
+  useAssistantContextBinding(useMemo(() => targetQuery.data ? {
+    page: 'target' as const,
+    routeKey: 'targets.$targetId.map',
+    targetId: targetQuery.data.id,
+    entityId: targetQuery.data.id,
+    statusLabel: '目标知识',
+    statusTone: 'neutral' as const,
+    summaryText: `目标系统「${targetQuery.data.name}」的知识地图`,
+  } : null, [targetQuery.data]))
 
   useBreadcrumb({
     entityId: targetId,

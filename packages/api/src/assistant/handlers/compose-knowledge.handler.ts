@@ -1,6 +1,7 @@
 import {
-  type AssistantKnowledgeProposal,
+  type AssistantResult,
   type ScenarioDocument,
+  canFlattenKnowledgeAuthoringDocument,
   authoringSteps,
   isAuthoringDocumentV2,
   parseScenarioDocument,
@@ -25,7 +26,7 @@ function requireFlatDocument(document: unknown): ScenarioDocument {
 
 export async function handleComposeKnowledge(
   ctx: AssistantCapabilityHandlerContext,
-): Promise<AssistantKnowledgeProposal> {
+): Promise<AssistantResult> {
   const { actor, slots, question, db, targets, platformConfig, onProgress } = ctx
   await onProgress?.('loading_facts', '正在检索草稿与已授权术语...')
 
@@ -43,7 +44,16 @@ export async function handleComposeKnowledge(
     throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新生成')
   }
 
-  const document = requireFlatDocument(detail.draft.document)
+  const savedDocument = detail.draft.document
+  if (isAuthoringDocumentV2(savedDocument) && !canFlattenKnowledgeAuthoringDocument(savedDocument)) {
+    return {
+      kind: 'unsupported',
+      reasonCode: 'AUTHORING_SCHEMA_UNSUPPORTED',
+      message: '当前已保存草稿包含成功条件、模块、分支或其他 V2 编排设置。知识辅助编写暂不能无损保留这些定义，因此没有生成提案，也没有修改草稿。请在场景工作区使用「场景编排建议」逐步补充并审查；已发布做法的无损复制仍需后续支持。',
+    }
+  }
+
+  const document = requireFlatDocument(savedDocument)
   const digest = await scenarioDocumentDigest(document)
   const config = await platformConfig.get()
 

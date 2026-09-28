@@ -23,6 +23,7 @@ export function resolveContextRecommendations(params: {
     canAssist: boolean
     canWrite: boolean
     canReadTarget: boolean
+    canReadSession?: boolean
     canReadSchedule?: boolean
     canReadRun?: boolean
   }
@@ -121,15 +122,6 @@ export function resolveContextRecommendations(params: {
       })
     }
 
-    if (bound?.isDirty) {
-      rawChips.push({
-        id: 'studio-draft-diff',
-        label: '📝 审查未保存改动',
-        question: '请总结当前草稿与 baseline 相比做出了哪些改动。',
-        capabilityHint: 'scenario.explain',
-        priority: 95,
-      })
-    }
   } else if (page === 'run' && runId) {
     const isError = bound?.statusTone === 'error'
 
@@ -138,23 +130,23 @@ export function resolveContextRecommendations(params: {
       if (selectedStepId && bound?.selectedStepFailed) {
         rawChips.push({
           id: 'run-step-diagnose',
-          label: '📸 诊断当前步骤报错',
-          question: '为什么当前选中的步骤会执行失败？请分析其错误与证据。',
+          label: '🔎 排查当前步骤报错',
+          question: '当前步骤记录了什么错误？我应该先核对哪份运行证据？',
           capabilityHint: 'run.diagnose',
           priority: 115,
         })
       }
       rawChips.push({
         id: 'run-diagnose-rca',
-        label: '🚨 诊断失败根因',
-        question: '请结合执行日志、截图证据与错误信息，诊断本次运行失败的根本原因。',
+        label: '🚨 排查本次失败',
+        question: '这次运行哪里失败？请根据已记录的步骤和错误信息说明先核对什么；证据不足时请指出缺口。',
         capabilityHint: 'run.diagnose',
         priority: 110,
       })
       rawChips.push({
         id: 'run-compare',
-        label: '🔄 对比上次成功运行',
-        question: '我想对比本次失败运行与上一次成功运行的差异；请先提示我指定对比运行。',
+        label: '🔄 对比上一次运行',
+        question: '这次运行和上一次相比有什么变化？',
         capabilityHint: 'run.compare',
         priority: 90,
       })
@@ -207,13 +199,15 @@ export function resolveContextRecommendations(params: {
     })
   } else if (page === 'target' && targetId && params.permissions.canReadTarget) {
     // 目标系统与凭据
-    rawChips.push({
-      id: 'target-account-health',
-      label: '🔑 检查账号健康度',
-      question: '请检查该目标系统关联账号的认证健康状态与会话租约情况。',
-      capabilityHint: 'platform.guide',
-      priority: 90,
-    })
+    if (params.permissions.canReadSession) {
+      rawChips.push({
+        id: 'target-account-health',
+        label: '🔑 检查账号健康度',
+        question: '请检查该目标系统关联账号的认证健康状态与会话租约情况。',
+        capabilityHint: 'knowledge.answer',
+        priority: 90,
+      })
+    }
     rawChips.push({
       id: 'target-menu-map',
       label: '🗺️ 目标菜单地图覆盖',

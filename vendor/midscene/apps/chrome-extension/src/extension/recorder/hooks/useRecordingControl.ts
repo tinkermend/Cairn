@@ -160,7 +160,23 @@ export const useRecordingControl = (
         let startStage = 'initialize recording';
         try {
           startStage = 'verify Cairn login';
-          await fetchCairnMe(cairn.apiOrigin, cairn.token);
+          try {
+            await fetchCairnMe(cairn.apiOrigin, cairn.token);
+          } catch (error: any) {
+            if (error?.status === 401) {
+              useCairnStore.getState().logout();
+              message.error('识途登录已过期，请重新登录');
+              return;
+            }
+            // 平台服务不可达或瞬时重启中（非 401 凭据过期）：
+            // 本地已有经核验的登录凭据，录制本身发生在当前标签页的本地隔离环境中，
+            // 允许进入本地录制，避免因本地服务热重载或瞬时网络抖动阻断操作。
+            recordLogger.warn(
+              'Failed to verify Cairn login online; proceeding with local recording',
+              { startStage, apiOrigin: cairn.apiOrigin, error },
+            );
+            message.warning('识途服务暂未响应，已继续本地录制（上传草稿前请确保服务就绪）');
+          }
           if (useCairnStore.getState().token !== cairn.token) {
             throw new Error('识途登录状态已改变');
           }
@@ -255,7 +271,7 @@ export const useRecordingControl = (
             error,
           );
           message.error(startStage === 'verify Cairn login'
-            ? '无法验证识途登录状态，请检查连接后重试'
+            ? '识途登录状态已改变，请重新登录后重试'
             : '启动录制失败，请确认当前页面可录制后重试');
         } finally {
           setIsStarting(false);

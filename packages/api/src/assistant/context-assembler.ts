@@ -1,14 +1,17 @@
 import {
   type AssistantCitationKey,
   type AssistantFact,
+  type AssistantHypothesis,
   type AssistantNextAction,
   type AssistantQuoteContext,
   type ScenarioDocument,
   type RunObservation,
   type DiagnosticFocus,
+  diagnosticFocusSchema,
   type MissingInfoReason,
   citationKey,
   isSensitiveFillInput,
+  assistantWaitingPlacementDescription,
   stepRunMapByStep,
   stepRunsOf,
   SENSITIVE_FILL_HINT,
@@ -98,14 +101,40 @@ export async function assembleDiagnoseContext(
     )
   }
 
-  const effectiveFocus = (options.focus as DiagnosticFocus) || 'overview'
+  // Routing and the capability schema historically use different focus labels.
+  // Normalize at this boundary so an LLM-provided slot cannot make an otherwise
+  // valid diagnosis fail only when the answer is persisted.
+  const requestedFocus = options.focus === 'waiting' ? 'wait'
+    : options.focus === 'timing' ? 'duration'
+      : options.focus === 'screenshot' || options.focus === 'evidence'
+        ? 'evidence_missing'
+        : options.focus
+  const effectiveFocus: DiagnosticFocus = diagnosticFocusSchema.safeParse(requestedFocus).data ?? 'overview'
 
   add('status', `运行状态为 ${run.status}，证据轴为 ${run.evidenceStatus}。`, [citationKey('run', run.id)])
   add(
-    'placement',
-    `调度位置为 ${run.placement.state}${run.placement.sessionStatus ? `，会话 ${run.placement.sessionStatus}` : ''}。`,
+    'outcome_status',
+    `运行业务结果为 ${run.outcomeStatus}；执行状态和业务结果是分别记录的，不能仅凭执行状态判断业务检查是否通过。`,
     [citationKey('run', run.id)],
+    run.outcomeStatus === 'FAIL',
   )
+  const outcomeResults = run.outcomeResults ?? []
+  const notableOutcomes = outcomeResults.filter((item) => item.verdict !== 'PASS')
+  const displayedOutcomes = (notableOutcomes.length > 0 ? notableOutcomes : outcomeResults).slice(0, 6)
+  for (const result of displayedOutcomes) {
+    add(
+      `outcome-${result.id}`,
+      `业务检查「${result.meaning}」结果为 ${result.verdict}（重要程度 ${result.severity}）。`,
+      [citationKey('run', run.id), citationKey('stepRun', result.stepRunId)],
+      result.verdict === 'FAIL',
+    )
+  }
+  if (notableOutcomes.length > displayedOutcomes.length) {
+    missingInformation.push(`业务检查异常共 ${notableOutcomes.length} 项，事实包只列出前 ${displayedOutcomes.length} 项`)
+    missingReasons.push({ reason: 'truncated', detail: '业务检查异常条目超过当前事实包展示上限' })
+  }
+  const placementDescription = assistantWaitingPlacementDescription(run.placement.state)
+  if (placementDescription) add('placement', placementDescription, [citationKey('run', run.id)])
 
   if (run.status === 'WAITING_FOR_AUTH') {
     add('auth', '运行正在等待目标系统认证，不是步骤失败。', [citationKey('run', run.id)])
@@ -115,7 +144,9 @@ export async function assembleDiagnoseContext(
   if (effectiveFocus === 'wait') {
     add(
       'focus_wait',
-      `【等待聚焦】运行处于状态 ${run.status}，调度阶段为 ${run.placement.state}，会话租约状态为 ${run.placement.sessionStatus ?? '未分配'}。若处于等待态，应排查调度队列或双租约等待，而非步骤业务执行报错。`,
+      placementDescription
+        ? `【等待聚焦】${placementDescription}请在运行详情核对会话与执行节点状态。`
+        : '【等待聚焦】当前记录没有可确认的调度等待原因；请在运行详情核对执行状态与时间线。',
       [citationKey('run', run.id)],
       true,
     )
@@ -127,7 +158,7 @@ export async function assembleDiagnoseContext(
   } else if (effectiveFocus === 'outcome') {
     add(
       'focus_outcome',
-      `【业务结果聚焦】运行最终状态为 ${run.status}，证据轴完整度为 ${run.evidenceStatus}。需分别评估业务断言契约与执行过程。`,
+      `【业务结果聚焦】运行最终状态为 ${run.status}，业务结果为 ${run.outcomeStatus}，证据轴完整度为 ${run.evidenceStatus}。需分别评估业务断言契约与执行过程。`,
       [citationKey('run', run.id)],
       true,
     )
@@ -301,6 +332,7 @@ export function buildAuthoringSlice(
         (s) =>
           s.id === referenced ||
           s.name === referenced ||
+          s.outputKey === referenced ||
           (s.input as Record<string, unknown>)?.variable === referenced ||
           (s.input as Record<string, unknown>)?.as === referenced,
       )
@@ -376,6 +408,28 @@ export function buildAuthoringSlice(
 /**
  * AIF-03: Assemble context for run comparison.
  */
+const COMPARE_RUN_STATUS_LABELS: Record<string, string> = {
+  QUEUED: '排队中', RUNNING: '执行中', RECOVERING: '恢复中', WAITING_FOR_AUTH: '等待认证',
+  HOLDING: '等待资源', NEEDS_REVIEW: '待人工核查', SUCCEEDED: '执行成功', FAILED: '执行失败', CANCELLED: '已取消',
+}
+const COMPARE_OUTCOME_LABELS: Record<string, string> = {
+  PASS: '业务通过', WARN: '业务警告', FAIL: '业务失败', UNKNOWN: '业务结果未知', NOT_EVALUATED: '业务未评估',
+}
+
+function comparisonTime(instant: string | undefined): string {
+  if (!instant) return '时间未记录'
+  const time = new Date(instant)
+  return Number.isNaN(time.getTime())
+    ? '时间未记录'
+    : `${time.toISOString().slice(0, 19).replace('T', ' ')} UTC`
+}
+
+function comparisonDuration(startedAt: string | null | undefined, finishedAt: string | null | undefined): number | undefined {
+  if (!startedAt || !finishedAt) return undefined
+  const elapsed = Date.parse(finishedAt) - Date.parse(startedAt)
+  return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : undefined
+}
+
 export async function assembleRunCompareContext(
   db: DbHandle,
   baseRunId: string,
@@ -431,18 +485,24 @@ export async function assembleRunCompareContext(
   const allStepIds = Array.from(new Set([...baseSteps.keys(), ...targetSteps.keys()]))
   const differences: RunCompareFactPack['differences'] = []
   const facts: AssistantFact[] = []
+  let largestDurationDifference: {
+    stepName: string
+    baseDuration: number
+    targetDuration: number
+    absoluteDifference: number
+  } | null = null
 
   const baseCite = citationKey('run', baseRunId)
   const targetCite = citationKey('run', targetRunId)
 
   facts.push({
     id: 'base-overview',
-    text: `基准运行 ${baseRunId} 状态为 ${baseObservation.run.status}，包含 ${baseObservation.run.stepRuns.length} 步。`,
+    text: `基准运行 ${baseRunId} 创建于 ${baseObservation.run.createdAt ?? '未知时间'}，执行状态为 ${baseObservation.run.status}，业务结果为 ${baseObservation.run.outcomeStatus ?? 'NOT_EVALUATED'}，包含 ${baseObservation.run.stepRuns.length} 步。`,
     citations: [baseCite],
   })
   facts.push({
     id: 'target-overview',
-    text: `对比运行 ${targetRunId} 状态为 ${targetObservation.run.status}，包含 ${targetObservation.run.stepRuns.length} 步。`,
+    text: `对比运行 ${targetRunId} 创建于 ${targetObservation.run.createdAt ?? '未知时间'}，执行状态为 ${targetObservation.run.status}，业务结果为 ${targetObservation.run.outcomeStatus ?? 'NOT_EVALUATED'}，包含 ${targetObservation.run.stepRuns.length} 步。`,
     citations: [targetCite],
   })
 
@@ -454,79 +514,124 @@ export async function assembleRunCompareContext(
     })
   }
 
-  // Definition & Environment dimensional diffs (B1)
-  if (baseObservation.run.scenarioVersionId !== targetObservation.run.scenarioVersionId) {
-    differences.push({
-      dimension: 'definition',
-      stepName: '场景版本',
-      detail: `基准版本 ${baseObservation.run.scenarioVersionId ?? '草稿'} vs 对比版本 ${targetObservation.run.scenarioVersionId ?? '草稿'}`,
-    })
-  }
-  if (
-    baseObservation.run.targetAccountId &&
-    targetObservation.run.targetAccountId &&
-    baseObservation.run.targetAccountId !== targetObservation.run.targetAccountId
-  ) {
-    differences.push({
-      dimension: 'environment',
-      stepName: '执行账号',
-      detail: `基准账号 ${baseObservation.run.targetAccountId} vs 对比账号 ${targetObservation.run.targetAccountId}`,
-    })
-  }
-
-  for (const stepId of allStepIds) {
-    const baseStep = baseSteps.get(stepId)
-    const targetStep = targetSteps.get(stepId)
-    const stepName = baseStep?.name ?? targetStep?.name ?? stepId
-
-    const baseStatus = baseStep?.status
-    const targetStatus = targetStep?.status
-
-    const baseDuration =
-      baseStep?.startedAt && baseStep?.finishedAt
-        ? Date.parse(baseStep.finishedAt) - Date.parse(baseStep.startedAt)
-        : undefined
-    const targetDuration =
-      targetStep?.startedAt && targetStep?.finishedAt
-        ? Date.parse(targetStep.finishedAt) - Date.parse(targetStep.startedAt)
-        : undefined
-
-    const durationDiffMs =
-      baseDuration !== undefined && targetDuration !== undefined
-        ? targetDuration - baseDuration
-        : undefined
-
-    const baseError = baseStep?.attempts.at(-1)?.error?.code
-    const targetError = targetStep?.attempts.at(-1)?.error?.code
-    const errorDiff =
-      baseError !== targetError
-        ? `基准错误: ${baseError ?? '无'}, 对比错误: ${targetError ?? '无'}`
-        : undefined
-
-    if (baseStatus !== targetStatus || errorDiff || (durationDiffMs !== undefined && Math.abs(durationDiffMs) > 1000)) {
+  // Step IDs and timings have no common semantic baseline across different
+  // scenarios or targets. Keep only the two separately cited run overviews.
+  if (comparable) {
+    // Definition & Environment dimensional diffs (B1)
+    if (baseObservation.run.outcomeStatus !== targetObservation.run.outcomeStatus) {
       differences.push({
         dimension: 'execution',
-        stepId,
-        stepName,
-        baseStatus,
-        targetStatus,
-        durationDiffMs,
-        errorDiff,
+        stepName: '业务结果',
+        baseStatus: baseObservation.run.outcomeStatus ?? 'NOT_EVALUATED',
+        targetStatus: targetObservation.run.outcomeStatus ?? 'NOT_EVALUATED',
+        detail: `业务结果由 ${COMPARE_OUTCOME_LABELS[baseObservation.run.outcomeStatus ?? 'NOT_EVALUATED']} 变为 ${COMPARE_OUTCOME_LABELS[targetObservation.run.outcomeStatus ?? 'NOT_EVALUATED']}`,
       })
+    }
+    if (baseObservation.run.scenarioVersionId !== targetObservation.run.scenarioVersionId) {
+      differences.push({
+        dimension: 'definition',
+        stepName: '场景版本',
+        detail: `基准版本 ${baseObservation.run.scenarioVersionId ?? '草稿'} vs 对比版本 ${targetObservation.run.scenarioVersionId ?? '草稿'}`,
+      })
+    }
+    if (
+      baseObservation.run.targetAccountId &&
+      targetObservation.run.targetAccountId &&
+      baseObservation.run.targetAccountId !== targetObservation.run.targetAccountId
+    ) {
+      differences.push({
+        dimension: 'environment',
+        stepName: '执行账号',
+        detail: `基准账号 ${baseObservation.run.targetAccountId} vs 对比账号 ${targetObservation.run.targetAccountId}`,
+      })
+    }
 
-      facts.push({
-        id: `diff-${stepId}`,
-        text: `步骤「${stepName}」状态由 ${baseStatus ?? '未执行'} 变为 ${targetStatus ?? '未执行'}${
-          durationDiffMs ? `，耗时变动 ${durationDiffMs > 0 ? '+' : ''}${durationDiffMs}ms` : ''
-        }${errorDiff ? `（${errorDiff}）` : ''}。`,
-        citations: [baseCite, targetCite],
-      })
+    for (const stepId of allStepIds) {
+      const baseStep = baseSteps.get(stepId)
+      const targetStep = targetSteps.get(stepId)
+      const stepName = baseStep?.name ?? targetStep?.name ?? stepId
+
+      const baseStatus = baseStep?.status
+      const targetStatus = targetStep?.status
+
+      const baseDuration =
+        baseStep?.startedAt && baseStep?.finishedAt
+          ? Date.parse(baseStep.finishedAt) - Date.parse(baseStep.startedAt)
+          : undefined
+      const targetDuration =
+        targetStep?.startedAt && targetStep?.finishedAt
+          ? Date.parse(targetStep.finishedAt) - Date.parse(targetStep.startedAt)
+          : undefined
+
+      const durationDiffMs =
+        baseDuration !== undefined && targetDuration !== undefined
+          ? targetDuration - baseDuration
+          : undefined
+      const durationDetail =
+        baseDuration !== undefined && targetDuration !== undefined && durationDiffMs !== undefined
+          ? `基准运行 ${baseDuration} 毫秒、对比运行 ${targetDuration} 毫秒，${durationDiffMs < 0 ? '基准运行' : '对比运行'}慢 ${Math.abs(durationDiffMs)} 毫秒`
+          : undefined
+
+      const baseError = baseStep?.attempts.at(-1)?.error?.code
+      const targetError = targetStep?.attempts.at(-1)?.error?.code
+      const errorDiff =
+        baseError !== targetError
+          ? `基准错误: ${baseError ?? '无'}, 对比错误: ${targetError ?? '无'}`
+          : undefined
+
+      if (baseStatus !== targetStatus || errorDiff || (durationDiffMs !== undefined && Math.abs(durationDiffMs) > 1000)) {
+        if (
+          durationDiffMs !== undefined &&
+          baseDuration !== undefined &&
+          targetDuration !== undefined &&
+          Math.abs(durationDiffMs) > (largestDurationDifference?.absoluteDifference ?? 0)
+        ) {
+          largestDurationDifference = {
+            stepName,
+            baseDuration,
+            targetDuration,
+            absoluteDifference: Math.abs(durationDiffMs),
+          }
+        }
+        differences.push({
+          dimension: 'execution',
+          stepId,
+          stepName,
+          baseStatus,
+          targetStatus,
+          durationDiffMs,
+          errorDiff,
+          detail: durationDetail,
+        })
+
+        facts.push({
+          id: `diff-${stepId}`,
+          text: `步骤「${stepName}」${
+            baseStatus === targetStatus
+              ? `两次状态均为 ${baseStatus ?? '未执行'}`
+              : `状态由 ${baseStatus ?? '未执行'} 变为 ${targetStatus ?? '未执行'}`
+          }${durationDetail ? `；${durationDetail}` : ''}${errorDiff ? `（${errorDiff}）` : ''}。`,
+          citations: [baseCite, targetCite],
+        })
+      }
     }
   }
 
-  const summary = `基准运行 ${baseObservation.run.status} vs 对比运行 ${targetObservation.run.status}，共检测到 ${differences.length} 处步骤与配置差异。${
-    !comparable ? '（注意：两次运行存在关键不可比因素）' : ''
-  }`
+  const timingSummary = largestDurationDifference
+    ? `耗时差异最大的是「${largestDurationDifference.stepName}」：基准运行 ${largestDurationDifference.baseDuration} 毫秒、对比运行 ${largestDurationDifference.targetDuration} 毫秒，${largestDurationDifference.baseDuration > largestDurationDifference.targetDuration ? '基准运行' : '对比运行'}慢 ${largestDurationDifference.absoluteDifference} 毫秒。`
+    : ''
+  const baseTotalMs = comparisonDuration(baseObservation.run.startedAt, baseObservation.run.finishedAt)
+  const targetTotalMs = comparisonDuration(targetObservation.run.startedAt, targetObservation.run.finishedAt)
+  const totalTimingSummary = comparable && baseTotalMs !== undefined && targetTotalMs !== undefined
+    ? `总执行耗时：基准运行 ${(baseTotalMs / 1000).toFixed(2)} 秒、对比运行 ${(targetTotalMs / 1000).toFixed(2)} 秒，${targetTotalMs === baseTotalMs ? '相同' : `${targetTotalMs > baseTotalMs ? '增加' : '减少'} ${(Math.abs(targetTotalMs - baseTotalMs) / 1000).toFixed(2)} 秒`}。`
+    : ''
+  if (totalTimingSummary) {
+    facts.push({ id: 'total-duration', text: totalTimingSummary, citations: [baseCite, targetCite] })
+  }
+  const statusSummary = `基准运行（${comparisonTime(baseObservation.run.createdAt)}）${COMPARE_RUN_STATUS_LABELS[baseObservation.run.status] ?? baseObservation.run.status}、${COMPARE_OUTCOME_LABELS[baseObservation.run.outcomeStatus ?? 'NOT_EVALUATED']}；对比运行（${comparisonTime(targetObservation.run.createdAt)}）${COMPARE_RUN_STATUS_LABELS[targetObservation.run.status] ?? targetObservation.run.status}、${COMPARE_OUTCOME_LABELS[targetObservation.run.outcomeStatus ?? 'NOT_EVALUATED']}`
+  const summary = comparable
+    ? `${statusSummary}。${differences.length > 0 ? `检测到 ${differences.length} 处业务结果、步骤或配置变化。` : '业务结果、步骤状态、错误码与配置没有变化；单步耗时变化均未超过 1 秒。'}${totalTimingSummary}${timingSummary}`
+    : `${statusSummary}。两次运行来自不同场景或目标系统，不能可靠地逐步对比或归因。`
 
   const missingInformation: string[] = []
   if (!comparable) {
@@ -570,6 +675,50 @@ export interface GroundingValidationOptions {
   facts?: AssistantFact[]
   sourceRevisions?: Record<string, string | number>
   accessibleSources?: Set<string>
+}
+
+/** A root-cause hypothesis needs an actual failed Run with a specific recorded error. */
+export function hasSpecificDiagnosisFailureEvidence(run: RunObservation['run']): boolean {
+  if (run.status !== 'FAILED') return false
+  const failedStep = run.stepRuns.some((step) =>
+    step.status === 'FAILED' || step.attempts.some((attempt) => Boolean(attempt.error)))
+  const errors = run.stepRuns.flatMap((step) =>
+    step.attempts.map((attempt) => attempt.error).filter((error) => error !== null))
+  if (!failedStep || errors.length === 0) return false
+  if (errors.every((error) => error.code === 'EXECUTOR_ERROR' &&
+    (!error.safeMessage || error.safeMessage.trim() === '执行器执行失败'))) return false
+  if (errors.every((error) => error.code === 'AI_NOT_FOUND' &&
+    /定位不唯一或目标被遮挡/.test(error.safeMessage ?? ''))) return false
+  return true
+}
+
+/** A failure hypothesis must cite a failed step; named steps or codes must cite the matching failure. */
+export function validateDiagnosisFailureCitations(
+  hypotheses: AssistantHypothesis[],
+  run: RunObservation['run'],
+): { valid: AssistantHypothesis[]; invalid: AssistantHypothesis[] } {
+  const failedSteps = run.stepRuns.filter((step) =>
+    step.status === 'FAILED' || step.attempts.some((attempt) => Boolean(attempt.error)))
+  if (failedSteps.length === 0) return { valid: [], invalid: hypotheses }
+  const citesFailure = (item: AssistantHypothesis, step: typeof failedSteps[number]) =>
+    item.citations.includes(citationKey('step', step.stepId)) ||
+    item.citations.includes(citationKey('stepRun', step.id)) ||
+    step.attempts.some((attempt) => attempt.error && item.citations.includes(citationKey('attempt', attempt.id)))
+  const valid: AssistantHypothesis[] = []
+  const invalid: AssistantHypothesis[] = []
+  for (const item of hypotheses) {
+    const namedSteps = failedSteps.filter((step) => step.name.length >= 3 && item.text.includes(step.name))
+    const codedSteps = failedSteps.filter((step) => step.attempts.some((attempt) =>
+      attempt.error?.code && item.text.includes(attempt.error.code)))
+    if ((failedSteps.length > 0 && !failedSteps.some((step) => citesFailure(item, step))) ||
+      (namedSteps.length > 0 && !namedSteps.some((step) => citesFailure(item, step))) ||
+      (codedSteps.length > 0 && !codedSteps.some((step) => citesFailure(item, step)))) {
+      invalid.push(item)
+    } else {
+      valid.push(item)
+    }
+  }
+  return { valid, invalid }
 }
 
 /**

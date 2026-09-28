@@ -13,6 +13,12 @@ describe('resolveWorkerRoleConfig', () => {
       'local-worker-maintenance',
     ])
     assert.deepEqual(roles.map(({ port }) => port), [8092, 8093, 8094, 8095])
+    assert.deepEqual(roles.map(({ advertiseUrl }) => advertiseUrl), [
+      'http://127.0.0.1:8092',
+      'http://127.0.0.1:8093',
+      'http://127.0.0.1:8094',
+      'http://127.0.0.1:8095',
+    ])
   })
 
   it('支持主机前缀和角色独立覆盖', () => {
@@ -23,7 +29,16 @@ describe('resolveWorkerRoleConfig', () => {
     })
     assert.equal(roles[0].id, 'host-a-runner-1')
     assert.equal(roles[0].port, 8102)
+    assert.equal(roles[0].advertiseUrl, 'http://127.0.0.1:8102')
     assert.equal(roles[1].id, 'host-a-scheduler')
+  })
+
+  it('角色显式广告地址优先于本机默认地址', () => {
+    const roles = resolveWorkerRoleConfig({
+      CAIRN_WORKER_EXECUTOR_ADVERTISE_URL: 'https://worker.example.test:8102',
+    })
+    assert.equal(roles[0].advertiseUrl, 'https://worker.example.test:8102')
+    assert.equal(roles[1].advertiseUrl, 'http://127.0.0.1:8093')
   })
 
   it('拒绝与 API、单 Worker 或其他角色冲突的端口和 ID', () => {

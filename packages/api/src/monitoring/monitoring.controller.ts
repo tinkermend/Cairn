@@ -20,6 +20,8 @@ import {
   type MonitorSeriesQuery,
   type MonitorSeriesResponse,
   type MonitorStreamQuery,
+  type MonitorTargetSlaResponse,
+  type MonitorAiModelResponse,
   type MonitoringOverviewResponse,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
@@ -37,6 +39,18 @@ export class MonitoringController {
   @RequirePermissions('monitor:read')
   overview(): Promise<MonitoringOverviewResponse> {
     return this.monitoring.overview()
+  }
+
+  @Get('targets/sla')
+  @RequirePermissions('monitor:read')
+  targetsSla(): Promise<MonitorTargetSlaResponse> {
+    return this.monitoring.targetsSla()
+  }
+
+  @Get('ai/models')
+  @RequirePermissions('monitor:read')
+  aiModels(): Promise<MonitorAiModelResponse> {
+    return this.monitoring.aiModels()
   }
 
   @Get('profiles')

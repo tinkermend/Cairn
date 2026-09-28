@@ -1,4 +1,5 @@
 import { and, desc, eq, isNull, inArray } from 'drizzle-orm'
+import { compileModuleContent } from '@cairn/authoring'
 import type { ModuleCondition, ModulePublicationStatus, Step } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { schemaFor } from '../native.js'
@@ -19,6 +20,7 @@ export type PublishedModuleKnowledgeRow = {
   steps: Step[]
   preconditions: ModuleCondition[]
   inputs: { key: string; label: string; required: boolean }[]
+  unusedRequiredInputs: { key: string; label: string }[]
   postconditions: ModuleCondition[]
 }
 
@@ -40,6 +42,14 @@ export async function listPublishedModuleKnowledge(db: Db, targetId: string, sel
       .limit(1)
     if (!version) continue
     const implementation = version.content.implementations[0]
+    const unusedInputIndexes = new Set(
+      implementation
+        ? compileModuleContent({ ...version.content, implementations: [implementation] }, { mode: 'release' })
+          .diagnostics
+          .filter((item) => item.code === 'MODULE_INPUT_UNUSED')
+          .map((item) => Number(item.fieldPath?.[2]))
+        : [],
+    )
     rows.push({
       moduleId: module.id,
       moduleVersionId: version.id,
@@ -52,6 +62,9 @@ export async function listPublishedModuleKnowledge(db: Db, targetId: string, sel
       publicationStatus: version.publicationStatus,
       steps: implementation?.steps ?? [],
       inputs: version.content.contract.inputs,
+      unusedRequiredInputs: version.content.contract.inputs
+        .filter((input, index) => input.required && unusedInputIndexes.has(index))
+        .map((input) => ({ key: input.key, label: input.label })),
       preconditions: version.content.contract.preconditions,
       postconditions: version.content.contract.postconditions ?? [],
     })

@@ -27,6 +27,14 @@ describe('Help Catalog & Retrieval (P0-B / CQ-06)', () => {
     expect(snippets[0].content.length).toBeLessThanOrEqual(500)
   })
 
+  it('retrieves the published save and trial rule for an ordinary unsaved-draft question', () => {
+    const snippets = retrieveHelpSnippets('草稿没保存时能试跑吗？应该怎么做？', {
+      permissions: ['ai:assist'],
+    })
+    expect(snippets[0]?.id).toBe('help:studio-steps')
+    expect(snippets[0]?.content).toContain('保存后方可作为发布版本或试跑输入')
+  })
+
   it('retrieves relevant snippets for session lease query', () => {
     const snippets = retrieveHelpSnippets('受管会话的租约规则是什么？')
     expect(snippets.length).toBeGreaterThan(0)
@@ -57,5 +65,25 @@ describe('Help Catalog & Retrieval (P0-B / CQ-06)', () => {
     expect(retrieveHelpSnippets('')).toEqual([])
     expect(retrieveHelpSnippets('   ')).toEqual([])
     expect(retrieveHelpSnippets('xyz123456789abc不存在的内容')).toEqual([])
+  })
+
+  it('retrieves field meaning and optional default from the shared form contract', () => {
+    const snippets = retrieveHelpSnippets('登录页停留超时不填会怎样？', {
+      permissions: ['ai:assist', 'target:read'],
+    })
+    expect(snippets[0]?.id).toBe('help:target-config-loginLeaveTimeoutSeconds')
+    expect(snippets[0]?.content).toContain('留空使用当前平台配置')
+  })
+
+  it('retrieves field help using defined code aliases and respects permissions', () => {
+    const found = retrieveHelpSnippets('登录超时怎么设置', {
+      permissions: ['ai:assist', 'target:read'],
+    })
+    expect(found[0]?.id).toBe('help:target-config-loginLeaveTimeoutSeconds')
+    expect(found[0]?.content).toContain('留空使用当前平台配置')
+    expect(
+      retrieveHelpSnippets('登录超时怎么设置', { permissions: ['ai:assist'] })
+        .some((item) => item.id === found[0]?.id),
+    ).toBe(false)
   })
 })

@@ -163,7 +163,10 @@ function screenshotTitle(item: EvidenceMetadata): string {
   if (item.type !== 'screenshot') return TYPE_LABELS[item.type]
   const payload = readScreenshotPayload(item.payload)
   const role = payload?.role
-  const diagnosis = payload?.diagnosis === 'suspected_blank' ? ' · 截图疑似空白' : ''
+  const diagnosis =
+    payload?.diagnosis === 'suspected_blank' || payload?.diagnosis === 'still_loading'
+      ? ` · ${SCREENSHOT_DIAGNOSIS_LABELS[payload.diagnosis]}`
+      : ''
   return role ? `${SCREENSHOT_ROLE_LABELS[role]}${diagnosis}` : TYPE_LABELS.screenshot
 }
 

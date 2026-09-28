@@ -116,7 +116,7 @@ export function translateStepError(error?: { code?: string; safeMessage?: string
       return {
         title: `执行异常 [${code}]`,
         description: message || '该步骤执行未达预期。',
-        suggestion: '可先查看右侧操作后截图与步骤数据，或使用识途助手进行深度诊断。',
+        suggestion: '请先核对这一步的错误证据和步骤数据；如有截图也请查看。识途助手可整理已记录事实，具体根因仍需核查。',
         isRetryable: true,
       }
   }

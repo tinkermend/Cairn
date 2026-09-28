@@ -2,29 +2,10 @@ import type {
   AccountUsage,
   AuthCapabilityTier,
   AuthMethod,
-  CaptchaMode,
   LoginLocator,
   LoginLocatorBy,
-  TargetStatus,
 } from '@cairn/shared'
-
-export const AUTH_METHOD_LABELS: Record<AuthMethod, string> = {
-  password: '账号密码',
-  manual: '仅手工登录',
-}
-
-export const CAPTCHA_MODE_LABELS: Record<CaptchaMode, string> = {
-  none: '无验证码',
-  image: '图形验证码',
-  slider: '滑动验证码',
-  sms: '短信验证码',
-  other: '其他',
-}
-
-export const TARGET_STATUS_LABELS: Record<TargetStatus, string> = {
-  active: '启用',
-  disabled: '停用',
-}
+export { AUTH_METHOD_LABELS, CAPTCHA_MODE_LABELS, TARGET_STATUS_LABELS } from '@cairn/shared'
 
 export const ACCOUNT_USAGE_LABELS: Record<AccountUsage, string> = {
   business: '业务运行',

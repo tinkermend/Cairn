@@ -13,6 +13,7 @@ import {
   AI_TASK_EVIDENCE_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
   VALIDATION_SUBJECT_PROTOCOL,
+  advertisesRunExecution,
   normalizeAuthoringDocument,
   scenarioValidationSchema,
   type RunSnapshot,
@@ -131,18 +132,39 @@ export async function assertDemonstrationExecutorRolloutTx(tx: Db, snapshot: Run
     .select()
     .from(workers)
     .where(inArray(workers.status, ['READY', 'DRAINING']))
-  const incompatible = live.some(
-    (worker) =>
-      worker.capacity > 0 &&
-      (worker.heartbeatExpiresAt?.getTime() ??
-        worker.heartbeatAt.getTime() + (worker.lostAfterSeconds ?? 60) * 1000) > now.getTime() &&
-      required.some((capability) => !worker.protocolCapabilities.includes(capability)),
-  )
-  if (incompatible)
+  // 分角色部署下调度/分析/维护节点不领 Run，也不会广告执行协议，不能算作旧执行节点。
+  const incompatible = live
+    .filter(
+      (worker) =>
+        worker.capacity > 0 &&
+        advertisesRunExecution(worker.protocolCapabilities) &&
+        (worker.heartbeatExpiresAt?.getTime() ??
+          worker.heartbeatAt.getTime() + (worker.lostAfterSeconds ?? 60) * 1000) > now.getTime(),
+    )
+    .map((worker) => ({
+      workerId: worker.id,
+      missing: required.filter((capability) => !worker.protocolCapabilities.includes(capability)),
+    }))
+    .filter((worker) => worker.missing.length > 0)
+  if (incompatible.length) {
+    const features = [
+      ...new Set(incompatible.flatMap((worker) => worker.missing.map((p) => ROLLOUT_FEATURE_LABELS[p]))),
+    ]
+    const ids = incompatible.map((worker) => worker.workerId)
+    const shown = ids.length > 3 ? `${ids.slice(0, 3).join('、')} 等 ${ids.length} 个` : ids.join('、')
     throw conflict(
       'DEMONSTRATION_EXECUTOR_UPGRADE_REQUIRED',
-      '请先排空并升级所有仍在线的执行 Worker，再运行新示教协议',
+      `执行节点版本过旧，暂不支持本草稿用到的${features.join('、')}，因此无法开始运行。请联系管理员升级执行节点（${shown}）后重试。`,
+      { workers: incompatible },
     )
+  }
+}
+
+const ROLLOUT_FEATURE_LABELS: Record<string, string> = {
+  [AI_ATOMIC_ACTIONS_PROTOCOL]: 'AI 动作',
+  [LIST_OUTPUT_PROTOCOL]: '列表输出',
+  [IMPORTED_OUTCOME_PROTOCOL]: '导入的业务结果',
+  [AI_TASK_EVIDENCE_PROTOCOL]: 'AI 任务证据记录',
 }
 
 export async function getScenarioValidation(db: Db, scenarioId: string, actorId: string) {

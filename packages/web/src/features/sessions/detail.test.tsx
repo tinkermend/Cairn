@@ -1,11 +1,12 @@
 import '@/styles/index.css'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { PERMISSIONS } from '@cairn/shared'
+import { PERMISSIONS, normalizeAssistantPageContext } from '@cairn/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { ThemeProvider } from '@/context/theme-provider'
 import {
   SessionDetailPage,
@@ -143,6 +144,31 @@ describe('SessionDetailPage', () => {
     mocks.releaseAuthControl.mockResolvedValue({ released: true })
     mocks.resumeRunAuth.mockResolvedValue({ ok: true })
     mocks.fetchSessionEvents.mockResolvedValue({ items: [], nextCursor: null })
+  })
+
+  it('账号尚无会话实例时，助手绑定账号而不伪造同 ID 的会话', async () => {
+    const base = await mocks.fetchAccountSession()
+    mocks.fetchAccountSession.mockResolvedValue({
+      ...base,
+      session: null,
+      instances: [],
+      status: 'unprepared',
+      occupancy: null,
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.poll(() => useAssistantStore.getState().pageContext).toMatchObject({
+      pageKind: 'session',
+      targetId: TARGET_ID,
+      primaryRef: { kind: 'account', id: ACCOUNT_ID },
+    })
+    expect(normalizeAssistantPageContext(useAssistantStore.getState().pageContext)?.view?.selectedRef).toBeUndefined()
   })
 
   it('未落到当前实例的保留意图不当成正在保留', () => {
@@ -620,4 +646,3 @@ describe('SessionDetailPage', () => {
     )
   })
 })
-

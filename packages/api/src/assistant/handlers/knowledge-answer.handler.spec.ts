@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { FACTORY_PLATFORM_CONFIG, assistantResultSchema } from '@cairn/shared'
 import { handleKnowledgeAnswer } from './knowledge-answer.handler.js'
 import type { AssistantCapabilityHandlerContext } from '../registry.js'
 
 vi.mock('@cairn/db', () => ({
   authorizeTargetRequest: vi.fn().mockResolvedValue(undefined),
+  assertTargetPermission: vi.fn().mockResolvedValue(undefined),
   getRun: vi.fn(),
   loadRunObservation: vi.fn(),
   getScenario: vi.fn(),
@@ -15,6 +17,8 @@ vi.mock('@cairn/db', () => ({
   findLiveSessions: vi.fn(async () => []),
   listQueuedRunsForAccount: vi.fn(async () => []),
   getAccountSessionDetail: vi.fn(),
+  listAccountSessionOverview: vi.fn(),
+  loadAccountAuthDisplay: vi.fn(async () => new Map()),
   listRuns: vi.fn(async () => ({ items: [], nextCursor: null })),
   loadRunFailureSummaries: vi.fn(async () => []),
   listIncidents: vi.fn(async () => ({ items: [], total: 0 })),
@@ -42,6 +46,8 @@ import {
   findLiveSessions,
   listQueuedRunsForAccount,
   getAccountSessionDetail,
+  listAccountSessionOverview,
+  loadAccountAuthDisplay,
   listRuns,
   loadRunFailureSummaries,
   listIncidents,
@@ -56,6 +62,10 @@ function shanghaiLocalDate(offsetDays: number): string {
 
 const SC_UUID = '5c5c5c5c-5c5c-4c5c-8c5c-5c5c5c5c5c5c'
 const TGT_UUID = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a'
+const OTHER_TGT_UUID = '6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b'
+const ACCOUNT_UUID = '8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b'
+const RETRY_HELP_QUOTE = '在「场景」打开场景工作区，选中要调整的步骤，在右侧步骤检查器展开「执行与容错策略」，填写「重试上限（0~10 次）」；0 表示不自动重试。'
+const UNSAVED_HELP_QUOTE = '草稿未保存时仅在画布生效，保存后方可作为发布版本或试跑输入。'
 
 describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => {
   beforeEach(() => {
@@ -85,11 +95,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         completeJson: vi.fn().mockResolvedValue({
           ok: true,
           value: {
-            summary: '在 Studio 中可以配置每个确定性步骤的最大重试次数与退避延迟。',
+            summary: '在场景工作区右侧步骤检查器的执行与容错策略中设置重试上限。',
             claims: [
               {
                 factKind: 'human_confirmed',
-                text: '每个确定性步骤支持配置 maxAttempts 与退避延迟',
+                text: '选中步骤后，在执行与容错策略中设置 retryLimit 重试上限',
                 citations: ['help:studio-retry'],
               },
             ],
@@ -121,18 +131,459 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     )
   })
 
+  it('从字段契约直接回答选填与平台默认，不让模型编造固定超时', async () => {
+    const question = '目标系统配置里的登录页停留超时是选填吗？不填会怎样？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read'] } as never,
+      slots: { targetId: TGT_UUID }, question,
+      body: { question, pageContext: { page: 'target', targetId: TGT_UUID } },
+    })
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('留空使用当前平台配置')
+    expect(result.summary).toContain('创建时选填')
+    expect(result.claims[0]?.citations).toEqual(['help:target-config-loginLeaveTimeoutSeconds'])
+    expect(ctx.session!.completeJson).not.toHaveBeenCalled()
+    expect(ctx.slots).not.toHaveProperty('targetId')
+  })
+
+  it('场景页实际运行问法区分执行成功与业务结果，并绑定具体运行供历史授权复核', async () => {
+    const runId = '11111111-1111-4111-8111-111111111111'
+    vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
+    vi.mocked(listRuns).mockResolvedValue({ items: [{
+      id: runId, scenarioId: SC_UUID, targetId: TGT_UUID, status: 'SUCCEEDED',
+      outcomeStatus: 'FAIL', scenarioVersionKind: 'trial', createdAt: '2026-09-27T10:00:00.000Z',
+    }] as never, nextCursor: null } as never)
+    const slots: Record<string, unknown> = { scenarioId: SC_UUID, targetId: TGT_UUID }
+    const question = '这个场景已经跑成功了吗？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'workflow:read', 'run:read', 'target:read'] } as never,
+      slots, question,
+      body: { question, pageContext: { page: 'studio', scenarioId: SC_UUID, targetId: TGT_UUID } },
+    })
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('执行成功、业务失败')
+    expect(result.summary).toContain('不能确认该次运行的执行与业务检查都通过')
+    expect(result.summary).toContain('不能证明当前草稿已通过')
+    expect(result.claims[0]?.citations).toEqual([`scenario:${SC_UUID}`, `run:${runId}`])
+    expect(slots).toMatchObject({ scenarioId: SC_UUID, runId })
+    expect(slots).not.toHaveProperty('targetId')
+    expect(ctx.session!.completeJson).not.toHaveBeenCalled()
+  })
+
+  it('无运行记录时如实说明缺口，不从草稿成功条件推断已通过', async () => {
+    vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
+    vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null } as never)
+    const question = '刚才这个场景运行通过了吗？'
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'workflow:read', 'run:read', 'target:read'] } as never,
+      slots: { scenarioId: SC_UUID }, question,
+      body: { question, pageContext: { page: 'studio', scenarioId: SC_UUID } },
+    }))
+    expect(result.summary).toContain('没有运行记录，无法确认')
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'no_visible_runs' }))
+    expect(result.nextActions?.[0]).toMatchObject({ href: '/runs' })
+  })
+
+  it('运行列表读取失败不被回答成零条或已通过', async () => {
+    vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
+    vi.mocked(listRuns).mockRejectedValue(new Error('storage unavailable'))
+    const question = '这个场景已经跑成功了吗？'
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'workflow:read', 'run:read', 'target:read'] } as never,
+      slots: { scenarioId: SC_UUID }, question,
+      body: { question, pageContext: { page: 'studio', scenarioId: SC_UUID } },
+    }))
+    expect(result.summary).toContain('未能读取场景运行记录')
+    expect(result.missing[0]?.reason).toBe('read_failed')
+    expect(result.summary).not.toContain('没有运行记录')
+  })
+
+  it('同名目标不在当前授权范围时，直接说明查询边界而不生成通用架构分析', async () => {
+    const question = '模型api中转站的账号和运行有哪些？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'run:read'] } as any,
+      body: { question, pageContext: { version: 2, routeKey: 'home', pageKind: 'home', page: 'home' } },
+      targets: { listTargets: vi.fn(async () => ({ items: [], nextCursor: null })) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(assistantResultSchema.parse(result).kind).toBe('knowledge_answer')
+    expect(ctx.targets.listTargets).toHaveBeenCalledWith(
+      expect.objectContaining({ search: '模型api中转站' }), ctx.actor)
+    expect(result.summary).toContain('本次查询可访问的目标范围内')
+    expect(result.summary).toContain('不能确认它是否存在')
+    expect(result.summary).not.toContain('模型api中转站')
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+  })
+
+  it('可见目标有账号和运行时，按授权事实列摘要而不是解释平台概念', async () => {
+    const question = '智慧运维管理平台的账号和运行有哪些？'
+    vi.mocked(listRuns).mockResolvedValueOnce({ items: [{
+      id: '9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c9c', scenarioName: '实例检查',
+      status: 'FAILED', outcomeStatus: 'UNKNOWN',
+    }], nextCursor: null } as any)
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'run:read'] } as any,
+      body: { question, pageContext: { version: 2, routeKey: 'home', pageKind: 'home', page: 'home' } },
+      targets: {
+        listTargets: vi.fn(async () => ({ items: [{ id: TGT_UUID, name: '智慧运维管理平台' }], nextCursor: null })),
+        getTarget: vi.fn(async () => ({ id: TGT_UUID, name: '智慧运维管理平台' })),
+        listAccounts: vi.fn(async () => ({ items: [{ displayName: '巡检账号', status: 'active' }], nextCursor: null })),
+      } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(assistantResultSchema.parse(result).kind).toBe('knowledge_answer')
+    expect(result.summary).toContain('巡检账号（启用）')
+    expect(result.summary).toContain('实例检查：执行失败、业务结果未知')
+    expect(result.summary).not.toContain('平台架构')
+    expect(result.nextActions?.map((item) => item.href)).toEqual([`/targets/${TGT_UUID}`, '/runs'])
+    expect(ctx.slots.targetId).toBe(TGT_UUID)
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['active', '已启用'],
+    ['disabled', '已停用'],
+  ] as const)('直接解释目标配置状态 %s，并避免误称账号或服务健康', async (status, label) => {
+    const question = '这个目标系统目前是什么状态？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read'], targetScope: 'all' } as any,
+      body: { question, pageContext: {
+        version: 2, routeKey: 'target.detail', pageKind: 'target', page: 'target', targetId: TGT_UUID,
+      } },
+      targets: { getTarget: vi.fn(async () => ({ id: TGT_UUID, name: '智慧运维管理平台', status })) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(assistantResultSchema.parse(result).kind).toBe('knowledge_answer')
+    expect(result.summary).toContain(`配置状态为${label}（${status}）`)
+    expect(result.summary).toContain('不能据此判断账号认证或业务服务是否健康')
+    expect(result.claims[0]?.citations).toEqual([`target:${TGT_UUID}`])
+    expect(result.nextActions?.[0]?.href).toBe(`/targets/${TGT_UUID}`)
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+  })
+
+  it('checks target account health from authorized live session facts without inventing an auth failure', async () => {
+    vi.mocked(listAccountSessionOverview).mockResolvedValue({
+      items: [{
+        accountDisplayName: '巡检账号', accountStatus: 'active', status: 'unprepared',
+        liveCount: 0, effectiveCap: 1, occupyingRunId: null, occupyingOperationId: null,
+        lastAuthCheckedAt: null,
+      }],
+      nextCursor: null,
+      summary: { total: 1, available: 0, problem: 0, unprepared: 1, busy: 0, retained: 0 },
+      asOf: '2026-09-27T12:00:00.000Z',
+    } as never)
+    const question = '请检查该目标系统关联账号的认证健康状态与会话租约情况。'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      body: { question, pageContext: { page: 'target', targetId: 'tgt-1' } },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(authorizeTargetRequest).toHaveBeenCalledWith(ctx.db, 'user-1', { targetId: 'tgt-1', permissions: ['session:read'] })
+    expect(listAccountSessionOverview).toHaveBeenCalledWith(ctx.db, { targetId: 'tgt-1', limit: 5 }, 'user-1')
+    expect(result.summary).toContain('1 个关联账号：就绪可用 0')
+    expect(result.summary).toContain('活跃会话 0/1')
+    expect(result.summary).toContain('不能断定账号密码错误')
+    expect(result.missing).toContainEqual(expect.objectContaining({ key: 'auth_probe' }))
+    expect(result.claims[0]?.citations).toEqual(['target:tgt-1'])
+    expect(result.sourceAsOf).toBe('2026-09-27T12:00:00.000Z')
+    expect(result.asOf).not.toBe(result.sourceAsOf)
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+  })
+
+  it('跨页点名目标的账号健康问法使用授权名称匹配目标，不使用当前页面目标', async () => {
+    vi.mocked(listAccountSessionOverview).mockResolvedValueOnce({
+      items: [], nextCursor: null,
+      summary: { total: 0, available: 0, problem: 0, unprepared: 0, busy: 0, retained: 0 },
+      asOf: '2026-09-28T00:00:00.000Z',
+    } as never)
+    const question = '请问系统甲的账号现在健康吗？'
+    const listTargets = vi.fn().mockResolvedValue({ items: [{ id: 'tgt-a', name: '系统甲' }], nextCursor: null })
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      question,
+      body: { question, pageContext: { page: 'target', targetId: 'tgt-b' } },
+      slots: { targetId: 'tgt-b' },
+      targets: { listTargets, getTarget: vi.fn() } as any,
+    })
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(listTargets).toHaveBeenCalledWith(expect.objectContaining({ search: '系统甲' }), ctx.actor)
+    expect(listAccountSessionOverview).toHaveBeenCalledWith(ctx.db, { targetId: 'tgt-a', limit: 5 }, 'user-1')
+    expect(result.claims[0]?.citations).toEqual(['target:tgt-a'])
+    expect(result.summary).toContain('目标系统「系统甲」')
+    expect(result.summary).not.toContain('tgt-b')
+  })
+
+  it('跨页点名目标有重名时不任选一个账号健康范围', async () => {
+    const question = '请问系统甲的账号现在健康吗？'
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      question,
+      body: { question, pageContext: { page: 'target', targetId: 'tgt-b' } },
+      targets: { listTargets: vi.fn().mockResolvedValue({ items: [
+        { id: 'tgt-a', name: '系统甲' }, { id: 'tgt-c', name: '系统甲' },
+      ], nextCursor: null }) } as any,
+    }))
+    expect(result.summary).toContain('多个同名目标')
+    expect(listAccountSessionOverview).not.toHaveBeenCalled()
+  })
+
+  it('does not read target session health without session:read or its target scope', async () => {
+    const question = '检查账号健康度'
+    const body = { question, pageContext: { page: 'target' as const, targetId: 'tgt-1' } }
+    const missingRole = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read'] } as any,
+      body,
+    }))
+    expect(missingRole.summary).toContain('缺少目标系统或会话读取权限')
+    expect(missingRole.claims[0]?.citations).toEqual(['platform:knowledge_status:session_permission_denied'])
+    expect(listAccountSessionOverview).not.toHaveBeenCalled()
+
+    vi.mocked(authorizeTargetRequest).mockRejectedValueOnce(new Error('scope denied'))
+    const missingScope = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      body,
+    }))
+    expect(missingScope.summary).toContain('未能访问目标账号与会话信息')
+    expect(missingScope.claims[0]?.citations).toEqual(['platform:knowledge_status:session_access_denied'])
+    expect(listAccountSessionOverview).not.toHaveBeenCalled()
+  })
+
+  it('answers a target-scoped session list from authorized live account facts', async () => {
+    vi.mocked(listAccountSessionOverview).mockResolvedValueOnce({
+      items: [{
+        accountDisplayName: '演示账号', accountStatus: 'active', status: 'unprepared',
+        liveCount: 0, effectiveCap: 1, occupyingRunId: null, occupyingOperationId: null,
+        lastAuthCheckedAt: null,
+      }],
+      nextCursor: null,
+      summary: { total: 1, available: 0, problem: 0, unprepared: 1, busy: 0, retained: 0 },
+      asOf: '2026-09-28T00:00:00.000Z',
+    } as never)
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      body: { question: '这个系统有哪些账号正在使用会话？', pageContext: {
+        version: 2, routeKey: 'sessions.index.systems', pageKind: 'session', page: 'session',
+        targetId: 'tgt-1', scopeRefs: [{ kind: 'target', id: 'tgt-1' }],
+      } },
+    }))
+    expect(result.summary).toContain('该目标当前有 0 个账号持有活跃会话')
+    expect(result.summary).toContain('演示账号：未准备；活跃会话 0/1')
+    expect(result.summary).not.toContain('入口地址')
+    expect(result.claims[0]?.citations).toEqual(['target:tgt-1'])
+    expect(listAccountSessionOverview).toHaveBeenCalledWith(expect.anything(), { targetId: 'tgt-1', limit: 5 }, 'user-1')
+  })
+
+  it('reports a session overview read error without presenting it as zero healthy accounts', async () => {
+    vi.mocked(listAccountSessionOverview).mockRejectedValueOnce(new Error('db unavailable'))
+    const question = '检查账号健康度'
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      body: { question, pageContext: { page: 'target', targetId: 'tgt-1' } },
+    }))
+    expect(result.summary).toContain('读取失败')
+    expect(result.summary).not.toContain('0 个')
+    expect(result.claims[0]?.citations).toEqual(['platform:knowledge_status:session_read_failed'])
+    expect(result.missing).toContainEqual(expect.objectContaining({ key: 'session_overview', reason: 'read_failed' }))
+  })
+
+  it('requires session permission and target scope before reading an account session page', async () => {
+    const question = '这个账号为什么需要重新登录？'
+    const body = { question, pageContext: {
+      version: 2 as const, routeKey: 'sessions.$targetId.$accountId', pageKind: 'session' as const,
+      page: 'session' as const, targetId: TGT_UUID,
+      scopeRefs: [{ kind: 'account' as const, id: ACCOUNT_UUID }],
+    } }
+    const noRole = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read'] } as any,
+      body,
+    }))
+    expect(noRole.missing).toContainEqual(expect.objectContaining({ key: 'session', reason: 'permission_denied' }))
+    expect(getAccountSessionDetail).not.toHaveBeenCalled()
+
+    vi.mocked(authorizeTargetRequest).mockRejectedValueOnce(new Error('session scope denied'))
+    const noScope = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      body,
+    }))
+    expect(noScope.missing).toContainEqual(expect.objectContaining({ key: 'session', reason: 'access_denied_or_not_found' }))
+    expect(getAccountSessionDetail).not.toHaveBeenCalled()
+  })
+
+  it('persists an authorized account deep link with a target citation and hides run facts without run access', async () => {
+    const question = '这个账号的会话状态怎样？'
+    const runId = '9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c9c'
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetName: '生产系统', targetAccountId: ACCOUNT_UUID,
+      accountDisplayName: '巡检账号', accountUsername: 'inspector', accountStatus: 'active',
+      lastAuthError: null, status: 'ready', effectiveCap: 1, liveCount: 1,
+    } as never)
+    vi.mocked(listQueuedRunsForAccount).mockResolvedValue([{ id: runId, status: 'QUEUED', createdAt: new Date() }] as never)
+    let modelPayload: any = null
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'] } as any,
+      body: { question, pageContext: {
+        version: 2, routeKey: 'sessions.$targetId.$accountId', pageKind: 'session',
+        page: 'session', targetId: TGT_UUID,
+        scopeRefs: [{ kind: 'account', id: ACCOUNT_UUID }],
+      } },
+      session: { completeJson: vi.fn().mockImplementation((_name, _schema, messages) => {
+        modelPayload = JSON.parse(messages[1].content)
+        return Promise.resolve({ ok: true, value: {
+          summary: '当前账号有一条活跃会话。',
+          claims: [{ factKind: 'observed', text: '当前账号有一条活跃会话。', citations: [`target:${TGT_UUID}`] }],
+        } })
+      }) } as any,
+    })
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(authorizeTargetRequest).toHaveBeenCalledWith(ctx.db, 'user-1', { targetId: TGT_UUID, permissions: ['session:read'] })
+    expect(listQueuedRunsForAccount).not.toHaveBeenCalled()
+    expect(JSON.stringify(modelPayload)).not.toContain(runId)
+    expect(modelPayload.contextFacts.find((fact: any) => fact.citation === `target:${TGT_UUID}`)?.fact).toContain('未检查')
+    expect(result.nextActions).toContainEqual(expect.objectContaining({
+      kind: 'target.accounts',
+      href: `/sessions/${TGT_UUID}/${ACCOUNT_UUID}`,
+      citations: [`target:${TGT_UUID}`],
+    }))
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+
+    vi.mocked(authorizeTargetRequest).mockImplementation(async (_db, _actorId, input) => {
+      if (input.permissions.includes('run:read')) throw new Error('run scope denied')
+    })
+    const scopedResult = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read', 'run:read'] } as any,
+      body: ctx.body,
+      session: ctx.session,
+    }))
+    expect(listQueuedRunsForAccount).not.toHaveBeenCalled()
+    expect(JSON.stringify(modelPayload)).not.toContain(runId)
+    expect(scopedResult.nextActions?.some((action) => action.kind === 'run.detail')).toBe(false)
+  })
+
+  it('does not mix facts from individually authorized Run, scenario, and target IDs with conflicting relationships', async () => {
+    const runId = '9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d9d'
+    vi.mocked(getRun).mockResolvedValue({ id: runId, targetId: TGT_UUID, scenarioId: SC_UUID } as never)
+    vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, targetId: OTHER_TGT_UUID, name: '另一个目标的场景' } as never)
+    const question = '这次运行和当前场景、目标的关系是什么？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'run:read', 'workflow:read', 'target:read'] } as any,
+      body: { question, pageContext: {
+        version: 2, routeKey: 'runs.$runId', pageKind: 'run', page: 'run',
+        runId, scenarioId: SC_UUID, targetId: OTHER_TGT_UUID,
+      } },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(getRun).toHaveBeenCalledWith(ctx.db, runId, 'user-1')
+    expect(authorizeTargetRequest).toHaveBeenCalledWith(ctx.db, 'user-1', { scenarioId: SC_UUID, permissions: ['workflow:read'] })
+    expect(getScenario).toHaveBeenCalledWith(ctx.db, SC_UUID)
+    expect(result.summary).toContain('不属于同一上下文')
+    expect(result.missing).toContainEqual(expect.objectContaining({ key: 'page_context', reason: 'scope_mismatch' }))
+    expect(result.claims).toEqual([expect.objectContaining({
+      factKind: 'human_confirmed',
+      citations: ['platform:page_context_mismatch'],
+    })])
+    expect(loadRunObservation).not.toHaveBeenCalled()
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+  })
+
+  it('does not invent a current CPU value for an external target instance', async () => {
+    const question = 'Mysql50.33 实例现在 CPU 利用率是多少？'
+    const ctx = createMockContext({
+      question,
+      body: { question, pageContext: { page: 'target', targetId: 'tgt-1' } },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(result.summary).toContain('没有这个目标外部实例的实时 CPU 利用率数据')
+    expect(result.summary).not.toMatch(/\b\d+(?:\.\d+)?%/)
+    expect(result.claims).toEqual([expect.objectContaining({
+      factKind: 'human_confirmed',
+      citations: ['platform:target_cpu_unavailable'],
+    })])
+    expect(result.missing).toContainEqual(expect.objectContaining({ key: 'target_cpu_metric' }))
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+    expect(ctx.targets.getTarget).not.toHaveBeenCalled()
+  })
+
+  it('answers the first-time capability question from the current permission catalog', async () => {
+    const question = '识途能帮我做什么？'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      actor: {
+        id: 'user-1',
+        permissions: ['ai:assist', 'target:read', 'workflow:read', 'run:read'],
+      } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(result.summary).toContain('运行诊断')
+    expect(result.summary).toContain('场景解释')
+    expect(result.summary).not.toContain('场景编排建议')
+    expect(result.claims[0]?.citations).toEqual(['platform:capability_overview'])
+    expect(result.missing).toEqual([])
+    expect(ctx.session?.completeJson).not.toHaveBeenCalled()
+  })
+
   it('CQ-06: returns grounded answer citing published help catalog', async () => {
     const ctx = createMockContext()
     const result = await handleKnowledgeAnswer(ctx)
 
     expect(result.kind).toBe('knowledge_answer')
-    expect(result.summary).toContain('Studio')
+    expect(result.summary).toContain('retryLimit')
     expect(result.claims.length).toBe(1)
     expect(result.claims[0].factKind).toBe('human_confirmed')
     expect(result.claims[0].citations).toContain('help:studio-retry')
     expect(result.nextActions).toBeDefined()
     expect(result.nextActions?.length).toBeGreaterThan(0)
     expect(result.nextActions?.[0].kind).toBe('studio.step')
+  })
+
+  it('instructs JSON output explicitly for the knowledge answer provider', async () => {
+    const completeJson = vi.fn().mockResolvedValue({ ok: false, message: '模型暂不可用' })
+    await handleKnowledgeAnswer(createMockContext({ session: { completeJson } as any }))
+
+    const messages = completeJson.mock.calls[0]?.[2] as Array<{ role: string; content: string }>
+    expect(messages[0]?.role).toBe('system')
+    expect(messages[0]?.content).toContain('JSON')
+    expect(messages[0]?.content).toContain('不要另写 summary')
+    expect(messages[0]?.content).not.toContain('{"summary":')
+    expect(messages[0]?.content).toContain('"claims":[]')
+    expect(messages[0]?.content).toContain('"missing":[]')
+    const schema = completeJson.mock.calls[0]?.[1]
+    expect(schema.parse({ claims: [], missing: [], summary: '未校验的多余摘要' })).toEqual({ claims: [], missing: [] })
+    expect(completeJson.mock.calls[0]?.[5]).toBe('off')
+  })
+
+  it('keeps a focused, explicitly incomplete help answer when model generation fails', async () => {
+    const question = '确定性步骤可以配置重试吗？怎么设置？'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: false, message: '模型暂不可用' }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('执行与容错策略')
+    expect(result.summary).toContain('重试上限（0~10 次）')
+    expect(result.summary).not.toContain('已找到相关可核验资料，以下列出最相关的事实')
+    expect(result.claims).toHaveLength(1)
+    expect(result.claims[0]?.citations).toEqual(['help:studio-retry'])
+    expect(result.summary).not.toContain('识途场景由有序的步骤列表组成')
+    expect(result.claims.some((claim) => claim.citations.includes('help:platform-architecture'))).toBe(false)
+    expect(result.nextActions?.every((action) => action.href === '/scenarios')).toBe(true)
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'generation_failed' }))
   })
 
   it('returns honest missing notice when query has no matching facts', async () => {
@@ -143,11 +594,26 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const result = await handleKnowledgeAnswer(ctx)
     expect(result.kind).toBe('knowledge_answer')
-    expect(result.claims.length).toBe(0)
+    expect(result.claims[0]?.citations).toEqual(['platform:knowledge_status:no_matching_facts'])
     expect(result.missing.some((m) => m.reason === 'no_matching_facts')).toBe(true)
   })
 
-  it('filters out hallucinated citations not in allowedCitations', async () => {
+  it('replaces a model answer with no verified claims instead of exposing its unsupported summary', async () => {
+    const ctx = createMockContext({
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        summary: '没有依据的虚构结论',
+        claims: [{ factKind: 'observed', text: '虚构实体事实', citations: ['unknown:invented'] }],
+        missing: [],
+      } }) } as any,
+    })
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('未产生通过事实引用校验的结论')
+    expect(JSON.stringify(result)).not.toContain('没有依据的虚构结论')
+    expect(result.claims[0]?.citations).toEqual(['platform:knowledge_status:no_verified_claims'])
+    expect(result.nextActions?.every((action) => action.href === '/scenarios')).toBe(true)
+  })
+
+  it('rejects a claim that mixes a real citation with a fabricated one', async () => {
     const ctx = createMockContext({
       session: {
         completeJson: vi.fn().mockResolvedValue({
@@ -168,8 +634,222 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     const result = await handleKnowledgeAnswer(ctx)
-    expect(result.claims[0].citations).toEqual(['help:studio-retry'])
-    expect(result.claims[0].citations).not.toContain('help:fake-non-existent-id')
+    expect(result.claims[0].citations).toEqual(['platform:knowledge_status:no_verified_claims'])
+    expect(result.missing).toContainEqual(expect.objectContaining({ key: 'unsupported_citation' }))
+    expect(JSON.stringify(result)).not.toContain('help:fake-non-existent-id')
+  })
+
+  it('rejects an explicit denial of retry configuration despite a valid help citation', async () => {
+    const falseConclusion = '在 Studio 中，确定性步骤不能配置重试策略。'
+    const ctx = createMockContext({
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        summary: falseConclusion,
+        claims: [{ factKind: 'human_confirmed', text: falseConclusion, citations: ['help:studio-retry'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.claims[0]?.citations).toEqual(['platform:knowledge_status:no_verified_claims'])
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'contradicts_published_help' }))
+  })
+
+  it('does not publish an unsupported schedule conclusion behind a real help citation', async () => {
+    const question = '定时调度能按目标时区运行吗？'
+    const falseConclusion = '定时调度不支持目标时区，只按服务器时区运行。'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'human_confirmed', text: falseConclusion, citations: ['help:schedule-cron'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.summary).toContain('目标时区绑定')
+    expect(result.claims[0]?.citations).toEqual(['help:schedule-cron'])
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'quote_not_in_cited_help' }))
+  })
+
+  it('shows the verified help quote instead of a conflicting model paraphrase', async () => {
+    const question = '定时调度能按目标时区运行吗？'
+    const falseConclusion = '定时调度不支持目标时区。'
+    const quote = '支持标准 5 字段 Cron 表达式与目标时区绑定。'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'human_confirmed', text: falseConclusion,
+          evidenceQuote: quote, citations: ['help:schedule-cron'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(quote)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.claims[0]?.citations).toEqual(['help:schedule-cron'])
+  })
+
+  it('retains a verified retry quote even when the discarded paraphrase is wrong', async () => {
+    const falseConclusion = '在 Studio 中，确定性步骤不能配置重试策略。'
+    const ctx = createMockContext({ session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+      claims: [{ factKind: 'human_confirmed', text: falseConclusion,
+        evidenceQuote: RETRY_HELP_QUOTE, citations: ['help:studio-retry'] }],
+      missing: [],
+    } }) } as any })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(RETRY_HELP_QUOTE)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.missing).toEqual([])
+  })
+
+  it('keeps the answer topic when two genuine help quotes cover different subjects', async () => {
+    const question = '确定性步骤可以配置重试吗？怎么设置？'
+    const unrelated = '确定性步骤包括页面导航（navigate）、元素点击（click）、表单填充（fill）、内容提取（extract）与业务断言（assert）。'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [
+          { factKind: 'human_confirmed', text: unrelated, evidenceQuote: unrelated, citations: ['help:studio-steps'] },
+          { factKind: 'human_confirmed', text: RETRY_HELP_QUOTE,
+            evidenceQuote: RETRY_HELP_QUOTE, citations: ['help:studio-retry'] },
+        ],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(RETRY_HELP_QUOTE)
+    expect(result.claims.map((claim) => claim.citations)).toEqual([['help:studio-retry']])
+  })
+
+  it('rejects a claim that an unsaved draft can be trial-run despite a valid help citation', async () => {
+    const falseConclusion = '草稿没保存也可以直接试跑。'
+    const question = '草稿没保存时能试跑吗？'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'human_confirmed', text: falseConclusion, citations: ['help:studio-steps'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'contradicts_published_help' }))
+  })
+
+  it('keeps the cited rule that an unsaved draft cannot be used for a trial run', async () => {
+    const question = '草稿没保存时能试跑吗？'
+    const answer = '草稿未保存时不能作为试跑输入，先保存草稿。'
+    const ctx = createMockContext({
+      question,
+      body: { question },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'human_confirmed', text: answer,
+          evidenceQuote: UNSAVED_HELP_QUOTE, citations: ['help:studio-steps'] }],
+        missing: [{ key: 'trial-run-without-save', reason: 'missing_procedure',
+          description: '缺少未保存草稿直接试跑的操作步骤' }],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(UNSAVED_HELP_QUOTE)
+    expect(result.claims[0]?.citations).toEqual(['help:studio-steps'])
+    expect(result.missing).toEqual([])
+  })
+
+  it('rejects obsolete retry controls even when the citation key is real', async () => {
+    const falseConclusion = 'Studio 中可设置 maxAttempts 与初始退避延迟。'
+    const ctx = createMockContext({ session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+      summary: falseConclusion,
+      claims: [{ factKind: 'human_confirmed', text: falseConclusion, citations: ['help:studio-retry'] }],
+      missing: [],
+    } }) } as any })
+
+    const result = await handleKnowledgeAnswer(ctx)
+
+    expect(result.summary).not.toContain('可设置 maxAttempts')
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'contradicts_published_help' }))
+  })
+
+  it('rejects the same help contradiction when relabeled as an inference', async () => {
+    const falseConclusion = '在 Studio 中，确定性步骤不能配置重试策略。'
+    const ctx = createMockContext({
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        summary: falseConclusion,
+        claims: [{ factKind: 'inferred', text: falseConclusion, citations: ['help:studio-retry'], premises: ['步骤可配置重试策略'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'contradicts_published_help' }))
+  })
+
+  it('rebuilds the summary from retained claims when one help claim is contradicted', async () => {
+    const falseConclusion = '步骤不支持配置重试策略。'
+    const supportedConclusion = '确定性步骤可在执行与容错策略中设置重试上限。'
+    const ctx = createMockContext({
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        summary: falseConclusion,
+        claims: [
+          { factKind: 'human_confirmed', text: falseConclusion, citations: ['help:studio-retry'] },
+          { factKind: 'human_confirmed', text: supportedConclusion,
+            evidenceQuote: RETRY_HELP_QUOTE, citations: ['help:studio-retry'] },
+        ],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(RETRY_HELP_QUOTE)
+    expect(result.claims.map((claim) => claim.text)).toEqual([RETRY_HELP_QUOTE])
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+  })
+
+  it('keeps a supported paraphrase and removes an independently false model summary', async () => {
+    const supportedConclusion = 'Studio 的确定性步骤可在执行与容错策略中设置重试上限。'
+    const ctx = createMockContext({
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        summary: '确定性步骤无法配置重试。',
+        claims: [{ factKind: 'human_confirmed', text: supportedConclusion,
+          evidenceQuote: RETRY_HELP_QUOTE, citations: ['help:studio-retry'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(RETRY_HELP_QUOTE)
+    expect(result.claims).toEqual([expect.objectContaining({ text: RETRY_HELP_QUOTE, citations: ['help:studio-retry'] })])
+  })
+
+  it('separates retained claim sentences without adding unsupported summary prose', async () => {
+    const first = '0 表示不自动重试。'
+    const second = '当前步骤配置字段是 policy.retryLimit 与 policy.timeoutMs；界面没有 maxAttempts、初始退避延迟或最大退避延迟输入项。'
+    const ctx = createMockContext({
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        summary: '模型自行生成的摘要',
+        claims: [
+          { factKind: 'human_confirmed', text: first, evidenceQuote: first, citations: ['help:studio-retry'] },
+          { factKind: 'human_confirmed', text: second, evidenceQuote: second, citations: ['help:studio-retry'] },
+        ],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toBe(`${first}\n${second}`)
+    expect(result.summary).not.toContain('模型自行生成的摘要')
+    expect(result.summary).not.toContain('。；')
   })
 
   it('CQ-05: handles unauthenticated/forbidden entity access without leaking existence', async () => {
@@ -233,17 +913,17 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const completeJsonMock = vi.fn().mockImplementation((name, schema, messages) => {
       const userPayload = JSON.parse(messages[1].content)
+      const cited = ['run:run-100', 'stepRun:sr-1', 'attempt:att-1', 'view:tab']
       return Promise.resolve({
         ok: true,
         value: {
           summary: '运行失败在第 1 次尝试。',
-          claims: [
-            {
-              factKind: 'observed',
-              text: '步骤点击提交按钮失败，错误为 Element not clickable',
-              citations: ['run:run-100', 'stepRun:sr-1', 'attempt:att-1', 'view:tab'],
-            },
-          ],
+          claims: cited.map((citation) => ({
+            factKind: 'observed',
+            text: userPayload.contextFacts.find((fact: any) => fact.citation === citation).fact,
+            evidenceQuote: userPayload.contextFacts.find((fact: any) => fact.citation === citation).fact,
+            citations: [citation],
+          })),
         },
       })
     })
@@ -275,10 +955,108 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const result = await handleKnowledgeAnswer(ctx)
     expect(result.kind).toBe('knowledge_answer')
-    expect(result.claims[0].citations).toContain('run:run-100')
-    expect(result.claims[0].citations).toContain('stepRun:sr-1')
-    expect(result.claims[0].citations).toContain('attempt:att-1')
-    expect(result.claims[0].citations).toContain('view:tab')
+    expect(result.claims.map((claim) => claim.citations[0])).toEqual([
+      'run:run-100', 'stepRun:sr-1', 'attempt:att-1', 'view:tab',
+    ])
+  })
+
+  it('does not turn a succeeded Run into a failure behind its real citation', async () => {
+    vi.mocked(loadRunObservation).mockResolvedValue({
+      run: {
+        id: 'run-100', targetId: 'tgt-1', scenarioId: 'sc-1',
+        status: 'SUCCEEDED', outcomeStatus: 'PASS', evidenceStatus: 'COMPLETE',
+        stepRuns: [],
+      },
+      evidence: { items: [] },
+    } as any)
+    const falseConclusion = '这次运行失败了。'
+    const ctx = createMockContext({
+      question: '这次运行成功了吗？',
+      actor: { id: 'user-1', permissions: ['ai:assist', 'run:read', 'target:read'], targetScope: 'all' } as any,
+      body: { question: '这次运行成功了吗？', pageContext: {
+        version: 2, routeKey: 'runs.$runId', pageKind: 'run', page: 'run', runId: 'run-100',
+      } },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'observed', text: falseConclusion, citations: ['run:run-100'] }],
+        missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.summary).toContain('SUCCEEDED')
+    expect(result.claims[0]?.citations).toEqual(['run:run-100'])
+
+    // A real excerpt cannot validate the model's opposite paraphrase: show
+    // only the excerpt itself, even when both the quote and citation are valid.
+    const quotedCtx = createMockContext({
+      question: '这次运行成功了吗？',
+      actor: { id: 'user-1', permissions: ['ai:assist', 'run:read', 'target:read'], targetScope: 'all' } as any,
+      body: { question: '这次运行成功了吗？', pageContext: {
+        version: 2, routeKey: 'runs.$runId', pageKind: 'run', page: 'run', runId: 'run-100',
+      } },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'observed', text: falseConclusion, citations: ['run:run-100'],
+          evidenceQuote: '状态: SUCCEEDED, 业务结果: PASS' }],
+        missing: [],
+      } }) } as any,
+    })
+    const quotedResult = await handleKnowledgeAnswer(quotedCtx)
+    expect(JSON.stringify(quotedResult)).not.toContain(falseConclusion)
+    expect(quotedResult.summary).toContain('状态: SUCCEEDED, 业务结果: PASS')
+    expect(quotedResult.claims[0]?.citations).toEqual(['run:run-100'])
+  })
+
+  it('does not publish a false inference even when its premises quote the real Run', async () => {
+    vi.mocked(loadRunObservation).mockResolvedValue({
+      run: { id: 'run-100', targetId: 'tgt-1', scenarioId: 'sc-1',
+        status: 'SUCCEEDED', outcomeStatus: 'PASS', evidenceStatus: 'COMPLETE', stepRuns: [] },
+      evidence: { items: [] },
+    } as any)
+    const falseConclusion = '这次运行失败了。'
+    const question = '这次运行成功了吗？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'run:read', 'target:read'], targetScope: 'all' } as any,
+      body: { question, pageContext: {
+        version: 2, routeKey: 'runs.$runId', pageKind: 'run', page: 'run', runId: 'run-100',
+      } },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'inferred', text: falseConclusion, citations: ['run:run-100'],
+          premises: ['状态: SUCCEEDED, 业务结果: PASS'] }], missing: [],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(JSON.stringify(result)).not.toContain(falseConclusion)
+    expect(result.summary).toContain('状态: SUCCEEDED, 业务结果: PASS')
+    expect(result.claims[0]?.factKind).toBe('observed')
+    expect(result.missing).toContainEqual(expect.objectContaining({ reason: 'conclusion_not_verified' }))
+  })
+
+  it('不把模型自由填写的缺口说明当成已核验的故障结论展示', async () => {
+    vi.mocked(loadRunObservation).mockResolvedValue({
+      run: { id: 'run-100', targetId: 'tgt-1', scenarioId: 'sc-1',
+        status: 'SUCCEEDED', outcomeStatus: 'PASS', evidenceStatus: 'COMPLETE', stepRuns: [] },
+      evidence: { items: [] },
+    } as any)
+    const fabricated = '已确认数据库故障是这次失败的根因'
+    const question = '这次运行成功了吗？'
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'run:read', 'target:read'], targetScope: 'all' } as any,
+      body: { question, pageContext: {
+        version: 2, routeKey: 'runs.$runId', pageKind: 'run', page: 'run', runId: 'run-100',
+      } },
+      session: { completeJson: vi.fn().mockResolvedValue({ ok: true, value: {
+        claims: [{ factKind: 'observed', text: '这次运行成功', citations: ['run:run-100'],
+          evidenceQuote: '状态: SUCCEEDED, 业务结果: PASS' }],
+        missing: [{ key: 'root_cause', reason: 'database_failure', description: fabricated }],
+      } }) } as any,
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('SUCCEEDED')
+    expect(JSON.stringify(result)).not.toContain(fabricated)
+    expect(result.missing).not.toContainEqual(expect.objectContaining({ key: 'root_cause' }))
   })
 
   it('does not load run observation when the actor lacks run scope for the target', async () => {
@@ -358,6 +1136,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       const userPayload = JSON.parse(messages[1].content)
       expect(userPayload.availableCitations).toContain('scenario:sc-1:draft_status')
       expect(userPayload.availableCitations).toContain('step:step-invoice')
+      const quoteFor = (citation: string) => userPayload.contextFacts.find((fact: any) => fact.citation === citation).fact
       return Promise.resolve({
         ok: true,
         value: {
@@ -366,11 +1145,13 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
             {
               factKind: 'observed',
               text: '提取发票金额步骤动作类型为 extract',
-              citations: ['scenario:sc-1', 'step:step-invoice'],
+              evidenceQuote: quoteFor('step:step-invoice'),
+              citations: ['step:step-invoice'],
             },
             {
               factKind: 'observed',
               text: '当前画布存在未保存修改，依据已保存修订号 12 解答',
+              evidenceQuote: quoteFor('scenario:sc-1:draft_status'),
               citations: ['scenario:sc-1:draft_status'],
             },
           ],
@@ -403,6 +1184,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     const result = await handleKnowledgeAnswer(ctx)
     expect(result.claims.some((c) => c.citations.includes('scenario:sc-1:draft_status'))).toBe(true)
     expect(result.claims.some((c) => c.citations.includes('step:step-invoice'))).toBe(true)
+    expect(completeJsonMock.mock.calls[0]?.[5]).toBeUndefined()
   })
 
   it('CQ-12: loads Session entity facts and enforces target/account scopeRefs validation', async () => {
@@ -488,6 +1270,232 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const mismatchResult = await handleKnowledgeAnswer(mismatchCtx)
     expect(mismatchResult.missing.some((m) => m.key === 'session' && m.reason === 'scope_mismatch')).toBe(true)
+  })
+
+  it('answers current account readiness from the authorized session even when the model would fail', async () => {
+    const sessionId = '9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a'
+    vi.mocked(getSessionDto).mockResolvedValue({
+      id: sessionId, targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      status: 'OPEN', health: 'HEALTHY', authState: 'AUTHENTICATED',
+      lastAuthSuccessAt: '2026-09-27T15:41:42.989Z', activeLease: null,
+    } as any)
+    const completeJson = vi.fn().mockResolvedValue({ ok: false })
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      session: { completeJson } as any,
+      body: {
+        question: '这个账号现在能用吗？会话是谁占着，最近认证成功了吗？',
+        pageContext: {
+          version: 2, routeKey: 'sessions.$targetId.$accountId', pageKind: 'session', page: 'session',
+          primaryRef: { kind: 'session', id: sessionId },
+          scopeRefs: [{ kind: 'target', id: TGT_UUID }], targetId: TGT_UUID,
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('已认证、开放且健康')
+    expect(result.summary).toContain('未记录活动租约')
+    expect(result.summary).toContain('2026-09-27T15:41:42.989Z')
+    expect(result.claims[0]?.citations).toEqual([`session:${sessionId}`])
+    expect(result.nextActions?.[0]?.href).toBe(`/sessions/${TGT_UUID}/${ACCOUNT_UUID}`)
+    expect(completeJson).not.toHaveBeenCalled()
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+  })
+
+  it('answers the actual account page context from live account and session facts', async () => {
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'ready', liveCount: 1, effectiveCap: 1,
+      session: { authState: 'AUTHENTICATED', lastAuthSuccessAt: '2026-09-27T15:41:42.989Z' },
+      instances: [], occupancy: null, asOf: '2026-09-27T15:50:00.000Z',
+    } as any)
+    const completeJson = vi.fn().mockResolvedValue({ ok: false })
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      session: { completeJson } as any,
+      body: {
+        question: '这个账号为什么一直等登录？现在谁占着会话？',
+        pageContext: {
+          version: 2, routeKey: 'sessions.$targetId.$accountId', pageKind: 'session', page: 'session',
+          primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+          scopeRefs: [{ kind: 'target', id: TGT_UUID }], targetId: TGT_UUID,
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('当前账号状态为就绪')
+    expect(result.summary).toContain('当前没有已记录的会话占用')
+    expect(result.summary).toContain('不支持“仍在等登录”的前提')
+    expect(result.claims[0]?.citations).toEqual([`target:${TGT_UUID}`])
+    expect(result.sourceAsOf).toBe('2026-09-27T15:50:00.000Z')
+    expect(result.asOf).not.toBe(result.sourceAsOf)
+    expect(completeJson).not.toHaveBeenCalled()
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+  })
+
+  it('answers the account authentication timestamp from recorded history without calling the model', async () => {
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'unprepared', liveCount: 0, effectiveCap: 1,
+      session: null, instances: [], occupancy: null, asOf: '2026-09-28T00:00:00.000Z',
+    } as any)
+    vi.mocked(loadAccountAuthDisplay).mockResolvedValueOnce(new Map([
+      [ACCOUNT_UUID, { lastAuthSuccessAt: '2026-09-27T16:40:01.900Z' }],
+    ]) as never)
+    const completeJson = vi.fn().mockResolvedValue({ ok: false })
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      session: { completeJson } as any,
+      body: { question: '这个账号最近一次认证成功是什么时候？', pageContext: {
+        version: 2, routeKey: 'sessions.$targetId.$accountId', pageKind: 'session', page: 'session',
+        primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+        scopeRefs: [{ kind: 'target', id: TGT_UUID }, { kind: 'account', id: ACCOUNT_UUID }],
+        targetId: TGT_UUID,
+      } },
+    }))
+    expect(result.summary).toContain('账号历史上最近一次成功认证记录为 2026-09-27T16:40:01.900Z')
+    expect(result.summary).toContain('不代表当前有可用会话')
+    expect(result.summary).not.toContain('厂家')
+    expect(result.claims[0]?.citations).toEqual([`target:${TGT_UUID}`])
+    expect(result.sourceAsOf).toBe('2026-09-28T00:00:00.000Z')
+    expect(completeJson).not.toHaveBeenCalled()
+  })
+
+  it('does not mistake a historical success for the latest authentication attempt', async () => {
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'unprepared', liveCount: 0, effectiveCap: 1,
+      session: null, instances: [], occupancy: null, asOf: '2026-09-28T00:00:00.000Z',
+    } as any)
+    vi.mocked(loadAccountAuthDisplay).mockResolvedValueOnce(new Map([
+      [ACCOUNT_UUID, { lastAuthSuccessAt: '2026-09-27T16:40:01.900Z' }],
+    ]) as never)
+    const result = await handleKnowledgeAnswer(createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      body: { question: '这个账号最近认证成功了吗？', pageContext: {
+        version: 2, routeKey: 'sessions.$targetId.$accountId', pageKind: 'session', page: 'session',
+        primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+        scopeRefs: [{ kind: 'target', id: TGT_UUID }, { kind: 'account', id: ACCOUNT_UUID }],
+        targetId: TGT_UUID,
+      } },
+    }))
+    expect(result.summary).toContain('2026-09-27T16:40:01.900Z')
+    expect(result.summary).toContain('不能确认最近一次认证尝试是否成功')
+    expect(result.summary).toContain('不代表当前有可用会话')
+    expect(result.summary).not.toContain('需补充该账号的登录触发或运行历史')
+  })
+
+  it('does not turn an unprepared account into an invented login wait cause', async () => {
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'unprepared', liveCount: 0, effectiveCap: 1,
+      session: null, instances: [], occupancy: null, asOf: '2026-09-28T00:00:00.000Z',
+    } as any)
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      body: {
+        question: '这个账号为什么一直等登录？现在谁占着会话？',
+        pageContext: {
+          version: 2, routeKey: 'session', pageKind: 'session', page: 'session',
+          primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+          scopeRefs: [{ kind: 'target', id: TGT_UUID }], targetId: TGT_UUID,
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('状态为未准备，活跃会话 0/1')
+    expect(result.summary).toContain('不能确定是在等待登录或判断具体原因')
+    expect(result.summary).toContain('当前没有已记录的会话占用')
+    expect(result.summary).not.toContain('unprepared')
+  })
+
+  it('distinguishes historical account authentication from a currently available session', async () => {
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'unprepared', liveCount: 0, effectiveCap: 1,
+      session: null, instances: [], occupancy: null, asOf: '2026-09-28T00:00:00.000Z',
+    } as any)
+    vi.mocked(loadAccountAuthDisplay).mockResolvedValueOnce(new Map([[ACCOUNT_UUID, {
+      lastAuthCheckedAt: '2026-09-27T15:57:03.773Z',
+      lastAuthSuccessAt: '2026-09-27T15:57:03.773Z',
+      lastAuthError: null, autoLoginPausedReason: null,
+    }]]))
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      body: {
+        question: '这个账号现在能用吗？会话是谁占着，最近认证成功了吗？',
+        pageContext: {
+          version: 2, routeKey: 'session', pageKind: 'session', page: 'session',
+          primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+          scopeRefs: [{ kind: 'target', id: TGT_UUID }], targetId: TGT_UUID,
+        },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('状态为未准备，活跃会话 0/1')
+    expect(result.summary).toContain('账号历史上最近一次成功认证记录为 2026-09-27T15:57:03.773Z')
+    expect(result.summary).toContain('这不代表当前有可用会话')
+    expect(result.missing).toEqual([])
+  })
+
+  it('P09: reports a recorded auth error and the occupying run from the account page', async () => {
+    const runId = '44444444-4444-4444-8444-444444444444'
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'needs_login', liveCount: 1, effectiveCap: 1,
+      lastAuthError: 'LOGIN_PAGE_UNREACHABLE',
+      session: { authState: 'STALE', lastAuthCheckedAt: '2026-09-27T10:00:00.000Z', lastAuthSuccessAt: null },
+      instances: [], occupancy: { purpose: 'EXECUTION', occupyingRunId: runId, occupyingOperationId: null },
+      asOf: '2026-09-27T10:05:00.000Z',
+    } as any)
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read', 'run:read'], targetScope: 'all' } as any,
+      body: {
+        question: '这个账号为什么一直等登录？现在谁占着会话？',
+        pageContext: { version: 2, routeKey: 'session', pageKind: 'session', page: 'session',
+          primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+          scopeRefs: [{ kind: 'target', id: TGT_UUID }], targetId: TGT_UUID },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('LOGIN_PAGE_UNREACHABLE')
+    expect(result.summary).toContain('目标登录页打不开')
+    expect(result.summary).toContain('占用运行 ID ' + runId)
+    expect(result.summary).toContain('不能断定现在可用')
+    expect(result.nextActions).toContainEqual(expect.objectContaining({
+      kind: 'run.detail', href: `/runs/${runId}`,
+    }))
+    expect(result.claims[0]?.citations).toEqual([`target:${TGT_UUID}`])
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+  })
+
+  it('P09: hides the occupying run ID when the reader lacks run access', async () => {
+    const runId = '55555555-5555-4555-8555-555555555555'
+    vi.mocked(getAccountSessionDetail).mockResolvedValue({
+      targetId: TGT_UUID, targetAccountId: ACCOUNT_UUID,
+      accountStatus: 'active', status: 'needs_login', liveCount: 1, effectiveCap: 1,
+      lastAuthError: 'LOGIN_PAGE_UNREACHABLE', session: { authState: 'STALE', lastAuthSuccessAt: null },
+      instances: [], occupancy: { purpose: 'EXECUTION', occupyingRunId: runId, occupyingOperationId: null },
+      asOf: '2026-09-27T10:05:00.000Z',
+    } as any)
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'target:read', 'session:read'], targetScope: 'all' } as any,
+      body: {
+        question: '这个账号为什么一直等登录？现在谁占着会话？',
+        pageContext: { version: 2, routeKey: 'session', pageKind: 'session', page: 'session',
+          primaryRef: { kind: 'account', id: ACCOUNT_UUID },
+          scopeRefs: [{ kind: 'target', id: TGT_UUID }], targetId: TGT_UUID },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).not.toContain(runId)
+    expect(result.nextActions?.some((action) => action.kind === 'run.detail')).toBe(false)
   })
 
   it('CQ-12: 会话租约占用排查 - 输出运行 ID、占用时长与 run.detail 处置入口', async () => {
@@ -822,6 +1830,8 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const result = await handleKnowledgeAnswer(ctx)
     expect(capturedPayload.availableCitations).not.toContain(`run:${runId}`)
+    expect(JSON.stringify(capturedPayload)).not.toContain(runId)
+    expect(listQueuedRunsForAccount).not.toHaveBeenCalled()
     expect(result.nextActions?.some((a) => a.kind === 'run.detail')).toBe(false)
   })
 
@@ -907,14 +1917,140 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     expect(result.nextActions?.some((a) => a.kind === 'target.accounts' && a.href === '/sessions/tgt-1')).toBe(true)
     expect(result.nextActions?.some((a) => a.kind === 'schedule.edit' && a.href === '/schedules')).toBe(true)
 
-    // 验证 prompt user content 中包含了 occurrence 与汇总事实
-    const callArgs = completeJsonMock.mock.calls[0]
-    const userPromptContent = JSON.parse(callArgs[2][1].content)
-    expect(userPromptContent.availableCitations).toContain('occurrence:11111111-1111-4111-8111-111111111111')
-    expect(userPromptContent.contextFacts.some((f: any) => f.fact.includes('AUTH_PREPARATION_REQUIRED'))).toBe(true)
-    // 触发记录带出调度时区下的具体时刻，统计按「昨天」范围
-    expect(userPromptContent.contextFacts.some((f: any) => f.fact.includes('应触发时刻:') && f.fact.includes('08:00') && f.fact.includes('(Asia/Shanghai)'))).toBe(true)
-    expect(userPromptContent.contextFacts.some((f: any) => f.fact.includes(`昨天（${yesterday} 至 ${yesterday}`) && f.fact.includes('已跳过 1 次'))).toBe(true)
+    // 具体日期与跳过事件由已授权事实直接回答，不依赖模型推断。
+    expect(completeJsonMock).not.toHaveBeenCalled()
+    expect(result.summary).toContain('AUTH_PREPARATION_REQUIRED')
+    expect(result.summary).toContain('08:00')
+    expect(result.summary).toContain('Asia/Shanghai')
+    expect(result.summary).toContain(`昨天（${yesterday}`)
+    expect(result.summary).toContain('已跳过 1 次')
+  })
+
+  it('explains that a schedule created today could not have triggered yesterday', async () => {
+    const scheduleId = '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a'
+    const today = shanghaiLocalDate(0)
+    const yesterday = shanghaiLocalDate(-1)
+    vi.mocked(getSchedule).mockResolvedValue({
+      scheduleId, targetId: TGT_UUID, name: '地图采集测试', enabled: true,
+      definition: { timezone: 'Asia/Shanghai' },
+      createdAt: `${today}T08:00:00.000Z`, nextDueAt: `${today}T18:00:00.000Z`,
+    } as any)
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({ items: [], nextCursor: null } as any)
+    const completeJson = vi.fn()
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read', 'target:read'], targetScope: 'all' } as any,
+      session: { completeJson } as any,
+      body: {
+        question: '昨晚这条调度怎么没跑？',
+        pageContext: { version: 2, routeKey: 'schedule', pageKind: 'schedule', page: 'schedule',
+          primaryRef: { kind: 'schedule', id: scheduleId } },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain(yesterday)
+    expect(result.summary).toContain('当时尚不存在')
+    expect(result.claims[0]?.citations).toEqual([`schedule:${scheduleId}`])
+    expect(completeJson).not.toHaveBeenCalled()
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+  })
+
+  it('explains a weekday excluded by the saved calendar rule without inventing a skip event', async () => {
+    const scheduleId = '7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a'
+    const yesterday = shanghaiLocalDate(-1)
+    const priorDate = shanghaiLocalDate(-2)
+    const yesterdayWeekday = new Date(`${yesterday}T00:00:00.000Z`).getUTCDay() || 7
+    const weekdays = [1, 2, 3, 4, 5, 6, 7].filter((day) => day !== yesterdayWeekday)
+    vi.mocked(getSchedule).mockResolvedValue({
+      scheduleId, targetId: TGT_UUID, name: '工作日采集', enabled: true,
+      definition: { timezone: 'Asia/Shanghai', timeRule: {
+        kind: 'calendar', timezone: 'Asia/Shanghai', weekdays,
+        windows: [{ ruleId: 'daily', windowStart: '02:00', windowEnd: '03:00' }], misfire: 'skip',
+      } },
+      createdAt: `${priorDate}T08:00:00.000Z`, nextDueAt: null,
+    } as any)
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({ items: [], nextCursor: null } as any)
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read', 'target:read'], targetScope: 'all' } as any,
+      body: {
+        question: '昨晚这条调度怎么没跑？',
+        pageContext: { version: 2, routeKey: 'schedule', pageKind: 'schedule', page: 'schedule',
+          primaryRef: { kind: 'schedule', id: scheduleId } },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('不在计划日期')
+    expect(result.summary).toContain('没有已记录的跳过事件')
+    expect(result.claims[0]?.citations).toEqual([`schedule:${scheduleId}`])
+    expect(result.missing).toEqual([])
+  })
+
+  it('P10: explains an actual skipped occurrence in the schedule timezone', async () => {
+    const scheduleId = '66666666-6666-4666-8666-666666666666'
+    const occurrenceId = '77777777-7777-4777-8777-777777777777'
+    const yesterday = shanghaiLocalDate(-1)
+    vi.mocked(getSchedule).mockResolvedValue({
+      scheduleId, targetId: TGT_UUID, name: '夜间订单巡检', enabled: true,
+      definition: { timezone: 'Asia/Shanghai' }, createdAt: '2025-01-01T00:00:00.000Z',
+    } as any)
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({
+      items: [{ occurrenceId, scheduleId, localStartDate: yesterday, source: 'scheduled',
+        windowStartUtc: `${yesterday}T14:00:00.000Z`, windowEndUtc: null,
+        admissionStatus: 'SKIPPED', reason: 'WORKER_UNAVAILABLE', runId: null }],
+      nextCursor: null,
+    } as any)
+    const completeJson = vi.fn()
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read', 'target:read'], targetScope: 'all' } as any,
+      session: { completeJson } as any,
+      body: {
+        question: '昨晚这条调度怎么没跑？',
+        pageContext: { version: 2, routeKey: 'schedule', pageKind: 'schedule', page: 'schedule',
+          primaryRef: { kind: 'schedule', id: scheduleId } },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain(yesterday)
+    expect(result.summary).toContain('Asia/Shanghai')
+    expect(result.summary).toContain('已跳过 1 次')
+    expect(result.summary).toContain('WORKER_UNAVAILABLE')
+    expect(result.summary).toContain('在准入阶段被跳过')
+    expect(result.claims[0]?.citations).toContain(`occurrence:${occurrenceId}`)
+    expect(completeJson).not.toHaveBeenCalled()
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
+  })
+
+  it('P10: corrects the premise when a scheduled occurrence was admitted', async () => {
+    const scheduleId = '88888888-8888-4888-8888-888888888888'
+    const occurrenceId = '99999999-9999-4999-8999-999999999999'
+    const yesterday = shanghaiLocalDate(-1)
+    vi.mocked(getSchedule).mockResolvedValue({
+      scheduleId, targetId: TGT_UUID, name: '夜间订单巡检', enabled: true,
+      definition: { timezone: 'Asia/Shanghai' }, createdAt: '2025-01-01T00:00:00.000Z',
+    } as any)
+    vi.mocked(listScheduleOccurrences).mockResolvedValue({
+      items: [{ occurrenceId, scheduleId, localStartDate: yesterday, source: 'scheduled',
+        windowStartUtc: `${yesterday}T14:00:00.000Z`, windowEndUtc: null,
+        admissionStatus: 'ADMITTED', reason: null, runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }],
+      nextCursor: null,
+    } as any)
+    const ctx = createMockContext({
+      actor: { id: 'user-1', permissions: ['ai:assist', 'schedule:read'], targetScope: 'all' } as any,
+      body: {
+        question: '昨晚这条调度怎么没跑？',
+        pageContext: { version: 2, routeKey: 'schedule', pageKind: 'schedule', page: 'schedule',
+          primaryRef: { kind: 'schedule', id: scheduleId } },
+      },
+    })
+
+    const result = await handleKnowledgeAnswer(ctx)
+    expect(result.summary).toContain('已准入 1 次')
+    expect(result.summary).toContain('不能说完全没跑')
+    expect(result.summary).toContain('是否执行完成或成功需要查看关联运行')
+    expect(result.claims[0]?.citations).toContain(`occurrence:${occurrenceId}`)
+    expect(assistantResultSchema.safeParse(result).success).toBe(true)
   })
 
   it('CQ-13: 按问题时间范围筛选触发记录，范围外记录不作为事实', async () => {
@@ -1184,8 +2320,10 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
             claims: [
               { factKind: 'human_confirmed', text: '伪装的目标官方规则', citations: ['target:tgt-1'] },
               { factKind: 'observed', text: '伪装的系统观测', citations: ['help:studio-retry'] },
-              { factKind: 'human_confirmed', text: '真实帮助规则', citations: ['help:studio-retry'] },
-              { factKind: 'observed', text: '真实目标状态', citations: ['target:tgt-1'] },
+              { factKind: 'human_confirmed', text: '真实帮助规则',
+                evidenceQuote: RETRY_HELP_QUOTE, citations: ['help:studio-retry'] },
+              { factKind: 'observed', text: '真实目标状态',
+                evidenceQuote: '状态: ACTIVE', citations: ['target:tgt-1'] },
             ],
           },
         }),
@@ -1193,11 +2331,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     const result = await handleKnowledgeAnswer(ctx)
-    expect(result.claims.map((claim) => claim.text)).toEqual(['真实帮助规则', '真实目标状态'])
+    expect(result.claims.map((claim) => claim.text)).toEqual([RETRY_HELP_QUOTE, '状态: ACTIVE'])
     expect(result.missing.filter((item) => item.reason === 'citation_source_mismatch')).toHaveLength(2)
   })
 
-  it('filters out unsupported inferences without premises or citations into missing', async () => {
+  it('requires cited source text for inference premises and rejects invented amounts', async () => {
     const ctx = createMockContext({
       session: {
         completeJson: vi.fn().mockResolvedValue({
@@ -1213,9 +2351,20 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
               },
               {
                 factKind: 'inferred',
-                text: '具备已知事实前提的合规推论',
+                text: '引用键正确但前提是编造的推论',
                 citations: ['help:studio-retry'],
-                premises: ['系统支持配置重试'],
+                premises: ['所有浏览器均已验证重试必定成功'],
+              },
+              {
+                factKind: 'inferred',
+                text: '遇到瞬态异常时可以考虑配置重试',
+                citations: ['help:studio-retry'],
+                premises: ['填写「重试上限（0~10 次）」'],
+              },
+              {
+                factKind: 'human_confirmed',
+                text: 'maxAttempts 默认会自动重试 99 次',
+                citations: ['help:studio-retry'],
               },
             ],
             missing: [],
@@ -1226,8 +2375,14 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
     const result = await handleKnowledgeAnswer(ctx)
     expect(result.claims.length).toBe(1)
-    expect(result.claims[0].text).toContain('具备已知事实前提的合规推论')
+    expect(result.claims[0].factKind).toBe('human_confirmed')
+    expect(result.claims[0].text).toContain('重试上限')
+    expect(result.claims[0].text).not.toContain('遇到瞬态异常时可以考虑配置重试')
     expect(result.missing.some((m) => m.key === 'unsupported_inference')).toBe(true)
+    expect(result.missing.some((m) => m.key === 'unverified_inference')).toBe(true)
+    expect(result.missing.some((m) => m.key === 'unsupported_citation')).toBe(true)
+    expect(result.missing.some((m) => m.key === 'unsupported_quantity')).toBe(true)
+    expect(result.summary).not.toContain('99')
   })
 
   it('CQ-06: 细粒度结构化事实解析：生成 step:<id>:selector, step:<id>:vars, step:<id>:flow 并支持在回答中精准引用', async () => {
@@ -1275,6 +2430,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       expect(userPayload.availableCitations).toContain('step:step-fill-qty:selector')
       expect(userPayload.availableCitations).toContain('step:step-fill-qty:vars')
       expect(userPayload.availableCitations).toContain('step:step-fill-qty:flow')
+      const quoteFor = (citation: string) => userPayload.contextFacts.find((fact: any) => fact.citation === citation).fact
 
       return Promise.resolve({
         ok: true,
@@ -1284,16 +2440,19 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
             {
               factKind: 'observed',
               text: '定位包含 CSS 选择器 input.quantity-field',
+              evidenceQuote: quoteFor('step:step-fill-qty:selector'),
               citations: ['step:step-fill-qty:selector'],
             },
             {
               factKind: 'observed',
               text: '引用了上游 itemUrl 变量，并将结果写入 submittedQty',
+              evidenceQuote: quoteFor('step:step-fill-qty:vars'),
               citations: ['step:step-fill-qty:vars'],
             },
             {
               factKind: 'observed',
               text: '紧邻前置分支判定步骤 检查库存状态',
+              evidenceQuote: quoteFor('step:step-fill-qty:flow'),
               citations: ['step:step-fill-qty:flow'],
             },
           ],
@@ -1428,28 +2587,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       vi.mocked(listRuns).mockResolvedValue({ items: mockRuns as any, nextCursor: null })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue(mockSummaries as any)
 
-      let capturedPayload: any = null
-      const completeJsonMock = vi.fn().mockImplementation((name, schema, messages) => {
-        capturedPayload = JSON.parse(messages[1].content)
-        return Promise.resolve({
-          ok: true,
-          value: {
-            summary: '经分析，这 4 次失败主要归并在 2 个原因。其中 3 次发生在填写地址步骤的超时，1 次发生在提交订单步骤。',
-            claims: [
-              {
-                factKind: 'observed',
-                text: '填写地址步骤因 TIMEOUT_WAITING_FOR_SELECTOR 失败 3 次',
-                citations: ['run:11111111-1111-1111-1111-111111111111'],
-              },
-              {
-                factKind: 'observed',
-                text: '提交订单步骤因 BUTTON_NOT_INTERACTABLE 失败 1 次',
-                citations: ['run:44444444-4444-4444-4444-444444444444'],
-              },
-            ],
-          },
-        })
-      })
+      const completeJsonMock = vi.fn()
 
       const ctx = createMockContext({
         actor: {
@@ -1489,25 +2627,23 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         '44444444-4444-4444-4444-444444444444',
       ])
 
-      // 验证上下文事实
-      expect(capturedPayload).not.toBeNull()
-      const contextFacts = capturedPayload.contextFacts
-      expect(contextFacts.some((f: any) => f.label.includes('总览') && f.fact.includes('4 条失败运行记录') && f.fact.includes('分组为 2 组'))).toBe(true)
-      expect(contextFacts.some((f: any) => f.label.includes('填写地址 (3次)') && f.fact.includes('TIMEOUT_WAITING_FOR_SELECTOR'))).toBe(true)
-      expect(contextFacts.some((f: any) => f.label.includes('提交订单 (1次)') && f.fact.includes('BUTTON_NOT_INTERACTABLE'))).toBe(true)
-
-      // 验证引用键
-      expect(capturedPayload.availableCitations).toContain('run:11111111-1111-1111-1111-111111111111')
-      expect(capturedPayload.availableCitations).toContain('run:44444444-4444-4444-4444-444444444444')
+      expect(completeJsonMock).not.toHaveBeenCalled()
+      expect(result.summary).toContain('分为 2 个错误表现组；现有事实不能确认它们同因')
+      expect(result.summary).toContain('填写地址：TIMEOUT_WAITING_FOR_SELECTOR（3 次）')
+      expect(result.summary).toContain('提交订单：BUTTON_NOT_INTERACTABLE（1 次）')
+      expect(result.claims[0]?.citations).toEqual([
+        'platform:run_failure_digest_v1',
+        ...mockRuns.map((run) => `run:${run.id}`),
+      ])
 
       // 验证处置动作
       expect(result.nextActions).toBeDefined()
       expect(result.nextActions?.some((a) => a.kind === 'run.detail' && a.href === '/runs/11111111-1111-1111-1111-111111111111')).toBe(true)
       expect(result.nextActions?.some((a) => a.kind === 'run.detail' && a.href === '/runs/44444444-4444-4444-4444-444444444444')).toBe(true)
-      expect(result.claims).toHaveLength(2)
+      expect(result.claims).toHaveLength(1)
     })
 
-    it('可靠性背景关联：具备 reliability:read 权限且存在活跃事件时生成 incident 引用与处置入口', async () => {
+    it('failure digest does not claim an incident as the cause of a Run failure', async () => {
       const mockRuns = [
         {
           id: '11111111-1111-1111-1111-111111111111',
@@ -1541,23 +2677,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       vi.mocked(loadRunFailureSummaries).mockResolvedValue(mockSummaries as any)
       vi.mocked(listIncidents).mockResolvedValue({ items: mockIncidents as any, total: 1 })
 
-      let capturedPayload: any = null
-      const completeJsonMock = vi.fn().mockImplementation((name, schema, messages) => {
-        capturedPayload = JSON.parse(messages[1].content)
-        return Promise.resolve({
-          ok: true,
-          value: {
-            summary: '当前失败与目标系统 ERP 接口延迟突增事件高度吻合。',
-            claims: [
-              {
-                factKind: 'observed',
-                text: '关联目标系统存在活跃可靠性事件 ERP 接口响应延迟突增',
-                citations: ['incident:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'],
-              },
-            ],
-          },
-        })
-      })
+      const completeJsonMock = vi.fn()
 
       const ctx = createMockContext({
         actor: {
@@ -1580,15 +2700,14 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
       const result = await handleKnowledgeAnswer(ctx)
 
-      expect(listIncidents).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ targetId: 'tgt-11111111-1111-1111-1111-111111111111' }),
-        'user-1',
-      )
-
-      expect(capturedPayload.availableCitations).toContain('incident:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
-      expect(result.nextActions?.some((a) => a.kind === 'incident.detail' && a.href === '/maintenance/incidents/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')).toBe(true)
-      expect(result.claims[0].citations).toContain('incident:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+      expect(listIncidents).not.toHaveBeenCalled()
+      expect(completeJsonMock).not.toHaveBeenCalled()
+      expect(result.summary).toContain('只有 1 条失败运行，无法判断多次失败是否同因')
+      expect(result.claims[0].citations).toEqual([
+        'platform:run_failure_digest_v1',
+        'run:11111111-1111-1111-1111-111111111111',
+      ])
+      expect(result.nextActions?.every((action) => action.kind === 'run.detail')).toBe(true)
     })
 
     it('权限隔离：缺少 run:read 权限时拒绝读取运行数据，记录 permission_denied', async () => {
@@ -1616,7 +2735,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       expect(result.missing.some((m) => m.key === 'runs' && m.reason === 'permission_denied')).toBe(true)
     })
 
-    it('权限隔离：缺少 reliability:read 权限时正常归并失败，安全记录 reliability_incidents 缺口', async () => {
+    it('failure digest only requires Run permission and does not infer reliability incidents', async () => {
       const mockRuns = [
         {
           id: '11111111-1111-1111-1111-111111111111',
@@ -1667,7 +2786,8 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
 
       const result = await handleKnowledgeAnswer(ctx)
       expect(listIncidents).not.toHaveBeenCalled()
-      expect(result.missing.some((m) => m.key === 'reliability_incidents' && m.reason === 'permission_denied')).toBe(true)
+      expect(result.summary).toContain('只有 1 条失败运行')
+      expect(result.missing.some((m) => m.key === 'reliability_incidents')).toBe(false)
       expect(result.claims.length).toBeGreaterThan(0)
     })
 
@@ -1725,6 +2845,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
     })
 
     it('场景编排全局排查：Studio 提问为什么老失败时自动限定当前 scenarioId 与 7 天范围', async () => {
+      vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
       vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null })
 
       const ctx = createMockContext({
@@ -1746,7 +2867,9 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         },
       })
 
-      await handleKnowledgeAnswer(ctx)
+      const result = await handleKnowledgeAnswer(ctx)
+      expect(result.summary).toContain('场景「订单创建」最近 7 天没有状态为 FAILED 的运行记录')
+      expect(result.summary).toContain('不代表其余运行的业务检查都通过')
       expect(listRuns).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -1757,6 +2880,21 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         }),
         'user-1',
       )
+    })
+
+    it('页面选中步骤但明确问整个场景失败记录时仍限定 scenarioId', async () => {
+      vi.mocked(getScenario).mockResolvedValue({ id: SC_UUID, name: '订单创建', targetId: TGT_UUID } as never)
+      vi.mocked(listRuns).mockResolvedValue({ items: [], nextCursor: null } as never)
+      const question = '分析当前场景最近 7 天内的失败运行记录，归纳主要失败原因。'
+      const result = await handleKnowledgeAnswer(createMockContext({
+        actor: { id: 'user-1', permissions: ['ai:assist', 'workflow:read', 'run:read', 'target:read'] } as never,
+        slots: { scenarioId: SC_UUID, stepId: 'step-1' }, question,
+        body: { question, pageContext: { page: 'studio', scenarioId: SC_UUID, stepId: 'step-1' } },
+      }))
+      expect(result.summary).toContain('场景「订单创建」最近 7 天没有状态为 FAILED')
+      expect(listRuns).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        scenarioId: SC_UUID, status: 'FAILED', limit: 50,
+      }), 'user-1')
     })
 
     it('截断保护：当失败运行达到 50 条时事实明确标注文案', async () => {
@@ -1777,23 +2915,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       vi.mocked(listRuns).mockResolvedValue({ items: fiftyRuns as any, nextCursor: null })
       vi.mocked(loadRunFailureSummaries).mockResolvedValue(fiftySummaries as any)
 
-      let capturedPayload: any = null
-      const completeJsonMock = vi.fn().mockImplementation((name, schema, messages) => {
-        capturedPayload = JSON.parse(messages[1].content)
-        return Promise.resolve({
-          ok: true,
-          value: {
-            summary: '仅分析最近 50 次失败，全为 ERR_TIMEOUT。',
-            claims: [
-              {
-                factKind: 'observed',
-                text: '分析了最近 50 条失败记录',
-                citations: [`run:${fiftyRuns[0].id}`],
-              },
-            ],
-          },
-        })
-      })
+      const completeJsonMock = vi.fn()
 
       const ctx = createMockContext({
         actor: {
@@ -1814,10 +2936,11 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         },
       })
 
-      await handleKnowledgeAnswer(ctx)
-      expect(capturedPayload).not.toBeNull()
-      const totalFact = capturedPayload.contextFacts.find((f: any) => f.label.includes('总览'))
-      expect(totalFact.fact).toContain('已达单批上限 50 条，仅分析最近 50 次失败')
+      const result = await handleKnowledgeAnswer(ctx)
+      expect(completeJsonMock).not.toHaveBeenCalled()
+      expect(result.summary).toContain('已达单批上限 50 条，仅分析最近 50 次失败')
+      expect(result.claims[0]?.citations).toHaveLength(51)
+      expect(result.missing).toContainEqual(expect.objectContaining({ key: 'older_runs', reason: 'truncated' }))
     })
 
     it('触发范围：运行详情页问「为什么失败」不做跨运行归并', async () => {
@@ -1884,7 +3007,7 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
       expect(result.missing.some((m) => m.key === 'run_filters' && m.reason === 'invalid_filters')).toBe(true)
     })
 
-    it('可靠性事件：查询时只取未关闭状态，处置入口首位保留代表性失败运行', async () => {
+    it('failure digest stays within the authorized Run set and links its representative Run', async () => {
       const runIdA = '11111111-1111-4111-8111-111111111111'
       vi.mocked(listRuns).mockResolvedValue({
         items: [{ id: runIdA, scenarioId: SC_UUID, scenarioName: '订单创建', targetId: TGT_UUID, status: 'FAILED', createdAt: '2026-09-27T10:00:00.000Z' }] as any,
@@ -1900,32 +3023,22 @@ describe('handleKnowledgeAnswer (P0-B & Entity Boundaries CQ-03..CQ-14)', () => 
         ] as any,
         total: 2,
       })
-      let captured: any = null
+      const completeJson = vi.fn()
       const ctx = createMockContext({
         actor: { id: 'user-1', name: 'Ops', permissions: ['ai:assist', 'run:read', 'reliability:read'], targetScope: 'all' },
-        session: {
-          completeJson: vi.fn().mockImplementation((_n: string, _s: unknown, messages: any[]) => {
-            captured = JSON.parse(messages[1].content)
-            return Promise.resolve({ ok: true, value: { summary: 'ok', claims: [] } })
-          }),
-        } as any,
+        session: { completeJson } as any,
         body: {
           question: '这些失败是同一个原因吗？',
           pageContext: { version: 2, routeKey: 'runs', pageKind: 'run', page: 'run', view: { filters: { status: 'FAILED' } } },
         },
       })
       const result = await handleKnowledgeAnswer(ctx)
-      expect(listIncidents).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          targetId: TGT_UUID,
-          statuses: ['DETECTED', 'DIAGNOSING', 'ACTION_REQUIRED', 'VERIFYING', 'OBSERVING'],
-        }),
-        'user-1',
-      )
+      expect(listIncidents).not.toHaveBeenCalled()
+      expect(completeJson).not.toHaveBeenCalled()
+      expect(result.summary).toContain('LOCATOR_NOT_FOUND')
+      expect(result.claims[0]?.citations).toEqual(['platform:run_failure_digest_v1', `run:${runIdA}`])
       expect(result.nextActions?.[0]).toMatchObject({ kind: 'run.detail', href: `/runs/${runIdA}` })
-      expect(result.nextActions?.[1]).toMatchObject({ kind: 'incident.detail' })
-      expect(captured.contextFacts.some((f: any) => f.fact.includes('错误说明示例: 未找到地址输入框'))).toBe(true)
+      expect(result.nextActions).toHaveLength(1)
     })
   })
 })

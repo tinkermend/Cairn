@@ -238,7 +238,7 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
         'conv-user-journey',
         expect.objectContaining({
           question: expect.stringContaining('认证健康状态与会话租约'),
-          capabilityHint: 'platform.guide',
+          capabilityHint: 'knowledge.answer',
         })
       )
     })
@@ -270,7 +270,7 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
   })
 
   describe('菜单 4：场景编排工作台（/scenarios/sc-order-flow）', () => {
-    it('正例：未聚焦单步但有未保存草稿时，UI 清晰告警并优先推荐「审查未保存改动」与「解释场景全貌」', async () => {
+    it('反例：未保存草稿只提醒先保存，不承诺分析助手看不到的本地改动', async () => {
       routeState.pathname = '/scenarios/sc-order-flow'
       useAssistantStore.setState({
         boundContext: {
@@ -295,19 +295,9 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
 
       // 推荐 Chips 巡检
       const explainScenarioChip = page.getByRole('button', { name: '💡 解释场景全貌', exact: true })
-      const diffChip = page.getByRole('button', { name: '📝 审查未保存改动', exact: true })
       await expect.element(explainScenarioChip).toBeVisible()
-      await expect.element(diffChip).toBeVisible()
-
-      // 用户点击「📝 审查未保存改动」
-      await userEvent.click(diffChip)
-      expect(createAssistantTurn).toHaveBeenCalledWith(
-        'conv-user-journey',
-        expect.objectContaining({
-          question: expect.stringContaining('请总结当前草稿与 baseline 相比'),
-          capabilityHint: 'scenario.explain',
-        })
-      )
+      await expect.element(page.getByRole('button', { name: '📝 审查未保存改动', exact: true })).not.toBeInTheDocument()
+      await expect.element(page.getByText('当前有未保存修改。助手会依据已保存版本回答；要分析刚才的编辑，请先保存草稿。')).toBeVisible()
     })
 
     it('反例：输入框已有自己手写的未发送内容时，点击推荐 Chip 不会冲掉输入，而是安全追加', async () => {
@@ -337,7 +327,7 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
   })
 
   describe('菜单 5：运行记录详情（/runs/run-failed-001）', () => {
-    it('正例：运行报错页面，红色错误警示与步骤报错诊断、根因分析、对比上次成功运行一目了然', async () => {
+    it('正例：运行报错页面，红色错误警示与步骤报错诊断、根因分析、对比上一次运行一目了然', async () => {
       routeState.pathname = '/runs/run-failed-001'
       useAssistantStore.setState({
         boundContext: {
@@ -363,19 +353,19 @@ describe('普通用户视角：跨菜单页面识途助手端到端正反例与 
       await expect.element(page.getByText('支付超时：等待页面响应超过 30s')).toBeVisible()
 
       // 推荐 Chips 巡检（置顶当前报错步骤诊断）
-      const stepDiagChip = page.getByRole('button', { name: '📸 诊断当前步骤报错', exact: true })
-      const rcaChip = page.getByRole('button', { name: '🚨 诊断失败根因', exact: true })
-      const compareChip = page.getByRole('button', { name: '🔄 对比上次成功运行', exact: true })
+      const stepDiagChip = page.getByRole('button', { name: '🔎 排查当前步骤报错', exact: true })
+      const rcaChip = page.getByRole('button', { name: '🚨 排查本次失败', exact: true })
+      const compareChip = page.getByRole('button', { name: '🔄 对比上一次运行', exact: true })
       await expect.element(stepDiagChip).toBeVisible()
       await expect.element(rcaChip).toBeVisible()
       await expect.element(compareChip).toBeVisible()
 
-      // 用户点击「📸 诊断当前步骤报错」
+      // 用户点击「🔎 排查当前步骤报错」
       await userEvent.click(stepDiagChip)
       expect(createAssistantTurn).toHaveBeenCalledWith(
         'conv-user-journey',
         expect.objectContaining({
-          question: expect.stringContaining('为什么当前选中的步骤会执行失败'),
+          question: expect.stringContaining('当前步骤记录了什么错误'),
           capabilityHint: 'run.diagnose',
         })
       )

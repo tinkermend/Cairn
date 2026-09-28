@@ -36,6 +36,9 @@ import {
   readMonitorSeries,
   recordManualObjectStoreProbe,
   summarizeAi,
+  summarizeAiModels,
+  summarizeSla,
+  summarizeTargetSla,
   markLostWorkers,
   markWorkerDraining,
   markWorkerStopped,
@@ -965,5 +968,81 @@ describe.each(DRIVERS)('%s 监控只读聚合', { timeout: 60_000 }, (driver) =>
     const [fresh] = await handle.db.select().from(scenarioAiCalls).where(eq(scenarioAiCalls.id, freshId))
     expect(stale).toBeUndefined()
     expect(fresh?.id).toBe(freshId)
+  })
+
+  it('summarizeAiModels 按模型分组的 p95 是真分位数，不是均值', async () => {
+    const { scenarioAiCalls } = schemaFor(handle.db)
+    const model = `p95-test-${newId().slice(0, 8)}`
+    // 15 次 500ms 正常调用 + 5 次 20000ms 长尾（25% 慢样本，确保按最近秩 p95 落在慢样本区）：
+    // 均值只有约 4625ms，真实 p95 应贴着 20000ms，两者必须能区分开
+    const row = (durationMs: number) => ({
+      id: newId(),
+      evidenceId: newId(),
+      runId: newId(),
+      stepRunId: newId(),
+      purpose: 'scenario',
+      phase: 'completed' as const,
+      model,
+      durationMs,
+    })
+    const rows = [
+      ...Array.from({ length: 15 }, () => row(500)),
+      ...Array.from({ length: 5 }, () => row(20_000)),
+    ]
+    await handle.db.insert(scenarioAiCalls).values(rows)
+
+    const items = await summarizeAiModels(handle.db, await clockNow(handle.db))
+    const item = items.find((i) => i.model === model)
+    expect(item).toBeDefined()
+    expect(item!.totalCalls).toBe(20)
+    // 均值只有约 4625ms；p95 必须贴着长尾样本，明显高于均值，证明走的是分位数而非平均
+    expect(item!.p95DurationMs).toBeGreaterThan(10_000)
+  })
+
+  it('summarizeFleet 磁盘使用率按真实总容量算，不是 profile 目录占可用空间的比例', async () => {
+    const { workers } = schemaFor(handle.db)
+    const workerId = `disk-${newId().slice(0, 8)}`
+    const instanceId = newId()
+    await registerWorker(handle.db, { workerId, instanceId, capacity: 1, lostAfterSeconds: 600 })
+    // 总容量 100GB，剩余 10GB：真实使用率应为 90%。
+    // 旧公式会用 profileBytes/(profileBytes+free) 算，而这里 profileBytes 未采集，
+    // 旧公式在这种情况下会直接判定 unknown 或算出错误偏低的比例。
+    const totalBytes = 100 * 1024 * 1024 * 1024
+    const freeBytes = 10 * 1024 * 1024 * 1024
+    expect(
+      await heartbeatWorker(handle.db, workerId, instanceId, {
+        profileDiskFreeBytes: freeBytes,
+        diskTotalBytes: totalBytes,
+      }),
+    ).toBe('ok')
+
+    const fleet = await summarizeFleet(handle.db, await clockNow(handle.db))
+    const sample = fleet.data.workerSamples.items.find((item) => item.workerId === workerId)
+    expect(sample).toBeDefined()
+    expect(sample!.diskUsagePercent).toEqual(knownMetric(90))
+  })
+
+  it('summarizeTargetSla 按登录记录里真实的验证码拦截标记计数', async () => {
+    const { sessionOperations } = schemaFor(handle.db)
+    await handle.db.insert(sessionOperations).values({
+      id: newId(),
+      targetId,
+      targetAccountId: accountId,
+      kind: 'LOGIN',
+      origin: 'BACKGROUND',
+      status: 'FAILED',
+      finishedAt: new Date(),
+      kindParams: { captchaPhase: 'MACHINE_HANDLING', challengeType: 'IMAGE_CAPTCHA', outcome: 'captcha_failed' },
+      secretRefs: [],
+      idempotencyKey: newId(),
+      contentDigest: 'digest',
+      platformConfigRevision: 1,
+      queueDeadlineAt: afterSeconds(handle.db, 300),
+    })
+
+    const items = await summarizeTargetSla(handle.db, await clockNow(handle.db))
+    const item = items.find((i) => i.targetId === targetId)
+    expect(item).toBeDefined()
+    expect(item!.captchaIntercepts).toBeGreaterThanOrEqual(1)
   })
 })

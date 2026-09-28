@@ -10,6 +10,7 @@ import {
   retainUntilFor,
   RUN_FILE_HANDLE_KIND,
   type BrowserCommand,
+  type BrowserCommandEvidence,
   type BrowserCommandResult,
   type DownloadStep,
   type ExecutionError,
@@ -17,6 +18,7 @@ import {
   type ResolvedUploadFile,
   type RunFileHandle,
   type RunSnapshot,
+  type SessionGrant,
   type Step,
   type TargetDescriptor,
   type UploadStep,
@@ -192,7 +194,7 @@ export class BrowserStepExecutor implements StepExecutor {
       }
     }
 
-    return runResolutionLadder({
+    const outcome = await runResolutionLadder({
       handle: this.handle,
       ctx,
       step,
@@ -202,6 +204,28 @@ export class BrowserStepExecutor implements StepExecutor {
       consumption: this.consumption,
       execute: (command) => this.browser!.execute(sessionGrant, command, signal, { ...evidence, commandType: command.type }),
     })
+    return this.withFailureScreenshotFallback(outcome, sessionGrant, evidence, signal)
+  }
+
+  /**
+   * 有些解析路线（如仅文本模型档）在失败前不执行任何浏览器命令，
+   * 结算时会因为缺 on_error 截图判定证据不完整。只在确认失败且过程中
+   * 确实没有拿到任何截图时补一张现场；取消与租约已丢失不重试，避免在
+   * 不可用的会话上再发一次页面操作。
+   */
+  private async withFailureScreenshotFallback(
+    outcome: StepExecutionOutcome,
+    sessionGrant: SessionGrant,
+    evidence: BrowserCommandEvidence,
+    signal: AbortSignal,
+  ): Promise<StepExecutionOutcome> {
+    if (outcome.kind !== 'failed' || outcome.screenshot || outcome.aborted || signal.aborted) return outcome
+    if (!this.browser?.captureFailureScreenshot) return outcome
+    if (outcome.error.category === 'CANCELLED' || outcome.error.code === 'SESSION_LEASE_LOST' || outcome.error.code === 'LEASE_LOST') {
+      return outcome
+    }
+    const screenshot = await this.browser.captureFailureScreenshot(sessionGrant, evidence, signal).catch(() => undefined)
+    return screenshot ? { ...outcome, screenshot } : outcome
   }
 
   private async handleDownloadOutcome(

@@ -2,11 +2,10 @@ import { z } from 'zod'
 import {
   ASSISTANT_PROMPT_VERSION,
   assistantCapabilityIdSchema,
-  assistantHypothesisSchema,
   assistantStepChangeSchema,
   PAGE_LANDMARK_MANIFESTS,
+  PLATFORM_AI_OUTPUT_TRUNCATED_CODE,
   type AssistantCapabilityId,
-  type AssistantHypothesis,
   type AssistantPageContext,
   type AssistantStepChange,
   type PlatformAiProvider,
@@ -22,10 +21,6 @@ import type { PlatformModelClient } from './model-client'
  */
 export const modelClassifySchema = z.strictObject({
   capabilityId: z.union([assistantCapabilityIdSchema, z.literal('none')]),
-})
-
-export const modelHypothesesSchema = z.strictObject({
-  hypotheses: assistantHypothesisSchema.array().max(8),
 })
 
 export const modelExplanationSchema = z.strictObject({
@@ -82,22 +77,48 @@ export class AssistantModelSession {
     messages: { role: 'system' | 'user'; content: string }[],
     signal?: AbortSignal,
     allowRepair = false,
+    thinkingModeOverride?: PlatformAiThinkingMode,
   ): Promise<{ ok: true; value: T } | { ok: false; message: string; code?: 'MODEL_UNAVAILABLE' | 'MODEL_TIMEOUT' | 'MODEL_INVALID_OUTPUT' | 'BUDGET_EXHAUSTED' | 'INTENT_UNSUPPORTED' }> {
-    const first = await this.call(purpose, messages, signal)
-    if (!first.ok) return first
+    const thinkingMode = thinkingModeOverride ?? this.access.thinkingMode
+    const retryTruncatedWithoutThinking = async () => {
+      if (thinkingMode !== 'on' || this.used >= this.access.maxCallsPerTurn) return null
+      const retry = await this.call(`${purpose}-no-thinking-retry`, messages, signal, 'off')
+      if (!retry.ok) return retry
+      const parsedRetry = this.parse(schema, retry.text)
+      await this.recordValidation(retry, parsedRetry.ok, parsedRetry.ok ? undefined : parsedRetry.message)
+      return parsedRetry.ok ? parsedRetry : {
+        ok: false as const,
+        code: 'MODEL_INVALID_OUTPUT' as const,
+        message: retry.finishReason === 'length' ? '模型输出达到生成上限，JSON 未完整返回' : parsedRetry.message,
+      }
+    }
+    const first = await this.call(purpose, messages, signal, thinkingMode)
+    if (!first.ok) {
+      if (first.finishReason === 'length') return await retryTruncatedWithoutThinking() ?? first
+      return first
+    }
     const parsed = this.parse(schema, first.text)
+    await this.recordValidation(first, parsed.ok, parsed.ok ? undefined : parsed.message)
     if (parsed.ok) return parsed
+    if (first.finishReason === 'length') {
+      const retried = await retryTruncatedWithoutThinking()
+      if (retried) return retried
+    }
     if (!allowRepair || this.used >= this.access.maxCallsPerTurn) {
-      return { ok: false, code: 'MODEL_INVALID_OUTPUT', message: parsed.message }
+      return { ok: false, code: 'MODEL_INVALID_OUTPUT',
+        message: first.finishReason === 'length' ? '模型输出达到生成上限，JSON 未完整返回' : parsed.message }
     }
     const repaired = await this.call(`${purpose}-repair`, [
       ...messages,
       { role: 'user', content: `上一次输出无法通过契约：${parsed.message}。请只输出合法 JSON。` },
-    ], signal)
+    ], signal, thinkingMode)
     if (!repaired.ok) return repaired
     const repairedParsed = this.parse(schema, repaired.text)
+    await this.recordValidation(repaired, repairedParsed.ok,
+      repairedParsed.ok ? undefined : repairedParsed.message)
     if (!repairedParsed.ok) {
-      return { ok: false, code: 'MODEL_INVALID_OUTPUT', message: repairedParsed.message }
+      return { ok: false, code: 'MODEL_INVALID_OUTPUT',
+        message: repaired.finishReason === 'length' ? '模型输出达到生成上限，JSON 未完整返回' : repairedParsed.message }
     }
     return repairedParsed
   }
@@ -105,18 +126,55 @@ export class AssistantModelSession {
   private parse<T>(schema: z.ZodType<T>, text: string): { ok: true; value: T } | { ok: false; message: string } {
     try {
       const parsed = schema.safeParse(parseModelJson(text))
-      if (!parsed.success) return { ok: false, message: parsed.error.issues[0]?.message ?? '模型输出不合法' }
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0]
+        const path = issue?.path.map(String).join('.') || '$'
+        return { ok: false, message: `模型输出不符合契约（${path}: ${issue?.code ?? 'unknown'}）` }
+      }
       return { ok: true, value: parsed.data }
     } catch {
       return { ok: false, message: '模型没有返回合法 JSON' }
     }
   }
 
+  private async recordValidation(
+    call: { seq: number; purpose: string; model: string; finishReason?: string; usage?: { promptTokens?: number; completionTokens?: number }; durationMs: number },
+    schemaOk: boolean,
+    issue?: string,
+  ): Promise<void> {
+    await recordPlatformAiCall(this.db, {
+      turnId: this.turnId,
+      ownerAccountId: this.ownerAccountId,
+      seq: call.seq,
+      purpose: call.purpose,
+      configRevision: this.access.revision,
+      model: call.model,
+      promptVersion: ASSISTANT_PROMPT_VERSION,
+      reservedTokens: this.access.maxOutputTokens,
+      usage: call.usage ?? null,
+      durationMs: call.durationMs,
+      errorClass: schemaOk ? 'none' : 'invalid_output',
+      validation: { schemaOk, grounded: 'not_checked',
+        ...(call.finishReason ? { finishReason: call.finishReason.slice(0, 64) } : {}),
+        ...(issue ? { issue: issue.slice(0, 160) } : {}) },
+    }).catch(() => undefined)
+  }
+
   private async call(
     purpose: string,
     messages: { role: 'system' | 'user'; content: string }[],
     signal?: AbortSignal,
-  ): Promise<{ ok: true; text: string } | { ok: false; message: string; code: 'MODEL_UNAVAILABLE' | 'MODEL_TIMEOUT' | 'BUDGET_EXHAUSTED' }> {
+    thinkingMode: PlatformAiThinkingMode = this.access.thinkingMode,
+  ): Promise<{
+    ok: true
+    text: string
+    seq: number
+    purpose: string
+    model: string
+    finishReason?: string
+    usage?: { promptTokens?: number; completionTokens?: number }
+    durationMs: number
+  } | { ok: false; message: string; code: 'MODEL_UNAVAILABLE' | 'MODEL_TIMEOUT' | 'MODEL_INVALID_OUTPUT' | 'BUDGET_EXHAUSTED'; finishReason?: string }> {
     if (this.used >= this.access.maxCallsPerTurn) {
       return { ok: false, code: 'BUDGET_EXHAUSTED', message: '本轮模型调用次数已用尽' }
     }
@@ -124,6 +182,7 @@ export class AssistantModelSession {
       return { ok: false, code: 'MODEL_TIMEOUT', message: '本轮模型时间已用尽' }
     }
     this.used += 1
+    const seq = this.used
     const started = Date.now()
     try {
       const result = await this.client.complete({
@@ -131,7 +190,7 @@ export class AssistantModelSession {
         apiKey: this.access.apiKey,
         model: this.access.model,
         provider: this.access.provider,
-        thinkingMode: this.access.thinkingMode,
+        thinkingMode,
         messages,
         maxTokens: this.access.maxOutputTokens,
         timeoutMs: this.remainingMs(),
@@ -148,48 +207,55 @@ export class AssistantModelSession {
         this.thinkingDurationMs += Date.now() - this.thinkingStartedAt
         this.thinkingStartedAt = undefined
       }
-      await recordPlatformAiCall(this.db, {
-        turnId: this.turnId,
-        ownerAccountId: this.ownerAccountId,
-        seq: this.used,
-        purpose,
-        configRevision: this.access.revision,
-        model: result.model,
-        promptVersion: ASSISTANT_PROMPT_VERSION,
-        reservedTokens: this.access.maxOutputTokens,
-        usage: result.usage ?? null,
-        durationMs: Date.now() - started,
-      })
-      return { ok: true, text: result.text }
+      return { ok: true, text: result.text, seq, purpose,
+        model: result.model, finishReason: result.finishReason,
+        usage: result.usage, durationMs: Date.now() - started }
     } catch (error) {
       if (this.thinkingStartedAt) {
         this.thinkingDurationMs += Date.now() - this.thinkingStartedAt
         this.thinkingStartedAt = undefined
       }
       const errMsg = error instanceof Error ? error.message : '模型调用失败'
+      const truncated = typeof error === 'object' && error !== null &&
+        'code' in error && error.code === PLATFORM_AI_OUTPUT_TRUNCATED_CODE
       const isTimeout = errMsg.toLowerCase().includes('timeout') || errMsg.toLowerCase().includes('deadline')
       const code: 'MODEL_TIMEOUT' | 'MODEL_UNAVAILABLE' = isTimeout ? 'MODEL_TIMEOUT' : 'MODEL_UNAVAILABLE'
       await recordPlatformAiCall(this.db, {
         turnId: this.turnId,
         ownerAccountId: this.ownerAccountId,
-        seq: this.used,
+        seq,
         purpose,
         configRevision: this.access.revision,
         model: this.access.model,
         promptVersion: ASSISTANT_PROMPT_VERSION,
         reservedTokens: this.access.maxOutputTokens,
         error: errMsg,
+        errorClass: truncated ? 'invalid_output' : 'provider_error',
+        ...(truncated ? { validation: { schemaOk: false, grounded: 'not_checked', finishReason: 'length' } } : {}),
         durationMs: Date.now() - started,
       }).catch(() => undefined)
-      return { ok: false, code, message: errMsg }
+      return { ok: false, code: truncated ? 'MODEL_INVALID_OUTPUT' : code,
+        message: errMsg, ...(truncated ? { finishReason: 'length' } : {}) }
     }
   }
 }
 
+const modelSupervisorSlotsSchema = z.record(z.string(), z.unknown()).transform((slots) => {
+  const normalized: Record<string, string | number | boolean | null> = {}
+  for (const [key, value] of Object.entries(slots)) {
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      normalized[key] = value
+    } else if (key === 'keywords' && Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+      normalized[key] = value.slice(0, 8).join(' ')
+    }
+  }
+  return normalized
+})
+
 export const modelSupervisorRouteSchema = z.strictObject({
   skillId: z.union([assistantCapabilityIdSchema, z.literal('none')]),
   confidence: z.number().min(0).max(1),
-  slots: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  slots: modelSupervisorSlotsSchema.default({}),
   reasoning: z.string().optional(),
 })
 export type ModelSupervisorRouteOutput = z.infer<typeof modelSupervisorRouteSchema>
@@ -259,7 +325,8 @@ ${skillPrompt}
   "confidence": 0.0到1.0的置信度数值,
   "slots": { "关键参数名": "提取的值" },
   "reasoning": "简要判断理由"
-}`,
+}
+slots 的值只能是字符串、数字、布尔值或 null；多个关键词请合成一个字符串，不要输出数组或嵌套对象。`,
       },
       {
         role: 'user',
@@ -293,34 +360,6 @@ export async function classifyAssistantCapability(
     return null
   }
   return res.skillId as AssistantCapabilityId
-}
-
-export async function generateDiagnosisHypotheses(
-  session: AssistantModelSession,
-  question: string,
-  facts: string,
-  citations: string[],
-  signal?: AbortSignal,
-): Promise<{ hypotheses: AssistantHypothesis[]; error?: string }> {
-  const result = await session.completeJson(
-    'diagnose',
-    modelHypothesesSchema,
-    [
-      {
-        role: 'system',
-        content:
-          '根据已确认事实提出可能原因。每条必须引用事实包中已有的 citation 键，标为推断。证据不足时不要编造根因。输出 JSON {"hypotheses":[{"text":"...","citations":["run:..."]}]}。',
-      },
-      { role: 'user', content: JSON.stringify({ question, facts, citations }) },
-    ],
-    signal,
-    true,
-  )
-  if (!result.ok) return { hypotheses: [], error: result.message }
-  const allowed = new Set(citations)
-  return {
-    hypotheses: result.value.hypotheses.filter((item) => item.citations.every((key) => allowed.has(key))),
-  }
 }
 
 export async function generateExplanationText(

@@ -77,6 +77,7 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
   let userA: RequestAccount
   let userB: RequestAccount
   let scopedReader: RequestAccount
+  let splitScopeReader: RequestAccount
   let targetAId: string
   let targetBId: string
   let scenarioAId: string
@@ -165,6 +166,33 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
       displayName: scopedAccount.displayName,
       email: scopedAccount.email,
       roles: scopedAccount.roles,
+    })
+
+    const targetReadRole = await rbac.createRole(
+      { key: 'assistant_target_a_only', name: '仅目标甲可读', permissions: ['ai:assist', 'target:read'] },
+      adminActor,
+    )
+    const workflowReadRole = await rbac.createRole(
+      { key: 'assistant_workflow_b_only', name: '仅系统乙场景可读', permissions: ['workflow:read'] },
+      adminActor,
+    )
+    const splitScopeAccount = await rbac.createAccount(
+      createAccountBodySchema.parse({
+        email: 'assistant-split-scope@example.com',
+        displayName: '授权范围分离用户',
+        password: 'split-scope-password',
+        roleIds: [targetReadRole.id, workflowReadRole.id],
+        targetScopes: [
+          { roleId: targetReadRole.id, mode: 'selected', targetIds: [targetAId] },
+          { roleId: workflowReadRole.id, mode: 'selected', targetIds: [targetBId] },
+        ],
+      }),
+      adminActor,
+    )
+    splitScopeReader = makeAccount(splitScopeAccount.id, splitScopeAccount.permissions, {
+      displayName: splitScopeAccount.displayName,
+      email: splitScopeAccount.email,
+      roles: splitScopeAccount.roles,
     })
 
     // 3. Create User A scoped strictly to Target A
@@ -342,6 +370,24 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
   })
 
   describe('2. 多租户 Target 强隔离与确定性 scenario.discover', () => {
+    it('目标读取与场景读取授权范围不重叠时不泄露目标名称或场景', async () => {
+      currentActor = splitScopeReader
+      const conv = await request(app.getHttpServer()).post('/assistant/conversations').send({}).expect(201)
+      const submitted = await request(app.getHttpServer())
+        .post(`/assistant/conversations/${conv.body.id}/turns`)
+        .send({
+          clientTurnId: `discover-split-scope-${newId()}`,
+          question: '有哪些场景？',
+          capabilityHint: 'scenario.discover',
+        })
+        .expect(202)
+      const turn = await waitForTurn(conv.body.id, submitted.body.turnId)
+      expect(turn.result).toMatchObject({ kind: 'discovery', candidates: [] })
+      expect(JSON.stringify(turn.result)).not.toContain(targetBId)
+      expect(JSON.stringify(turn.result)).not.toContain('系统-乙')
+      expect(JSON.stringify(turn.result)).not.toContain('场景乙-机密核验')
+    })
+
     it('用户甲进行场景发现：仅列出授权的系统甲场景，不出现系统乙的内容', async () => {
       currentActor = userA
       const sub = await request(app.getHttpServer())

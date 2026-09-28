@@ -24,13 +24,14 @@ export function resolveWorkerRoleConfig(env = process.env) {
     const upper = role.toUpperCase()
     const id = env[`CAIRN_WORKER_${upper}_ID`]?.trim() || `${prefix}-${role}`
     const port = parsePort(env[`CAIRN_WORKER_${upper}_PORT`], DEFAULT_PORTS[role], `CAIRN_WORKER_${upper}_PORT`)
-    const advertiseUrl = env[`CAIRN_WORKER_${upper}_ADVERTISE_URL`]?.trim() || ''
+    const configuredAdvertiseUrl = env[`CAIRN_WORKER_${upper}_ADVERTISE_URL`]?.trim() || ''
     if (!/^[a-zA-Z0-9._:-]+$/.test(id)) {
       throw new Error(`CAIRN_WORKER_${upper}_ID 只能包含字母、数字、点、下划线、冒号和短横线`)
     }
-    if (globalAdvertiseUrl && !advertiseUrl) {
+    if (globalAdvertiseUrl && !configuredAdvertiseUrl) {
       throw new Error(`CAIRN_WORKER_ADVERTISE_URL 已设置；分角色启动需分别配置 CAIRN_WORKER_${upper}_ADVERTISE_URL`)
     }
+    const advertiseUrl = configuredAdvertiseUrl || `http://127.0.0.1:${port}`
     return { role, id, port, advertiseUrl }
   })
 

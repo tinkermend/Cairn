@@ -111,6 +111,17 @@ describe.each(DRIVERS)('%s 助手会话与额度', { timeout: 30_000 }, (driver)
     expect(next.turn.status).toBe('RUNNING')
   })
 
+  it('同一用户并发提交时一条运行、其余排队，不返回事务错误', async () => {
+    const { db, owner } = await fixture(driver)
+    const conversations = await Promise.all(Array.from({ length: 4 }, (_, index) =>
+      api.createAssistantConversation(db, { ownerAccountId: owner.id, title: `并发 ${index}` })))
+    const turns = await Promise.all(conversations.map((conversation) =>
+      api.beginAssistantTurn(db, beginInput(conversation.id, owner.id, { allowQueue: true }))))
+    expect(turns.filter((item) => item.turn.status === 'RUNNING')).toHaveLength(1)
+    expect(turns.filter((item) => item.turn.status === 'QUEUED')).toHaveLength(3)
+    expect(new Set(turns.map((item) => item.turn.id)).size).toBe(4)
+  })
+
   it('过期 RUNNING 记 INTERRUPTED，迟到提交不能覆盖终态', async () => {
     const { db, owner } = await fixture(driver)
     const conversation = await api.createAssistantConversation(db, {

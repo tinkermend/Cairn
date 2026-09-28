@@ -3,8 +3,6 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   Line,
   LineChart,
@@ -272,7 +270,7 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
             ) : (
               <ChartContainer config={backlogChartConfig} className="h-full w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart syncId="monitoring-trends" data={backlogRows} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
+                  <AreaChart syncId="monitoring-trends" data={backlogRows} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
                     <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" />
                     <XAxis
                       dataKey="time"
@@ -287,25 +285,34 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
                     />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <ChartLegend content={<ChartLegendContent />} />
-                    <Bar
+                    <Area
+                      type="monotone"
                       dataKey="queue.needsReview"
                       name={backlogChartConfig['queue.needsReview'].label as string}
+                      stroke={backlogChartConfig['queue.needsReview'].color}
                       fill={backlogChartConfig['queue.needsReview'].color}
-                      radius={[4, 4, 0, 0]}
+                      fillOpacity={0.15}
+                      strokeWidth={2}
                     />
-                    <Bar
+                    <Area
+                      type="monotone"
                       dataKey="queue.targetsWithBacklog"
                       name={backlogChartConfig['queue.targetsWithBacklog'].label as string}
+                      stroke={backlogChartConfig['queue.targetsWithBacklog'].color}
                       fill={backlogChartConfig['queue.targetsWithBacklog'].color}
-                      radius={[4, 4, 0, 0]}
+                      fillOpacity={0.1}
+                      strokeWidth={2}
                     />
-                    <Bar
+                    <Area
+                      type="monotone"
                       dataKey="queue.unclaimableRuns"
                       name={backlogChartConfig['queue.unclaimableRuns'].label as string}
+                      stroke={backlogChartConfig['queue.unclaimableRuns'].color}
                       fill={backlogChartConfig['queue.unclaimableRuns'].color}
-                      radius={[4, 4, 0, 0]}
+                      fillOpacity={0.05}
+                      strokeWidth={2}
                     />
-                  </BarChart>
+                  </AreaChart>
                 </ResponsiveContainer>
               </ChartContainer>
             )}
@@ -398,7 +405,7 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
             ) : (
               <ChartContainer config={aiChartConfig} className="h-full w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart syncId="monitoring-trends" data={aiRows} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
+                  <AreaChart syncId="monitoring-trends" data={aiRows} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
                     <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" />
                     <XAxis
                       dataKey="time"
@@ -413,19 +420,25 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
                     />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <ChartLegend content={<ChartLegendContent />} />
-                    <Bar
+                    <Area
+                      type="monotone"
                       dataKey="ai.calls"
                       name={aiChartConfig['ai.calls'].label as string}
+                      stroke={aiChartConfig['ai.calls'].color}
                       fill={aiChartConfig['ai.calls'].color}
-                      radius={[4, 4, 0, 0]}
+                      fillOpacity={0.15}
+                      strokeWidth={2}
                     />
-                    <Bar
+                    <Area
+                      type="monotone"
                       dataKey="ai.errors"
                       name={aiChartConfig['ai.errors'].label as string}
+                      stroke={aiChartConfig['ai.errors'].color}
                       fill={aiChartConfig['ai.errors'].color}
-                      radius={[4, 4, 0, 0]}
+                      fillOpacity={0.08}
+                      strokeWidth={2}
                     />
-                  </BarChart>
+                  </AreaChart>
                 </ResponsiveContainer>
               </ChartContainer>
             )}

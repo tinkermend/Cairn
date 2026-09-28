@@ -93,6 +93,43 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
         emptyReason: OBJECT_MISSING_REASONS.captureFailed,
       })
     },
+    async captureFailureScreenshot(grant, evidence, signal) {
+      if (!objects || signal?.aborted) return undefined
+      if (!shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', true)) return undefined
+      const page = manager.pageForGrant(grant)
+      if (!page) return undefined
+      const sensitiveSelectors = evidence.sensitiveSelectors ?? []
+      const viewport = evidence.screenshotViewport ?? 'full_page'
+      const { pageHasSensitiveContent, screenshotPage } = await import('./runtime.js')
+      const { diagnoseScreenshot } = await import('./screenshot-quality.js')
+      const bytes = await screenshotPage(page, {
+        fullPage: viewport === 'full_page',
+        selectors: sensitiveSelectors,
+      }).catch(() => undefined)
+      if (!bytes || bytes.byteLength === 0) return undefined
+      const [sensitive, diagnosis] = await Promise.all([
+        pageHasSensitiveContent(page, sensitiveSelectors).catch(() => true),
+        diagnoseScreenshot(page, bytes).catch(() => undefined),
+      ])
+      return attachObjectEvidence({
+        type: 'screenshot',
+        bytes,
+        contentType: 'image/png',
+        objects,
+        evidence,
+        retainUntil: evidence.screenshotRetainUntil,
+        emptyReason: OBJECT_MISSING_REASONS.captureFailed,
+        artifactKey: writeEvidenceArtifactKey({
+          type: 'screenshot',
+          attemptId: evidence.attemptId,
+          role: 'on_error',
+        }),
+        payload: screenshotPayload('on_error', viewport, new Date().toISOString(), undefined, {
+          diagnosis,
+          sensitive,
+        }),
+      })
+    },
     async execute(
       grant: SessionGrant,
       command: BrowserCommand,

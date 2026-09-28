@@ -150,7 +150,7 @@ export function RunVideoSection({
       ) : null}
       {truncated ? <p className='text-label text-status-warning-foreground'>录像已截断</p> : null}
       {video?.status === 'available' && passwordMask === 'failed' ? (
-        <p className='text-label text-muted-foreground'>口令遮罩未完全套用，控制台仍仅内部可见。</p>
+        <p className='text-label text-muted-foreground'>录像额外遮罩处理有异常，不影响试跑与播放；如需分享录像，请先检查画面。</p>
       ) : null}
     </section>
   )
@@ -278,5 +278,5 @@ export function stepFaceScreenshot(
     .sort((a, b) => a.attemptNo - b.attemptNo)
   const last = finished[finished.length - 1]
   if (!last) return undefined
-  return faceScreenshot(items, last.id)
+  return faceScreenshot(items, last.id, { attemptFailed: last.status !== 'SUCCEEDED' })
 }

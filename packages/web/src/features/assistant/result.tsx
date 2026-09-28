@@ -1,5 +1,14 @@
 import { useNavigate } from '@tanstack/react-router'
-import type { AssistantAuthoringProposal, AssistantClarifyOption, AssistantProposal, AssistantResult } from '@cairn/shared'
+import {
+  TARGET_CONFIG_FORM_FIELDS,
+  targetConfigFieldValueLabel,
+  validateTargetFormProposalChange,
+  type AssistantAuthoringProposal,
+  type AssistantClarifyOption,
+  type AssistantProposal,
+  type AssistantResult,
+  type TargetFormProposal,
+} from '@cairn/shared'
 import {
   AlertTriangle,
   ArrowRight,
@@ -23,6 +32,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { stepTypeLabel } from '@/features/authoring/labels'
 import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS } from '@/features/scenarios/labels'
+import { RUN_OUTCOME_STATUS_LABELS } from '@/features/runs/outcome-labels'
 import { AssistantFactItem } from './components/assistant-fact-badge'
 import { citationDisplayLabel } from './citation-label'
 
@@ -65,7 +75,18 @@ function statusLabel(status?: string): string {
   if (!status) return '无记录'
   return STEP_RUN_STATUS_LABELS[status as keyof typeof STEP_RUN_STATUS_LABELS]
     ?? RUN_STATUS_LABELS[status as keyof typeof RUN_STATUS_LABELS]
+    ?? RUN_OUTCOME_STATUS_LABELS[status as keyof typeof RUN_OUTCOME_STATUS_LABELS]
     ?? '状态待确认'
+}
+
+function formatSourceTime(iso: string): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, timeZoneName: 'shortOffset',
+  }).formatToParts(new Date(iso))
+  const value = (kind: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === kind)?.value ?? ''
+  return `${value('year')}-${value('month')}-${value('day')} ${value('hour')}:${value('minute')}:${value('second')} ${value('timeZoneName')}`
 }
 
 function unsupportedTitle(reasonCode: string): string {
@@ -169,6 +190,8 @@ function ProposalDiffViewer({
 }) {
   const isV2 = proposal.kind === 'authoring_proposal'
   const reason = isV2 ? '已按要求生成受限编排候选' : proposal.reason
+  const diagnostics = isV2 ? (proposal.diagnostics ?? []) : []
+  const mapSourceWarnings = diagnostics.filter((item) => item.code.startsWith('MAP_SOURCE_'))
   const firstInsert = isV2 ? proposal.operations.find((op) => op.kind === 'insert_step') : null
   const firstWithStepId = isV2 ? proposal.operations.find((op): op is Extract<typeof op, { stepId: string }> => 'stepId' in op) : null
   const stepId = isV2
@@ -291,17 +314,32 @@ function ProposalDiffViewer({
         </div>
       </div>
 
-      <div className='flex items-center gap-1.5 text-label text-text-muted'>
-        <CheckCircle2
-          className='size-3.5 shrink-0 text-status-success-foreground'
-          aria-hidden='true'
-        />
-        <span>
-          静态预检：
-          {proposal.executable
-            ? '语法有效，满足依赖'
-            : '存在原有编译提示，提案未新增错误'}
-        </span>
+      <div className='space-y-1.5 text-label text-text-muted'>
+        <div className='flex items-start gap-1.5'>
+          {proposal.executable ? (
+            <CheckCircle2 className='mt-0.5 size-3.5 shrink-0 text-status-success-foreground' aria-hidden='true' />
+          ) : (
+            <AlertTriangle className='mt-0.5 size-3.5 shrink-0 text-status-warning-foreground' aria-hidden='true' />
+          )}
+          <span>
+            静态预检：{proposal.executable ? '语法有效，满足依赖' : '已有编译问题仍需处理'}。
+            {isV2 ? ' 尚未验证当前页面定位和业务结果，采纳后请核对并试跑。' : null}
+          </span>
+        </div>
+        {mapSourceWarnings.length > 0 ? (
+          <p className='rounded-md border border-status-warning-foreground/20 bg-status-warning-background p-2 text-status-warning-foreground'>
+            地图来源待核对：{mapSourceWarnings[0]?.message}
+            {mapSourceWarnings.length > 1 ? ` 另有 ${mapSourceWarnings.length - 1} 处，见下方提示。` : null}
+          </p>
+        ) : null}
+        {diagnostics.length > 0 ? (
+          <details className='rounded-md border border-status-warning-foreground/20 bg-status-warning-background p-2 text-status-warning-foreground'>
+            <summary className='cursor-pointer font-medium'>场景还有 {diagnostics.length} 条校验提示，展开核对</summary>
+            <ul className='mt-1.5 max-h-32 space-y-1 overflow-y-auto ps-4 list-disc'>
+              {diagnostics.map((item, index) => <li key={`${item.code}-${item.stepId ?? index}`}>{item.message}</li>)}
+            </ul>
+          </details>
+        ) : null}
       </div>
 
       <div className='flex flex-wrap items-center gap-2 border-t border-border-divider pt-1'>
@@ -353,6 +391,89 @@ function ProposalDiffViewer({
           >
             <Sparkles className='size-3.5' aria-hidden='true' />
             采纳到本地草稿
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TargetFormProposalViewer({
+  proposal,
+  onAdopt,
+  adopting,
+  isAdopted,
+}: {
+  proposal: TargetFormProposal
+  onAdopt?: (proposal: TargetFormProposal) => void
+  adopting?: boolean
+  isAdopted?: boolean
+}) {
+  const hasValidationError = proposal.changes.some(
+    (c) => Boolean(validateTargetFormProposalChange(c, proposal.mode)),
+  )
+
+  return (
+    <div
+      className='space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-4 shadow-sm'
+      data-testid='target-form-proposal-card'
+    >
+      <div className='flex items-center gap-2 text-small font-medium text-text-primary'>
+        <Sparkles className='size-4 text-primary-600 shrink-0' aria-hidden='true' />
+        <span>目标系统配置建议</span>
+        <span className='ml-auto rounded-full bg-primary/10 px-2 py-0.5 text-label text-primary font-mono'>
+          {proposal.mode === 'edit' ? '编辑模式' : '新建模式'}
+        </span>
+      </div>
+
+      <p className='text-label text-text-secondary leading-relaxed'>
+        {proposal.summary}
+      </p>
+
+      <div className='rounded-lg border border-border-default bg-surface-card p-3 space-y-2 text-label'>
+        <div className='font-medium text-text-primary text-label'>拟修改字段：</div>
+        <ul className='space-y-1.5 text-text-secondary list-none'>
+          {proposal.changes.map((c) => {
+            const field = TARGET_CONFIG_FORM_FIELDS.find((f) => f.id === c.fieldId)
+            const label = field?.label ?? c.fieldId
+            const displayVal = targetConfigFieldValueLabel(c.fieldId, c.value)
+            const validationError = validateTargetFormProposalChange(c, proposal.mode)
+            return (
+              <li key={c.fieldId} className='flex items-center justify-between gap-2 flex-wrap'>
+                <div className='flex items-center gap-1.5'>
+                  <span className='font-medium text-text-primary'>{label}</span>
+                  <span className='text-text-muted'>→</span>
+                  <span className='text-primary-600 font-mono'>{displayVal}</span>
+                </div>
+                {validationError ? (
+                  <span className='text-label text-status-error-foreground bg-status-error-background/60 border border-status-error-foreground/20 rounded px-1.5 py-0.5'>
+                    {validationError}
+                  </span>
+                ) : null}
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+
+      <div className='flex items-center justify-end gap-2 pt-1'>
+        {isAdopted ? (
+          <span className='inline-flex items-center gap-1.5 rounded-md bg-status-success-subtle px-2.5 py-1 text-label font-medium text-status-success-foreground'>
+            <Check className='size-3.5' />
+            已应用到表单
+          </span>
+        ) : (
+          <Button
+            type='button'
+            size='sm'
+            disabled={!onAdopt || adopting || hasValidationError}
+            loading={adopting}
+            title={hasValidationError ? '提案中包含不合法的字段修改，无法采纳' : undefined}
+            className='gap-1.5 text-label font-medium'
+            onClick={() => onAdopt?.(proposal)}
+          >
+            <Sparkles className='size-3.5' aria-hidden='true' />
+            采纳到表单
           </Button>
         )}
       </div>
@@ -427,8 +548,8 @@ export function AssistantResultView({
   canRollback = true,
 }: {
   result: AssistantResult
-  onAdopt?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
-  onRollback?: (proposal: AssistantProposal | AssistantAuthoringProposal) => void
+  onAdopt?: (proposal: AssistantProposal | AssistantAuthoringProposal | TargetFormProposal) => void
+  onRollback?: (proposal: AssistantProposal | AssistantAuthoringProposal | TargetFormProposal) => void
   onPreviewStep?: (stepId: string) => void
   onClarify?: (optionId: string, option?: AssistantClarifyOption) => void
   onCancelTask?: () => void
@@ -523,7 +644,9 @@ export function AssistantResultView({
       >
         <AlertTriangle className='size-4 shrink-0 mt-0.5' aria-hidden='true' />
         <div className='space-y-1 min-w-0 flex-1'>
-          <p className='font-medium leading-tight'>无访问权限</p>
+          <p className='font-medium leading-tight'>
+            {result.reasonCode === 'UNVERIFIED_HISTORY' ? '历史回答需复核' : '无访问权限'}
+          </p>
           <p className='text-label leading-normal opacity-90'>{result.message}</p>
         </div>
       </div>
@@ -584,11 +707,10 @@ export function AssistantResultView({
                   </span>
                 </div>
 
-                {/* 次行：说明文本截断 + 紧凑进入按钮 */}
-                <div className='mt-1 flex min-w-0 items-center justify-between gap-2'>
+                {/* 操作说明必须完整可读，尤其是含多步路径的上手指引。 */}
+                <div className='mt-1.5 flex min-w-0 flex-col items-start gap-2'>
                   <p
-                    className='line-clamp-1 min-w-0 flex-1 text-label leading-tight text-text-secondary'
-                    title={item.steps}
+                    className='w-full break-words whitespace-pre-wrap text-small leading-relaxed text-text-secondary'
                   >
                     {item.steps}
                   </p>
@@ -599,7 +721,7 @@ export function AssistantResultView({
                       size='sm'
                       aria-label='打开入口'
                       title='打开入口'
-                      className='h-6 shrink-0 gap-1 px-2 text-label font-medium text-primary hover:bg-primary/5 hover:text-primary'
+                      className='h-6 self-end gap-1 px-2 text-label font-medium text-primary hover:bg-primary/5 hover:text-primary'
                       onClick={(e) => {
                         e.stopPropagation()
                         go(item.href!)
@@ -742,23 +864,54 @@ export function AssistantResultView({
     )
   }
   if (result.kind === 'compare') {
+    const visibleMissing = result.missingInformation?.filter((item) =>
+      result.comparability?.comparable !== false || !item.startsWith('运行对比存在不可比因素'))
     return (
       <div className='space-y-3 rounded-lg border border-border-default bg-surface-card p-3.5 shadow-2xs'>
         <p className='text-body font-medium text-text-primary'>{result.summary}</p>
-        <section className='space-y-1.5 rounded-md border border-border-divider bg-surface-subtle p-2.5'>
-          <h3 className='text-label font-medium text-text-secondary'>对比差异</h3>
-          <ul className='space-y-1 text-small text-text-primary'>
-            {result.differences.map((diff, index) => (
-              <li key={index} className='flex items-center gap-1.5 font-mono text-label'>
-                <span className='font-sans font-medium'>{diff.stepName}:</span>
-                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{statusLabel(diff.baseStatus)}</span>
-                <span>→</span>
-                <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{statusLabel(diff.targetStatus)}</span>
-                {diff.errorDiff ? <span className='text-status-error-foreground font-sans'>({diff.errorDiff})</span> : null}
-              </li>
-            ))}
-          </ul>
-        </section>
+        {result.comparability && !result.comparability.comparable ? (
+          <section className='rounded-md border border-status-warning-foreground/20 bg-status-warning-background p-2.5 text-small text-status-warning-foreground'>
+            <h3 className='font-medium'>这两次运行不宜逐步比较</h3>
+            {result.comparability.incomparableFactors.length > 0 ? (
+              <ul className='mt-1 list-disc space-y-1 pl-4'>
+                {result.comparability.incomparableFactors.map((factor) => (
+                  <li key={factor}>{factor.replace(/^[A-Z_]+:\s*/, '')}</li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        ) : null}
+        {result.differences.length > 0 ? (
+          <section className='space-y-1.5 rounded-md border border-border-divider bg-surface-subtle p-2.5'>
+            <h3 className='text-label font-medium text-text-secondary'>对比差异</h3>
+            <ul className='space-y-1 text-small text-text-primary'>
+              {result.differences.map((diff, index) => (
+                <li key={index} className='flex items-center gap-1.5 font-mono text-label'>
+                  <span className='font-sans font-medium'>{diff.stepName}:</span>
+                  <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{statusLabel(diff.baseStatus)}</span>
+                  <span>→</span>
+                  <span className='rounded bg-surface-card px-1.5 py-0.5 border border-border-default'>{statusLabel(diff.targetStatus)}</span>
+                  {diff.errorDiff ? <span className='text-status-error-foreground font-sans'>({diff.errorDiff})</span> : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {(result.facts?.length ?? 0) > 0 ? (
+          <details className='rounded-md border border-border-divider p-2.5'>
+            <summary className='cursor-pointer text-label font-medium text-text-secondary'>
+              查看对比依据（{result.facts.length} 条）
+            </summary>
+            <div className='mt-2 space-y-2'>
+              {result.facts.map((fact) => <AssistantFactItem key={fact.id} fact={fact} />)}
+            </div>
+          </details>
+        ) : null}
+        {visibleMissing?.length ? (
+          <p className='rounded-md border border-status-warning-foreground/20 bg-status-warning-background p-2.5 text-small text-status-warning-foreground'>
+            仍缺少：{visibleMissing.join('；')}
+          </p>
+        ) : null}
         {result.nextActions.length > 0 ? (
           <section>
             <h3 className='text-label font-medium text-text-secondary mb-1.5'>建议操作</h3>
@@ -780,13 +933,20 @@ export function AssistantResultView({
     )
   }
   if (result.kind === 'knowledge_proposal') {
+    const hasEditableChanges = result.status === 'proposed' && result.executable && result.diffs.length > 0
     return (
       <div className='space-y-3 rounded-lg border border-border-default bg-surface-card p-3.5 shadow-2xs'>
         <p className='text-body font-medium text-text-primary'>{result.reason}</p>
         <p className='text-small text-text-muted'>
-          知识建议已保存。请在场景中核对完整步骤与来源，再显式接受到草稿。
+          {hasEditableChanges
+            ? '可编辑建议已生成，尚未应用。请在场景中核对完整步骤与来源，再显式接受到草稿。'
+            : result.status === 'needs_input'
+              ? '尚未生成可编辑变更。请补齐上方所列信息后重试；当前草稿没有被修改。'
+              : '本次没有生成可应用的草稿变更；当前草稿没有被修改。'}
         </p>
-        <p className='text-label font-mono text-text-muted break-all'>建议编号：{result.proposalId}</p>
+        <p className='text-label font-mono text-text-muted break-all'>
+          {hasEditableChanges ? '建议编号' : '请求记录编号'}：{result.proposalId}
+        </p>
         {result.diffs.length ? (
           <details className='rounded-md border border-border-divider bg-surface-subtle p-2 text-label'>
             <summary className='cursor-pointer font-medium text-text-secondary hover:text-text-primary'>查看具体变更 ({result.diffs.length} 项)</summary>
@@ -894,6 +1054,17 @@ export function AssistantResultView({
     )
   }
 
+  if (result.kind === 'target_form') {
+    return (
+      <TargetFormProposalViewer
+        proposal={result}
+        onAdopt={onAdopt as any}
+        adopting={adopting}
+        isAdopted={isAdopted}
+      />
+    )
+  }
+
   if (result.kind === 'in_page_guidance') {
     return (
       <div className='space-y-2.5 rounded-xl border border-border-default bg-surface-card p-3 shadow-2xs' data-testid='in-page-guidance-card'>
@@ -952,6 +1123,11 @@ export function AssistantResultView({
           <Sparkles className='size-4 text-primary-600 shrink-0 mt-0.5' aria-hidden='true' />
           <div className='space-y-2 min-w-0 flex-1'>
             <p className='font-medium text-text-primary whitespace-pre-wrap'>{result.summary}</p>
+            {result.sourceAsOf ? (
+              <p className='text-label text-text-muted' data-testid='knowledge-source-as-of'>
+                来源数据查询基准时间：{formatSourceTime(result.sourceAsOf)}
+              </p>
+            ) : null}
 
             {result.claims?.length ? (
               <div className='space-y-2 pt-1' data-testid='knowledge-claims-list'>

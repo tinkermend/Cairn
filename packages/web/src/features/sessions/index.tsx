@@ -54,6 +54,7 @@ import {
 import { SessionWorkbenchSheet } from './session-workbench-sheet'
 import { AccountInstancesSubtable } from './account-instances-subtable'
 import { SystemAccountsPanel } from './system-accounts-panel'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 
 const BUCKET_TABS: AccountSessionBucketTab[] = ['all', 'problem', 'ready', 'busy', 'unprepared']
 
@@ -65,6 +66,18 @@ const SYSTEMS_FILTERS: Array<SessionSystemOverviewFilter | 'all'> = [
   'busy',
   'retained',
 ]
+
+function SessionSystemsAssistantBinding({ targetId, targetName }: { targetId: string; targetName: string }) {
+  useAssistantContextBinding({
+    page: 'session',
+    routeKey: 'sessions.index.systems',
+    targetId,
+    statusLabel: '目标账号会话',
+    summaryText: `目标系统「${targetName}」的账号会话列表`,
+    statusTone: 'neutral',
+  })
+  return null
+}
 
 function getInitialStreamFilterState(): {
   bucket: AccountSessionBucketTab
@@ -342,6 +355,13 @@ export function SessionsPage() {
 
   return (
     <>
+      {!activeSession && view === 'systems' && searchParams.targetId &&
+        targetNameQuery.data?.id === searchParams.targetId ? (
+          <SessionSystemsAssistantBinding
+            targetId={searchParams.targetId}
+            targetName={targetNameQuery.data.name}
+          />
+        ) : null}
       <Main className="flex min-w-0 flex-1 flex-col gap-6">
         <PageHeader
           title="账号会话"

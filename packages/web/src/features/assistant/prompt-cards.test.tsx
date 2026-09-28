@@ -105,14 +105,14 @@ describe('PromptCards 能力与承诺', () => {
           chips: [
             {
               id: 'run-step-diagnose',
-              label: '📸 诊断当前步骤报错',
-              question: '为什么当前选中的步骤会执行失败？请分析其错误与证据。',
+              label: '🔎 排查当前步骤报错',
+              question: '当前步骤记录了什么错误？我应该先核对哪份运行证据？',
               capabilityHint: 'run.diagnose',
             },
             {
               id: 'run-diagnose-rca',
-              label: '🚨 诊断失败根因',
-              question: '请结合执行日志、截图证据与错误信息，诊断本次运行失败的根本原因。',
+              label: '🚨 排查本次失败',
+              question: '这次运行哪里失败？请根据已记录的步骤和错误信息说明先核对什么；证据不足时请指出缺口。',
               capabilityHint: 'run.diagnose',
             },
           ],

@@ -4,6 +4,8 @@ import {
   AUTH_METHODS,
   CAPTCHA_MODES,
   TARGET_STATUSES,
+  TARGET_CONFIG_MAX_TIMEOUT_SECONDS,
+  targetConfigFieldHelp,
 } from '@cairn/shared'
 import { ChevronDown, HelpCircle, ShieldAlert } from 'lucide-react'
 import {
@@ -71,6 +73,8 @@ export function TargetFormBasicFields({
   const [securityOpen, setSecurityOpen] = useState(
     Boolean(form.getValues('sensitiveSelectors')?.trim())
   )
+  const fieldHelp = (id: 'code' | 'loginLeaveTimeoutSeconds' | 'landingSettleMode' | 'landingSettleTimeoutSeconds') =>
+    targetConfigFieldHelp(id)
 
   const showIdentity = section === 'all' || section === 'identity'
   const showRuntime = section === 'all' || section === 'runtime'
@@ -103,11 +107,7 @@ export function TargetFormBasicFields({
                 <FormLabel className='inline-flex items-center gap-1.5'>
                   <span>编码</span>
                   {!isEdit && <span className='text-destructive font-bold' aria-hidden='true'>*</span>}
-                  <FieldHelp
-                    content={isEdit
-                      ? '系统唯一标识，创建后不可修改。'
-                      : '小写字母开头的 slug，2–63 字符，创建后不可改。'}
-                  />
+                  <FieldHelp content={fieldHelp('code')} />
                 </FormLabel>
                 <FormControl>
                   <Input
@@ -168,10 +168,10 @@ export function TargetFormBasicFields({
             <FormLabel className='inline-flex items-center gap-1.5'>
               <span>提交后等待离开登录页</span>
               <span className='text-label font-normal text-muted-foreground'>（秒，可选）</span>
-              <FieldHelp content='自动填写提交后，等多久仍停在登录页才判未完成。跳转慢的系统加大；不填用平台配置。' />
+              <FieldHelp content={fieldHelp('loginLeaveTimeoutSeconds')} />
             </FormLabel>
             <FormControl>
-              <Input {...field} type='number' min={1} step={1} placeholder='留空则用平台默认' />
+              <Input {...field} type='number' min={1} max={TARGET_CONFIG_MAX_TIMEOUT_SECONDS} step={1} placeholder='留空则用平台默认' />
             </FormControl>
             <FormMessage />
           </FormItem>
@@ -186,7 +186,7 @@ export function TargetFormBasicFields({
             <FormItem>
               <FormLabel className='inline-flex items-center gap-1.5'>
                 <span>登录后整理</span>
-                <FieldHelp content='关掉后，换节点自动登录也不会关欢迎层。' />
+                <FieldHelp content={fieldHelp('landingSettleMode')} />
               </FormLabel>
               <Select value={field.value} onValueChange={field.onChange}>
                 <FormControl>
@@ -211,10 +211,10 @@ export function TargetFormBasicFields({
               <FormLabel className='inline-flex items-center gap-1.5'>
                 <span>整理预算</span>
                 <span className='text-label font-normal text-muted-foreground'>（秒，可选）</span>
-                <FieldHelp content='覆盖平台整理预算。不填用平台配置。' />
+                <FieldHelp content={fieldHelp('landingSettleTimeoutSeconds')} />
               </FormLabel>
               <FormControl>
-                <Input {...field} type='number' min={1} step={1} placeholder='留空则用平台默认' />
+                <Input {...field} type='number' min={1} max={TARGET_CONFIG_MAX_TIMEOUT_SECONDS} step={1} placeholder='留空则用平台默认' />
               </FormControl>
               <FormMessage />
             </FormItem>

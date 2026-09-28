@@ -109,7 +109,9 @@ export function TrialPanel({
   const stepRun = historic && run ? stepRunFor(run.stepRuns, historic.id) : undefined
   const latestAttempt = stepRun?.attempts[stepRun.attempts.length - 1]
   const attemptEvidence = (evidence?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
-  const screenshot = latestAttempt ? faceScreenshot(attemptEvidence, latestAttempt.id) : undefined
+  const screenshot = latestAttempt
+    ? faceScreenshot(attemptEvidence, latestAttempt.id, { attemptFailed: latestAttempt.status !== 'SUCCEEDED' })
+    : undefined
   const runLevel = (evidence?.items ?? []).filter((item) => !item.attemptId)
   const draftMissing = Boolean(
     selectedDraftStepId &&

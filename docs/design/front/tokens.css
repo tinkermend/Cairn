@@ -134,6 +134,12 @@
   --status-neutral-background: var(--surface-subtle);
   --status-neutral-foreground: #526174;
 
+  /* 基础状态色别名：默认映射到 accent 强调色，满足实体强调态、图表与自然直觉使用 */
+  --status-success: var(--status-success-accent);
+  --status-warning: var(--status-warning-accent);
+  --status-error: var(--status-error-accent);
+  --status-info: var(--status-info-accent);
+
   /* 普通数据系列：语义状态图必须改用对应 status Token。 */
   --chart-1: var(--primary-600);
   --chart-2: #168779;

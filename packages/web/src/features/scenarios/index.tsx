@@ -43,6 +43,7 @@ import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { ScenarioCreateDialog } from './create-dialog'
 import { SCENARIO_STATUS_LABELS } from './labels'
 
@@ -111,6 +112,19 @@ export function ScenariosPage() {
       item.name,
     ])
   )
+  const selectedTarget = targetId === 'all' || !canReadTargets
+    ? undefined
+    : targets.data?.items.find((item) => item.id === targetId)
+
+  useAssistantContextBinding({
+    page: 'scenario',
+    routeKey: 'scenarios.index',
+    ...(selectedTarget ? { targetId: selectedTarget.id } : {}),
+    statusLabel: selectedTarget ? `场景列表 · ${selectedTarget.name}` : '场景列表',
+    summaryText: selectedTarget
+      ? `当前按目标系统「${selectedTarget.name}」筛选场景`
+      : '当前场景列表没有绑定具体目标系统',
+  })
 
   return (
     <>

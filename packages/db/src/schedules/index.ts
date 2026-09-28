@@ -5,6 +5,7 @@ export {
   expireClosedScheduleWindows,
   expireScheduledMapJobs,
   getSchedule,
+  getScheduleOccurrence,
   listPendingScheduleAdmits,
   listScheduleEvents,
   listScheduleEventsAfter,

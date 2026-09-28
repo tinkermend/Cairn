@@ -1,14 +1,10 @@
 import { z } from 'zod'
 import {
-  AUTH_METHODS,
-  CAPTCHA_MODES,
   DEFAULT_TARGET_ACCENT_KEY,
   DEFAULT_TARGET_ICON_KEY,
   LOGIN_LOCATOR_BY,
-  TARGET_ACCENT_KEYS,
-  TARGET_ICON_KEYS,
-  TARGET_STATUSES,
   compactLoginFields,
+  targetConfigFormFieldSchemas,
   type CreateTargetAccountBody,
   type LoginLocatorBy,
   type TargetCaptchaDefinition,
@@ -18,18 +14,7 @@ import {
 
 export const targetFormSchema = z
   .object({
-    code: z.string(),
-    name: z.string().min(1, '请填写名称。'),
-    entryUrl: z.string().min(1, '请填写入口 URL。'),
-    loginUrl: z.string(),
-    loginLeaveTimeoutSeconds: z.string(),
-    landingSettleMode: z.enum(['default', 'off']),
-    landingSettleTimeoutSeconds: z.string(),
-    authMethod: z.enum(AUTH_METHODS),
-    captchaMode: z.enum(CAPTCHA_MODES),
-    status: z.enum(TARGET_STATUSES),
-    iconKey: z.enum(TARGET_ICON_KEYS),
-    accentKey: z.enum(TARGET_ACCENT_KEYS),
+    ...targetConfigFormFieldSchemas,
     accountDisplayName: z.string(),
     accountUsername: z.string(),
     accountPassword: z.string(),
@@ -53,28 +38,6 @@ export const targetFormSchema = z
     sensitiveSelectors: z.string(),
   })
   .superRefine((values, ctx) => {
-    const leave = values.loginLeaveTimeoutSeconds.trim()
-    if (leave !== '') {
-      const parsed = Number(leave)
-      if (!Number.isInteger(parsed) || parsed <= 0) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['loginLeaveTimeoutSeconds'],
-          message: '须为正整数秒，或留空用平台默认。',
-        })
-      }
-    }
-    const settle = values.landingSettleTimeoutSeconds.trim()
-    if (settle !== '') {
-      const parsed = Number(settle)
-      if (!Number.isInteger(parsed) || parsed <= 0) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['landingSettleTimeoutSeconds'],
-          message: '须为正整数秒，或留空用平台默认。',
-        })
-      }
-    }
     const hasAny =
       values.accountDisplayName.trim() !== '' ||
       values.accountUsername.trim() !== '' ||
@@ -95,6 +58,10 @@ export const targetFormSchema = z
       })
     }
   })
+
+// Persisted legacy codes can predate today's create-time slug rule. The field
+// is disabled in edit mode and is never sent by updateTarget.
+export const targetEditFormSchema = targetFormSchema.safeExtend({ code: z.string() })
 
 export type TargetFormValues = z.infer<typeof targetFormSchema>
 

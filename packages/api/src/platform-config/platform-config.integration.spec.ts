@@ -226,7 +226,8 @@ describe('平台配置凭据绑定（真实仓储与 HTTP）', () => {
     const sent = JSON.parse(String(fetchMock.mock.calls[0]![1].body)) as Record<string, unknown>
     expect(sent.max_tokens).toBe(1)
     expect(sent).not.toHaveProperty('response_format')
-    expect(sent).not.toHaveProperty('thinking')
+    // DeepSeek defaults to reasoning unless the request explicitly disables it.
+    expect(sent.thinking).toEqual({ type: 'disabled' })
     expect(sent).not.toHaveProperty('modelFamily')
   })
 

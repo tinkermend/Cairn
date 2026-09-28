@@ -22,6 +22,8 @@ const fetchMonitorAlerts = vi.fn()
 const probeObjectStore = vi.fn()
 const subscribeMonitoringStream = vi.fn()
 const fetchWorkers = vi.fn()
+const fetchTargetSla = vi.fn()
+const fetchAiModels = vi.fn()
 const useCan = vi.fn(
   (permission: string) =>
     permission === 'session:read' || permission === 'monitor:read' || permission === 'platform-config:read',
@@ -63,6 +65,8 @@ vi.mock('@/lib/monitoring-api', () => ({
   fetchMonitorProfiles: (...args: unknown[]) => fetchMonitorProfiles(...args),
   fetchMonitorSeries: (...args: unknown[]) => fetchMonitorSeries(...args),
   fetchMonitorAlerts: (...args: unknown[]) => fetchMonitorAlerts(...args),
+  fetchTargetSla: (...args: unknown[]) => fetchTargetSla(...args),
+  fetchAiModels: (...args: unknown[]) => fetchAiModels(...args),
   silenceMonitorAlert: vi.fn(),
   probeObjectStore: (...args: unknown[]) => probeObjectStore(...args),
   subscribeMonitoringStream: (...args: unknown[]) => subscribeMonitoringStream(...args),
@@ -222,6 +226,20 @@ function overview(overrides: Partial<MonitoringOverviewResponse['partitions']> =
           lastErrorClass: null,
         },
       },
+      sla: {
+        availability: 'available',
+        source: 'aggregate',
+        sampledAt: AS_OF,
+        data: {
+          windowHours: 24,
+          totalRuns: 10,
+          succeededRuns: 9,
+          successRate: 90,
+          failedRuns: 1,
+          p95DurationMs: 1200,
+          throughputRpm: 5,
+        },
+      },
       ...overrides,
     },
   }
@@ -321,6 +339,8 @@ describe('运行监控页', () => {
       items: [worker('worker-ready', 'READY', true), worker('worker-stopped', 'STOPPED', true)],
       asOf: AS_OF,
     })
+    fetchTargetSla.mockResolvedValue({ asOf: AS_OF, windowHours: 24, items: [] })
+    fetchAiModels.mockResolvedValue({ asOf: AS_OF, windowHours: 24, items: [] })
     subscribeMonitoringStream.mockImplementation(async (input: { signal: AbortSignal }) => {
       await new Promise<void>((resolve) => {
         input.signal.addEventListener('abort', () => resolve(), { once: true })
@@ -337,28 +357,52 @@ describe('运行监控页', () => {
     await expect.element(screen.getByRole('heading', { name: '监控', exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
     await expect.element(screen.getByText('自动刷新')).toBeInTheDocument()
+
+    // 检查第一层全局概览卡片
+    await expect.element(screen.getByText('业务执行 SLA')).toBeInTheDocument()
+    await expect.element(screen.getByText('平台容量与舰队')).toBeInTheDocument()
+    await expect.element(screen.getByText('核心服务基线')).toBeInTheDocument()
+    await expect.element(screen.getByText('AI 推理流速')).toBeInTheDocument()
+
+    const pageText = screen.container.textContent ?? ''
+    expect(pageText).toContain('此刻的事实')
+    expect(pageText).toContain('当前没有未恢复告警')
+    expect(pageText).toContain('配置规则')
+
+    // 切换到“队列与租约守卫” Tab 检查分区失败降级
+    await screen.getByRole('tab', { name: '队列与租约守卫' }).click()
     await expect.element(screen.getByText('监控数据读取失败', { exact: true })).toBeInTheDocument()
     await expect.element(screen.getByText('数据面不可用，监控数据读取失败。其余分区仍可查看。')).toBeInTheDocument()
     await expect.element(screen.getByText('证据待上传', { exact: true })).toBeInTheDocument()
-    const pageText = screen.container.textContent ?? ''
-    expect(pageText).toContain('此刻的事实')
-    expect(pageText).toContain('实时进度不可用')
-    expect(pageText).toContain('未使用')
-    expect(pageText).toContain('被监控对象故障')
-    expect(pageText).not.toMatch(/提示通道[\s\S]*被监控对象故障/)
-    expect(pageText).toContain('未采集／未上报')
-    expect(pageText).not.toMatch(/池 0/)
-    expect(pageText).toContain('这个窗口没有样本，空洞不是 0。')
-    expect(pageText).toContain('当前没有未恢复告警')
-    expect(pageText).toContain('配置规则')
-    expect(pageText).toContain('自动派生')
-    expect(pageText).toContain('节点 worker-ready')
-    expect(pageText).toContain('成本')
+
+    // 切换到“Worker 节点与沙箱” Tab 检查节点列表
+    await screen.getByRole('tab', { name: 'Worker 节点与沙箱' }).click()
     await expect.element(screen.getByRole('cell', { name: '已停止' })).toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: '查看节点 worker-ready' })).toHaveAttribute(
       'href',
       '/workers/worker-ready',
     )
+  })
+
+  it('全局概览单卡片降级，不拖累同层其余卡片', async () => {
+    fetchMonitoringOverview.mockResolvedValue(
+      overview({
+        service: {
+          availability: 'unavailable',
+          reasonCode: 'DATA_PLANE_UNAVAILABLE',
+          message: '数据面不可用',
+        },
+      }),
+    )
+    const screen = await renderPage()
+
+    // 核心服务卡片降级为失败提示
+    await expect.element(screen.getByText('数据面不可用，监控数据读取失败。其余分区仍可查看。')).toBeInTheDocument()
+
+    // 同一层的其余三张卡片（业务 SLA / AI 推理 / 容量与舰队）不受影响，仍然渲染
+    await expect.element(screen.getByText('业务执行 SLA')).toBeInTheDocument()
+    await expect.element(screen.getByText('AI 推理流速')).toBeInTheDocument()
+    await expect.element(screen.getByText('平台容量与舰队')).toBeInTheDocument()
   })
 
   it('整页读取失败与无权限文案分开', async () => {
@@ -373,9 +417,12 @@ describe('运行监控页', () => {
   it('无会话读取权限时节点表显示无权限，其余分区仍在', async () => {
     useCan.mockImplementation((permission: string) => permission === 'monitor:read')
     const screen = await renderPage()
+    await expect.element(screen.getByText('平台容量与舰队')).toBeInTheDocument()
+
+    // 切换到 Worker 节点与沙箱 Tab 确认无权限占位与提示
+    await screen.getByRole('tab', { name: 'Worker 节点与沙箱' }).click()
     await expect.element(screen.getByText('无权限')).toBeInTheDocument()
     await expect.element(screen.getByText('查看节点列表需要会话读取权限。可从容量水位了解舰队计数。')).toBeInTheDocument()
-    await expect.element(screen.getByRole('heading', { name: '容量水位' })).toBeInTheDocument()
     expect(fetchWorkers).not.toHaveBeenCalled()
   })
 
@@ -387,6 +434,7 @@ describe('运行监控页', () => {
 
   it('同时具备 run:read 才把证据异常链到证据中心', async () => {
     const withoutRead = await renderPage()
+    await withoutRead.getByRole('tab', { name: '队列与租约守卫' }).click()
     expect(withoutRead.container.querySelector('a[href^="/evidence"]')).toBeNull()
     withoutRead.unmount()
     useCan.mockImplementation(
@@ -397,6 +445,7 @@ describe('运行监控页', () => {
         permission === 'run:read',
     )
     const screen = await renderPage()
+    await screen.getByRole('tab', { name: '队列与租约守卫' }).click()
     await expect.element(screen.getByRole('link', { name: '证据上传失败' })).toHaveAttribute(
       'href',
       '/evidence?view=capture_upload_anomaly',
@@ -407,3 +456,5 @@ describe('运行监控页', () => {
     )
   })
 })
+
+

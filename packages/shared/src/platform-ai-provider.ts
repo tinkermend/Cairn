@@ -11,6 +11,7 @@ import {
 export const PLATFORM_AI_THINKING_UNSUPPORTED = 'PLATFORM_AI_THINKING_UNSUPPORTED' as const
 export const PLATFORM_AI_OUTPUT_LIMIT = 256_000
 export const PLATFORM_AI_OUTPUT_LIMIT_CODE = 'PLATFORM_AI_OUTPUT_LIMIT' as const
+export const PLATFORM_AI_OUTPUT_TRUNCATED_CODE = 'PLATFORM_AI_OUTPUT_TRUNCATED' as const
 
 export type PlatformAiModelPreset = { id: string; hint: string }
 
@@ -168,7 +169,11 @@ export function buildPlatformAiChatBody(input: {
   }
   if (input.json) body.response_format = { type: 'json_object' }
   if (input.provider === 'qwen') body.enable_thinking = false
-  if ((input.provider === 'glm' || input.provider === 'deepseek') && input.thinkingMode === 'on') {
+  // DeepSeek enables thinking by default. Omitting the field would turn an
+  // explicit "off" (including the assistant's truncation retry) back on.
+  if (input.provider === 'deepseek') {
+    body.thinking = { type: input.thinkingMode === 'on' ? 'enabled' : 'disabled' }
+  } else if (input.provider === 'glm' && input.thinkingMode === 'on') {
     body.thinking = { type: 'enabled' }
   }
   return body
@@ -178,6 +183,7 @@ export type PlatformAiChatRead = {
   text: string
   reasoningText?: string
   model?: string
+  finishReason?: string
   usage?: { promptTokens?: number; completionTokens?: number }
 }
 
@@ -189,7 +195,9 @@ export function readPlatformAiChatResult(body: unknown, mode: 'business' | 'prob
   if (!Array.isArray(record.choices)) {
     throw new Error('模型没有返回可用结果')
   }
-  const message = (record.choices[0] as { message?: Record<string, unknown> } | undefined)?.message
+  const choice = record.choices[0] as { message?: Record<string, unknown>; finish_reason?: unknown } | undefined
+  const message = choice?.message
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined
   let text = typeof message?.content === 'string' ? message.content.trim() : ''
   let reasoningText =
     typeof message?.reasoning_content === 'string' ? message.reasoning_content.trim() : ''
@@ -205,6 +213,12 @@ export function readPlatformAiChatResult(body: unknown, mode: 'business' | 'prob
       ? (record.usage as Record<string, unknown>)
       : undefined
   if (mode === 'business' && !text) {
+    if (finishReason === 'length') {
+      throw Object.assign(new Error('模型输出达到生成上限，未返回可用正文'), {
+        code: PLATFORM_AI_OUTPUT_TRUNCATED_CODE,
+        finishReason,
+      })
+    }
     throw new Error(
       reasoningText
         ? '模型没有返回可用文本：正文为空，推理内容不能作为结果。请关闭思考模式或更换模型。'
@@ -215,6 +229,7 @@ export function readPlatformAiChatResult(body: unknown, mode: 'business' | 'prob
     text,
     reasoningText: reasoningText || undefined,
     model: typeof record.model === 'string' ? record.model : undefined,
+    ...(finishReason ? { finishReason } : {}),
     usage: usage
       ? {
           promptTokens: typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : undefined,
@@ -337,6 +352,7 @@ export async function streamPlatformAiChatCompletion(input: {
   let fullText = ''
   let fullReasoning = ''
   let model: string | undefined
+  let finishReason: string | undefined
   let usage: { promptTokens?: number; completionTokens?: number } | undefined
   let buffer = ''
   let totalBytes = 0
@@ -371,6 +387,7 @@ export async function streamPlatformAiChatCompletion(input: {
             }
           }
           const choice = Array.isArray(parsed.choices) ? (parsed.choices[0] as Record<string, unknown> | undefined) : undefined
+          if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
           const delta = choice?.delta && typeof choice.delta === 'object' ? (choice.delta as Record<string, unknown>) : undefined
           const rawContent = typeof delta?.content === 'string' ? delta.content : undefined
           let reasoningDelta = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined
@@ -428,6 +445,7 @@ export async function streamPlatformAiChatCompletion(input: {
     text: fullText.trim(),
     reasoningText: fullReasoning.trim() || undefined,
     model,
+    finishReason,
     usage,
   }
 }

@@ -170,6 +170,11 @@ describe('keybindings-store', () => {
       expect(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')['palette.open']).toBe('mod+shift+p')
     })
 
+    it('旧偏好中已保存的 Ctrl 别名也能作为有效键位读取', () => {
+      useKeybindingsStore.setState({ customBindings: { 'palette.open': 'Ctrl+Shift+P' } })
+      expect(useKeybindingsStore.getState().getEffectiveKey('palette.open')).toBe('mod+shift+p')
+    })
+
     it('若修改违规应失败且不影响原值', () => {
       const store = useKeybindingsStore.getState()
       const res = store.setCustomKey('assistant.toggle', 'mod+w')

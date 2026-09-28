@@ -229,7 +229,7 @@ export class AssistantCapabilityRegistry {
         id: 'run.diagnose',
         version: '1.0.0',
         label: '运行诊断',
-        purpose: '分析 Run 失败或慢跑事实，提出可能原因与下一步动作',
+        purpose: '核对 Run 的执行、业务结果、失败步骤与可展示错误，并给出证据核查入口',
         notApplicable: ['未完成的运行', '非本租户的运行'],
         requiredPermissions: ['ai:assist', 'run:read', 'target:read'],
         inputSchemaRef: 'assistantDiagnoseInputSchema',
@@ -239,8 +239,8 @@ export class AssistantCapabilityRegistry {
         sideEffect: 'read_only',
         allowedTools: [],
         policyRef: 'diagnose_policy:v1',
-        promptRef: { id: 'diagnose_prompt', version: 'v1' },
-        validatorRefs: ['grounding_validator'],
+        promptRef: null,
+        validatorRefs: ['schema_validator'],
         intentMatchers: [
           { kind: 'keyword', pattern: '诊断' },
           { kind: 'regex', pattern: '为什么(失败|报错|卡住|慢)' },
@@ -254,15 +254,12 @@ export class AssistantCapabilityRegistry {
       inputSchema: z.strictObject({
         runId: z.string(),
         stepId: z.string().optional(),
-        focus: z.enum(['overview', 'timing', 'network', 'console']).optional(),
+        focus: z.string().max(64).optional(),
       }),
       outputSchema: assistantDiagnosisSchema,
       handler: async (ctx) => {
         const { handleRunDiagnose } = await import('./handlers/diagnose.handler.js')
         return handleRunDiagnose(ctx)
-      },
-      promptTemplates: {
-        v1: '根据已确认事实提出可能原因。每条必须引用事实包中已有的 citation 键，标为推断。证据不足时不要编造根因。输出 JSON {"hypotheses":[{"text":"...","citations":["run:..."]}]}。',
       },
     })
 
@@ -290,14 +287,16 @@ export class AssistantCapabilityRegistry {
         ],
         slotBindings: [
           { slot: 'baseRunId', from: 'question', key: 'baseRunId', required: true },
-          { slot: 'compareRunId', from: 'question', key: 'compareRunId', required: true },
+          { slot: 'compareRunId', from: 'question', key: 'compareRunId', required: false },
         ],
-        requiredContextKeys: ['baseRunId', 'compareRunId'],
+        requiredContextKeys: ['baseRunId'],
       },
       inputSchema: z.strictObject({
         baseRunId: z.string().uuid(),
-        compareRunId: z.string().uuid(),
-      }),
+        compareRunId: z.string().uuid().optional(),
+        targetRunId: z.string().uuid().optional(),
+        comparePrevious: z.boolean().optional(),
+      }).refine((input) => Boolean(input.compareRunId || input.targetRunId || input.comparePrevious)),
       outputSchema: assistantCompareSchema,
       handler: async (ctx) => {
         const { handleRunCompare } = await import('./handlers/compare.handler.js')
@@ -407,7 +406,7 @@ export class AssistantCapabilityRegistry {
         id: 'scenario.compose_with_knowledge',
         version: '1.0.0',
         label: '知识辅助编写',
-        purpose: '基于已授权术语、地图与已发布做法生成可编辑草稿建议',
+        purpose: '为仅含独立步骤、且必需输入齐全的已保存草稿，基于已授权知识生成可编辑建议',
         notApplicable: ['无地图授权的目标'],
         requiredPermissions: ['ai:assist', 'workflow:read', 'workflow:write', 'target:read', 'map:read'],
         inputSchemaRef: 'assistantComposeKnowledgeInputSchema',
@@ -789,4 +788,3 @@ export class AssistantCapabilityRegistry {
     })
   }
 }
-

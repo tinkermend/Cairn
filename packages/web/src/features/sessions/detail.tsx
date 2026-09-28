@@ -586,6 +586,11 @@ export function SessionWorkbenchView({
             ) : null}
           </div>
           <div className="flex items-center gap-1.5 shrink-0 pr-8">
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/sessions/$targetId/$accountId" params={{ targetId, accountId }}>
+                {hasPermission(permissions, 'ai:assist') ? '打开详情并提问' : '打开完整详情'}
+              </Link>
+            </Button>
             {onFullscreenToggle ? (
               <Button
                 variant="ghost"

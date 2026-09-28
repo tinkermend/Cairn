@@ -37,11 +37,49 @@ describe('evidence slots', () => {
     expect(face?.payload).toMatchObject({ role: 'on_error' })
   })
 
+  it('已知 Attempt 最终成功时，主图不能倒退成解析梯内部的失败现场', () => {
+    const attemptId = '00000000-0000-4000-8000-0000000000a1'
+    const face = faceScreenshot(
+      [
+        { attemptId, type: 'screenshot', payload: { role: 'on_error', viewport: 'viewport', capturedAt: '2026-09-19T00:00:00.000Z' } },
+        { attemptId, type: 'screenshot', payload: { role: 'after_action', viewport: 'viewport', capturedAt: '2026-09-19T00:00:01.000Z' } },
+      ],
+      attemptId,
+      { attemptFailed: false },
+    )
+    expect(face?.payload).toMatchObject({ role: 'after_action' })
+  })
+
+  it('已知 Attempt 最终失败时，仍优先失败现场', () => {
+    const attemptId = '00000000-0000-4000-8000-0000000000a1'
+    const face = faceScreenshot(
+      [
+        { attemptId, type: 'screenshot', payload: { role: 'before_action', viewport: 'viewport', capturedAt: '2026-09-19T00:00:00.000Z' } },
+        { attemptId, type: 'screenshot', payload: { role: 'on_error', viewport: 'viewport', capturedAt: '2026-09-19T00:00:01.000Z' } },
+      ],
+      attemptId,
+      { attemptFailed: true },
+    )
+    expect(face?.payload).toMatchObject({ role: 'on_error' })
+  })
+
   it('同一角色优先有内容的较新一张', () => {
     const attemptId = '00000000-0000-4000-8000-0000000000a1'
     const face = faceScreenshot(
       [
         { attemptId, type: 'screenshot', payload: { role: 'after_action', viewport: 'viewport', capturedAt: '2026-09-19T00:00:01.000Z', seq: 0, diagnosis: 'suspected_blank' } },
+        { attemptId, type: 'screenshot', payload: { role: 'after_action', viewport: 'viewport', capturedAt: '2026-09-19T00:00:03.000Z', seq: 1, diagnosis: 'not_flagged' } },
+      ],
+      attemptId,
+    )
+    expect(face?.payload).toMatchObject({ seq: 1, diagnosis: 'not_flagged' })
+  })
+
+  it('同一角色里，疑似仍在加载也要让位给已渲染完的那张', () => {
+    const attemptId = '00000000-0000-4000-8000-0000000000a1'
+    const face = faceScreenshot(
+      [
+        { attemptId, type: 'screenshot', payload: { role: 'after_action', viewport: 'viewport', capturedAt: '2026-09-19T00:00:01.000Z', seq: 0, diagnosis: 'still_loading' } },
         { attemptId, type: 'screenshot', payload: { role: 'after_action', viewport: 'viewport', capturedAt: '2026-09-19T00:00:03.000Z', seq: 1, diagnosis: 'not_flagged' } },
       ],
       attemptId,

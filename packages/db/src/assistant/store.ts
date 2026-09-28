@@ -19,11 +19,10 @@ import {
 import type { Db } from '../client.js'
 import { cursorFilter, encodeCursor, paginateResults } from '../cursor.js'
 import { newId } from '../id.js'
-import { atomic, schemaFor, updateRowsCount } from '../native.js'
+import { atomic, locked, schemaFor, updateRowsCount } from '../native.js'
 import {
   DomainError,
   conflict,
-  constraintName,
   forbidden,
   isUniqueViolation,
   notFound,
@@ -249,6 +248,12 @@ export async function beginAssistantTurn(
   },
 ): Promise<{ turn: AssistantTurn; replay: boolean; epoch: number }> {
   return atomic(db, async (tx) => {
+    // Serialize submissions from the same account before reading the in-flight
+    // count. A unique-index error inside a PostgreSQL transaction aborts that
+    // transaction, so the old catch-and-insert-QUEUED fallback could return 500.
+    const { consoleAccounts } = schemaFor(tx)
+    await locked(tx, tx.select({ id: consoleAccounts.id }).from(consoleAccounts)
+      .where(eq(consoleAccounts.id, input.ownerAccountId)))
     await interruptExpiredAssistantTurns(tx)
     const { assistantTurns, assistantConversations } = schemaFor(tx)
     const [conversation] = await tx
@@ -333,77 +338,27 @@ export async function beginAssistantTurn(
 
     const now = new Date()
     const id = newId()
-    try {
-      await tx.insert(assistantTurns).values({
-        id,
-        conversationId: input.conversationId,
-        ownerAccountId: input.ownerAccountId,
-        clientTurnId: input.clientTurnId,
-        parentTurnId: input.parentTurnId,
-        requestDigest: input.requestDigest,
-        question: input.question,
-        requestPayload: input.requestPayload ?? null,
-        status,
-        stage,
-        eventSeq: 0,
-        queuePosition,
-        deadlineAt: input.deadlineAt,
-        processingToken: input.processingToken,
-        ownerInstanceId: status === 'RUNNING' ? (input.ownerInstanceId ?? null) : null,
-        leaseUntil: status === 'RUNNING' ? (input.leaseUntil ?? null) : null,
-        epoch: status === 'RUNNING' ? 1 : 0,
-        createdAt: now,
-        updatedAt: now,
-      })
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error
-      const name = constraintName(error) ?? ''
-      if (name.includes('assistant_turns_owner_running')) {
-        // 并发争抢活跃槽位失败，转入 QUEUED 排队
-        const [queuedCount] = await tx
-          .select({ n: sql<number>`count(*)` })
-          .from(assistantTurns)
-          .where(eq(assistantTurns.status, 'QUEUED'))
-        const fallbackQueuePosition = Number(queuedCount?.n ?? 0) + 1
-        await tx.insert(assistantTurns).values({
-          id,
-          conversationId: input.conversationId,
-          ownerAccountId: input.ownerAccountId,
-          clientTurnId: input.clientTurnId,
-          parentTurnId: input.parentTurnId,
-          requestDigest: input.requestDigest,
-          question: input.question,
-          requestPayload: input.requestPayload ?? null,
-          status: 'QUEUED',
-          stage: 'queued',
-          eventSeq: 0,
-          queuePosition: fallbackQueuePosition,
-          deadlineAt: input.deadlineAt,
-          processingToken: input.processingToken,
-          ownerInstanceId: null,
-          leaseUntil: null,
-          epoch: 0,
-          createdAt: now,
-          updatedAt: now,
-        })
-      } else {
-        const [replay] = await tx
-          .select()
-          .from(assistantTurns)
-          .where(
-            and(
-              eq(assistantTurns.conversationId, input.conversationId),
-              eq(assistantTurns.clientTurnId, input.clientTurnId),
-            ),
-          )
-          .limit(1)
-        if (replay && replay.requestDigest === input.requestDigest) {
-          return { turn: toTurn(replay), replay: true, epoch: replay.epoch }
-        }
-        if (replay) throw conflict('ASSISTANT_TURN_CONFLICT', '同一轮次标识对应了不同的问题')
-        throw error
-      }
-    }
+    await tx.insert(assistantTurns).values({
+      id,
+      conversationId: input.conversationId,
+      ownerAccountId: input.ownerAccountId,
+      clientTurnId: input.clientTurnId,
+      parentTurnId: input.parentTurnId,
+      requestDigest: input.requestDigest,
+      question: input.question,
+      requestPayload: input.requestPayload ?? null,
+      status,
+      stage,
+      eventSeq: 0,
+      queuePosition,
+      deadlineAt: input.deadlineAt,
+      processingToken: input.processingToken,
+      ownerInstanceId: status === 'RUNNING' ? (input.ownerInstanceId ?? null) : null,
+      leaseUntil: status === 'RUNNING' ? (input.leaseUntil ?? null) : null,
+      epoch: status === 'RUNNING' ? 1 : 0,
+      createdAt: now,
+      updatedAt: now,
+    })
     await tx
       .update(assistantConversations)
       .set({ lastActiveAt: now, updatedAt: now })

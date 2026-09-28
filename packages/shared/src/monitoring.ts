@@ -14,7 +14,7 @@ export type MonitorLayer = (typeof MONITOR_LAYERS)[number]
 export const MONITOR_UNITS = ['count', 'milliseconds', 'seconds', 'bytes', 'percent'] as const
 export type MonitorUnit = (typeof MONITOR_UNITS)[number]
 
-export const MONITOR_SAMPLE_SCOPES = ['platform', 'api', 'worker'] as const
+export const MONITOR_SAMPLE_SCOPES = ['platform', 'api', 'worker', 'target'] as const
 export type MonitorSampleScope = (typeof MONITOR_SAMPLE_SCOPES)[number]
 
 export const MONITOR_API_ID_SOURCES = ['configured', 'derived'] as const
@@ -483,6 +483,9 @@ export const monitorWorkerSampleItemSchema = z.object({
   browserProcessRssBytes: monitorMetricNumberSchema.optional(),
   browserHostLostCount: monitorMetricNumberSchema.optional(),
   clockSkewMs: monitorMetricNumberSchema,
+  diskFreeBytes: monitorMetricNumberSchema.optional(),
+  diskUsagePercent: monitorMetricNumberSchema.optional(),
+  stepHardTimeoutCount: monitorMetricNumberSchema.optional(),
   sampledAt: utcInstantSchema.nullable(),
 })
 export type MonitorWorkerSampleItem = z.infer<typeof monitorWorkerSampleItemSchema>
@@ -607,6 +610,18 @@ export const monitorQueuesPartitionSchema = monitorPartitionSchema(monitorQueues
 export const monitorAnomaliesPartitionSchema = monitorPartitionSchema(monitorAnomaliesCardSchema)
 export const monitorAiPartitionSchema = monitorPartitionSchema(monitorAiCardSchema)
 
+export const monitorSlaCardSchema = z.object({
+  windowHours: z.number().default(24),
+  totalRuns: z.number().int().nonnegative(),
+  succeededRuns: z.number().int().nonnegative(),
+  failedRuns: z.number().int().nonnegative(),
+  successRate: z.number().min(0).max(100),
+  p95DurationMs: z.number().int().nonnegative().nullable(),
+  throughputRpm: z.number().nonnegative(),
+})
+export type MonitorSlaCard = z.infer<typeof monitorSlaCardSchema>
+export const monitorSlaPartitionSchema = monitorPartitionSchema(monitorSlaCardSchema)
+
 const unknownAiCard: MonitorAiCard = {
   calls: unknownMetric('not_collected'),
   errors: unknownMetric('not_collected'),
@@ -630,6 +645,7 @@ export const monitoringOverviewResponseSchema = z.object({
     capacity: monitorCapacityPartitionSchema,
     queues: monitorQueuesPartitionSchema,
     anomalies: monitorAnomaliesPartitionSchema,
+    sla: monitorSlaPartitionSchema.optional(),
     ai: monitorAiPartitionSchema.default({
       availability: 'unavailable',
       reasonCode: 'AGGREGATE_FAILED',
@@ -638,6 +654,45 @@ export const monitoringOverviewResponseSchema = z.object({
   }),
 })
 export type MonitoringOverviewResponse = z.infer<typeof monitoringOverviewResponseSchema>
+
+export const monitorTargetSlaItemSchema = z.object({
+  targetId: z.string().min(1),
+  targetName: z.string().min(1),
+  totalRuns: z.number().int().nonnegative(),
+  successRate: z.number().min(0).max(100),
+  failedRuns: z.number().int().nonnegative(),
+  p95DurationMs: z.number().int().nonnegative().nullable(),
+  activeAccounts: z.number().int().nonnegative(),
+  totalAccounts: z.number().int().nonnegative(),
+  captchaIntercepts: z.number().int().nonnegative().default(0),
+})
+export type MonitorTargetSlaItem = z.infer<typeof monitorTargetSlaItemSchema>
+
+export const monitorTargetSlaResponseSchema = z.object({
+  asOf: utcInstantSchema,
+  windowHours: z.number(),
+  items: z.array(monitorTargetSlaItemSchema),
+})
+export type MonitorTargetSlaResponse = z.infer<typeof monitorTargetSlaResponseSchema>
+
+export const monitorAiModelItemSchema = z.object({
+  model: z.string().min(1),
+  totalCalls: z.number().int().nonnegative(),
+  failedCalls: z.number().int().nonnegative(),
+  errorRate: z.number().min(0).max(100),
+  p95DurationMs: z.number().int().nonnegative(),
+  inputTokensPerMin: z.number().nonnegative(),
+  outputTokensPerMin: z.number().nonnegative(),
+  rateLimitHits: z.number().int().nonnegative(),
+})
+export type MonitorAiModelItem = z.infer<typeof monitorAiModelItemSchema>
+
+export const monitorAiModelResponseSchema = z.object({
+  asOf: utcInstantSchema,
+  windowHours: z.number(),
+  items: z.array(monitorAiModelItemSchema),
+})
+export type MonitorAiModelResponse = z.infer<typeof monitorAiModelResponseSchema>
 
 export const monitorProfileListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),

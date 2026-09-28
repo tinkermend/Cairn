@@ -28,7 +28,8 @@ export {
   countScenarioAiInBucket,
   type MonitorSampleWrite,
 } from './samples.js'
-export { summarizeAi } from './ai.js'
+export { summarizeAi, summarizeAiModels } from './ai.js'
+export { summarizeSla, summarizeTargetSla } from './sla.js'
 export { collectPlatformSamples, collectWorkerSamples } from './tick.js'
 export {
   collectAlertReadings,

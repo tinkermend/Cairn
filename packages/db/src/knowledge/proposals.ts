@@ -2,10 +2,12 @@ import { compileScenarioDocument } from '@cairn/authoring'
 import { and, eq } from 'drizzle-orm'
 import {
   acceptKnowledgeProposalBodySchema,
+  canFlattenKnowledgeAuthoringDocument,
   authoringProposalSchema,
   canonicalJson,
   createKnowledgeProposalBodySchema,
   isAuthoringDocumentV2,
+  normalizeAuthoringDocument,
   knowledgeProposalAcceptedSchema,
   mapAssetRefKey,
   parseScenarioDocument,
@@ -99,7 +101,8 @@ function toProposal(row: {
 
 function flattenKnowledgeDocument(value: unknown): ScenarioDocument {
   if (isAuthoringDocumentV2(value)) {
-    if (value.nodes.some((node) => node.kind === 'module' || node.kind === 'block' || (node.kind === 'step' && (node.outcomes?.length ?? 0) > 0))) authoringSchemaUnsupported()
+    if (!canFlattenKnowledgeAuthoringDocument(value))
+      authoringSchemaUnsupported('当前 V2 草稿包含成功条件或其他编排设置，知识建议暂不能无损转换')
     return parseScenarioDocument({
       schemaVersion: value.schemaVersion,
       inputs: value.inputs,
@@ -379,17 +382,23 @@ export async function acceptKnowledgeProposal(
     if (!compiled.ok || compiled.diagnostics.some(item => item.code === 'SCENARIO_UNRESOLVED_REF')) throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '建议未通过编译验证')
     const now = await clockNow(tx)
     const nextRevision = draft.revision + 1
+    const nextSavedDocument = isAuthoringDocumentV2(draft.document)
+      ? {
+          ...normalizeAuthoringDocument(nextDocument),
+          ...(draft.document.locatorProtocol === 2 ? { locatorProtocol: 2 as const } : {}),
+        }
+      : nextDocument
     await tx
       .update(scenarioDrafts)
       .set({
         revision: nextRevision,
-        document: nextDocument,
+        document: nextSavedDocument,
         updatedByConsoleAccountId: actor.id,
         updatedAt: now,
       })
       .where(eq(scenarioDrafts.scenarioId, scenarioId))
     await tx.update(scenarios).set({ updatedAt: now }).where(eq(scenarios.id, scenarioId))
-    await reconcileMapDraftBindingsTx(tx, { scenarioId, targetId: row.targetId, revision: nextRevision, document: nextDocument })
+    await reconcileMapDraftBindingsTx(tx, { scenarioId, targetId: row.targetId, revision: nextRevision, document: nextSavedDocument })
     await writeAcceptedBindings(tx, row.targetId, scenarioId, nextRevision, row.suggestedBindings, proposalId, actor)
     await tx
       .update(mapAuthoringProposals)

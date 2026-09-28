@@ -79,6 +79,7 @@ function mockServices() {
     },
     runs: {
       list: vi.fn(async () => ({ items: [] })),
+      reportReadScope: vi.fn(async () => ({ all: false, ids: [] })),
       get: vi.fn(async () => ({ id: 'run-1' })),
       create: vi.fn(async () => ({ detail: { id: 'run-1' }, created: true })),
     },

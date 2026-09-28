@@ -3,14 +3,17 @@ import {
   type ScenarioDocument,
   type AssistantCitationKey,
   citationKey,
+  diagnosticFocusSchema,
   matchAssistantCapabilities,
   clarifyAvailableCapabilities,
 } from '@cairn/shared'
 import { AssistantCapabilityRegistry } from './registry'
 import {
+  assembleDiagnoseContext,
   assembleRunCompareContext,
   buildAuthoringSlice,
   validateGrounding,
+  validateDiagnosisFailureCitations,
 } from './context-assembler'
 import { DIAGNOSIS_EVAL_SAMPLES, AUTHORING_EVAL_SAMPLES } from './eval/eval-fixtures'
 
@@ -134,6 +137,9 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
               scenarioId: 'sc-1',
               targetId: 'tgt-1',
               status: 'SUCCEEDED',
+              outcomeStatus: 'PASS',
+              startedAt: '2026-09-20T10:00:00Z',
+              finishedAt: '2026-09-20T10:00:02Z',
               evidenceStatus: 'COMPLETE',
               placement: { state: 'FINISHED' },
               stepRuns: [
@@ -167,6 +173,9 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
               scenarioId: 'sc-1',
               targetId: 'tgt-1',
               status: 'FAILED',
+              outcomeStatus: 'FAIL',
+              startedAt: '2026-09-21T10:00:00Z',
+              finishedAt: '2026-09-21T10:00:05Z',
               evidenceStatus: 'COMPLETE',
               placement: { state: 'FINISHED' },
               stepRuns: [
@@ -207,10 +216,22 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
 
       try {
         const { pack } = await assembleRunCompareContext(mockDb, baseRunId, targetRunId, 'test-actor')
-        expect(pack.differences.length).toBe(2)
+        expect(pack.differences.length).toBe(3)
+        expect(pack.differences.find((d) => d.stepName === '业务结果')).toMatchObject({
+          baseStatus: 'PASS', targetStatus: 'FAIL',
+        })
+        expect(pack.summary).toContain('业务通过')
+        expect(pack.summary).toContain('业务失败')
+        expect(pack.summary).toContain('总执行耗时：基准运行 2.00 秒、对比运行 5.00 秒，增加 3.00 秒')
 
         const loginDiff = pack.differences.find((d) => d.stepId === 'step-login')
         expect(loginDiff?.durationDiffMs).toBe(3000)
+        expect(loginDiff?.detail).toContain('对比运行慢 3000 毫秒')
+        expect(pack.summary).toContain('耗时差异最大的是「登录」')
+        expect(pack.summary).toContain('对比运行慢 3000 毫秒')
+
+        const reversed = (await assembleRunCompareContext(mockDb, targetRunId, baseRunId, 'test-actor')).pack
+        expect(reversed.summary).toContain('基准运行慢 3000 毫秒')
 
         const searchDiff = pack.differences.find((d) => d.stepId === 'step-search')
         expect(searchDiff?.baseStatus).toBe('SUCCEEDED')
@@ -218,6 +239,90 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
         expect(searchDiff?.errorDiff).toContain('ELEMENT_NOT_FOUND')
 
         expect(pack.facts.some((f) => f.id.includes('step-search'))).toBe(true)
+
+        spy.mockImplementation(async (_db: any, id: string) => {
+          const observed = await mockLoadObservation(_db, id)
+          return id === targetRunId
+            ? { ...observed, run: { ...observed.run, scenarioId: 'sc-2', targetId: 'tgt-2' } }
+            : observed
+        })
+        const unrelated = (await assembleRunCompareContext(mockDb, baseRunId, targetRunId, 'test-actor')).pack
+        expect(unrelated.comparability?.comparable).toBe(false)
+        expect(unrelated.comparability?.incomparableFactors).toEqual(expect.arrayContaining([
+          expect.stringContaining('SCENARIO_MISMATCH'),
+          expect.stringContaining('TARGET_MISMATCH'),
+        ]))
+        expect(unrelated.differences).toEqual([])
+        expect(unrelated.facts.map((fact) => fact.id)).toContain('comparability-warning')
+        expect(unrelated.summary).toContain('不能可靠地逐步对比')
+      } finally {
+        spy.mockRestore()
+      }
+    })
+  })
+
+  describe('运行诊断中的业务结果轴', () => {
+    it('执行成功时仍展示业务检查结论与具体条件，避免把执行成功当作业务通过', async () => {
+      const runId = '11111111-1111-4111-8111-111111111111'
+      const stepRunId = '22222222-2222-4222-8222-222222222222'
+      let verdict: 'PASS' | 'FAIL' = 'PASS'
+      let placementState: 'not_applicable' | 'owner_at_capacity' = 'not_applicable'
+      const dbModule = await import('@cairn/db')
+      const spy = vi.spyOn(dbModule, 'loadRunObservation').mockImplementation(async () => ({
+        eventSeq: 1,
+        evidence: { items: [] },
+        run: {
+          id: runId,
+          scenarioId: 'scenario-1',
+          targetId: 'target-1',
+          status: 'SUCCEEDED',
+          outcomeStatus: verdict,
+          evidenceStatus: 'COMPLETE',
+          placement: { state: placementState },
+          stepRuns: [],
+          outcomeResults: [{
+            id: '33333333-3333-4333-8333-333333333333',
+            stepRunId,
+            meaning: '已进入分组管理页',
+            severity: 'MUST',
+            verdict,
+          }],
+        },
+      }) as any)
+      try {
+        const pass = (await assembleDiagnoseContext({} as any, runId, { focus: 'failure' }, 'actor')).pack
+        expect(pass.facts).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: 'outcome_status', text: expect.stringContaining('业务结果为 PASS') }),
+          expect.objectContaining({ text: expect.stringContaining('「已进入分组管理页」结果为 PASS') }),
+        ]))
+        expect(pass.facts.some((fact) => fact.id === 'placement')).toBe(false)
+        expect(pass.text).not.toContain('not_applicable')
+
+        verdict = 'FAIL'
+        const fail = (await assembleDiagnoseContext({} as any, runId, { focus: 'outcome' }, 'actor')).pack
+        expect(fail.facts).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: 'outcome_status', text: expect.stringContaining('业务结果为 FAIL') }),
+          expect.objectContaining({ text: expect.stringContaining('「已进入分组管理页」结果为 FAIL') }),
+        ]))
+        expect(fail.facts.find((fact) => fact.id === 'outcome_status')?.citations).toEqual([`run:${runId}`])
+
+        // Real screenshot questions can arrive with a free-form supervisor focus.
+        // Every returned focus must be safe to persist as an AssistantDiagnosis.
+        for (const [requested, expected] of [
+          ['waiting', 'wait'],
+          ['timing', 'duration'],
+          ['screenshot', 'evidence_missing'],
+          ['screenshot_page_state', 'overview'],
+        ]) {
+          const { pack } = await assembleDiagnoseContext({} as any, runId, { focus: requested }, 'actor')
+          expect(pack.focus).toBe(expected)
+          expect(diagnosticFocusSchema.safeParse(pack.focus).success).toBe(true)
+          expect(pack.text).not.toContain('not_applicable')
+        }
+        placementState = 'owner_at_capacity'
+        const waiting = (await assembleDiagnoseContext({} as any, runId, { focus: 'waiting' }, 'actor')).pack
+        expect(waiting.facts.find((fact) => fact.id === 'placement')?.text).toContain('执行槽已满')
+        expect(waiting.text).not.toContain('owner_at_capacity')
       } finally {
         spy.mockRestore()
       }
@@ -270,6 +375,17 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
       expect(stepIds).not.toContain('step-unrelated') // pruned!
     })
 
+    it('AIF-11: 使用已保存 outputKey 识别现代步骤的上游来源', () => {
+      const modern = {
+        ...document,
+        steps: document.steps.map((step) => step.id === 'step-extract-token'
+          ? { ...step, outputKey: 'authToken', input: { selector: '#auth-token', as: 'text' } }
+          : step),
+      }
+      const slice = buildAuthoringSlice(modern as unknown as Parameters<typeof buildAuthoringSlice>[0], 'step-fill-password')
+      expect(slice.slicedDocument.steps.map((step) => step.id)).toContain('step-extract-token')
+    })
+
     it('AIF-16: 敏感字段脱敏：密码等敏感值遮盖为 [REDACTED]', () => {
       const slice = buildAuthoringSlice(document, 'step-fill-password')
       const fillStep = slice.slicedDocument.steps.find((s) => s.id === 'step-fill-password')
@@ -317,6 +433,36 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
       expect(valid[0]!.text).toBe('按钮被遮挡导致点击超时')
       expect(invalid.length).toBe(2)
     })
+
+    it('失败原因必须引用失败步骤，点名步骤或错误码时不能错引其他步骤', () => {
+      const priorStepId = '11111111-1111-4111-8111-111111111111'
+      const failedStepId = '22222222-2222-4222-8222-222222222222'
+      const failedStepRunId = '33333333-3333-4333-8333-333333333333'
+      const run = { stepRuns: [
+        { id: '44444444-4444-4444-8444-444444444444', stepId: priorStepId, name: '打开页面', status: 'SUCCEEDED', attempts: [] },
+        { id: failedStepRunId, stepId: failedStepId, name: '点击 Groups 导航', status: 'FAILED', attempts: [
+          { id: '55555555-5555-4555-8555-555555555555', error: { code: 'AI_NOT_FOUND' } },
+        ] },
+      ] } as any
+      const wrong = { text: '点击 Groups 导航出现 AI_NOT_FOUND，可能是元素不存在。', citations: [citationKey('step', priorStepId)] }
+      const right = { ...wrong, citations: [citationKey('step', failedStepId)] }
+      const unnamedWrong = { text: '这次可能是网页加载异常。', citations: [citationKey('step', priorStepId)] }
+      const unnamedRight = { ...unnamedWrong, citations: [citationKey('stepRun', failedStepRunId)] }
+      const checked = validateDiagnosisFailureCitations([wrong, right, unnamedWrong, unnamedRight], run)
+      expect(checked.invalid).toEqual([wrong, unnamedWrong])
+      expect(checked.valid).toEqual([right, unnamedRight])
+    })
+
+    it('没有失败步骤时即使引用真实 Run 也不能保留根因假设', () => {
+      const runId = '66666666-6666-4666-8666-666666666666'
+      const guess = { text: '可能是数据库故障导致运行失败。', citations: [citationKey('run', runId)] }
+      const run = { status: 'SUCCEEDED', stepRuns: [{
+        id: '77777777-7777-4777-8777-777777777777',
+        stepId: '88888888-8888-4888-8888-888888888888',
+        name: '检查结果', status: 'SUCCEEDED', attempts: [],
+      }] } as any
+      expect(validateDiagnosisFailureCitations([guess], run)).toEqual({ valid: [], invalid: [guess] })
+    })
   })
 
   describe('AIF-19: 多能力同时命中时澄清歧义', () => {
@@ -327,7 +473,9 @@ describe('AI 基座与上下文工程基础测试 (AIF-01 ~ AIF-27)', () => {
 
       const clarify = clarifyAvailableCapabilities(matches)
       expect(clarify.type).toBe('clarify')
+      if (clarify.type !== 'clarify') throw new Error('Expected clarification')
       expect(clarify.options?.length).toBeGreaterThanOrEqual(2)
+      expect(clarify.options?.every((option) => option.kind === 'capability')).toBe(true)
     })
   })
 

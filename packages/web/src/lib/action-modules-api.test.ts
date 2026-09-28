@@ -2,11 +2,16 @@ import { actionModuleDetailSchema, moduleContentSchema } from '@cairn/shared'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
   createActionModule,
+  moduleTestCaseListResponseSchema,
   saveActionModuleDraft,
   updateActionModuleMeta,
   publishActionModule,
   deleteActionModule,
 } from './action-modules-api'
+
+it('回归用例列表接受服务端仅返回 items 的响应', () => {
+  expect(moduleTestCaseListResponseSchema.parse({ items: [] })).toEqual({ items: [] })
+})
 
 afterEach(() => vi.unstubAllGlobals())
 it('模块写请求均带 JSON Content-Type，包含 OCC 和幂等键', async () => {

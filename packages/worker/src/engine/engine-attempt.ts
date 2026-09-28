@@ -27,6 +27,7 @@ import {
   type Step,
 } from '@cairn/shared'
 import { isAbortError, type EngineClock } from './clock.js'
+import { recordStepHardTimeout } from '../runtime/step-timeout-stats.js'
 import { persistBeforeObservation, buildAfterMapFacts, type CapturePhaseBudget } from '../map/passive-capture.js'
 import { planCandidateFailure, planCandidateHalt, planCandidateSuccess } from './engine-candidate-plan.js'
 import { planBranchSuccess } from './engine-branch-plan.js'
@@ -208,6 +209,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
           grant: input.grant,
           snapshot: input.snapshot,
         })
+        if (outcome.timedOut) recordStepHardTimeout()
         const remainingAfter = Math.max(0, input.policy.timeoutMs - (input.clock.now() - stepStarted))
         mapFacts = await this.collectAfterFacts({
           input,

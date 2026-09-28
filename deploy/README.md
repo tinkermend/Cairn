@@ -62,7 +62,7 @@ pnpm infra:clean-test-dbs            # 一键清理测试残留孤儿数据库
 API ──HTTPS + HMAC──► 每 Worker 专用 TLS 入口 ──同机 loopback HTTP──► Worker
 ```
 
-Worker 启动后向数据库自注册其内部通信地址（`internalBaseUrl`）。跨机、跨容器网络或经由反向代理时，可显式设置 `CAIRN_WORKER_ADVERTISE_URL`（支持 HTTP 与 HTTPS，由具体部署架构与用户需求自主决定），API 将始终以数据库自注册记录作为动态路由与反向寻址的事实源。Worker 进程默认监听 `127.0.0.1:$CAIRN_WORKER_INTERNAL_PORT`。
+Worker 配置广告入口后会向数据库自注册其内部通信地址（`internalBaseUrl`），API 优先使用该地址；没有广告入口时可使用 API 配置的 `CAIRN_WORKER_ENDPOINTS` 映射。跨机、跨容器网络或经由反向代理时，应设置 API 可访问的 `CAIRN_WORKER_ADVERTISE_URL`（支持 HTTP 与 HTTPS，由具体部署架构与用户需求自主决定）。Worker 进程默认监听 `127.0.0.1:$CAIRN_WORKER_INTERNAL_PORT`。
 
 ### 单机按角色拆分 Worker
 
@@ -93,7 +93,7 @@ pnpm --filter @cairn/worker build
 | `analyst` | `local-worker-analyst` | `8094` |
 | `maintenance` | `local-worker-maintenance` | `8095` |
 
-多主机共用数据库时，每台主机设置不同的 `CAIRN_WORKER_ROLE_ID_PREFIX`，或分别配置 `CAIRN_WORKER_EXECUTOR_ID` 等四个 ID；也可用对应的 `CAIRN_WORKER_EXECUTOR_PORT` 等变量改端口。ID 与端口在同一实例组内必须唯一。每个角色继承同一份数据库与密钥配置。若单 Worker 配置了 `CAIRN_WORKER_ADVERTISE_URL`，角色模式必须分别设置 `CAIRN_WORKER_EXECUTOR_ADVERTISE_URL` 等四个独立的专用入口，避免多个节点广告同一个地址；未配置广告入口时沿用现有“不可反向寻址”的行为。应用迁移和正式多主机部署仍按现有升级流程执行。
+多主机共用数据库时，每台主机设置不同的 `CAIRN_WORKER_ROLE_ID_PREFIX`，或分别配置 `CAIRN_WORKER_EXECUTOR_ID` 等四个 ID；也可用对应的 `CAIRN_WORKER_EXECUTOR_PORT` 等变量改端口。ID 与端口在同一实例组内必须唯一。每个角色继承同一份数据库与密钥配置。本机角色脚本在未配置广告入口时默认登记各自的 loopback 地址；API 也为默认角色 ID 与端口提供本机映射，以便路由已有会话。跨主机、跨容器时必须分别设置 `CAIRN_WORKER_EXECUTOR_ADVERTISE_URL` 等四个 API 可达的独立入口，不能使用默认 loopback 地址。若单 Worker 配置了 `CAIRN_WORKER_ADVERTISE_URL`，角色模式也必须分别设置这些入口，避免多个节点广告同一个地址。应用迁移和正式多主机部署仍按现有升级流程执行。
 
 代理须保留内部签名头和原始请求体，关闭 SSE 缓冲，超时不短于连接 3s / 响应头 10s / 认证 POST 30s。不要把多个 Worker 随机负载均衡到同一个广告 origin，也不要关闭证书校验。HMAC 密钥继续走 `CAIRN_INTERNAL_AUTH_SECRET`，不要写进广告 URL。
 

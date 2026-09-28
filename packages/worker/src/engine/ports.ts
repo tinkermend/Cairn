@@ -70,6 +70,16 @@ export type BrowserPort = {
       screenshotViewport?: 'viewport' | 'full_page'
     },
   ): Promise<void>
+  /**
+   * 解析梯最终失败、且过程中没有任何浏览器/AI 命令产生截图时的兜底失败现场。
+   * 只在 outcome 已确认失败且缺 screenshot 时调用一次；标记 on_error，遵守证据策略与敏感遮罩。
+   * 页面已不可用等情况静默返回 undefined，不升级为新的执行错误。
+   */
+  captureFailureScreenshot?(
+    grant: SessionGrant,
+    evidence: BrowserCommandEvidence,
+    signal?: AbortSignal,
+  ): Promise<ScreenshotPointer | undefined>
   probeErrorSurface?(grant: SessionGrant, signal?: AbortSignal): Promise<ErrorSurfaceNode[]>
   bindResolvedFromPoint?(
     grant: SessionGrant,

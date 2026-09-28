@@ -727,8 +727,7 @@ function createBudgetClient(input: {
             return result
           } catch (error) {
             const durationMs = Date.now() - started
-            const errorCode =
-              error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_CALL_FAILED'
+            const errorCode = classifyAiCallErrorCode(error)
             await completeAiModelCall(input.handle, {
               evidenceId: reserved.evidenceId,
               phase: 'failed',
@@ -763,6 +762,21 @@ function usageOf(result: unknown, field: 'prompt' | 'completion'): number | null
   const key = field === 'prompt' ? 'prompt_tokens' : 'completion_tokens'
   const value = usage?.[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * 把 AI 调用失败归一化成可聚合的 errorCode。限流（HTTP 429 / 常见 provider
+ * 限流子码）统一归一为 RATE_LIMITED，供 monitoring 的 rateLimitHits 聚合识别；
+ * 命中 provider 自带的 .code 时原样透传，其余退化为通用 AI_CALL_FAILED。
+ */
+export function classifyAiCallErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'AI_CALL_FAILED'
+  const status = 'status' in error ? Number((error as { status?: unknown }).status) : undefined
+  const rawCode = 'code' in error ? String((error as { code?: unknown }).code) : undefined
+  if (status === 429 || rawCode === 'rate_limit_exceeded' || rawCode === 'RESOURCE_EXHAUSTED') {
+    return 'RATE_LIMITED'
+  }
+  return rawCode ?? 'AI_CALL_FAILED'
 }
 
 async function runCommand(

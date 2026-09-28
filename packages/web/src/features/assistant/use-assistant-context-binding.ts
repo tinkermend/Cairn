@@ -10,6 +10,7 @@ function bindingSignature(context: AssistantBoundContext | null): string {
   if (!context) return ''
   return JSON.stringify([
     context.page,
+    context.routeKey ?? null,
     context.filters ? JSON.stringify(context.filters) : null,
     Boolean(context.listHasFailures),
     context.entityId ?? null,

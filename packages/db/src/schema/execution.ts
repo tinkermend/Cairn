@@ -170,7 +170,7 @@ export const runs = cairnSchema.table(
     index('runs_claim_idx').on(t.status, t.createdAt, t.id),
     index('runs_deleted_at_idx').on(t.deletedAt),
     index('runs_outbound_repair_idx').on(t.outboundExpected, t.status, t.finishedAt, t.id),
-    index('runs_target_created_idx').on(t.targetId, t.createdAt),
+    index('runs_target_created_outcome_idx').on(t.targetId, t.createdAt),
     index('runs_scenario_created_idx').on(t.scenarioId, t.createdAt),
     index('runs_suite_run_id_idx').on(t.suiteRunId),
     index('runs_execution_origin_idx').on(t.executionOrigin, t.createdAt),

@@ -35,12 +35,17 @@ export const EVIDENCE_ARTIFACT_KEY_MAX = 160
 
 export const evidenceArtifactKeySchema = z.string().trim().min(1).max(EVIDENCE_ARTIFACT_KEY_MAX)
 
-export const SCREENSHOT_DIAGNOSES = ['suspected_blank', 'not_flagged'] as const
+/**
+ * `still_loading` 只在导航后补拍触发过、且预算耗尽时仍能看到整页级加载遮罩/动画的
+ * 情况下才写入；不是"疑似空白"，画面通常有内容，只是不确定是否已经渲染完。
+ */
+export const SCREENSHOT_DIAGNOSES = ['suspected_blank', 'still_loading', 'not_flagged'] as const
 export type ScreenshotDiagnosis = (typeof SCREENSHOT_DIAGNOSES)[number]
 export const screenshotDiagnosisSchema = z.enum(SCREENSHOT_DIAGNOSES)
 
 export const SCREENSHOT_DIAGNOSIS_LABELS: Record<ScreenshotDiagnosis, string> = {
   suspected_blank: '截图疑似空白',
+  still_loading: '疑似仍在加载',
   not_flagged: '未发现空白迹象',
 }
 
@@ -122,21 +127,39 @@ export function screenshotSatisfiesRequiredRole(
   return row.type === 'screenshot' && screenshotRoleOf(row) === role
 }
 
+/**
+ * 挑一张最能代表该 Attempt 的截图。
+ *
+ * `attemptFailed` 未显式传入时按失败处理（历史调用点的保守默认，行为不变）：
+ * on_error 排最前，因为失败 Attempt 的失败现场就是最有代表性的画面。
+ * 显式传 `false`（调用方已确认该 Attempt 最终成功）时反过来：优先展示操作后
+ * / 条件达成 / 运行结束等成功画面，避免把解析梯内部先失败、后被 AI 救活的
+ * on_error 中间现场当成这个成功步骤的门面图。
+ */
 export function faceScreenshot<T extends { attemptId?: string; type: string; payload?: unknown }>(
   items: readonly T[],
   attemptId: string,
+  options?: { attemptFailed?: boolean },
 ): T | undefined {
   const shots = items.filter((item) => item.attemptId === attemptId && item.type === 'screenshot')
+  const attemptFailed = options?.attemptFailed ?? true
   const rank = (item: T) => {
     const payload = readScreenshotPayload(item.payload)
     const role = payload?.role
-    const roleRank =
+    const succeededRoleRank =
+      role === 'after_action' || role === 'after_condition' || role === 'final' ? 0
+      : role === 'handoff' ? 1
+      : role === 'before_action' ? 2
+      : role === 'on_error' ? 3
+      : 4
+    const failedRoleRank =
       role === 'on_error' ? 0
       : role === 'after_action' || role === 'after_condition' || role === 'final' ? 1
       : role === 'handoff' ? 2
       : role === 'before_action' ? 3
       : 4
-    const blankRank = payload?.diagnosis === 'suspected_blank' ? 1 : 0
+    const roleRank = attemptFailed ? failedRoleRank : succeededRoleRank
+    const blankRank = payload?.diagnosis === 'suspected_blank' || payload?.diagnosis === 'still_loading' ? 1 : 0
     const seq = payload?.seq ?? 0
     return [roleRank, blankRank, -seq] as const
   }

@@ -63,7 +63,6 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const [password, setPassword] = React.useState('')
   const [targetId, setTargetId] = React.useState('')
   const [draftName, setDraftName] = React.useState('')
-  const [targetSearch, setTargetSearch] = React.useState('')
   const [targets, setTargets] = React.useState<TargetDto[]>([])
   const [selectedTarget, setSelectedTarget] = React.useState<TargetDto | null>(null)
   const [busy, setBusy] = React.useState(false)
@@ -250,22 +249,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     void saveDraftName(value)
   }
 
-  React.useEffect(() => {
-    if (!session || !canReadTargets(session.account?.permissions ?? [])) return
-    const handle = window.setTimeout(() => {
-      void fetchTargets({
-        limit: 100,
-        status: 'active',
-        search: targetSearch.trim() || undefined,
-      })
-        .then((list) => {
-          const active = list.items.filter((item) => item.status === 'active')
-          setTargets(active)
-        })
-        .catch(() => {})
-    }, 200)
-    return () => window.clearTimeout(handle)
-  }, [session, targetSearch])
+
 
   const onLogout = async () => {
     await requestDetach().catch(() => {})
@@ -511,6 +495,19 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     try { void Promise.resolve(window.dispatch?.({ event: 'highlightRequested', params: { selector: selector ?? NO_HIGHLIGHT } })).catch(() => {}) } catch { /* stale vendor port */ }
   }
 
+  const ready = preview && !('error' in preview) ? preview : null
+  const items = ready?.items ?? []
+  const fallbackDraftName = React.useMemo(() => {
+    if (draftName.trim() || binding) return ''
+    const facts = capture.facts.filter((_, index) => !excluded.includes(index))
+    const firstUrl = facts.find((f) => f.data?.url)?.data?.url || (sources[0] as { url?: string } | undefined)?.url
+    return synthesizeRecordingDraftTitle({
+      targetName: selectedTarget?.name,
+      url: firstUrl,
+      stepCount: items.length,
+    })
+  }, [draftName, binding, capture.facts, excluded, sources, selectedTarget?.name, items.length])
+
   const loggedIn = session ? canAttachRecorder(session) : false
   if (!loggedIn) {
     return (
@@ -530,21 +527,9 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
 
   const permissions = session?.account?.permissions ?? []
   const canUpload = canUploadRecording(permissions)
-  const ready = preview && !('error' in preview) ? preview : null
-  const items = ready?.items ?? []
   const recording = RECORDING_MODES.includes(effectiveMode) && attachment?.attached === true
   const inspecting = INSPECT_MODES.includes(effectiveMode)
   const asserting = ASSERT_MODES.includes(effectiveMode)
-  const fallbackDraftName = React.useMemo(() => {
-    if (draftName.trim() || binding) return ''
-    const facts = capture.facts.filter((_, index) => !excluded.includes(index))
-    const firstUrl = facts.find((f) => f.data.url)?.data.url || (sources[0] as { url?: string } | undefined)?.url
-    return synthesizeRecordingDraftTitle({
-      targetName: selectedTarget?.name,
-      url: firstUrl,
-      stepCount: items.length,
-    })
-  }, [draftName, binding, capture.facts, excluded, sources, selectedTarget?.name, items.length])
   const uploadMeta = resolveRecordingUploadMeta({
     name: draftName.trim() || fallbackDraftName,
     targetId,
@@ -622,15 +607,6 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           />
         </div>
         <div className='cairn-field'>
-          <label htmlFor='cairn-target-search'>搜索目标系统</label>
-          <input
-            id='cairn-target-search'
-            type='search'
-            value={targetSearch}
-            disabled={Boolean(binding)}
-            placeholder='名称或编码'
-            onChange={(event) => setTargetSearch(event.target.value)}
-          />
           <label htmlFor='cairn-target'>目标系统</label>
           <select
             id='cairn-target'

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { TargetMapPage } from './page'
 
 const TARGET_ID = '11111111-1111-4111-8111-111111111111'
@@ -271,6 +272,16 @@ describe('目标知识页', () => {
       applicability: 'unknown',
     })
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
+  })
+
+  it('加载授权目标后把知识地图页与目标 ID 绑定到助手', async () => {
+    await renderPage()
+    await expect.poll(() => useAssistantStore.getState().pageContext).toMatchObject({
+      routeKey: 'targets.$targetId.map',
+      pageKind: 'target',
+      targetId: TARGET_ID,
+      primaryRef: { kind: 'target', id: TARGET_ID },
+    })
   })
 
   it('OMD02 中文桌面实现显示适用未知项，不以可信徽标概括', async () => {

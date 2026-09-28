@@ -126,8 +126,11 @@ function registrationValues(input: {
     sampledProfileBytes: null,
     sampledProfileCount: null,
     sampledProfileDiskFreeBytes: null,
+    sampledDiskTotalBytes: null,
     sampledMidsceneBytes: null,
     sampledBrowserProcessCount: null,
+    sampledBrowserHostLostCount: null,
+    sampledStepHardTimeoutCount: null,
     processClockSkewMs: null,
     sampledDiskAt: null,
     listenHost: input.listenHost ?? null,
@@ -339,8 +342,11 @@ export type WorkerHeartbeatTelemetry = {
   profileBytes?: number | null
   profileCount?: number | null
   profileDiskFreeBytes?: number | null
+  diskTotalBytes?: number | null
   midsceneBytes?: number | null
   browserProcessCount?: number | null
+  browserHostLostCount?: number | null
+  stepHardTimeoutCount?: number | null
   clockSkewMs?: number | null
   diskSampledAt?: Date | null
   listenHost?: string | null
@@ -406,8 +412,11 @@ export async function heartbeatWorker(
         sampledProfileBytes: telemetry?.profileBytes ?? null,
         sampledProfileCount: telemetry?.profileCount ?? null,
         sampledProfileDiskFreeBytes: telemetry?.profileDiskFreeBytes ?? null,
+        sampledDiskTotalBytes: telemetry?.diskTotalBytes ?? null,
         sampledMidsceneBytes: telemetry?.midsceneBytes ?? null,
         sampledBrowserProcessCount: telemetry?.browserProcessCount ?? null,
+        sampledBrowserHostLostCount: telemetry?.browserHostLostCount ?? null,
+        sampledStepHardTimeoutCount: telemetry?.stepHardTimeoutCount ?? null,
         processClockSkewMs: Date.now() - now.getTime(),
         sampledDiskAt: telemetry?.diskSampledAt ?? null,
         ...(telemetry?.listenHost !== undefined ? { listenHost: telemetry.listenHost } : {}),

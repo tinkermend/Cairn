@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Page } from 'playwright'
 import {
   assertPageScope,
+  classifyAiCallErrorCode,
   createAiPort,
   evidenceFailed,
   leaseLostError,
@@ -538,5 +539,25 @@ describe('AI 端口边界', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+})
+
+describe('classifyAiCallErrorCode', () => {
+  it('把 HTTP 429 归一为 RATE_LIMITED，供 monitoring 的 rateLimitHits 聚合识别', () => {
+    expect(classifyAiCallErrorCode({ status: 429 })).toBe('RATE_LIMITED')
+  })
+
+  it('把常见 provider 限流子码也归一为 RATE_LIMITED', () => {
+    expect(classifyAiCallErrorCode({ code: 'rate_limit_exceeded' })).toBe('RATE_LIMITED')
+    expect(classifyAiCallErrorCode({ code: 'RESOURCE_EXHAUSTED' })).toBe('RATE_LIMITED')
+  })
+
+  it('非限流的 provider code 原样透传', () => {
+    expect(classifyAiCallErrorCode({ code: 'INVALID_REQUEST' })).toBe('INVALID_REQUEST')
+  })
+
+  it('没有 status／code 的普通错误退化为 AI_CALL_FAILED', () => {
+    expect(classifyAiCallErrorCode(new Error('boom'))).toBe('AI_CALL_FAILED')
+    expect(classifyAiCallErrorCode(null)).toBe('AI_CALL_FAILED')
   })
 })

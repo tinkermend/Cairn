@@ -160,6 +160,8 @@ export const modelInvocationRecordSchema = z.strictObject({
   validation: z.strictObject({
     schemaOk: z.boolean(),
     grounded: z.union([z.boolean(), z.literal('not_checked')]),
+    finishReason: z.string().max(64).optional(),
+    issue: z.string().max(160).optional(),
   }),
   note: z.string().optional(),
 })

@@ -1,5 +1,5 @@
 import '@/styles/index.css'
-import type { AssistantProposal, AssistantResult } from '@cairn/shared'
+import type { AssistantProposal, AssistantResult, TargetFormProposal } from '@cairn/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { assistantHrefTo, AssistantResultView } from './result'
@@ -58,6 +58,34 @@ describe('assistantHrefTo', () => {
     const otherRes = assistantHrefTo('/settings')
     expect(otherRes).toEqual({
       to: '/settings',
+    })
+  })
+})
+
+describe('同名场景发现结果', () => {
+  it('显示各自目标，并把第二个候选准确打开到第二个场景', async () => {
+    navigateMock.mockClear()
+    const alphaId = '11111111-1111-4111-8111-111111111111'
+    const betaId = '22222222-2222-4222-8222-222222222222'
+    const result = {
+      kind: 'discovery',
+      candidates: [
+        { id: alphaId, name: '订单对账场景', targetId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', targetName: '系统-甲', kind: 'scenario' },
+        { id: betaId, name: '订单对账场景', targetId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', targetName: '系统-乙', kind: 'scenario' },
+      ],
+      scope: { entityType: 'scenario' },
+      coverage: { totalVisible: 2, hasMore: false, observedAt: '2026-09-28T00:00:00.000Z' },
+      message: '已检索到 2 个可用场景候选：',
+    } as AssistantResult
+    const screen = await render(<AssistantResultView result={result} />)
+    await expect.element(screen.getByText('系统-甲')).toBeVisible()
+    await expect.element(screen.getByText('系统-乙')).toBeVisible()
+    const buttons = screen.getByRole('button', { name: '查看' }).elements()
+    expect(buttons).toHaveLength(2)
+    await (buttons[1] as HTMLButtonElement).click()
+    expect(navigateMock).toHaveBeenCalledWith({
+      to: '/scenarios/$scenarioId',
+      params: { scenarioId: betaId },
     })
   })
 })
@@ -184,6 +212,34 @@ describe('AssistantResultView 结构化提案比对与采纳', () => {
       '草稿已有后续修改，请在画布中使用快捷键撤销'
     )
   })
+
+  it('正确渲染 target_form 提案卡并支持点击采纳到表单', async () => {
+    const onAdopt = vi.fn()
+    const targetProposal: TargetFormProposal = {
+      kind: 'target_form',
+      mode: 'create',
+      summary: '建议设置名称为业务系统，超时 30 秒',
+      changes: [
+        { fieldId: 'name', value: '业务系统' },
+        { fieldId: 'loginLeaveTimeoutSeconds', value: '30' },
+      ],
+    }
+
+    const screen = await render(
+      <AssistantResultView
+        result={targetProposal}
+        onAdopt={onAdopt}
+      />
+    )
+
+    await expect.element(screen.getByTestId('target-form-proposal-card')).toBeInTheDocument()
+    await expect.element(screen.getByText('建议设置名称为业务系统，超时 30 秒')).toBeInTheDocument()
+    await expect.element(screen.getByText('业务系统', { exact: true })).toBeInTheDocument()
+
+    const adoptBtn = screen.getByRole('button', { name: /采纳到表单/ })
+    await adoptBtn.click()
+    expect(onAdopt).toHaveBeenCalledWith(targetProposal)
+  })
 })
 
 describe('AssistantResultView 诊断结果与已确认事实呈现', () => {
@@ -290,7 +346,7 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
     ],
   } as unknown as AssistantResult
 
-  it('展示紧凑首行（图标+标题+状态小圆点）、截断文本与进入按钮', async () => {
+  it('展示标题、完整操作说明与进入按钮', async () => {
     navigateMock.mockClear()
     const onNavigate = vi.fn()
     const screen = await render(
@@ -400,16 +456,16 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
   it('正确渲染有源问答 knowledge_answer 卡片、事实类别与引用', async () => {
     const knowledgeResult = {
       kind: 'knowledge_answer' as const,
-      summary: '在 Studio 中可以配置每个确定性步骤的最大重试次数与退避延迟。',
+      summary: '在场景工作区选中步骤，可在执行与容错策略中配置重试上限（0~10 次）；0 表示不自动重试。',
       claims: [
         {
           factKind: 'human_confirmed' as const,
-          text: '确定性步骤支持配置 maxAttempts',
+          text: '当前配置字段为 policy.retryLimit；界面没有 maxAttempts 或退避延迟输入项。',
           citations: ['help:studio-retry'],
         },
         {
           factKind: 'observed' as const,
-          text: '当前运行状态为 COMPLETED',
+          text: '当前运行状态为 SUCCEEDED',
           citations: ['run:01920000-0000-7000-8000-000000000100'],
         },
       ],
@@ -433,7 +489,7 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
 
     const screen = await render(<AssistantResultView result={knowledgeResult} />)
     await expect.element(screen.getByTestId('knowledge-answer-card')).toBeInTheDocument()
-    await expect.element(screen.getByText(/在 Studio 中可以配置每个确定性步骤/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/在场景工作区选中步骤.*重试上限/)).toBeInTheDocument()
     await expect.element(screen.getByText('已确认资料')).toBeInTheDocument()
     await expect.element(screen.getByText('系统观测')).toBeInTheDocument()
     await expect.element(screen.getByText('帮助资料 · studio-r')).toBeInTheDocument()
@@ -442,10 +498,60 @@ describe('AssistantResultView 功能导览 Guide 紧凑微卡与自适应双列�
     await expect.element(screen.getByText('该步骤未配置显式超时时间')).toBeInTheDocument()
     await expect.element(screen.getByText(/step_timeout/)).not.toBeVisible()
     await expect.element(screen.getByRole('button', { name: '前往场景工作室' })).toBeInTheDocument()
+    await expect.element(screen.getByTestId('knowledge-source-as-of')).not.toBeInTheDocument()
+  })
+
+  it('区分来源数据查询时间和旧回答里含义不明的 asOf', async () => {
+    const screen = await render(<AssistantResultView result={{
+      kind: 'knowledge_answer',
+      summary: '该账号目前没有可用会话。',
+      claims: [{ factKind: 'observed', text: '活跃会话 0/1', citations: ['target:target-1'] }],
+      missing: [],
+      asOf: '2026-09-28T02:00:00.000Z',
+      sourceAsOf: '2026-09-27T12:00:00.000Z',
+    }} />)
+    await expect.element(screen.getByTestId('knowledge-source-as-of')).toHaveTextContent('来源数据查询基准时间：')
+    await expect.element(screen.getByTestId('knowledge-source-as-of')).toHaveTextContent(/2026-09-27|2026-09-28/)
+    await expect.element(screen.getByTestId('knowledge-source-as-of')).toHaveTextContent(/GMT|UTC/)
+  })
+
+  it('旧推断需重新核验时不误显示为权限不足', async () => {
+    const screen = await render(<AssistantResultView result={{
+      kind: 'inaccessible',
+      reasonCode: 'UNVERIFIED_HISTORY',
+      message: '这条历史推断未按当前证据规则核验，请重新提问',
+    }} />)
+    await expect.element(screen.getByText('历史回答需复核')).toBeVisible()
+    await expect.element(screen.getByText('这条历史推断未按当前证据规则核验，请重新提问')).toBeVisible()
+    await expect.element(screen.getByText('无访问权限')).not.toBeInTheDocument()
   })
 })
 
 describe('AssistantResultView 面向用户的状态与差异标签', () => {
+  it('知识辅助编写缺少输入时说明尚无可编辑变更，不暗示已生成步骤', async () => {
+    const screen = await render(<AssistantResultView result={{
+      kind: 'knowledge_proposal', proposalId: '11111111-1111-4111-8111-111111111111',
+      status: 'needs_input', reason: '请先声明模型唯一标识', diagnostics: [], diffs: [],
+      sources: [], unknowns: ['model_name'], executable: false,
+      draftRevision: 3, documentDigest: 'a'.repeat(64),
+    } as AssistantResult} />)
+    await expect.element(screen.getByText(/尚未生成可编辑变更/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/请求记录编号/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/可编辑建议已生成/)).not.toBeInTheDocument()
+  })
+
+  it('知识建议确有可编辑差异时说明尚未应用', async () => {
+    const screen = await render(<AssistantResultView result={{
+      kind: 'knowledge_proposal', proposalId: '11111111-1111-4111-8111-111111111111',
+      status: 'proposed', reason: '已生成建议', diagnostics: [],
+      diffs: [{ fieldPath: ['steps', '2'], to: { name: '检查状态' } }],
+      sources: [{ kind: 'module_version' }], unknowns: [], executable: true,
+      draftRevision: 3, documentDigest: 'a'.repeat(64),
+    } as AssistantResult} />)
+    await expect.element(screen.getByText(/可编辑建议已生成，尚未应用/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/建议编号/)).toBeInTheDocument()
+  })
+
   it.each([
     ['TASK_CANCELLED', '本次任务已取消'],
     ['PERMISSION_DENIED', '无访问权限'],
@@ -471,6 +577,26 @@ describe('AssistantResultView 面向用户的状态与差异标签', () => {
     await expect.element(screen.getByText('点击详情按钮')).toBeInTheDocument()
   })
 
+  it('步骤提案将静态预检与现场试跑区分，并允许查看定位警告', async () => {
+    const screen = await render(
+      <AssistantResultView result={{
+        kind: 'authoring_proposal',
+        operations: [{ kind: 'insert_step', step: { id: 'step-1', name: '等待 Name 列' } }],
+        diffs: [{ type: 'add', stepName: '等待 Name 列', stepType: 'wait' }],
+        executable: true,
+        diagnostics: [{ code: 'SCENARIO_WEAK_LOCATOR', severity: 'warning',
+          message: '步骤「查询」只用 CSS 定位', stepId: 'existing-step' },
+        { code: 'MAP_SOURCE_NEEDS_REVIEW', severity: 'warning',
+          message: '地图元素「Name」：原始证据不可回看；采纳前请核对定位并试跑。' }],
+      } as unknown as AssistantResult} />,
+    )
+    await expect.element(screen.getByText(/尚未验证当前页面定位和业务结果，采纳后请核对并试跑/)).toBeVisible()
+    await expect.element(screen.getByText(/地图来源待核对：.*原始证据不可回看/)).toBeVisible()
+    await expect.element(screen.getByText('场景还有 2 条校验提示，展开核对')).toBeVisible()
+    await screen.getByText('场景还有 2 条校验提示，展开核对').click()
+    await expect.element(screen.getByText('步骤「查询」只用 CSS 定位')).toBeVisible()
+  })
+
   it('运行对比把步骤状态转为业务标签', async () => {
     const screen = await render(
       <AssistantResultView result={{
@@ -483,5 +609,39 @@ describe('AssistantResultView 面向用户的状态与差异标签', () => {
     await expect.element(screen.getByText('失败')).toBeInTheDocument()
     await expect.element(screen.getByText('成功')).toBeInTheDocument()
     await expect.element(screen.getByText('FAILED')).not.toBeInTheDocument()
+  })
+
+  it('运行对比把业务结果差异显示为可读标签', async () => {
+    const screen = await render(
+      <AssistantResultView result={{
+        kind: 'compare', summary: '业务结果发生变化',
+        differences: [{ stepName: '业务结果', baseStatus: 'PASS', targetStatus: 'FAIL' }],
+        nextActions: [],
+      } as unknown as AssistantResult} />,
+    )
+    await expect.element(screen.getByText('业务通过')).toBeInTheDocument()
+    await expect.element(screen.getByText('业务异常')).toBeInTheDocument()
+    await expect.element(screen.getByText('状态待确认')).not.toBeInTheDocument()
+  })
+
+  it('跨场景运行对比展示不可比原因，不显示空差异框', async () => {
+    const screen = await render(
+      <AssistantResultView result={{
+        kind: 'compare',
+        summary: '两次运行属于不同场景，不能逐步比较。',
+        comparability: {
+          comparable: false,
+          incomparableFactors: ['SCENARIO_MISMATCH: 场景定义不同', 'TARGET_MISMATCH: 目标系统不同'],
+        },
+        differences: [],
+        missingInformation: ['运行对比存在不可比因素：SCENARIO_MISMATCH: 场景定义不同'],
+        facts: [],
+        nextActions: [],
+      } as unknown as AssistantResult} />,
+    )
+    await expect.element(screen.getByText('场景定义不同')).toBeVisible()
+    await expect.element(screen.getByText('目标系统不同')).toBeVisible()
+    await expect.element(screen.getByText('对比差异')).not.toBeInTheDocument()
+    await expect.element(screen.getByText(/运行对比存在不可比因素/)).not.toBeInTheDocument()
   })
 })

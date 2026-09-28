@@ -231,7 +231,7 @@ describe('Assistant Recommendation Engine E2E (Positive & Negative Test Suite)',
   })
 
   describe('正例 2：运行失败且聚焦报错单步状态', () => {
-    it('优先展示 📸 诊断当前步骤报错 置顶 Chip', async () => {
+    it('优先展示 🔎 排查当前步骤报错 置顶 Chip', async () => {
       useAssistantStore.setState({
         boundContext: {
           page: 'run',
@@ -244,13 +244,13 @@ describe('Assistant Recommendation Engine E2E (Positive & Negative Test Suite)',
 
       render(<AssistantHost />)
 
-      const diagStepChip = page.getByRole('button', { name: '📸 诊断当前步骤报错', exact: true })
+      const diagStepChip = page.getByRole('button', { name: '🔎 排查当前步骤报错', exact: true })
       await expect.element(diagStepChip).toBeVisible()
     })
   })
 
   describe('正例 3：运行详情页失败状态', () => {
-    it('展示 🚨 诊断失败根因 与 🔄 对比上次成功运行', async () => {
+    it('展示 🚨 排查本次失败 与 🔄 对比上一次运行', async () => {
       useAssistantStore.setState({
         boundContext: {
           page: 'run',
@@ -261,16 +261,16 @@ describe('Assistant Recommendation Engine E2E (Positive & Negative Test Suite)',
 
       render(<AssistantHost />)
 
-      const rcaChip = page.getByRole('button', { name: '🚨 诊断失败根因', exact: true })
-      const compareChip = page.getByRole('button', { name: '🔄 对比上次成功运行', exact: true })
+      const rcaChip = page.getByRole('button', { name: '🚨 排查本次失败', exact: true })
+      const compareChip = page.getByRole('button', { name: '🔄 对比上一次运行', exact: true })
 
       await expect.element(rcaChip).toBeVisible()
       await expect.element(compareChip).toBeVisible()
     })
   })
 
-  describe('正例 4：Studio 草稿包含未保存修改', () => {
-    it('推荐 Chips 中包含 📝 审查未保存改动', async () => {
+  describe('反例 4：Studio 草稿包含未保存修改', () => {
+    it('不推荐助手无法读取的本地草稿差异', async () => {
       useAssistantStore.setState({
         boundContext: {
           page: 'studio',
@@ -282,7 +282,7 @@ describe('Assistant Recommendation Engine E2E (Positive & Negative Test Suite)',
       render(<AssistantHost />)
 
       const diffChip = page.getByRole('button', { name: '📝 审查未保存改动', exact: true })
-      await expect.element(diffChip).toBeVisible()
+      await expect.element(diffChip).not.toBeInTheDocument()
     })
   })
 

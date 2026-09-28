@@ -12,8 +12,8 @@ import {
   availableAssistantCapabilities,
   canonicalJson,
   createAssistantTurnBodySchema,
-  filterGuideCatalog,
   hasAllPermissions,
+  isTargetDeletionGuideQuestion,
   sha256Hex,
   quoteTargetSystemId,
   unpackAssistantResultEnvelope,
@@ -39,8 +39,12 @@ import {
   deleteAssistantConversation,
   expandWithLoader,
   getAssistantTurnRecord,
+  getDataset,
   getRun,
   getScenario,
+  getSchedule,
+  getScheduleOccurrence,
+  getSessionDto,
   interruptExpiredAssistantTurns,
   listAssistantConversations,
   listAssistantTurnEvents,
@@ -57,6 +61,22 @@ import { redactKnowledgeQuestion } from '@cairn/map'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
 import { AssistantAsyncRunner } from './async-runner'
+import { effectiveHelpCatalog } from './help/catalog'
+import {
+  buildCapabilityOverviewResult,
+  buildKnowledgeStatusResult,
+  buildNamedTargetAccountRunResult,
+  buildPageContextMismatchResult,
+  buildTargetCpuUnavailableResult,
+  knowledgeStatusFromCitation,
+  PAGE_CONTEXT_MISMATCH_CITATION,
+  NAMED_TARGET_SCOPE_CITATION,
+  NAMED_TARGET_ACCOUNT_RUN_CITATION,
+  RUN_FAILURE_DIGEST_CITATION,
+  TARGET_CPU_UNAVAILABLE_CITATION,
+} from './handlers/knowledge-answer.handler'
+import { buildManifestPageGuidance, isTargetPageEntryQuestion, namedTargetForPageEntryQuestion, resolveObservedTargetPageEntry } from './handlers/in-page-guidance.handler'
+import { buildPlatformGuideForQuestion, targetDeletionGuide } from './handlers/guide.handler'
 import type { RequestAccount as Actor } from '../common/request-account'
 
 const TITLE_MAX = 40
@@ -405,6 +425,7 @@ export class AssistantService implements OnModuleInit {
       const draftDoc = normalizeAuthoringDocument(draft.document)
       const adoptCheck = await canAdoptAuthoringProposal({
         proposal: result,
+        scenarioId: scenario.id,
         revision: draft.revision,
         document: draftDoc,
         hasFieldDrafts: false,
@@ -476,13 +497,156 @@ export class AssistantService implements OnModuleInit {
     }
     await assertTargetPermission(this.db, actor.id, targetId, 'target:read')
     try {
-      await this.targets.getTarget(targetId)
+      return await this.targets.getTarget(targetId)
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw new DomainError('not_found', 'TARGET_NOT_FOUND', '目标系统不存在')
       }
       throw error
     }
+  }
+
+  private async canReadStoredKnowledgeSource(actor: Actor, citation: string, slots: Record<string, unknown> | null): Promise<boolean> {
+    try {
+      if (citation.startsWith('help:')) {
+        const item = effectiveHelpCatalog().find((entry) => entry.id === citation)
+        return Boolean(item && hasAllPermissions(actor.permissions, item.requiredPermissions))
+      }
+      if (citation.startsWith('target:')) {
+        const targetId = citation.slice('target:'.length)
+        if (!targetId || !hasAllPermissions(actor.permissions, ['target:read', 'session:read'])) return false
+        await this.requireVisibleTarget(actor, targetId)
+        // A target citation is also used for account/session facts. The old
+        // result does not record which of those facts it contained.
+        await assertTargetPermission(this.db, actor.id, targetId, 'session:read')
+        return true
+      }
+      if (citation.startsWith('scenario:')) {
+        const scenarioId = citation.slice('scenario:'.length).split(':')[0] ?? ''
+        if (!scenarioId || !hasAllPermissions(actor.permissions, ['workflow:read', 'target:read'])) return false
+        await authorizeTargetRequest(this.db, actor.id, { scenarioId, permissions: ['workflow:read'] })
+        const scenario = await getScenario(this.db, scenarioId)
+        await this.requireVisibleTarget(actor, scenario.targetId)
+        return true
+      }
+      if (citation.startsWith('run:')) {
+        const runId = citation.slice('run:'.length)
+        // A digest may summarize many runs while citing only a few examples.
+        // Without a single explicit run scope its complete source set is unknown.
+        if (!runId || !hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) return false
+        const run = await getRun(this.db, runId, actor.id)
+        const explicitRun = slots?.runId === runId
+        const accountScoped = typeof slots?.targetId === 'string' &&
+          typeof slots?.targetAccountId === 'string' &&
+          run.targetId === slots.targetId && run.targetAccountId === slots.targetAccountId
+        let sessionScoped = false
+        if (typeof slots?.sessionId === 'string') {
+          const boundSession = await getSessionDto(this.db, slots.sessionId)
+          sessionScoped = Boolean(boundSession && run.targetId === boundSession.targetId &&
+            run.targetAccountId === boundSession.targetAccountId)
+        }
+        if (!explicitRun && !accountScoped && !sessionScoped) return false
+        await this.requireVisibleTarget(actor, run.targetId)
+        return true
+      }
+      if (citation.startsWith('session:')) {
+        const sessionId = citation.slice('session:'.length)
+        if (!sessionId || !hasAllPermissions(actor.permissions, ['session:read', 'target:read'])) return false
+        await authorizeTargetRequest(this.db, actor.id, { sessionId, permissions: ['session:read'] })
+        const session = await getSessionDto(this.db, sessionId)
+        if (!session) return false
+        await this.requireVisibleTarget(actor, session.targetId)
+        return true
+      }
+      if (citation.startsWith('schedule:')) {
+        const scheduleId = citation.slice('schedule:'.length)
+        if (!scheduleId || !hasAllPermissions(actor.permissions, ['schedule:read', 'target:read'])) return false
+        const schedule = await getSchedule(this.db, scheduleId, actor.id)
+        if (!schedule) return false
+        await this.requireVisibleTarget(actor, schedule.targetId)
+        return true
+      }
+      if (citation.startsWith('occurrence:')) {
+        const occurrenceId = citation.slice('occurrence:'.length)
+        if (!occurrenceId || !hasAllPermissions(actor.permissions, ['schedule:read', 'target:read'])) return false
+        const occurrence = await getScheduleOccurrence(this.db, occurrenceId, actor.id)
+        if (!occurrence || (slots?.scheduleId && slots.scheduleId !== occurrence.scheduleId)) return false
+        const schedule = await getSchedule(this.db, occurrence.scheduleId, actor.id)
+        await this.requireVisibleTarget(actor, schedule.targetId)
+        return true
+      }
+      if (citation.startsWith('dataset:')) {
+        const datasetId = citation.slice('dataset:'.length)
+        if (!datasetId || !hasAllPermissions(actor.permissions, ['dataset:read'])) return false
+        return Boolean(await getDataset(this.db, datasetId, actor.id))
+      }
+    } catch {
+      return false
+    }
+    // Step, Attempt, evidence, incident and view citations do not
+    // carry enough scope to reconstruct all facts in a legacy free-text answer.
+    return false
+  }
+
+  private async canReadStoredKnowledgeAnswer(
+    actor: Actor,
+    result: Extract<NonNullable<Awaited<ReturnType<typeof getAssistantTurnRecord>>['turn']['result']>, { kind: 'knowledge_answer' }>,
+    slots: Record<string, unknown> | null,
+  ): Promise<boolean> {
+    const digestClaims = result.claims.filter((claim) =>
+      claim.citations.includes(RUN_FAILURE_DIGEST_CITATION))
+    if (digestClaims.length > 0) {
+      // A grouped answer can summarize runs that the model did not cite in its
+      // prose. Only the deterministic digest with a complete source manifest
+      // can be replayed after every input Run is reauthorized.
+      if (result.claims.length !== 1 || digestClaims.length !== 1 || digestClaims[0]!.factKind !== 'observed') return false
+      const manifestCitations = digestClaims[0]!.citations
+      if (manifestCitations[0] !== RUN_FAILURE_DIGEST_CITATION) return false
+      const sourceCitations = manifestCitations.slice(1)
+      if (sourceCitations.length < 1 || sourceCitations.length > 50) return false
+      if (new Set(sourceCitations).size !== sourceCitations.length) return false
+      if (sourceCitations.some((citation) => !/^run:[0-9a-f-]{36}$/i.test(citation))) return false
+      const sourceSet = new Set(sourceCitations)
+      if (result.nextActions?.some((action) => {
+        if (action.kind !== 'run.detail' || action.citations.length !== 1) return true
+        const citation = action.citations[0]!
+        return !sourceSet.has(citation) || action.href !== `/runs/${citation.slice('run:'.length)}`
+      })) return false
+      if (!hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) return false
+      try {
+        await Promise.all(sourceCitations.map(async (citation) => {
+          const run = await getRun(this.db, citation.slice('run:'.length), actor.id)
+          await this.requireVisibleTarget(actor, run.targetId)
+        }))
+      } catch {
+        return false
+      }
+      return true
+    }
+
+    const citations = [
+      ...result.claims.flatMap((claim) => claim.citations),
+      ...(result.nextActions ?? []).flatMap((action) => action.citations),
+    ]
+    if (citations.length === 0 || result.claims.some((claim) => claim.citations.length === 0)) return false
+    const staticRoutes = new Set(['/scenarios', '/runs', '/targets', '/platform-config', '/datasets', '/schedules'])
+    if (result.nextActions?.some((action) => action.citations.length === 0 && !staticRoutes.has(action.href))) return false
+    for (const citation of new Set(citations)) {
+      if (!(await this.canReadStoredKnowledgeSource(actor, citation, slots))) return false
+    }
+    // These IDs may have supplied the uncited summary. Recheck them too.
+    for (const [key, prefix] of [
+      ['targetId', 'target:'],
+      ['scenarioId', 'scenario:'],
+      ['runId', 'run:'],
+      ['sessionId', 'session:'],
+      ['scheduleId', 'schedule:'],
+      ['datasetId', 'dataset:'],
+    ] as const) {
+      const id = slots?.[key]
+      if (typeof id === 'string' && id && !(await this.canReadStoredKnowledgeSource(actor, `${prefix}${id}`, slots))) return false
+    }
+    return true
   }
 
   private async sanitizeStoredTurn(
@@ -549,18 +713,149 @@ export class AssistantService implements OnModuleInit {
       const topic = assistantGuideTopicSchema.safeParse(slots?.topic).success
         ? assistantGuideTopicSchema.parse(slots?.topic)
         : undefined
-      const items = filterGuideCatalog(actor.permissions, topic)
-      if (items.length === 0) {
-        return {
-          ...turn,
-          result: {
-            kind: 'unsupported' as const,
-            reasonCode: 'GUIDE_UNAVAILABLE',
-            message: '当前权限不能打开该入口。',
-          },
+      const guide = buildPlatformGuideForQuestion(actor.permissions, topic, turn.question)
+      if (guide.kind !== 'guide') return { ...turn, result: guide }
+      if (isTargetDeletionGuideQuestion(turn.question)) {
+        if (!guide.items.some((item) => item.topic === 'targets')) {
+          return { ...turn, result: { kind: 'unsupported' as const, reasonCode: 'GUIDE_UNAVAILABLE', message: '当前权限不能打开目标系统入口。' } }
+        }
+        const targetId = typeof slots?.targetId === 'string' ? slots.targetId : undefined
+        if (targetId) {
+          try {
+            await this.requireVisibleTarget(actor, targetId)
+          } catch {
+            return { ...turn, result: { kind: 'inaccessible' as const, message: '相关目标已不可访问' } }
+          }
+        }
+        return { ...turn, result: targetDeletionGuide(targetId) }
+      }
+      return { ...turn, result: guide }
+    }
+
+    if (unpackedResult.kind === 'knowledge_answer') {
+      if (unpackedResult.claims.some((claim) => claim.citations.includes(NAMED_TARGET_ACCOUNT_RUN_CITATION))) {
+        const targetId = typeof slots?.targetId === 'string' ? slots.targetId : ''
+        if (!targetId) return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '历史目标范围无法核验，请重新提问' } }
+        try {
+          const rebuilt = await buildNamedTargetAccountRunResult(this.db, actor, this.targets, targetId)
+          return { ...turn, thinkingText: undefined, result: rebuilt }
+        } catch {
+          return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '相关目标已不可访问' } }
         }
       }
-      return { ...turn, result: { kind: 'guide' as const, items } }
+      // This answer contains no target entity facts; it only records what the
+      // actor-scoped lookup found at the answer's asOf time. Keep that wording
+      // instead of attempting to replay a now-stale target list as current.
+      if (unpackedResult.claims.length === 1 &&
+        unpackedResult.claims[0]?.citations.length === 1 &&
+        unpackedResult.claims[0].citations[0] === NAMED_TARGET_SCOPE_CITATION) {
+        return { ...turn, thinkingText: undefined, result: unpackedResult }
+      }
+      const isOverview = unpackedResult.claims.length === 1 &&
+        unpackedResult.claims[0]?.factKind === 'human_confirmed' &&
+        unpackedResult.claims[0]?.citations.length === 1 &&
+        unpackedResult.claims[0]?.citations[0] === 'platform:capability_overview' &&
+        (!unpackedResult.nextActions || unpackedResult.nextActions.length === 0)
+      if (isOverview) {
+        return { ...turn, thinkingText: undefined, result: buildCapabilityOverviewResult(actor.permissions) }
+      }
+      const isTargetCpuUnavailable = unpackedResult.claims.length === 1 &&
+        unpackedResult.claims[0]?.factKind === 'human_confirmed' &&
+        unpackedResult.claims[0]?.citations.length === 1 &&
+        unpackedResult.claims[0]?.citations[0] === TARGET_CPU_UNAVAILABLE_CITATION &&
+        (!unpackedResult.nextActions || unpackedResult.nextActions.length === 0)
+      if (isTargetCpuUnavailable) {
+        // This is a fixed platform capability limit with no target facts. Never
+        // replay historical free text when the target context changes.
+        return { ...turn, thinkingText: undefined, result: buildTargetCpuUnavailableResult() }
+      }
+      const isPageContextMismatch = unpackedResult.claims.length === 1 &&
+        unpackedResult.claims[0]?.factKind === 'human_confirmed' &&
+        unpackedResult.claims[0]?.citations.length === 1 &&
+        unpackedResult.claims[0]?.citations[0] === PAGE_CONTEXT_MISMATCH_CITATION &&
+        (!unpackedResult.nextActions || unpackedResult.nextActions.length === 0)
+      if (isPageContextMismatch) {
+        return { ...turn, thinkingText: undefined, result: buildPageContextMismatchResult() }
+      }
+      const statusCitation = unpackedResult.claims.length === 1 &&
+        unpackedResult.claims[0]?.factKind === 'human_confirmed' &&
+        unpackedResult.claims[0]?.citations.length === 1
+        ? unpackedResult.claims[0].citations[0]
+        : undefined
+      const knowledgeStatus = statusCitation ? knowledgeStatusFromCitation(statusCitation) : null
+      if (knowledgeStatus) {
+        return { ...turn, thinkingText: undefined, result: buildKnowledgeStatusResult(knowledgeStatus) }
+      }
+      // Older model answers could publish arbitrary conclusions as inferred
+      // claims once their premises had a valid citation. The summary may also
+      // contain that conclusion, so do not replay any part of such an answer.
+      if (unpackedResult.claims.some((claim) => claim.factKind === 'inferred')) {
+        return { ...turn, thinkingText: undefined, result: {
+          kind: 'inaccessible' as const,
+          message: '这条历史推断未按当前证据规则核验，请重新提问',
+          reasonCode: 'UNVERIFIED_HISTORY' as const,
+        } }
+      }
+      if (!(await this.canReadStoredKnowledgeAnswer(actor, unpackedResult, slots))) {
+        return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '历史回答的事实来源已不可访问或无法重新核验，请重新提问' } }
+      }
+      const helpClaims = unpackedResult.claims.filter((claim) =>
+        claim.citations.some((citation) => citation.startsWith('help:')))
+      const helpCatalog = effectiveHelpCatalog()
+      if (helpClaims.some((claim) => {
+        if (claim.factKind !== 'human_confirmed' || claim.citations.length !== 1) return true
+        const item = helpCatalog.find((entry) => entry.id === claim.citations[0])
+        return !item || !item.content.includes(claim.text)
+      })) {
+        return { ...turn, thinkingText: undefined, result: {
+          kind: 'inaccessible' as const,
+          reasonCode: 'UNVERIFIED_HISTORY' as const,
+          message: '这条历史帮助结论无法按已发布原文核验，请重新提问',
+        } }
+      }
+      if (helpClaims.length > 0 && helpClaims.length === unpackedResult.claims.length) {
+        // A legacy summary or missing item can still contain the model's
+        // discarded paraphrase. Rebuild from verified help excerpts only.
+        const helpRoutes = new Set(helpClaims.map((claim) =>
+          helpCatalog.find((entry) => entry.id === claim.citations[0])!.pageRoute))
+        return { ...turn, thinkingText: undefined, result: {
+          ...unpackedResult,
+          summary: helpClaims.map((claim) => claim.text).join('\n').slice(0, 2000),
+          missing: [],
+          nextActions: unpackedResult.nextActions?.filter((action) =>
+            action.citations.length === 0 && helpRoutes.has(action.href)),
+        } }
+      }
+      return { ...turn, thinkingText: undefined, result: unpackedResult }
+    }
+
+    if (unpackedResult.kind === 'in_page_guidance') {
+      const targetId = typeof slots?.targetId === 'string' ? slots.targetId : ''
+      const page = typeof slots?.page === 'string' ? slots.page : ''
+      const question = typeof slots?.question === 'string' ? slots.question : ''
+      if (isTargetPageEntryQuestion(page, question)) {
+        if (!targetId) {
+          return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '历史目标页面指引缺少可核验的目标范围，请重新提问' } }
+        }
+        try {
+          if (!hasAllPermissions(actor.permissions, ['target:read', 'map:read'])) throw new Error('permission denied')
+          const target = await this.requireVisibleTarget(actor, targetId)
+          const namedTarget = namedTargetForPageEntryQuestion(question)
+          if (namedTarget && target.name.toLocaleLowerCase() !== namedTarget.toLocaleLowerCase()) {
+            return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '历史页面指引的目标范围与提问名称不一致，请重新提问' } }
+          }
+          await assertTargetPermission(this.db, actor.id, targetId, 'map:read')
+          const rebuilt = await resolveObservedTargetPageEntry({ actor, db: this.db, targets: this.targets }, targetId, question)
+          return { ...turn, thinkingText: undefined, result: rebuilt }
+        } catch {
+          return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '历史页面指引的目标知识已不可访问' } }
+        }
+      }
+      const rebuilt = typeof page === 'string' && question
+        ? buildManifestPageGuidance(page, question)
+        : null
+      if (rebuilt) return { ...turn, thinkingText: undefined, result: rebuilt }
+      return { ...turn, thinkingText: undefined, result: { kind: 'inaccessible' as const, message: '历史页面指引缺少可复核的来源，请重新提问' } }
     }
 
     if (unpackedResult.kind === 'diagnosis') {
@@ -574,6 +869,9 @@ export class AssistantService implements OnModuleInit {
             ? runDetailAction.href.split('/').pop()
             : undefined
       const runId = rawRunId && rawRunId !== 'runs' ? rawRunId : undefined
+      if (!runId && unpackedResult.hypotheses.length > 0) {
+        return { ...turn, result: { kind: 'inaccessible' as const, message: '历史运行诊断缺少可核验的运行范围，请重新提问' } }
+      }
       if (runId) {
         if (!hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) {
           return { ...turn, result: { kind: 'inaccessible' as const, message: '相关运行或目标已不可访问' } }
@@ -581,6 +879,16 @@ export class AssistantService implements OnModuleInit {
         try {
           const run = await getRun(this.db, runId, actor.id)
           await this.requireVisibleTarget(actor, run.targetId)
+          if (unpackedResult.hypotheses.length > 0) {
+            return { ...turn, result: {
+              ...unpackedResult,
+              hypotheses: [],
+              missingInformation: [
+                '历史模型原因未经过语义证据核验，已隐藏；请按当前运行事实与失败步骤证据重新核对。',
+                ...unpackedResult.missingInformation,
+              ].slice(0, 12),
+            } }
+          }
         } catch {
           return {
             ...turn,

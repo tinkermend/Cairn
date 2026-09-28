@@ -278,7 +278,7 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
     })
 
     render(<AssistantHost />)
-    const compareCardGlobal = page.getByRole('button', { name: /对比两次运行/ })
+    const compareCardGlobal = page.getByRole('button', { name: /对比上一次运行/ })
     await expect.element(compareCardGlobal).not.toBeInTheDocument()
   })
 
@@ -292,7 +292,7 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
     })
 
     render(<AssistantHost />)
-    const compareCardRun = page.getByRole('button', { name: /对比两次运行/ })
+    const compareCardRun = page.getByRole('button', { name: /对比上一次运行/ })
     await expect.element(compareCardRun).toBeVisible()
 
     await userEvent.click(compareCardRun)
@@ -300,6 +300,7 @@ describe('识途助手：浏览器端仿真验证与全交互逻辑测试 (Brows
       'conv-browser-sim-1',
       expect.objectContaining({
         capabilityHint: 'run.compare',
+        question: '这次运行和上一次相比有什么变化？',
       }),
     )
   })

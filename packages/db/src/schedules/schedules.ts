@@ -475,6 +475,15 @@ export async function getSchedule(db: Db, scheduleId: string, actorId?: string):
   return dto
 }
 
+export async function getScheduleOccurrence(db: Db, occurrenceId: string, actorId: string): Promise<ScheduleOccurrenceDto | null> {
+  const { scheduleOccurrences } = schemaFor(db)
+  const [row] = await db.select().from(scheduleOccurrences)
+    .where(eq(scheduleOccurrences.id, occurrenceId)).limit(1)
+  if (!row) return null
+  await getSchedule(db, row.scheduleId, actorId)
+  return occurrenceToDto(row)
+}
+
 export async function listScheduleEventsAfter(db: Db, scheduleId: string, after: number, actorId: string) {
   await getSchedule(db, scheduleId, actorId)
   const { scheduleEvents } = schemaFor(db)

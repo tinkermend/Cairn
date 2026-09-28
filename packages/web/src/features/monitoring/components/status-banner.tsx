@@ -13,7 +13,6 @@ import {
 import {
   AlertTriangle,
   ArrowUpRight,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   VolumeX,
@@ -67,8 +66,7 @@ export function PlatformHealthBadge() {
   const items = active.data?.items ?? []
   if (items.length === 0) {
     return (
-      <StatusBadge tone="success" className="gap-1 font-medium">
-        <CheckCircle2 className="size-3 text-status-success" aria-hidden />
+      <StatusBadge tone="success" className="font-medium">
         运行健康
         <span className="sr-only"> · 当前没有未恢复告警</span>
       </StatusBadge>
@@ -77,8 +75,7 @@ export function PlatformHealthBadge() {
 
   const hasCritical = items.some((i) => i.severity === 'critical')
   return (
-    <StatusBadge tone={hasCritical ? 'error' : 'warning'} className="gap-1 font-medium">
-      <AlertTriangle className="size-3" aria-hidden />
+    <StatusBadge tone={hasCritical ? 'error' : 'warning'} className="font-medium">
       {items.length} 条告警
     </StatusBadge>
   )

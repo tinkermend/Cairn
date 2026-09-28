@@ -39,6 +39,7 @@ export type PublishedModuleKnowledge = {
   publicationStatus: 'published' | 'deprecated' | 'withdrawn'
   steps: readonly Step[]
   inputs?: readonly { key: string; label: string; required: boolean }[]
+  unusedRequiredInputs?: readonly { key: string; label: string }[]
   preconditions?: readonly { meaning: string; verification: { kind: string } }[]
   postconditions: readonly { meaning: string; verification: { kind: string } }[]
 }
@@ -423,6 +424,18 @@ export function composeKnowledgeSuggestion(input: KnowledgeComposeInput): Knowle
     }
   }
 
+  if (module.unusedRequiredInputs?.length) {
+    sources.push({ kind: 'module_version', moduleId: module.moduleId,
+      moduleVersionId: module.moduleVersionId, contentDigest: module.contentDigest })
+    return {
+      status: 'unsupported', question, diffs: [],
+      diagnostics: [...diagnostics, { code: 'KNOWLEDGE_MODULE_INPUT_UNUSED',
+        message: '已发布做法的必需输入没有在复制的步骤中使用：' + module.unusedRequiredInputs.map(item => item.label).join('、') + '。请修订做法并发布新版本后再生成，当前草稿未修改。' }],
+      sources, unknowns: module.unusedRequiredInputs.map(item => item.key).slice(0, 16),
+      termCandidates: selectedTerms.slice(0, 16).map(termCandidate),
+      suggestedModules: [moduleSuggestion(module)], suggestedBindings: [],
+    }
+  }
   const missingInputs = (module.inputs ?? []).filter(item => item.required && !input.draft.inputs.some(existing => existing.key === item.key))
   if (missingInputs.length) return {
     status: 'needs_input', question, diffs: [],

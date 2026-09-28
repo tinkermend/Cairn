@@ -139,15 +139,19 @@
   --color-link: var(--link);
   --color-scrim: var(--scrim);
 
+  --color-status-success: var(--status-success);
   --color-status-success-accent: var(--status-success-accent);
   --color-status-success-background: var(--status-success-background);
   --color-status-success-foreground: var(--status-success-foreground);
+  --color-status-warning: var(--status-warning);
   --color-status-warning-accent: var(--status-warning-accent);
   --color-status-warning-background: var(--status-warning-background);
   --color-status-warning-foreground: var(--status-warning-foreground);
+  --color-status-error: var(--status-error);
   --color-status-error-accent: var(--status-error-accent);
   --color-status-error-background: var(--status-error-background);
   --color-status-error-foreground: var(--status-error-foreground);
+  --color-status-info: var(--status-info);
   --color-status-info-accent: var(--status-info-accent);
   --color-status-info-background: var(--status-info-background);
   --color-status-info-foreground: var(--status-info-foreground);

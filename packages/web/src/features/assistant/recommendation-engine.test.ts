@@ -37,6 +37,7 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     canAssist: true,
     canWrite: true,
     canReadTarget: true,
+    canReadSession: true,
   }
 
   it('闸门拦截：当全局未启用模型或用户缺少 ai:assist 权限时，严格返回空列表', () => {
@@ -74,7 +75,7 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     ])
   })
 
-  it('场景编排（草稿未保存态）：优先置顶审查草稿改动', () => {
+  it('场景编排（草稿未保存态）：不推荐助手无法看到的本地改动分析', () => {
     const chips = resolveContextRecommendations({
       boundContext: { page: 'studio', isDirty: true },
       pageContext: { page: 'studio', scenarioId: 'sc-1' },
@@ -82,13 +83,12 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
       permissions: defaultPermissions,
     })
 
-    // 优先级：解释场景全貌 (100) > 审查未保存改动 (95) > 检查逻辑完整性 (90)
     expect(chips.map((c) => c.label)).toEqual([
       '💡 解释场景全貌',
-      '📝 审查未保存改动',
       '🔍 检查逻辑完整性',
+      '➕ 建议测试分支',
     ])
-    expect(chips[1].id).toBe('studio-draft-diff')
+    expect(chips.some((chip) => chip.id === 'studio-draft-diff')).toBe(false)
   })
 
   it('场景编排（单步聚焦）：推荐修改建议、解释单步与断言', () => {
@@ -147,7 +147,7 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     expect(chips.map((c) => c.label)).toEqual(['📖 解释此步骤'])
   })
 
-  it('运行详情（失败复盘）：推荐诊断失败根因与对比上次成功运行', () => {
+  it('运行详情（失败复盘）：推荐排查本次失败与对比上一次运行', () => {
     const chips = resolveContextRecommendations({
       boundContext: {
         page: 'run',
@@ -159,9 +159,11 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     })
 
     expect(chips.map((c) => c.label)).toEqual([
-      '🚨 诊断失败根因',
-      '🔄 对比上次成功运行',
+      '🚨 排查本次失败',
+      '🔄 对比上一次运行',
     ])
+    expect(chips.find((c) => c.capabilityHint === 'run.compare')?.question)
+      .toBe('这次运行和上一次相比有什么变化？')
   })
 
   it('运行详情（选中具体报错步骤）：置顶推荐当前步骤报错诊断', () => {
@@ -178,9 +180,9 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
     })
 
     expect(chips.map((c) => c.label)).toEqual([
-      '📸 诊断当前步骤报错',
-      '🚨 诊断失败根因',
-      '🔄 对比上次成功运行',
+      '🔎 排查当前步骤报错',
+      '🚨 排查本次失败',
+      '🔄 对比上一次运行',
     ])
   })
 
@@ -210,6 +212,15 @@ describe('resolveContextRecommendations (M2 - 全域上下文智能推荐解析�
       '🔑 检查账号健康度',
       '🗺️ 目标菜单地图覆盖',
     ])
+    expect(chipsWithTarget[0]?.capabilityHint).toBe('knowledge.answer')
+
+    const chipsNoSession = resolveContextRecommendations({
+      boundContext: { page: 'target', entityId: 'tgt-1' },
+      pageContext: { page: 'target', targetId: 'tgt-1' },
+      capabilities: mockCapabilities(),
+      permissions: { ...defaultPermissions, canReadSession: false },
+    })
+    expect(chipsNoSession.map((c) => c.label)).toEqual(['🗺️ 目标菜单地图覆盖'])
 
     // 2. 缺少 target:read 权限 -> 安全回退全局引导
     const chipsNoTarget = resolveContextRecommendations({

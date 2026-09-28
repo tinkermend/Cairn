@@ -216,7 +216,9 @@ export function buildRunVideoChapters(input: BuildRunVideoChaptersInput): RunVid
       .filter((a) => a.status !== 'RUNNING')
       .sort((a, b) => a.attemptNo - b.attemptNo)
     const lastFinished = finishedAttempts[finishedAttempts.length - 1]
-    const faceItem = lastFinished && evidenceItems ? faceScreenshot(evidenceItems, lastFinished.id) : undefined
+    const faceItem = lastFinished && evidenceItems
+      ? faceScreenshot(evidenceItems, lastFinished.id, { attemptFailed: lastFinished.status !== 'SUCCEEDED' })
+      : undefined
 
     chapters.push({
       stepRunId: stepRun.id,

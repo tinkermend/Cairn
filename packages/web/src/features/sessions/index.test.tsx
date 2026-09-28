@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { PERMISSIONS } from '@cairn/shared'
+import { PERMISSIONS, normalizeAssistantPageContext } from '@cairn/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { ThemeProvider } from '@/context/theme-provider'
 import { SessionsPage } from './index'
 
@@ -452,6 +453,38 @@ describe('SessionsPage', () => {
     )
   })
 
+  it('目标会话列表与账号抽屉切换时，助手引用跟随当前对象', async () => {
+    mocks.useSearch.mockReturnValue({ view: 'systems', targetId: TARGET_ID })
+    mocks.fetchTarget.mockResolvedValue({
+      id: TARGET_ID,
+      name: '智慧运维管理平台',
+      code: 'ops-platform',
+      status: 'active',
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionsPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+
+    await expect.poll(() => useAssistantStore.getState().pageContext).toMatchObject({
+      routeKey: 'sessions.index.systems',
+      targetId: TARGET_ID,
+      scopeRefs: [{ kind: 'target', id: TARGET_ID }],
+    })
+    await screen.getByText('巡检账号', { exact: true }).click()
+    await expect.poll(() => normalizeAssistantPageContext(useAssistantStore.getState().pageContext)?.primaryRef).toEqual({
+      kind: 'account', id: 'acc-1',
+    })
+    await screen.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect.poll(() => useAssistantStore.getState().pageContext).toMatchObject({
+      routeKey: 'sessions.index.systems', targetId: TARGET_ID,
+    })
+  })
+
   it('从旧的 /sessions/$targetId 跳转过来时，若目标系统不在当前页会自动填入搜索框定位', async () => {
     const OTHER_TARGET_ID = '22222222-2222-4222-8222-222222222222'
     mocks.useSearch.mockReturnValue({ view: 'systems', targetId: OTHER_TARGET_ID })
@@ -481,5 +514,3 @@ describe('SessionsPage', () => {
       .toBe(true)
   })
 })
-
-
