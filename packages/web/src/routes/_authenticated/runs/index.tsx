@@ -9,6 +9,7 @@ export const runsPageSearchSchema = evidencePageSearchSchema.extend({
   view: z.enum(['runs', 'suites', 'reports', 'materials', 'retention']).optional().catch('runs'),
   evidenceView: evidenceSearchViewSchema.optional().catch(undefined),
   targetId: entityIdSchema.optional().catch(undefined),
+  scenarioId: entityIdSchema.optional().catch(undefined),
   search: z.string().optional().catch(undefined),
   status: runStatusSchema.optional().catch(undefined),
   hasReport: z.coerce.boolean().optional().catch(undefined),

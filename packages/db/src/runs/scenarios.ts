@@ -41,6 +41,8 @@ import {
   scenarioListQuerySchema,
   scenarioListResponseSchema,
   scenarioSchema,
+  type ScenarioLatestRun,
+  type ScenarioScheduleSummary,
   scenarioVersionListResponseSchema,
   scenarioVersionSchema,
   validateScenarioDefinition,
@@ -418,6 +420,11 @@ function toScenarioDto(
   row: ScenarioRow,
   latest: ScenarioVersionRow,
   draftDirty: boolean,
+  extras?: {
+    createdByName?: string | null
+    latestRun?: ScenarioLatestRun | null
+    schedule?: ScenarioScheduleSummary | null
+  },
 ): ScenarioDto {
   return scenarioSchema.parse({
     id: row.id,
@@ -429,6 +436,9 @@ function toScenarioDto(
     latestVersionNo: publishedVersionNo(latest),
     stepCount: latest.definition.steps.length,
     draftDirty,
+    createdByName: extras?.createdByName ?? null,
+    latestRun: extras?.latestRun ?? null,
+    schedule: extras?.schedule ?? null,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   })
@@ -549,7 +559,7 @@ export async function listScenarios(
   actorId?: string,
 ): Promise<ScenarioListResponse> {
   const parsed = scenarioListQuerySchema.parse(query)
-  const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
+  const { consoleAccounts, runs, schedules, scheduleVersions, scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
   const limit = parsed.limit
   const filters: (SQL | undefined)[] = [
     await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, scenarios.targetId, 'workflow:read'),
@@ -624,13 +634,117 @@ export async function listScenarios(
       : []
   const draftById = new Map(drafts.map((draft) => [draft.scenarioId, draft]))
 
+  // 1. 批量查询创建人 DisplayName
+  const creatorIds = Array.from(
+    new Set(paginated.items.map((r) => r.createdByConsoleAccountId).filter(Boolean)),
+  )
+  const creatorRows =
+    creatorIds.length > 0
+      ? await db
+          .select({ id: consoleAccounts.id, displayName: consoleAccounts.displayName })
+          .from(consoleAccounts)
+          .where(inArray(consoleAccounts.id, creatorIds))
+      : []
+  const creatorNameById = new Map(creatorRows.map((c) => [c.id, c.displayName]))
+
+  // 2. 批量聚合各场景的最近一次运行 (latestRun)
+  let latestRunByScenario = new Map<string, ScenarioLatestRun>()
+  if (pageScenarioIds.length > 0) {
+    const rankedRuns = db
+      .select({
+        id: runs.id,
+        scenarioId: runs.scenarioId,
+        status: runs.status,
+        outcomeStatus: runs.outcomeStatus,
+        createdAt: runs.createdAt,
+        rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${runs.scenarioId} ORDER BY ${runs.createdAt} DESC)`.as(
+          'rn',
+        ),
+      })
+      .from(runs)
+      .where(inArray(runs.scenarioId, pageScenarioIds))
+      .as('ranked_runs')
+
+    const latestRunRows = await db
+      .select()
+      .from(rankedRuns)
+      .where(eq(rankedRuns.rn, 1))
+
+    latestRunByScenario = new Map(
+      latestRunRows.map((r) => [
+        r.scenarioId,
+        {
+          id: r.id,
+          status: r.status,
+          outcomeStatus: r.outcomeStatus ?? undefined,
+          createdAt: iso(r.createdAt),
+        },
+      ]),
+    )
+  }
+
+  // 3. 批量查询关联的直属定时调度 (schedule)
+  const scheduleByScenario = new Map<string, ScenarioScheduleSummary>()
+  if (pageScenarioIds.length > 0) {
+    const scheduleRows = await db
+      .select({
+        id: schedules.id,
+        name: schedules.name,
+        enabled: schedules.enabled,
+        nextDueAt: schedules.nextDueAt,
+        consumer: scheduleVersions.consumer,
+        timeRule: scheduleVersions.timeRule,
+      })
+      .from(schedules)
+      .innerJoin(scheduleVersions, eq(scheduleVersions.id, schedules.currentVersionId))
+      .where(eq(schedules.consumerKey, 'scenario_run'))
+
+    for (const s of scheduleRows) {
+      const consumer = s.consumer as { type?: string; scenarioId?: string } | null
+      if (consumer?.scenarioId && pageScenarioIds.includes(consumer.scenarioId)) {
+        const existing = scheduleByScenario.get(consumer.scenarioId)
+        if (!existing || (!existing.enabled && Boolean(s.enabled))) {
+          let summary = '定时调度'
+          if (s.timeRule && typeof s.timeRule === 'object') {
+            const tr = s.timeRule as {
+              kind?: string
+              intervalMs?: number
+              windows?: Array<{ windowStart?: string; windowEnd?: string }>
+            }
+            if (tr.kind === 'interval' && tr.intervalMs) {
+              summary = `每隔 ${Math.round(tr.intervalMs / 60000)} 分钟`
+            } else if (tr.windows && tr.windows.length > 0 && tr.windows[0]?.windowStart) {
+              summary = `每天 ${tr.windows[0].windowStart}`
+            }
+          }
+          scheduleByScenario.set(consumer.scenarioId, {
+            id: s.id,
+            name: s.name,
+            enabled: Boolean(s.enabled),
+            summary,
+            nextDueAt: s.nextDueAt ? iso(s.nextDueAt) : undefined,
+          })
+        }
+      }
+    }
+  }
+
   const items: ScenarioDto[] = []
   for (const row of paginated.items) {
     const latest = latestByScenario.get(row.id)
     if (!latest) throw notFound('SCENARIO_VERSION_NOT_FOUND', '场景版本不存在')
     const draft = draftById.get(row.id)
     items.push(
-      toScenarioDto(row, latest, draft ? isDraftDirty(draft.document, latest.definition, latest.authoringDocument) : false),
+      toScenarioDto(
+        row,
+        latest,
+        draft ? isDraftDirty(draft.document, latest.definition, latest.authoringDocument) : false,
+        {
+          createdByName: creatorNameById.get(row.createdByConsoleAccountId) ?? null,
+          latestRun: latestRunByScenario.get(row.id) ?? null,
+          schedule: scheduleByScenario.get(row.id) ?? null,
+        },
+      ),
     )
   }
   return scenarioListResponseSchema.parse({

@@ -306,6 +306,23 @@ export function validateScenarioDefinition(definition: unknown): ScenarioDefinit
   return parsed
 }
 
+export const scenarioLatestRunSchema = z.object({
+  id: entityIdSchema,
+  status: z.string(),
+  outcomeStatus: z.string().nullable().optional(),
+  createdAt: utcInstantSchema,
+})
+export type ScenarioLatestRun = z.infer<typeof scenarioLatestRunSchema>
+
+export const scenarioScheduleSummarySchema = z.object({
+  id: entityIdSchema,
+  name: z.string().nullable().optional(),
+  enabled: z.boolean(),
+  summary: z.string(),
+  nextDueAt: utcInstantSchema.nullable().optional(),
+})
+export type ScenarioScheduleSummary = z.infer<typeof scenarioScheduleSummarySchema>
+
 export const scenarioSchema = z.object({
   id: entityIdSchema,
   targetId: entityIdSchema,
@@ -318,6 +335,9 @@ export const scenarioSchema = z.object({
   draftDirty: z.boolean().default(false),
   deletedAt: utcInstantSchema.nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
+  createdByName: z.string().nullable().optional(),
+  latestRun: scenarioLatestRunSchema.nullable().optional(),
+  schedule: scenarioScheduleSummarySchema.nullable().optional(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })

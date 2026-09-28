@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
 }))
 let routeSearch: {
   targetId?: string
+  scenarioId?: string
+  search?: string
   view?: 'runs' | 'materials'
   evidenceView?: 'recent_failures'
   asOf?: string
@@ -168,6 +170,16 @@ describe('RunsPage', () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
     expect(mocks.fetchRuns).toHaveBeenCalledWith(expect.objectContaining({ targetId: routeSearch.targetId }))
+  })
+
+  it('从 URL 恢复 search 搜索参数（例如场景名称）并同步回填至搜索框且传入运行查询', async () => {
+    routeSearch = { search: '下单巡检' }
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
+    const searchInput = screen.getByRole('textbox', { name: '搜索运行' })
+    await expect.element(searchInput).toHaveValue('下单巡检')
+    expect(mocks.fetchRuns).toHaveBeenCalledWith(expect.objectContaining({ search: '下单巡检' }))
   })
 
   it('材料检索不把顶层 view=materials 当成证据预置视图', async () => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   keepPreviousData,
   useQuery,
@@ -139,10 +139,10 @@ export function RunsPage() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [removing, setRemoving] = useState<RunSummaryDto | null>(null)
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(routeSearch.search ?? '')
   const [status, setStatus] = useState<string>('all')
   const targetId = routeSearch.targetId ?? 'all'
-  const [scenarioId, setScenarioId] = useState<string>('all')
+  const [scenarioId, setScenarioId] = useState<string>(routeSearch.scenarioId ?? 'all')
   const [isTrial, setIsTrial] = useState<'all' | 'true'>('all')
   const [isMapJob, setIsMapJob] = useState<'all' | 'true'>('all')
   const [evidenceStatus, setEvidenceStatus] = useState<
@@ -155,6 +155,14 @@ export function RunsPage() {
     'all'
   )
   const [range, setRange] = useState<DateRange | undefined>()
+
+  useEffect(() => {
+    setSearch(routeSearch.search ?? '')
+  }, [routeSearch.search])
+
+  useEffect(() => {
+    setScenarioId(routeSearch.scenarioId ?? 'all')
+  }, [routeSearch.scenarioId])
 
   const filters = useMemo(() => {
     const days = rangeToDayKeys(range)
@@ -556,7 +564,7 @@ export function RunsPage() {
                         setOutcomeStatus('all')
                         setSourceKind('all')
                         setRange(undefined)
-                        patch({ hasReport: undefined })
+                        patch({ hasReport: undefined, search: undefined, scenarioId: undefined })
                         page.reset()
                       }}
                     >
