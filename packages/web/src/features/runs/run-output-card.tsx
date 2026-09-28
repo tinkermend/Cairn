@@ -52,7 +52,7 @@ export function RunOutputCard({ output, runStatus, outcomeStatus, onFocusEvidenc
   const dataRowEntries = Object.entries(output.dataRow || {})
   const hasDataRow = dataRowEntries.length > 0
 
-  let formattedDate = ''
+  let formattedDate: string
   try {
     formattedDate = new Date(output.assembledAt).toLocaleString('zh-CN', {
       year: 'numeric',

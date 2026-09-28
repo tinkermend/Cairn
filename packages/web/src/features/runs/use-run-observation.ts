@@ -5,6 +5,7 @@ import { fetchRunObservation, subscribeRunEvents } from '@/lib/runs-api'
 import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 export type ObservationConnection = 'live' | 'recovering' | 'unavailable' | 'forbidden' | 'idle'
 
 type SharedStream = {
@@ -177,10 +178,13 @@ export function useRunObservation(runId: string, enabled = true) {
     setView(next)
   }
 
-  useEffect(() => {
-    appliedSeq.current = 0
+  // 切换运行时丢掉上一条运行的观察视图与连接状态；已应用序号在提交后清零。
+  useResetOnChange(runId, () => {
     setView(null)
     setConnection('idle')
+  })
+  useEffect(() => {
+    appliedSeq.current = 0
   }, [runId])
 
   useEffect(() => {

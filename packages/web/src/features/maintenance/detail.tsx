@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
@@ -69,6 +69,7 @@ import { toast } from 'sonner'
 import type { IncidentSeverity, MaintenanceUpgradeJobDto } from '@cairn/shared'
 import { getIncidentStatusMeta } from './index'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 const SEVERITY_VARIANTS: Record<IncidentSeverity, 'destructive' | 'outline' | 'secondary' | 'default'> = {
   P1: 'destructive',
   P2: 'destructive',
@@ -119,6 +120,8 @@ function SimplePagination({
   )
 }
 
+
+const INCIDENT_TABS = ['overview', 'impact', 'evidence', 'repairs'] as const
 export function IncidentDetailPage() {
   const { incidentId } = useParams({ from: '/_authenticated/maintenance/incidents/$incidentId/' })
   const search = useSearch({ from: '/_authenticated/maintenance/incidents/$incidentId/' }) as {
@@ -172,15 +175,13 @@ export function IncidentDetailPage() {
   const [batchUpgrading, setBatchUpgrading] = useState(false)
   const [upgradeReceipt, setUpgradeReceipt] = useState<MaintenanceUpgradeJobDto | null>(null)
 
-  // Auto-select upgradeable scenarios on first impact data load
-  useEffect(() => {
-    if (impactQuery.data?.affectedAssets) {
-      const upgradeable = impactQuery.data.affectedAssets
-        .filter((a) => a.upgradeStatus === 'upgradeable')
-        .map((a) => a.assetId)
-      setSelectedScenarioIds(upgradeable)
-    }
-  }, [impactQuery.data])
+  // 影响数据到达（或刷新）时默认勾选全部可升级场景
+  useResetOnChange(impactQuery.data, (data) => {
+    if (!data?.affectedAssets) return
+    setSelectedScenarioIds(
+      data.affectedAssets.filter((a) => a.upgradeStatus === 'upgradeable').map((a) => a.assetId),
+    )
+  })
 
   const toggleSelectScenario = (id: string) => {
     setSelectedScenarioIds((prev) =>
@@ -212,8 +213,8 @@ export function IncidentDetailPage() {
       const successCount = job.results.filter((r) => r.status === 'upgraded').length
       toast.success(`集中升级任务已完成（成功 ${successCount} / ${job.results.length}）`)
       queryClient.invalidateQueries({ queryKey: ['reliability-incident-impact', incidentId] })
-    } catch (err: any) {
-      toast.error(err.message || '批量升级执行失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '批量升级执行失败')
     } finally {
       setBatchUpgrading(false)
     }
@@ -223,11 +224,14 @@ export function IncidentDetailPage() {
   const members = detailQuery.data?.members ?? []
   const signals = signalsQuery.data?.items ?? []
 
-  const handleTabChange = (newTab: string) => {
+  const handleTabChange = (value: string) => {
+    const newTab = INCIDENT_TABS.find((tab) => tab === value)
+    if (!newTab) return
     navigate({
+      from: '/maintenance/incidents/$incidentId/',
       to: '/maintenance/incidents/$incidentId',
       params: { incidentId },
-      search: (prev: any) => ({ ...prev, tab: newTab }),
+      search: (prev) => ({ ...prev, tab: newTab }),
     })
   }
 
@@ -258,8 +262,8 @@ export function IncidentDetailPage() {
       setSelectedSplitMembers([])
       queryClient.invalidateQueries({ queryKey: ['reliability-incident', incidentId] })
       queryClient.invalidateQueries({ queryKey: ['reliability-incidents'] })
-    } catch (err: any) {
-      toast.error(err.message || '操作失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '操作失败')
     } finally {
       setTriageSubmitting(false)
     }

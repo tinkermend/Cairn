@@ -2,8 +2,7 @@ import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { AlertCircle, Ban, ServerCrash } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { StatusBadge } from '@/components/status-badge'
-import type { StatusTone } from '@/components/status-badge'
+import { StatusBadge, type StatusTone } from '@/components/status-badge'
 import {
   MONITOR_FAILURE_TITLE,
   type MonitorFailureKind,

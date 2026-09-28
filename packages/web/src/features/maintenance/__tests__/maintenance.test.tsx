@@ -7,7 +7,7 @@ import { IncidentDetailPage } from '../detail'
 
 const mocks = vi.hoisted(() => ({
   params: { incidentId: 'inc-101' },
-  search: { view: 'incidents' } as Record<string, any>,
+  search: { view: 'incidents' } as Record<string, unknown>,
   navigate: vi.fn(),
   fetchIncidents: vi.fn(),
   fetchIncidentDetail: vi.fn(),

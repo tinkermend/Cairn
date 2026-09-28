@@ -285,6 +285,8 @@ function EvidenceScreenshot({
   label?: string
 }) {
   const [url, setUrl] = useState<string | null>(imageCache.get(`${runId}:${evidenceId}`) ?? null)
+  // 同一证据可能已被页面上另一处加载进缓存：直接用缓存，不再请求。
+  const shownUrl = url ?? imageCache.get(`${runId}:${evidenceId}`) ?? null
   const [failed, setFailed] = useState(false)
   const [open, setOpen] = useState(false)
   const [visible, setVisible] = useState(false)
@@ -292,7 +294,7 @@ function EvidenceScreenshot({
 
   useEffect(() => {
     const node = hostRef.current
-    if (!node || url) return
+    if (!node || shownUrl) return
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) setVisible(true)
@@ -301,16 +303,11 @@ function EvidenceScreenshot({
     )
     observer.observe(node)
     return () => observer.disconnect()
-  }, [hostRef, url])
+  }, [hostRef, shownUrl])
 
   useEffect(() => {
-    if (!visible || url) return
+    if (!visible || shownUrl) return
     const key = `${runId}:${evidenceId}`
-    const cached = imageCache.get(key)
-    if (cached) {
-      setUrl(cached)
-      return
-    }
     let cancelled = false
     void fetchEvidenceContent(runId, evidenceId)
       .then(({ blob }) => {
@@ -325,7 +322,7 @@ function EvidenceScreenshot({
     return () => {
       cancelled = true
     }
-  }, [runId, evidenceId, url, visible])
+  }, [runId, evidenceId, shownUrl, visible])
 
   if (failed) {
     return <p className='text-label text-status-warning-foreground'>截图无法加载</p>
@@ -339,8 +336,8 @@ function EvidenceScreenshot({
         aria-label={`查看${label}大图`}
         onClick={() => setOpen(true)}
       >
-        {url ? (
-          <img src={url} alt={label} className='max-h-full max-w-full object-contain' />
+        {shownUrl ? (
+          <img src={shownUrl} alt={label} className='max-h-full max-w-full object-contain' />
         ) : (
           <span className='text-label text-muted-foreground'>截图加载中…</span>
         )}
@@ -348,8 +345,8 @@ function EvidenceScreenshot({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className='max-h-[90vh] overflow-auto sm:max-w-5xl'>
           <DialogTitle>{label}</DialogTitle>
-          {url ? (
-            <img src={url} alt={`${label}原始分辨率`} className='max-h-[75vh] w-auto max-w-full object-contain' />
+          {shownUrl ? (
+            <img src={shownUrl} alt={`${label}原始分辨率`} className='max-h-[75vh] w-auto max-w-full object-contain' />
           ) : (
             <p className='text-label text-muted-foreground'>截图加载中…</p>
           )}

@@ -1,6 +1,6 @@
 import { render } from 'vitest-browser-react'
 import { describe, expect, it } from 'vitest'
-import type { EvidenceMetadata } from '@cairn/shared'
+import type { EvidenceMetadata, JsonValue } from '@cairn/shared'
 import { AiAttemptSummary } from './ai-evidence'
 
 const call: EvidenceMetadata = {
@@ -39,7 +39,7 @@ describe('AiAttemptSummary', () => {
       ...call,
       id: '11111111-1111-4111-8111-111111111111',
       payload: {
-        ...(call.payload as any),
+        ...(call.payload as Record<string, JsonValue>),
         route: 'aria_text',
         model: 'deepseek-chat',
       },
@@ -48,7 +48,7 @@ describe('AiAttemptSummary', () => {
       ...call,
       id: '22222222-2222-4222-8222-222222222222',
       payload: {
-        ...(call.payload as any),
+        ...(call.payload as Record<string, JsonValue>),
         n: 2,
         route: 'vision',
         model: 'qwen-vl-max',

@@ -192,14 +192,18 @@ export function RunDetailPage() {
       }
       setSelectedMode('step')
       void navigate({
-        search: ((prev: Record<string, unknown>) => ({ ...prev, evidenceId })) as any,
+        from: '/runs/$runId/',
+        search: (prev) => ({ ...prev, evidenceId }),
       })
     },
     [evidenceItems, navigate]
   )
 
   // 初始化默认选中的步骤（首屏直达失败步或深链步）
+  // 深链定位要等运行数据与证据到齐后按 URL 参数判定一次，并用 ref 记住已处理过的参数，
+  // 这是与外部状态（URL、实时推送）的同步，保留在 effect 中。
   const lastFocusedSearchRef = useRef<string | null>(null)
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!run) return
     const currentSearchKey = `${search.stepRunId ?? ''}:${search.attemptId ?? ''}:${search.evidenceId ?? ''}`
@@ -240,6 +244,7 @@ export function RunDetailPage() {
     }
     lastFocusedSearchRef.current = currentSearchKey
   }, [run, evidenceItems, search, currentStepRunId])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // 深链初始化录像 Seek
   const deepLinkSeekDoneRef = useRef(false)

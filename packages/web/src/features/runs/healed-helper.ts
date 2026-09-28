@@ -1,5 +1,27 @@
 import type { AttemptDto, EvidenceMetadata, StepRunDto } from '@cairn/shared'
 
+/** 沿路径读取未知结构里的字段；任一层不是对象就返回 undefined。 */
+function fieldAt(value: unknown, ...path: string[]): unknown {
+  let current = value
+  for (const key of path) {
+    if (!current || typeof current !== 'object') return undefined
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
+function outputMarksHealed(output: unknown): boolean {
+  return fieldAt(output, 'healerResolved') === true || fieldAt(output, 'diagnostics', 'resolvedVia') === 'ai'
+}
+
+function logMarksHealed(evidence: EvidenceMetadata): boolean {
+  if (evidence.type !== 'log') return false
+  return (
+    fieldAt(evidence.payload, 'resolvedVia') === 'ai' ||
+    fieldAt(evidence.payload, 'suggestedPatch', 'kind') === 'ADD_CANDIDATE'
+  )
+}
+
 /**
  * 判断单个 Attempt 是否由 AI 救活：
  * 1. 兼容原有 mock / 测试标记 healerResolved: true
@@ -11,21 +33,8 @@ export function isAttemptHealed(
   evidenceItems?: EvidenceMetadata[],
 ): boolean {
   if (!attempt) return false
-  if ((attempt.output as any)?.healerResolved === true) return true
-  if ((attempt.output as any)?.diagnostics?.resolvedVia === 'ai') return true
-  if (evidenceItems && evidenceItems.length > 0) {
-    return evidenceItems.some((e) => {
-      const matchAttempt = e.attemptId === attempt.id
-      if (!matchAttempt) return false
-      if (e.type !== 'log') return false
-      const payload = e.payload as any
-      return (
-        payload?.resolvedVia === 'ai' ||
-        payload?.suggestedPatch?.kind === 'ADD_CANDIDATE'
-      )
-    })
-  }
-  return false
+  if (outputMarksHealed(attempt.output)) return true
+  return Boolean(evidenceItems?.some((e) => e.attemptId === attempt.id && logMarksHealed(e)))
 }
 
 /**
@@ -36,19 +45,12 @@ export function isStepHealed(
   evidenceItems?: EvidenceMetadata[],
 ): boolean {
   if (!step) return false
-  if (step.attempts?.some((a) => (a.output as any)?.healerResolved === true)) return true
-  if (step.attempts?.some((a) => (a.output as any)?.diagnostics?.resolvedVia === 'ai')) return true
-  if (evidenceItems && evidenceItems.length > 0) {
-    return evidenceItems.some((e) => {
-      const matchStep = e.stepRunId === step.id
-      if (!matchStep) return false
-      if (e.type !== 'log') return false
-      const payload = e.payload as any
-      return (
-        payload?.resolvedVia === 'ai' ||
-        payload?.suggestedPatch?.kind === 'ADD_CANDIDATE'
-      )
-    })
-  }
-  return false
+  if (step.attempts?.some((a) => outputMarksHealed(a.output))) return true
+  return Boolean(evidenceItems?.some((e) => e.stepRunId === step.id && logMarksHealed(e)))
+}
+
+/** 读取尝试输出里的 AI 修复假设说明（healerHypothesis），没有则返回 undefined。 */
+export function healerHypothesisOf(output: unknown): string | undefined {
+  const value = fieldAt(output, 'healerHypothesis')
+  return typeof value === 'string' && value ? value : undefined
 }

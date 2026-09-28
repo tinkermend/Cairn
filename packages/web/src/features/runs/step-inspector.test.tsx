@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { RunDetailDto, StepRunDto } from '@cairn/shared'
+import type { EvidenceMetadata, ModuleManifest, RunDetailDto, Step, StepRunDto } from '@cairn/shared'
 import { StepInspector } from './step-inspector'
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -34,9 +34,9 @@ describe('StepInspector AI Heal & Repair Candidate Integration', () => {
           id: 'step-click-btn',
           name: '点击登录按钮',
           type: 'click',
-        } as any,
+        } as Step,
       ],
-    } as any,
+    } as RunDetailDto['snapshot'],
     stepRuns: [],
     context: {},
   } as unknown as RunDetailDto
@@ -96,10 +96,10 @@ describe('StepInspector AI Heal & Repair Candidate Integration', () => {
               moduleId: 'mod-auth-99',
               name: '标准登录组件',
               expandedStepIds: ['step-click-btn'],
-            },
+            } as ModuleManifest['entries'][number],
           ],
         },
-      } as any,
+      },
     }
 
     const screen = await render(
@@ -151,7 +151,7 @@ describe('StepInspector AI Heal & Repair Candidate Integration', () => {
           suggestedCandidate: { by: 'role', value: 'button', name: '登录' },
           suggestedPatch: { kind: 'ADD_CANDIDATE', suggestedCandidate: { by: 'role', value: 'button', name: '登录' } },
         },
-      } as any,
+      } as EvidenceMetadata,
     ]
 
     const screen = await render(

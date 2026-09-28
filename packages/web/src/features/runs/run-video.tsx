@@ -83,10 +83,12 @@ export function RunVideoSection({
     enabled: showVideo && hasLoops,
   })
   const iterations = iterationsQuery.data?.iterations
-  const chapterModel = useMemo(
-    () => (showVideo ? buildRunVideoChapters({ run, payload: videoPayload, evidenceItems: items, iterations }) : null),
-    [showVideo, run, videoPayload, items, iterations],
-  )
+  // 只依赖 props 与查询数据：payload 在 memo 内从 items 解析，免得每次渲染的新对象让 memo 失效。
+  const chapterModel = useMemo(() => {
+    if (!showVideo) return null
+    const payload = readRunVideoPayload(findRunVideo(items)?.payload)
+    return buildRunVideoChapters({ run, payload, evidenceItems: items, iterations })
+  }, [showVideo, run, items, iterations])
 
   if (!showVideo || !chapterModel) return null
 

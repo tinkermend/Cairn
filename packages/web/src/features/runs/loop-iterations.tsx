@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { JsonValue, RunDetailDto, RunEvidenceListResponse, StepIterationDto, StepRunDto } from '@cairn/shared'
 import { Repeat } from 'lucide-react'
@@ -52,10 +52,10 @@ export function LoopIterationsPanel({
   const iterations = listQuery.data?.iterations ?? []
 
   const defaultSelection = useMemo(() => pickDefaultIteration(iterations), [iterations])
-  const [selectedId, setSelectedId] = useState<string | undefined>(undefined)
-  useEffect(() => {
-    if (!selectedId || !iterations.some((item) => item.id === selectedId)) setSelectedId(defaultSelection)
-  }, [defaultSelection, iterations, selectedId])
+  // 用户选中的迭代不在当前列表里（首次加载或列表刷新）时回落到默认迭代。
+  const [pickedId, setSelectedId] = useState<string | undefined>(undefined)
+  const selectedId =
+    pickedId && iterations.some((item) => item.id === pickedId) ? pickedId : defaultSelection
 
   const selected = iterations.find((item) => item.id === selectedId)
   const detailQuery = useQuery({

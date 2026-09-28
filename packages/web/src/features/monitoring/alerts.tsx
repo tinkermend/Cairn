@@ -30,6 +30,7 @@ import { CursorPagination } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { StatusBadge } from '@/components/status-badge'
+import { useNow } from '@/hooks/use-now'
 import { FailureAlert, Section } from './facts'
 import {
   alertStateTone,
@@ -188,6 +189,8 @@ function AlertTable({
   items: MonitorAlertItem[]
   canSilence: boolean
 }) {
+  // 持续时长只需分钟级新鲜度，30 秒走一次本地时钟即可。
+  const now = useNow(true, 30_000)
   return (
     <div className='overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
       <Table>
@@ -207,7 +210,7 @@ function AlertTable({
             const opened = new Date(
               item.firedAt ?? item.conditionOpenedAt
             ).getTime()
-            const lasted = Math.max(0, Math.round((Date.now() - opened) / 1000))
+            const lasted = Math.max(0, Math.round((now - opened) / 1000))
             return (
               <TableRow key={item.id}>
                 <TableCell>

@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import type { ResolutionDecision, RunDetailDto } from '@cairn/shared'
-import { RESOLUTION_PREFERENCE_LABELS } from '@cairn/shared'
+import {
+  type ResolutionDecision,
+  type RunDetailDto,
+  RESOLUTION_PREFERENCE_LABELS,
+} from '@cairn/shared'
 import { fetchRunResolutionDecisions } from '@/lib/runs-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'

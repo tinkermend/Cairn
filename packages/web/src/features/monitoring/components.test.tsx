@@ -7,7 +7,8 @@ import { SegmentedStatusBar } from './components/segmented-status-bar'
 import { StatusBanner } from './components/status-banner'
 import { MonitoringChartsGrid } from './components/monitoring-charts-grid'
 import { DrilldownTabs } from './components/drilldown-tabs'
-import type { MonitorCapacityCard } from '@cairn/shared'
+import type { MonitorCapacityCard, MonitoringOverviewResponse } from '@cairn/shared'
+import type { MockLinkProps } from '@/test-utils/router-mocks'
 
 const fetchMonitorAlerts = vi.fn()
 const fetchMonitorSeries = vi.fn()
@@ -17,7 +18,7 @@ const useCan = vi.fn((_permission?: string) => true)
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => vi.fn(),
-  Link: ({ children, ...props }: any) => <a {...props}>{children}</a>,
+  Link: ({ children, ...props }: MockLinkProps) => <a {...props}>{children}</a>,
 }))
 
 vi.mock('@/lib/monitoring-api', () => ({
@@ -279,8 +280,8 @@ describe('监控增强组件 (Visualization & Layout Components)', () => {
       wrap(
         <DrilldownTabs
           capacity={testCapacity}
-          queues={{} as any}
-          anomalies={{} as any}
+          queues={{} as MonitoringOverviewResponse['partitions']['queues']}
+          anomalies={{} as MonitoringOverviewResponse['partitions']['anomalies']}
           canReadWorkers={true}
         />,
       ),

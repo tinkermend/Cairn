@@ -12,6 +12,7 @@ import {
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { useNow } from '@/hooks/use-now'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   acquireAuthControl as runAcquireAuthControl,
@@ -29,6 +30,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { useAuthoringObserve } from '@/features/authoring'
 import { cn } from '@/lib/utils'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 const LIVE_VIEW_STATUSES = new Set([
   'QUEUED',
   'RUNNING',
@@ -193,11 +195,16 @@ export function BrowserView({
   const composing = useRef(false)
   const tokenRef = useRef<string | null>(null)
   const inputId = useId()
-  tokenRef.current = token
-
+  const now = useNow(Boolean(expiresAt))
+  // 回调与后续 effect 读最新 token；effect 按声明顺序执行，这里先同步。
   useEffect(() => {
+    tokenRef.current = token
+  })
+
+  // 运行进入可实时观看的状态时自动展开画面（切换运行或状态变化时重新判断）。
+  useResetOnChange(`${runId}:${runStatus}:${sessionMode}`, () => {
     if (!sessionMode && isLiveViewRun(runStatus)) setOpen(true)
-  }, [runId, runStatus, sessionMode])
+  })
 
   useEffect(() => {
     if (!canView) return
@@ -272,20 +279,20 @@ export function BrowserView({
 
   const streamFailToastAt = useRef(0)
 
+  // 等待认证时只有持有控制权的一方看画面；不满足条件就不订阅，并清掉上一段画面与错误。
+  const streamEnabled =
+    open &&
+    canView &&
+    Boolean(meta?.framesAvailable) &&
+    !(runStatus === 'WAITING_FOR_AUTH' && !(token || meta?.authControl?.heldByViewer))
+  useResetOnChange(streamEnabled, (enabled) => {
+    if (enabled) return
+    setFrame(null)
+    setStreamError(null)
+  })
+
   useEffect(() => {
-    const waitingForAuth = runStatus === 'WAITING_FOR_AUTH'
-    const holdingAuth =
-      Boolean(tokenRef.current) || Boolean(meta?.authControl?.heldByViewer)
-    if (!open || !canView || !meta?.framesAvailable) {
-      setFrame(null)
-      setStreamError(null)
-      return
-    }
-    if (waitingForAuth && !holdingAuth) {
-      setFrame(null)
-      setStreamError(null)
-      return
-    }
+    if (!streamEnabled) return
     let cancelled = false
     let retryTimer = 0
     let controller: AbortController | null = null
@@ -330,6 +337,7 @@ export function BrowserView({
       window.clearTimeout(retryTimer)
     }
   }, [
+    streamEnabled,
     open,
     canView,
     runId,
@@ -379,6 +387,8 @@ export function BrowserView({
     if (shouldRevoke) {
       const held = tokenRef.current
       tokenRef.current = null
+      // 撤销控制权与释放服务端控制租约必须同一处完成，不拆成渲染期派生。
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setToken(null)
       if (held)
         void releaseAuthControl(runId, { token: held }).catch(() => undefined)
@@ -394,6 +404,8 @@ export function BrowserView({
   const wheelTimer = useRef<number | null>(null)
   const wheelInFlight = useRef(false)
 
+  // 滚轮在途时要在稍后重放自己；经 ref 调用，避免在 useCallback 内引用尚未声明完成的自身。
+  const flushWheelRef = useRef<() => void>(() => undefined)
   const flushWheel = useCallback(() => {
     if (!pendingWheel.current || wheelInFlight.current) return
     if (!token || !pageRef || !frame || !canControl) {
@@ -448,12 +460,15 @@ export function BrowserView({
           if (wheelTimer.current === null) {
             wheelTimer.current = window.setTimeout(() => {
               wheelTimer.current = null
-              flushWheel()
+              flushWheelRef.current()
             }, 40)
           }
         }
       })
   }, [token, pageRef, frame, canControl, runId, inputAuthControl])
+  useEffect(() => {
+    flushWheelRef.current = flushWheel
+  }, [flushWheel])
 
   const scheduleWheel = useCallback(
     (x: number, y: number, deltaX: number, deltaY: number) => {
@@ -500,10 +515,10 @@ export function BrowserView({
   })
   const remain =
     expiresAt && Date.parse(expiresAt)
-      ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1000))
+      ? Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1000))
       : null
 
-  type DistributiveOmit<T, K extends keyof any> = T extends any
+  type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
     ? Omit<T, K>
     : never
   type BrowserAuthInputPayload = DistributiveOmit<

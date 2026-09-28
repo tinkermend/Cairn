@@ -103,7 +103,7 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
 
   const runsKeys = 'worker.capacity.used,queue.claimableRuns,queue.recovering'
   const runsQuery = useQuery({
-    queryKey: ['monitoring', 'series', 'runs', runsKeys, range],
+    queryKey: ['monitoring', 'series', 'runs', runsKeys, range, fromIso, toIso],
     queryFn: () =>
       fetchMonitorSeries({
         keys: runsKeys,
@@ -115,7 +115,7 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
 
   const backlogKeys = 'queue.needsReview,queue.targetsWithBacklog,queue.unclaimableRuns'
   const backlogQuery = useQuery({
-    queryKey: ['monitoring', 'series', 'backlog', backlogKeys, range],
+    queryKey: ['monitoring', 'series', 'backlog', backlogKeys, range, fromIso, toIso],
     queryFn: () =>
       fetchMonitorSeries({
         keys: backlogKeys,
@@ -127,7 +127,7 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
 
   const anomalyKeys = 'evidence.pendingUpload,evidence.uploadFailed,lease.expiredActiveRunLeases'
   const anomalyQuery = useQuery({
-    queryKey: ['monitoring', 'series', 'anomalies', anomalyKeys, range],
+    queryKey: ['monitoring', 'series', 'anomalies', anomalyKeys, range, fromIso, toIso],
     queryFn: () =>
       fetchMonitorSeries({
         keys: anomalyKeys,
@@ -139,7 +139,7 @@ export function MonitoringChartsGrid({ asOf }: { asOf: string }) {
 
   const aiKeys = 'ai.calls,ai.errors'
   const aiQuery = useQuery({
-    queryKey: ['monitoring', 'series', 'ai', aiKeys, range],
+    queryKey: ['monitoring', 'series', 'ai', aiKeys, range, fromIso, toIso],
     queryFn: () =>
       fetchMonitorSeries({
         keys: aiKeys,

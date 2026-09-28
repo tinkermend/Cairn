@@ -80,11 +80,10 @@ export function useMonitoringObservation() {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [])
 
+  // 未开自动刷新、页面不可见或首屏未成功时不订阅推送；此时对外展示为 idle（无权限状态保持不变）。
+  const streaming = autoRefresh && visible && overview.isSuccess
   useEffect(() => {
-    if (!autoRefresh || !visible || !overview.isSuccess) {
-      setConnection((current) => (current === 'forbidden' ? current : 'idle'))
-      return
-    }
+    if (!streaming) return
     const tokenAtStart = useAuthStore.getState().auth.accessToken
     const controller = new AbortController()
     let stopped = false
@@ -153,7 +152,7 @@ export function useMonitoringObservation() {
       stopped = true
       controller.abort()
     }
-  }, [autoRefresh, visible, overview.isSuccess, refreshInterval])
+  }, [streaming, refreshInterval])
 
   useEffect(() => {
     if (!visible) {
@@ -168,7 +167,7 @@ export function useMonitoringObservation() {
 
   return {
     overview,
-    connection,
+    connection: !streaming && connection !== 'forbidden' ? 'idle' : connection,
     autoRefresh,
     setAutoRefresh,
     refreshInterval,

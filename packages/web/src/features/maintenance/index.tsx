@@ -58,7 +58,7 @@ import {
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
-import type { IncidentSeverity, IncidentStatus } from '@cairn/shared'
+import { ASSET_RELIABILITY_STATUSES, type IncidentSeverity, type IncidentStatus } from '@cairn/shared'
 
 const SEVERITY_VARIANTS: Record<IncidentSeverity, 'destructive' | 'outline' | 'secondary' | 'default'> = {
   P1: 'destructive',
@@ -67,6 +67,8 @@ const SEVERITY_VARIANTS: Record<IncidentSeverity, 'destructive' | 'outline' | 's
   P4: 'secondary',
 }
 
+
+const MAINTENANCE_VIEWS = ['incidents', 'assets'] as const
 export function getIncidentStatusMeta(status: IncidentStatus): { tone: StatusTone; label: string } {
   switch (status) {
     case 'DETECTED':
@@ -102,6 +104,8 @@ export function MaintenancePage() {
   const currentView = search.view ?? 'incidents'
   const targetIdFilter = search.targetId ?? 'all'
   const statusFilter = search.status ?? 'all'
+  // 状态筛选在两个视图间共用；资产视图只认资产可靠性状态，其余取值不下发。
+  const assetStatus = ASSET_RELIABILITY_STATUSES.find((status) => status === statusFilter)
   const severityFilter = search.severity ?? 'all'
   const searchTerm = search.search ?? ''
 
@@ -153,7 +157,7 @@ export function MaintenancePage() {
       'reliability-assets',
       {
         targetId: targetIdFilter !== 'all' ? targetIdFilter : undefined,
-        status: statusFilter !== 'all' ? (statusFilter as any) : undefined,
+        status: assetStatus,
         search: searchTerm || undefined,
         cursor: assetsPage.cursor,
         limit: assetsPage.pageSize,
@@ -162,7 +166,7 @@ export function MaintenancePage() {
     queryFn: () =>
       fetchAssetReliability({
         targetId: targetIdFilter !== 'all' ? targetIdFilter : undefined,
-        status: statusFilter !== 'all' ? (statusFilter as any) : undefined,
+        status: assetStatus,
         search: searchTerm || undefined,
         cursor: assetsPage.cursor,
         limit: assetsPage.pageSize,
@@ -184,17 +188,20 @@ export function MaintenancePage() {
       setTriageReason('')
       queryClient.invalidateQueries({ queryKey: ['reliability-incidents'] })
       queryClient.invalidateQueries({ queryKey: ['reliability-assets'] })
-    } catch (err: any) {
-      toast.error(err.message || '操作失败')
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : '操作失败')
     } finally {
       setTriageSubmitting(false)
     }
   }
 
-  const handleViewChange = (newView: string) => {
+  const handleViewChange = (value: string) => {
+    const newView = MAINTENANCE_VIEWS.find((view) => view === value)
+    if (!newView) return
     navigate({
+      from: '/maintenance/',
       to: '/maintenance',
-      search: (prev: any) => ({ ...prev, view: newView }),
+      search: (prev) => ({ ...prev, view: newView }),
     })
   }
 
@@ -202,8 +209,9 @@ export function MaintenancePage() {
     incidentsPage.reset()
     assetsPage.reset()
     navigate({
+      from: '/maintenance/',
       to: '/maintenance',
-      search: (prev: any) => ({
+      search: (prev) => ({
         ...prev,
         ...updates,
       }),
@@ -317,7 +325,7 @@ export function MaintenancePage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">全部目标</SelectItem>
-                  {targetsQuery.data?.items?.map((t: any) => (
+                  {targetsQuery.data?.items?.map((t) => (
                     <SelectItem key={t.id} value={t.id}>
                       {t.name}
                     </SelectItem>
@@ -612,21 +620,17 @@ export function MaintenancePage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <Button variant="ghost" size="sm" asChild className="h-8 text-label">
-                            <Link
-                              to={
-                                asset.assetType === 'scenario'
-                                  ? '/scenarios/$scenarioId'
-                                  : '/action-modules/$moduleId'
-                              }
-                              params={
-                                asset.assetType === 'scenario'
-                                  ? ({ scenarioId: asset.assetId } as any)
-                                  : ({ moduleId: asset.assetId } as any)
-                              }
-                            >
-                              <ExternalLink className="mr-1 size-3.5" />
-                              编辑器
-                            </Link>
+                            {asset.assetType === 'scenario' ? (
+                              <Link to="/scenarios/$scenarioId" params={{ scenarioId: asset.assetId }}>
+                                <ExternalLink className="mr-1 size-3.5" />
+                                编辑器
+                              </Link>
+                            ) : (
+                              <Link to="/action-modules/$moduleId" params={{ moduleId: asset.assetId }}>
+                                <ExternalLink className="mr-1 size-3.5" />
+                                编辑器
+                              </Link>
+                            )}
                           </Button>
                         </TableCell>
                       </TableRow>

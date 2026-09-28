@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   isAiStepType,
   type EvidenceMetadata,
@@ -25,7 +25,7 @@ import { Can } from '@/components/rbac/can'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { buildStepQuote } from '@/features/assistant/quote-helper'
 import { translateStepError } from './error-translator'
-import { isAttemptHealed, isStepHealed } from './healed-helper'
+import { healerHypothesisOf, isAttemptHealed, isStepHealed } from './healed-helper'
 import { OutcomeConditionList } from './outcome-axis'
 import { ContextLists } from './context-lists'
 import { AiAttemptSummary } from './ai-evidence'
@@ -41,6 +41,7 @@ import {
 } from './labels'
 import { StatusBadge } from '@/components/status-badge'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 type Props = {
   run: RunDetailDto
   step: StepRunDto | undefined
@@ -65,11 +66,9 @@ export function StepInspector({
   const openAssistant = useAssistantStore((s) => s.openPanel)
 
   // 当外部聚焦指定证据时，自动切至「诊断与证据」Tab
-  useEffect(() => {
-    if (focusEvidenceId) {
-      setActiveTab('evidence')
-    }
-  }, [focusEvidenceId])
+  useResetOnChange(focusEvidenceId, (id) => {
+    if (id) setActiveTab('evidence')
+  })
 
   if (!step) {
     return (
@@ -97,8 +96,8 @@ export function StepInspector({
 
   const healedAttempt = step.attempts.find((a) => isAttemptHealed(a, evidenceItems))
   const isHealed = Boolean(healedAttempt) || isStepHealed(step, evidenceItems)
-  const parentModule = (run.snapshot as any)?.moduleManifest?.entries?.find((e: any) =>
-    e.expandedStepIds?.includes(step.stepId),
+  const parentModule = run.snapshot.moduleManifest?.entries.find((e) =>
+    e.expandedStepIds.includes(step.stepId),
   )
 
   const askAssistantAboutError = () => {
@@ -202,7 +201,7 @@ export function StepInspector({
                 </Badge>
               </div>
               <p className='text-muted-foreground'>
-                {(healedAttempt?.output as any)?.healerHypothesis || '定位器已在运行时自动修正并救活执行。可前往场景编排草稿或维护中心受控采纳。'}
+                {healerHypothesisOf(healedAttempt?.output) || '定位器已在运行时自动修正并救活执行。可前往场景编排草稿或维护中心受控采纳。'}
               </p>
               {run.scenarioId && (
                 <div className='flex items-center gap-2 pt-0.5'>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
@@ -48,6 +48,7 @@ import {
   unusableAccountReason,
 } from './target-account'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 type RunCreateDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -132,9 +133,10 @@ export function RunCreateDialog({
   const inheritVideo = capabilities.data?.defaults?.evidence.video ?? 'always'
   const inheritTrace = capabilities.data?.defaults?.evidence.trace ?? 'off'
 
-  useEffect(() => {
-    setTargetAccountId(preferredPasswordAccountId(accounts.data?.items ?? []))
-  }, [accounts.data, scenarioId])
+  // 账号列表到达或切换场景时，按首选密码账号重新预选。
+  const pickPreferredAccount = () => setTargetAccountId(preferredPasswordAccountId(accounts.data?.items ?? []))
+  useResetOnChange(accounts.data, pickPreferredAccount)
+  useResetOnChange(scenarioId, pickPreferredAccount)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

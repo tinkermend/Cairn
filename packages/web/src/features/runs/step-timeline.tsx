@@ -36,6 +36,7 @@ import {
   stepRunStatusTone,
 } from './labels'
 
+import { useResetOnChange } from '@/hooks/use-reset-on-change'
 type EvidenceItem = RunEvidenceListResponse['items'][number]
 
 type StepTimelineProps = {
@@ -161,10 +162,12 @@ export function StepTimeline({
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>(initialExpanded)
 
+  // 聚焦到模块调用内的步骤时先展开该调用，再由下方 effect 滚动定位。
+  useResetOnChange(focusInvocationId, (id) => {
+    if (id) setExpanded((prev) => ({ ...prev, [id]: true }))
+  })
+
   useEffect(() => {
-    if (focusInvocationId) {
-      setExpanded((prev) => ({ ...prev, [focusInvocationId]: true }))
-    }
     const target =
       (focusEvidenceId && document.getElementById(`evidence-${focusEvidenceId}`)) ||
       (focusAttemptId && document.getElementById(`attempt-${focusAttemptId}`)) ||
@@ -463,7 +466,7 @@ export function StepRunItem({
           ) : skipReason ? (
             <Badge variant='outline'>{SKIP_REASON_LABELS[skipReason]}</Badge>
           ) : null}
-          {isStepHealed(step, evidenceItems as any) && (
+          {isStepHealed(step, evidenceItems) && (
             <Badge
               variant='outline'
               className='text-3xs font-medium border-primary/40 text-primary bg-primary/5 gap-0.5'
@@ -474,7 +477,7 @@ export function StepRunItem({
           )}
           {(() => {
             const lastAttempt = step.attempts[step.attempts.length - 1]
-            const lastOutput = lastAttempt?.output as any
+            const lastOutput = lastAttempt?.output as { branch?: string; matched?: unknown } | null | undefined
             if (step.type === 'decide' && lastOutput?.branch) {
               return (
                 <Badge

@@ -9,11 +9,11 @@ import {
   faceScreenshot,
   type OutcomeStatus,
   type RunDetailDto,
+  type EvidenceMetadata,
 } from '@cairn/shared'
 import { RUNTIME_INVARIANT_KIND_LABELS } from '@/features/authoring/invariant-editor'
 import { StatusBadge, type StatusTone } from '@/components/status-badge'
 import { cn } from '@/lib/utils'
-import type { EvidenceMetadata } from '@cairn/shared'
 import {
   RUN_OUTCOME_STATUS_HINTS,
   RUN_OUTCOME_STATUS_LABELS,

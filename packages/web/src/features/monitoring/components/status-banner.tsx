@@ -6,6 +6,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { useNow } from '@/hooks/use-now'
 import {
   MAX_ALERT_SILENCE_SECONDS,
   MIN_ALERT_SILENCE_SECONDS,
@@ -85,6 +86,7 @@ export function StatusBanner() {
   const canSilence = useCan('monitor:operate')
   const canReadConfig = useCan('platform-config:read')
   const [expanded, setExpanded] = React.useState(false)
+  const now = useNow(true, 30_000)
 
   const activePage = useCursorPage(10, 'monitoring-alert-banner')
   const active = useQuery({
@@ -215,7 +217,7 @@ export function StatusBanner() {
                 const opened = new Date(
                   item.firedAt ?? item.conditionOpenedAt
                 ).getTime()
-                const lasted = Math.max(0, Math.round((Date.now() - opened) / 1000))
+                const lasted = Math.max(0, Math.round((now - opened) / 1000))
                 return (
                   <TableRow key={item.id}>
                     <TableCell>

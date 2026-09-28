@@ -38,7 +38,9 @@ const INTEGRITY_LABELS: Record<string, string> = {
 
 export function AiActionTracePanel({ runId, attemptId }: { runId: string; attemptId: string }) {
   const canRead = useCan('run:read')
-  const canSolidify = useCan('workflow:write') && useCan('target:read')
+  const canWriteWorkflow = useCan('workflow:write')
+  const canReadTarget = useCan('target:read')
+  const canSolidify = canWriteWorkflow && canReadTarget
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const query = useQuery({
