@@ -171,27 +171,29 @@ export function CreatorCell({ scenario, context }: { scenario: ScenarioDto; cont
 
 function CardTitle({ scenario }: { scenario: ScenarioDto }) {
   const [ref, truncated] = useIsTruncated<HTMLAnchorElement>(scenario.name)
-  const link = (
-    <Link
-      ref={ref}
-      data-card-link=''
-      to='/scenarios/$scenarioId'
-      params={{ scenarioId: scenario.id }}
-      className={cn(
-        'relative z-[1] line-clamp-2 text-body font-semibold [text-wrap:pretty] outline-none transition-colors duration-150 group-hover/card:text-link',
-        scenario.status === 'disabled' ? 'text-text-secondary' : 'text-text-primary',
-      )}
-    >
-      {scenario.name}
-    </Link>
-  )
-  if (!truncated) return link
+  // Tooltip 常驻、只条件渲染内容：若按截断与否切换树形状，锚点 DOM 会被 React 重建，
+  // useIsTruncated 的 ResizeObserver 随之失联，截断态会被清掉且不再恢复。
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{link}</TooltipTrigger>
-      <TooltipContent side='top' className='max-w-sm text-left'>
-        {scenario.name}
-      </TooltipContent>
+      <TooltipTrigger asChild>
+        <Link
+          ref={ref}
+          data-card-link=''
+          to='/scenarios/$scenarioId'
+          params={{ scenarioId: scenario.id }}
+          className={cn(
+            'relative z-[1] line-clamp-2 text-body font-semibold [text-wrap:pretty] outline-none transition-colors duration-150 group-hover/card:text-link',
+            scenario.status === 'disabled' ? 'text-text-secondary' : 'text-text-primary',
+          )}
+        >
+          {scenario.name}
+        </Link>
+      </TooltipTrigger>
+      {truncated ? (
+        <TooltipContent side='top' className='max-w-sm text-left'>
+          {scenario.name}
+        </TooltipContent>
+      ) : null}
     </Tooltip>
   )
 }

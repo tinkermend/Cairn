@@ -13,7 +13,28 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIsTruncated } from '@/features/scenarios/list/use-is-truncated'
 import { cn } from '@/lib/utils'
+
+function ScenarioName({ name }: { name: string }) {
+  const [ref, truncated] = useIsTruncated<HTMLSpanElement>(name)
+  // Tooltip 常驻保持节点稳定，避免截断态被 RO 的死节点回调清掉（同场景编排列表页）。
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span ref={ref} className='block truncate text-body font-medium text-foreground'>
+          {name}
+        </span>
+      </TooltipTrigger>
+      {truncated ? (
+        <TooltipContent side='top' className='max-w-sm text-left'>
+          {name}
+        </TooltipContent>
+      ) : null}
+    </Tooltip>
+  )
+}
 
 export type PickerScenario = {
   id: string
@@ -150,9 +171,7 @@ export function MemberPickerDialog({
                           <Layers className='size-3.5' />
                         </span>
                         <span className='min-w-0 flex-1'>
-                          <span className='block truncate text-body font-medium text-foreground'>
-                            {scenario.name}
-                          </span>
+                          <ScenarioName name={scenario.name} />
                           <span className='mt-0.5 flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
                             {scenario.latestVersionNo ? <span>已发布 v{scenario.latestVersionNo}</span> : <span>已发布</span>}
                             {alreadyAdded ? (

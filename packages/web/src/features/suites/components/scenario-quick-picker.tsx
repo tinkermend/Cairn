@@ -16,6 +16,25 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIsTruncated } from '@/features/scenarios/list/use-is-truncated'
+
+function ScenarioName({ name }: { name: string }) {
+  const [ref, truncated] = useIsTruncated<HTMLSpanElement>(name)
+  // Tooltip 常驻保持节点稳定，避免截断态被 RO 的死节点回调清掉（同场景编排列表页）。
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span ref={ref} className='truncate font-medium text-foreground'>{name}</span>
+      </TooltipTrigger>
+      {truncated ? (
+        <TooltipContent side='top' className='max-w-sm text-left'>
+          {name}
+        </TooltipContent>
+      ) : null}
+    </Tooltip>
+  )
+}
 
 export interface ScenarioQuickPickerProps {
   availableScenarios: Array<{ id: string; name: string; latestVersionId?: string }>
@@ -122,7 +141,7 @@ export function ScenarioQuickPicker({
                     >
                       <div className='flex items-center gap-2 min-w-0 flex-1 mr-2'>
                         <Layers className='size-3.5 shrink-0 text-primary' />
-                        <span className='truncate font-medium text-foreground'>{item.name}</span>
+                        <ScenarioName name={item.name} />
                       </div>
                       <div className='flex items-center gap-1.5 shrink-0'>
                         {count > 0 ? (
@@ -151,7 +170,7 @@ export function ScenarioQuickPicker({
                   >
                     <div className='flex items-center gap-2 min-w-0 flex-1 mr-2'>
                       <Layers className='size-3.5 shrink-0 text-muted-foreground' />
-                      <span className='truncate font-medium text-foreground'>{item.name}</span>
+                      <ScenarioName name={item.name} />
                     </div>
                     <div className='flex items-center gap-1.5 shrink-0'>
                       {count > 0 ? (

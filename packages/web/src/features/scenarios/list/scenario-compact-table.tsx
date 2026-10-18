@@ -16,23 +16,24 @@ import { useIsTruncated } from './use-is-truncated'
 
 function NameLink({ scenario }: { scenario: ScenarioDto }) {
   const [ref, truncated] = useIsTruncated<HTMLAnchorElement>(scenario.name)
-  const link = (
-    <Link
-      ref={ref}
-      to='/scenarios/$scenarioId'
-      params={{ scenarioId: scenario.id }}
-      className='block truncate rounded-sm text-body font-medium text-text-primary outline-none hover:text-link focus-visible:ring-2 focus-visible:ring-ring'
-    >
-      {scenario.name}
-    </Link>
-  )
-  if (!truncated) return link
+  // 与卡片标题同理：Tooltip 常驻保持锚点 DOM 稳定，避免截断态被 RO 的死节点回调清掉。
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{link}</TooltipTrigger>
-      <TooltipContent side='top' className='max-w-sm text-left'>
-        {scenario.name}
-      </TooltipContent>
+      <TooltipTrigger asChild>
+        <Link
+          ref={ref}
+          to='/scenarios/$scenarioId'
+          params={{ scenarioId: scenario.id }}
+          className='block truncate rounded-sm text-body font-medium text-text-primary outline-none hover:text-link focus-visible:ring-2 focus-visible:ring-ring'
+        >
+          {scenario.name}
+        </Link>
+      </TooltipTrigger>
+      {truncated ? (
+        <TooltipContent side='top' className='max-w-sm text-left'>
+          {scenario.name}
+        </TooltipContent>
+      ) : null}
     </Tooltip>
   )
 }
